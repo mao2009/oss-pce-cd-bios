@@ -100,6 +100,204 @@ BLOCKPRE_ALWAYS_BLOCKED = frozenset({"tii-hwpage-fetch-blocked-unguarded"})
 BLOCKPRE_HWPAGE_ARMED = frozenset({"tii-hwpage-fetch-blocked"})
 BLOCKPRE_EXPECTED_EVIDENCE = BLOCKPRE_ARMED | BLOCKPRE_MUTATIONS
 
+# Pinned per-case safety contract, grounded in the measured probe plan
+# (tests/integration/geargrafx_block_preblock.py BLOCK_EXPECTED_PC,
+# BLOCK_EXECUTED_BEFORE_REFUSAL, BLOCK_OP; the C++ probe's deterministic
+# synthetic environment: MPR1=$F8, rest $00, guest TAM changes MPR2 only).
+BLOCKPRE_EXPECTED_PC = {
+    "tii-entry": 0x3E00,
+    "tdd-unknown": 0x3E10,
+    "tin-unknown-far": 0x3E20,
+    "tia-wrap-forbidden": 0x3E04,
+    "tai-mpr2-unknown": 0x4010,
+    "tii-hwpage-fetch-blocked": 0x4000,
+    "block-irq-handler": 0x3F80,
+}
+BLOCKPRE_EXPECTED_EXECUTED = {
+    "tii-entry": 0,
+    "tdd-unknown": 1,
+    "tin-unknown-far": 1,
+    "tia-wrap-forbidden": 2,
+    "tai-mpr2-unknown": 3,
+    "tii-hwpage-fetch-blocked": 3,
+    "block-irq-handler": 2,
+}
+BLOCKPRE_EXPECTED_OP = {
+    "tii-entry": 0x73,
+    "tdd-unknown": 0xC3,
+    "tin-unknown-far": 0xD3,
+    "tia-wrap-forbidden": 0xE3,
+    "tai-mpr2-unknown": 0xF3,
+    "tii-hwpage-fetch-blocked": 0x73,
+    "block-irq-handler": 0x73,
+}
+_BLOCKPRE_MPR_INIT = [0x00, 0xF8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+BLOCKPRE_MPR_BEFORE = {
+    "tii-entry": list(_BLOCKPRE_MPR_INIT),
+    "tdd-unknown": list(_BLOCKPRE_MPR_INIT),
+    "tin-unknown-far": list(_BLOCKPRE_MPR_INIT),
+    "tia-wrap-forbidden": list(_BLOCKPRE_MPR_INIT),
+    "tai-mpr2-unknown": list(_BLOCKPRE_MPR_INIT),
+    "tii-hwpage-fetch-blocked": list(_BLOCKPRE_MPR_INIT),
+    "block-irq-handler": list(_BLOCKPRE_MPR_INIT),
+}
+BLOCKPRE_MPR_AFTER = {
+    "tii-entry": list(_BLOCKPRE_MPR_INIT),
+    "tdd-unknown": list(_BLOCKPRE_MPR_INIT),
+    "tin-unknown-far": list(_BLOCKPRE_MPR_INIT),
+    "tia-wrap-forbidden": [0x00, 0xF8, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00],
+    "tai-mpr2-unknown": [0x00, 0xF8, 0xF8, 0x00, 0x00, 0x00, 0x00, 0x00],
+    "tii-hwpage-fetch-blocked": [0x00, 0xF8, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00],
+    "block-irq-handler": list(_BLOCKPRE_MPR_INIT),
+}
+BLOCKPRE_IRQ_VECTOR = 0x3F80
+BLOCKPRE_STACK_CELLS = frozenset({0x21FF, 0x21FE, 0x21FD})
+BLOCKPRE_RESUME_ATTEMPTS = 3
+
+
+def _blockpre_bad_int(row, name, case):
+    value = row.get(name)
+    if type(value) is not int:
+        return f"ARMED_FIELD_MISSING:{case}:{name}"
+    return None
+
+
+def _blockpre_check_mpr(row, case):
+    """Full 8-byte MPR before/after vs the measured plan (missing -> BLOCKED)."""
+    before = row.get("before") if isinstance(row.get("before"), dict) else None
+    after = row.get("after") if isinstance(row.get("after"), dict) else None
+    before_mpr = before.get("mpr") if isinstance(before, dict) else None
+    after_mpr = after.get("mpr") if isinstance(after, dict) else None
+    for label, mpr in (("before", before_mpr), ("after", after_mpr)):
+        if type(mpr) is not list or len(mpr) != 8:
+            return "BLOCKED", f"ARMED_MPR_MISSING:{case}:{label}"
+        for value in mpr:
+            if type(value) is not int or not 0 <= value <= 0xFF:
+                return "BLOCKED", f"ARMED_MPR_MISSING:{case}:{label}"
+    if before_mpr != BLOCKPRE_MPR_BEFORE[case]:
+        return "FAIL", f"ARMED_MPR_BEFORE_CHANGED:{case}"
+    if after_mpr != BLOCKPRE_MPR_AFTER[case]:
+        return "FAIL", f"ARMED_MPR_CHANGED:{case}"
+    return None, None
+
+
+def _blockpre_check_ram(row, case):
+    """Net-diff re-check (never trust net-empty alone: truncation/count gated).
+
+    Missing/wrong-type evidence -> BLOCKED (cannot verify). Truncated diffs are
+    never accepted as complete. Any non-stack WRAM delta -> FAIL.
+    """
+    diffs = row.get("ram_diff")
+    if not isinstance(diffs, list):
+        return "BLOCKED", f"ARMED_RAM_DIFF_MISSING:{case}"
+    truncated = row.get("ram_diff_truncated")
+    if type(truncated) is not bool:
+        return "BLOCKED", f"ARMED_RAM_DIFF_TRUNCATED_MISSING:{case}"
+    if truncated:
+        return "BLOCKED", f"ARMED_RAM_DIFF_TRUNCATED:{case}"
+    count = row.get("ram_diff_count")
+    if type(count) is not int:
+        return "BLOCKED", f"ARMED_RAM_DIFF_COUNT_MISSING:{case}"
+    if count != len(diffs):
+        return "FAIL", f"ARMED_RAM_DIFF_COUNT_MISMATCH:{case}"
+    if case == "block-irq-handler":
+        if row.get("only_stack_net_diffs") is not True:
+            return "FAIL", f"ARMED_IRQ_NOT_STACK_ONLY:{case}"
+        for entry in diffs:
+            if not isinstance(entry, dict):
+                return "BLOCKED", f"ARMED_RAM_DIFF_MALFORMED:{case}"
+            address, before, after = entry.get("address"), entry.get("before"), entry.get("after")
+            if type(address) is not int or not 0 <= address <= 0xFFFF:
+                return "BLOCKED", f"ARMED_RAM_DIFF_MALFORMED:{case}"
+            if type(before) is not int or type(after) is not int:
+                return "BLOCKED", f"ARMED_RAM_DIFF_MALFORMED:{case}"
+            if address not in BLOCKPRE_STACK_CELLS:
+                return "FAIL", f"ARMED_RAM_NON_STACK_DELTA:{case}:{address:#x}"
+            if before == after:
+                return "FAIL", f"ARMED_RAM_DIFF_NOT_A_CHANGE:{case}:{address:#x}"
+    elif diffs:
+        return "FAIL", f"ARMED_RAM_CHANGED:{case}"
+    return None, None
+
+
+def _blockpre_check_resume(row, case):
+    """Resume flatness: 3/3 refusals, no execution or RAM advance."""
+    for name in ("resume_attempts", "resume_refused"):
+        bad = _blockpre_bad_int(row, name, case)
+        if bad is not None:
+            return "BLOCKED", bad
+    if row["resume_attempts"] != BLOCKPRE_RESUME_ATTEMPTS or \
+            row["resume_refused"] != BLOCKPRE_RESUME_ATTEMPTS:
+        return "FAIL", f"ARMED_RESUME_NOT_REFUSED:{case}"
+    for name in ("executed_at_refusal", "executed_after_resume"):
+        bad = _blockpre_bad_int(row, name, case)
+        if bad is not None:
+            return "BLOCKED", bad
+    if row["executed_at_refusal"] != BLOCKPRE_EXPECTED_EXECUTED[case]:
+        return "FAIL", f"ARMED_EXECUTED_AT_REFUSAL_MISMATCH:{case}"
+    if row["executed_after_resume"] != BLOCKPRE_EXPECTED_EXECUTED[case]:
+        return "FAIL", f"ARMED_EXECUTED_AFTER_RESUME:{case}"
+    if row.get("ram_unchanged_during_resume") is not True:
+        if type(row.get("ram_unchanged_during_resume")) is not bool:
+            return "BLOCKED", f"ARMED_RESUME_RAM_FLAG_MISSING:{case}"
+        return "FAIL", f"ARMED_RAM_CHANGED_DURING_RESUME:{case}"
+    return None, None
+
+
+def _blockpre_check_fetch_operand(row, case):
+    """Fetch/operand evidence: safe peek of the expected opcode, 7 bytes complete."""
+    expected_op = BLOCKPRE_EXPECTED_OP[case]
+    for name in ("refused_opcode", "fetch_opcode"):
+        bad = _blockpre_bad_int(row, name, case)
+        if bad is not None:
+            return "BLOCKED", bad
+    if row["refused_opcode"] != expected_op:
+        return "FAIL", f"ARMED_REFUSED_OPCODE_MISMATCH:{case}"
+    if row["fetch_opcode"] != expected_op:
+        return "FAIL", f"ARMED_FETCH_OPCODE_MISMATCH:{case}"
+    if row.get("fetch_safe") is not True:
+        if type(row.get("fetch_safe")) is not bool:
+            return "BLOCKED", f"ARMED_FETCH_SAFE_MISSING:{case}"
+        return "FAIL", f"ARMED_FETCH_UNSAFE:{case}"
+    if row.get("fetch_failed") is not False:
+        if type(row.get("fetch_failed")) is not bool:
+            return "BLOCKED", f"ARMED_FETCH_FAILED_MISSING:{case}"
+        return "FAIL", f"ARMED_FETCH_FAILED_SET:{case}"
+    operands = row.get("operand_bytes")
+    if not isinstance(operands, list) or len(operands) != 7:
+        return "BLOCKED", f"ARMED_OPERAND_EVIDENCE_MISSING:{case}"
+    for value in operands:
+        if type(value) is not int or not 0 <= value <= 0xFF:
+            return "BLOCKED", f"ARMED_OPERAND_EVIDENCE_MISSING:{case}"
+    if operands[0] != expected_op:
+        return "FAIL", f"ARMED_OPERAND_OPCODE_MISMATCH:{case}"
+    if row.get("operand_complete") is not True:
+        if type(row.get("operand_complete")) is not bool:
+            return "BLOCKED", f"ARMED_OPERAND_COMPLETE_MISSING:{case}"
+        return "FAIL", f"ARMED_OPERAND_INCOMPLETE:{case}"
+    return None, None
+
+
+def _blockpre_check_irq(row, case):
+    """IRQ acceptance evidence: only the handler family may accept an IRQ."""
+    accepted = row.get("irq_accepted")
+    if type(accepted) is not bool:
+        return "BLOCKED", f"ARMED_IRQ_FLAG_MISSING:{case}"
+    if case == "block-irq-handler":
+        if accepted is not True:
+            return "FAIL", f"ARMED_IRQ_NOT_ACCEPTED:{case}"
+        if row.get("observed_vector") != BLOCKPRE_IRQ_VECTOR:
+            if type(row.get("observed_vector")) is not int:
+                return "BLOCKED", f"ARMED_IRQ_VECTOR_MISSING:{case}"
+            return "FAIL", f"ARMED_IRQ_VECTOR_MISMATCH:{case}"
+        if row.get("handler_steps") != 0:
+            if type(row.get("handler_steps")) is not int:
+                return "BLOCKED", f"ARMED_HANDLER_STEPS_MISSING:{case}"
+            return "FAIL", f"ARMED_HANDLER_STEPPED:{case}"
+    elif accepted is True:
+        return "FAIL", f"ARMED_UNEXPECTED_IRQ:{case}"
+    return None, None
+
 
 def _check_blockpre_cases(cases, probe_ok=False, summary_ok=False):
     """Validate pinned #742 blockpre transcript. Returns (verdict, reasons, halt).
@@ -111,6 +309,14 @@ def _check_blockpre_cases(cases, probe_ok=False, summary_ok=False):
     (pos-write has no EVIDENCE line); without both it is BLOCKED. Partial
     verification never returns PASS, so verify() can never map it to
     VERIFIED_PREBLOCK. ST probe behavior is untouched (see _check_st_cases).
+
+    Armed rows are independently re-judged from raw fields, never trusted via
+    the probe "verdict" string alone: expected stop/refused PC, opcode,
+    instruction count, fetch/operand evidence, resume flatness, net RAM diff
+    (truncation and count gated, non-stack deltas rejected), full 8-byte MPR
+    before/after, and IRQ acceptance are all pinned per case ID. Missing or
+    wrong-typed evidence -> BLOCKED; an observed side effect or an internal
+    inconsistency -> FAIL.
     """
     reasons = []
     if set(cases) != BLOCKPRE_EXPECTED_EVIDENCE:
@@ -142,11 +348,62 @@ def _check_blockpre_cases(cases, probe_ok=False, summary_ok=False):
             if case in BLOCKPRE_HWPAGE_ARMED:
                 if verdict != "hardware_page_fetch_failed_closed_before_step":
                     return FAIL, [f"ARMED_HWPAGE_NOT_BLOCKED:{case}:{verdict}"], {}
+                expected_pc = BLOCKPRE_EXPECTED_PC[case]
+                bad = _blockpre_bad_int(row, "stop_pc", case)
+                if bad is not None:
+                    return BLOCKED, [bad], {}
+                if row["stop_pc"] != expected_pc:
+                    return FAIL, [f"ARMED_STOP_PC_MISMATCH:{case}"], {}
+                bad = _blockpre_bad_int(row, "instructions_executed", case)
+                if bad is not None:
+                    return BLOCKED, [bad], {}
+                if row["instructions_executed"] != BLOCKPRE_EXPECTED_EXECUTED[case]:
+                    return FAIL, [f"ARMED_EXECUTED_MISMATCH:{case}"], {}
+                for name, sentinel in (("vdc_ar_before", 5), ("vdc_ar_after", 5),
+                                       ("vdc_sr_before", 0x3F), ("vdc_sr_after", 0x3F)):
+                    bad = _blockpre_bad_int(row, name, case)
+                    if bad is not None:
+                        return BLOCKED, [bad], {}
+                    if row[name] != sentinel:
+                        return FAIL, [f"ARMED_HWPAGE_VDC_CHANGED:{case}:{name}"], {}
+                rb_before, rb_after = row.get("vdc_read_buffer_before"), row.get("vdc_read_buffer_after")
+                if type(rb_before) is not int or type(rb_after) is not int:
+                    return BLOCKED, [f"ARMED_READ_BUFFER_MISSING:{case}"], {}
+                if rb_before != rb_after:
+                    return FAIL, [f"ARMED_READ_BUFFER_CHANGED:{case}"], {}
+                for helper in (_blockpre_check_ram, _blockpre_check_mpr,
+                               _blockpre_check_resume, _blockpre_check_irq):
+                    status, reason = helper(row, case)
+                    if status is not None:
+                        return status, [reason], {}
             else:
                 if not _is_refused_verdict(verdict):
                     if isinstance(verdict, str) and "landed" in verdict.lower():
                         return FAIL, [f"ARMED_SIDE_EFFECT:{case}"], {}
                     return BLOCKED, [f"ARMED_VERDICT_UNKNOWN:{case}:{verdict}"], {}
+                # Independent re-judgment of the armed raw row: pin the expected
+                # PC/opcode/instruction count per case ID instead of trusting the
+                # probe's verdict string alone. Missing/wrong-type -> BLOCKED
+                # (cannot verify); observed side effect or inconsistency -> FAIL.
+                expected_pc = BLOCKPRE_EXPECTED_PC[case]
+                for name in ("refused_pc", "stop_pc"):
+                    bad = _blockpre_bad_int(row, name, case)
+                    if bad is not None:
+                        return BLOCKED, [bad], {}
+                if row["refused_pc"] != expected_pc:
+                    return FAIL, [f"ARMED_REFUSED_PC_MISMATCH:{case}"], {}
+                if row["stop_pc"] != expected_pc:
+                    return FAIL, [f"ARMED_STOP_PC_MISMATCH:{case}"], {}
+                bad = _blockpre_bad_int(row, "instructions_executed", case)
+                if bad is not None:
+                    return BLOCKED, [bad], {}
+                if row["instructions_executed"] != BLOCKPRE_EXPECTED_EXECUTED[case]:
+                    return FAIL, [f"ARMED_EXECUTED_MISMATCH:{case}"], {}
+                for helper in (_blockpre_check_fetch_operand, _blockpre_check_resume,
+                               _blockpre_check_ram, _blockpre_check_mpr, _blockpre_check_irq):
+                    status, reason = helper(row, case)
+                    if status is not None:
+                        return status, [reason], {}
             if row.get("vdc_sr_before") != row.get("vdc_sr_after"):
                 return FAIL, [f"ARMED_VDC_CHANGED:{case}"], {}
             rb_before, rb_after = row.get("vdc_read_buffer_before"), row.get("vdc_read_buffer_after")
@@ -181,16 +438,85 @@ def _check_blockpre_cases(cases, probe_ok=False, summary_ok=False):
     return PASS, reasons, halt
 
 
-def _check_st_cases(cases, probe_ok=False, summary_ok=False, always_blocked=()):
-    """Validate st/blockpre boundary transcripts. Returns (verdict, reasons, summary).
+# Pinned #365 ST case set, grounded in the measured probe plan
+# (tests/integration/geargrafx_st_boundary.py ARMED_MODES with 17 entries and
+# MUTATIONS with 22 runs; HWPAGE_MODE/BBR3_TAKEN_MODE are the two dynamic
+# hardware-page entries). Positive control is via probe exit + summary
+# (pos-write has no EVIDENCE line), exactly like the blockpre contract.
+ST_ARMED = frozenset({
+    "st0-entry", "st1-entry", "st2-entry",
+    "st1-unknown", "st2-unknown",
+    "st1-branch-unknown",
+    "st0-jsr-rts",
+    "st1-page-boundary",
+    "st0-rom-page0",
+    "st1-unknown-far",
+    "st2-mpr2-unknown",
+    "st1-unused-bank",
+    "st0-bbr3-hwpage-skip",
+    "irq2-handler-st0-survey",
+    "irq2-core-stop-survey",
+    "st0-hwpage-fetch-blocked",
+    "st0-bbr3-hwpage-taken",
+})
+ST_HWPAGE_ARMED = frozenset({
+    "st0-hwpage-fetch-blocked",
+    "st0-bbr3-hwpage-taken",
+})
+ST_MUTATIONS = frozenset({
+    "st0-entry-no-entry-check",
+    "st1-entry-no-entry-check",
+    "st2-entry-no-entry-check",
+    "st1-unknown-unguarded",
+    "st2-unknown-unguarded",
+    "st1-branch-unknown-resume-allowed",
+    "st0-jsr-rts-knownpc-only",
+    "st1-page-boundary-knownpc-only",
+    "st0-rom-page0-knownpc-only",
+    "st1-unknown-far-knownpc-only",
+    "st2-mpr2-unknown-no-recheck",
+    "st2-mpr2-unknown-wrong-opcode",
+    "st0-hwpage-fetch-blocked-unsafe-read",
+    "st0-hwpage-fetch-blocked-peek-fail-step",
+    "st0-hwpage-fetch-blocked-no-hazard-latch",
+    "st0-bbr3-hwpage-taken-unsafe-read",
+    "st0-bbr3-hwpage-taken-peek-fail-step",
+    "st0-bbr3-hwpage-taken-no-hazard-latch",
+    "st0-bbr3-hwpage-skip-knownpc-only",
+    "st1-unused-bank-knownpc-only",
+    "irq2-handler-st0-survey-knownpc-only",
+    "irq2-core-stop-survey-knownpc-only",
+})
+ST_EXPECTED_EVIDENCE = ST_ARMED | ST_MUTATIONS
 
-    Armed-vs-control contract (probe classifiers are authoritative for counts):
-    armed runs must carry a refused-family verdict with VDC SR unchanged and a
-    recorded stop PC; mutations must carry a landed verdict (sensitivity proof).
+
+def _check_st_cases(cases, probe_ok=False, summary_ok=False):
+    """Validate st boundary transcripts. Returns (verdict, reasons, summary).
+
+    Exact-case contract (no substring classification): EVIDENCE must contain
+    exactly the 17 armed + 22 mutation cases, no more, no fewer. Missing ->
+    BLOCKED, duplicate is rejected in _parse_evidence, unknown -> BLOCKED
+    (never auto-accepted: a foreign probe's case IDs can never sneak in, and a
+    partial 1-armed+1-mutation transcript can never PASS). Case roles come only
+    from exact set membership: fail-closed hardware-page entries, refused armed
+    runs (VDC SR unchanged, recorded stop PC), and landed mutations
+    (sensitivity proof, hazard shapes included). Positive control is via probe
+    exit + summary only; without both it is BLOCKED. Partial verification
+    never returns PASS, so verify() can never map it to VERIFIED_PREBLOCK.
+
     Executed-instruction counts vary by family (entry/setup steps) and are
     recorded, not gated here.
     """
     reasons = []
+    if set(cases) != ST_EXPECTED_EVIDENCE:
+        missing = sorted(ST_EXPECTED_EVIDENCE - set(cases))
+        extra = sorted(set(cases) - ST_EXPECTED_EVIDENCE)
+        detail = []
+        if missing:
+            detail.append("MISSING:" + ",".join(missing))
+        if extra:
+            detail.append("UNKNOWN:" + ",".join(extra))
+        return BLOCKED, [f"ST_CASE_SET_MISMATCH:{';'.join(detail)}"], {}
     armed_ok = mut_ok = pos_ok = 0
     halt = {}
     for case, item in sorted(cases.items()):
@@ -202,30 +528,13 @@ def _check_st_cases(cases, probe_ok=False, summary_ok=False, always_blocked=()):
         if row is None:
             return BLOCKED, [f"ROW_MISSING:{case}"], {}
         verdict = item.get("verdict")
-        if case == "pos-write" or case.startswith("pos-"):
-            if not (isinstance(verdict, str) and "landed" in verdict.lower()) and verdict not in ("PASS", "pass"):
-                # Positive control must have run unrefused; probe exit code
-                # already gates this - unknown verdict strings stay BLOCKED.
-                return BLOCKED, [f"POS_CONTROL_NOT_LANDED:{case}:{verdict}"], {}
-            pos_ok += 1
-            continue
-        is_mut = any(s in case for s in ("-unguarded", "-no-entry-check", "-no-recheck",
-                                         "-wrong-opcode", "-knownpc-only", "-resume-allowed",
-                                         "-unsafe-read", "-peek-fail-step", "-no-hazard-latch"))
-        if case in always_blocked:
-            # Fail-closed fetch does not depend on the monitor: even unguarded,
-            # no step is issued at an unpeekable PC. Expect the blocked verdict.
+        if case in ST_HWPAGE_ARMED:
+            # Fail-closed fetch does not depend on the monitor: no step is
+            # issued at an unpeekable PC. Expect the blocked verdict.
             if verdict != "hardware_page_fetch_failed_closed_before_step":
                 return FAIL, [f"HWPAGE_EXPECTED_BLOCKED:{case}:{verdict}"], {}
-            mut_ok += 1
-        elif is_mut:
-            # Sensitivity: mutation must make the effect observable (not refused).
-            if _is_refused_verdict(verdict):
-                return FAIL, [f"MUTATION_REFUSED:{case}"], {}
-            if not (isinstance(verdict, str) and "landed" in verdict.lower()):
-                return BLOCKED, [f"MUTATION_INCONCLUSIVE:{case}:{verdict}"], {}
-            mut_ok += 1
-        else:
+            armed_ok += 1
+        elif case in ST_ARMED:
             if not _is_refused_verdict(verdict):
                 if isinstance(verdict, str) and "landed" in verdict.lower():
                     return FAIL, [f"ARMED_SIDE_EFFECT:{case}"], {}
@@ -235,26 +544,34 @@ def _check_st_cases(cases, probe_ok=False, summary_ok=False, always_blocked=()):
             if not isinstance(row.get("stop_pc"), int):
                 return BLOCKED, [f"ARMED_STOP_PC_MISSING:{case}"], {}
             armed_ok += 1
+        elif case in ST_MUTATIONS:
+            # Sensitivity: mutation must make the effect observable (not refused).
+            if _is_refused_verdict(verdict):
+                return FAIL, [f"MUTATION_REFUSED:{case}"], {}
+            if not (isinstance(verdict, str) and "landed" in verdict.lower()):
+                return BLOCKED, [f"MUTATION_INCONCLUSIVE:{case}:{verdict}"], {}
+            mut_ok += 1
+        else:
+            return BLOCKED, [f"UNKNOWN_CASE:{case}"], {}
         halt[case] = {"stop_pc": row.get("stop_pc"),
                       "executed": row.get("instructions_executed"),
                       "sr_before": row.get("vdc_sr_before"),
                       "sr_after": row.get("vdc_sr_after"),
                       "status": row.get("status")}
-    if armed_ok == 0:
-        return BLOCKED, ["NO_ARMED_CASES"], {}
-    if mut_ok == 0:
-        return BLOCKED, ["NO_MUTATION_CASES"], {}
-    if pos_ok == 0:
-        # The st probe asserts the positive control internally (check_pos
-        # raises on failure -> nonzero exit, already gated above) and reports
-        # it only in the human summary, not as an EVIDENCE line. Accept it iff
-        # the probe exited 0 with the summary present; label the evidence
-        # strength explicitly - this is weaker than per-case EVIDENCE.
-        if probe_ok and summary_ok:
-            reasons.append("POS_CONTROL_BY_PROBE_EXIT")
-            pos_ok = 1
-        else:
-            return BLOCKED, ["NO_POS_CONTROL"], {}
+    if armed_ok != len(ST_ARMED):
+        return BLOCKED, [f"ARMED_COUNT_{armed_ok}_EXPECTED_{len(ST_ARMED)}"], {}
+    if mut_ok != len(ST_MUTATIONS):
+        return BLOCKED, [f"MUT_COUNT_{mut_ok}_EXPECTED_{len(ST_MUTATIONS)}"], {}
+    # The st probe asserts the positive control internally (check_pos
+    # raises on failure -> nonzero exit, already gated above) and reports
+    # it only in the human summary, not as an EVIDENCE line. Accept it iff
+    # the probe exited 0 with the summary present; label the evidence
+    # strength explicitly - this is weaker than per-case EVIDENCE.
+    if probe_ok and summary_ok:
+        reasons.append("POS_CONTROL_BY_PROBE_EXIT")
+        pos_ok = 1
+    else:
+        return BLOCKED, ["NO_POS_CONTROL"], {}
     reasons = reasons + [f"ARMED_{armed_ok}_MUT_{mut_ok}_POS_{pos_ok}"]
     return PASS, reasons, halt
 

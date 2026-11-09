@@ -107,10 +107,54 @@ def _int_fields(row, names):
             raise ValueError(f"{row.get('mode')}: {name} missing/non-integer: {value!r}")
 
 
+def _require_ok_exit(row, mode):
+    """Fail-closed exit validation: only the integer 0 is accepted.
+
+    A missing field, None, a bool, or a numeric string must never be
+    treated as success (``row.get("exit", 0)`` would accept missing as 0
+    and ``False == 0`` would accept False as 0).
+    """
+    exit_code = row.get("exit")
+    if type(exit_code) is not int or exit_code != 0:
+        raise ValueError(f"{mode}: probe refused to run (exit {exit_code!r})")
+
+
+def _require_mpr_bytes(mpr, mode, label):
+    if type(mpr) is not list or len(mpr) != 8:
+        raise ValueError(f"{mode}: {label} MPR is not an 8-entry list: {mpr!r}")
+    for value in mpr:
+        if type(value) is not int or not 0 <= value <= 0xFF:
+            raise ValueError(f"{mode}: {label} MPR entry not a byte: {value!r}")
+    return mpr
+
+
+# Measured synthetic-environment mapping (tests/integration/geargrafx_block_preblock.cpp:
+# host sets MPR1=$F8, MPR0/MPR2-MPR7=$00; only the guest TAM changes MPR2).
+MPR_INITIAL = [0x00, 0xF8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+MPR_AFTER_TIA_WRAP = [0x00, 0xF8, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00]
+MPR_AFTER_TAI_MPR2 = [0x00, 0xF8, 0xF8, 0x00, 0x00, 0x00, 0x00, 0x00]
+
+
+def _check_mpr_transition(row, mode, expected_before, expected_after):
+    """Validate the full 8-byte MPR before/after against the measured plan.
+
+    Only the guest-driven TAM may change an entry (MPR2 for the wrap/mpr2/hwpage
+    families); every other MPR entry must be stable and byte-typed.
+    """
+    before = row.get("before", {}).get("mpr") if isinstance(row.get("before"), dict) else None
+    after = row.get("after", {}).get("mpr") if isinstance(row.get("after"), dict) else None
+    _require_mpr_bytes(before, mode, "before")
+    _require_mpr_bytes(after, mode, "after")
+    if before != expected_before:
+        raise ValueError(f"{mode}: MPR before {before} != measured {expected_before}")
+    if after != expected_after:
+        raise ValueError(f"{mode}: MPR after {after} != measured {expected_after}")
+    return before, after
+
+
 def check_armed(row, mode):
     """Validate a refused whole-instruction preblock run."""
-    if row.get("exit", 0) != 0:
-        raise ValueError(f"{mode}: probe refused to run (exit {row.get('exit')})")
+    _require_ok_exit(row, mode)
     if row.get("status") != "refused" or row.get("reason") != "block_opcode_at_instruction_boundary":
         raise ValueError(f"{mode}: not a block refusal: {row.get('status')}/{row.get('reason')}")
     if row.get("mode") != mode:
@@ -172,15 +216,16 @@ def check_armed(row, mode):
     elif row.get("ram_diff") != []:
         raise ValueError(f"{mode}: RAM diff {row.get('ram_diff')}: transfer bytes moved")
     # MPR: unchanged except the guest-driven TAM the family plan requires.
-    mpr_before, mpr_after = row.get("before", {}).get("mpr"), row.get("after", {}).get("mpr")
+    # Full 8-byte before/after validation: only the expected MPR2 change is
+    # allowed; any other MPR change is a side effect before the stop.
     if mode == "tia-wrap-forbidden":
-        if not isinstance(mpr_after, list) or mpr_after[2] != 0xFF:
-            raise ValueError(f"{mode}: MPR2 is not $FF after guest TAM: {mpr_after}")
+        _check_mpr_transition(row, mode, MPR_INITIAL, MPR_AFTER_TIA_WRAP)
     elif mode == "tai-mpr2-unknown":
-        if not isinstance(mpr_after, list) or mpr_after[2] != 0xF8:
-            raise ValueError(f"{mode}: MPR2 is not $F8 after guest TAM: {mpr_after}")
-    elif mpr_before != mpr_after:
-        raise ValueError(f"{mode}: MPR changed {mpr_before} -> {mpr_after}")
+        _check_mpr_transition(row, mode, MPR_INITIAL, MPR_AFTER_TAI_MPR2)
+    elif mode == "block-irq-handler":
+        _check_mpr_transition(row, mode, MPR_INITIAL, MPR_INITIAL)
+    else:
+        _check_mpr_transition(row, mode, MPR_INITIAL, MPR_INITIAL)
     # Resume refusals through the same guarded entry.
     if row.get("resume_attempts") != RESUME_ATTEMPTS or row.get("resume_refused") != RESUME_ATTEMPTS:
         raise ValueError(f"{mode}: resume {row.get('resume_refused')}/{row.get('resume_attempts')}")
@@ -199,8 +244,7 @@ def check_unguarded_landed(row, mode):
     monitor armed but a check removed. Either way the transfer must land and
     the run must not be refused: that is the sensitivity proof.
     """
-    if row.get("exit", 0) != 0:
-        raise ValueError(f"{mode}: probe refused to run")
+    _require_ok_exit(row, mode)
     if row.get("refused") is not False or row.get("status") == "refused":
         raise ValueError(f"{mode}: bypassed run was refused: monitor still armed")
     diffs = row.get("ram_diff")
@@ -236,8 +280,7 @@ def check_unguarded_landed(row, mode):
 def check_resume_allowed_landed(row, mode):
     """Refusal flag raised at first, but the latch does not hold the stop: the
     initial run steps through and the transfer lands anyway."""
-    if row.get("exit", 0) != 0:
-        raise ValueError(f"{mode}: probe refused to run")
+    _require_ok_exit(row, mode)
     if row.get("refused") is not True:
         raise ValueError(f"{mode}: resume-allowed never refused at first")
     if row.get("refused_pc") != BLOCK_EXPECTED_PC[mode]:
@@ -254,8 +297,7 @@ def check_resume_allowed_landed(row, mode):
 
 def check_hwpage_armed(row, mode):
     """Validate the fail-closed fetch: no step issued at the unpeekable PC."""
-    if row.get("exit", 0) != 0:
-        raise ValueError(f"{mode}: probe refused to run")
+    _require_ok_exit(row, mode)
     if row.get("status") != "fetch_blocked" or row.get("fetch_blocked") is not True:
         raise ValueError(f"{mode}: fetch was not failed-closed: {row.get('status')}")
     if row.get("fetch_failed") is not True or row.get("fetch_safe") is not False:
@@ -273,9 +315,7 @@ def check_hwpage_armed(row, mode):
         raise ValueError(f"{mode}: VDC READ_BUFFER changed without any step")
     if row.get("ram_diff") != []:
         raise ValueError(f"{mode}: RAM changed without any step")
-    mpr_after = row.get("after", {}).get("mpr")
-    if not isinstance(mpr_after, list) or mpr_after[2] != 0xFF:
-        raise ValueError(f"{mode}: MPR2 is not $FF: {mpr_after}")
+    _check_mpr_transition(row, mode, MPR_INITIAL, MPR_AFTER_TIA_WRAP)
     if row.get("resume_attempts") != RESUME_ATTEMPTS or row.get("resume_refused") != RESUME_ATTEMPTS:
         raise ValueError(f"{mode}: resume not refused")
     return HWPAGE_BLOCKED_VERDICT
@@ -342,8 +382,7 @@ def mutation_test_armed(refused_row, landed_row, mode, check=check_armed):
 def check_hwpage_unguarded_still_blocked(row, mode):
     """The fail-closed fetch does not depend on the monitor: even unguarded, no
     step is issued at an unpeekable hardware-page PC and no VDC side effect lands."""
-    if row.get("exit", 0) != 0:
-        raise ValueError(f"{mode}: probe refused to run")
+    _require_ok_exit(row, mode)
     if row.get("status") != "fetch_blocked" or row.get("fetch_blocked") is not True:
         raise ValueError(f"{mode}: hwpage fetch was not failed-closed: {row.get('status')}")
     if row.get("vdc_ar_before") != row.get("vdc_ar_after"):

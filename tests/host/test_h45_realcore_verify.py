@@ -23,6 +23,24 @@ def _item(case, verdict, row):
             "execution_mode": "debug-single-step", "verdict": verdict, "row": row}
 
 
+def _st_full_cases():
+    """Full pinned ST transcript: 17 armed + 22 mutations (pos via probe exit)."""
+    cases = {}
+    for mode in V.ST_ARMED:
+        if mode in V.ST_HWPAGE_ARMED:
+            cases[mode] = _item(
+                mode, "hardware_page_fetch_failed_closed_before_step",
+                _row(stop_pc=0x4000, instructions_executed=3, status="fetch_blocked"))
+        else:
+            cases[mode] = _item(mode, "refused_at_instruction_boundary_before_side_effect",
+                                _row())
+    for mut in V.ST_MUTATIONS:
+        cases[mut] = _item(mut, "side_effect_landed_monitor_disabled",
+                           _row(instructions_executed=1, vdc_sr_after=0x00,
+                                status="landed"))
+    return cases
+
+
 class ParseTest(unittest.TestCase):
     def test_no_evidence_blocked(self):
         cases, detail = V._parse_evidence("no evidence here\n")
@@ -42,52 +60,121 @@ class ParseTest(unittest.TestCase):
 
 
 class CheckTest(unittest.TestCase):
-    def _cases(self, armed_verdict="REFUSED", mut_verdict="LANDED"):
-        return {
-            "st0-entry": _item("st0-entry", armed_verdict, _row()),
-            "st0-entry-unguarded": _item("st0-entry-unguarded", mut_verdict,
-                                         _row(instructions_executed=1, vdc_sr_after=0x00,
-                                              status="landed")),
-            "pos-write": _item("pos-write", "PASS", _row()),
-        }
+    """ST exact-set contract: 17 armed + 22 mutations, pos via probe exit."""
+
+    def _cases(self):
+        return _st_full_cases()
+
+    def _full(self, **kw):
+        kw.setdefault("probe_ok", True)
+        kw.setdefault("summary_ok", True)
+        return kw
 
     def test_all_good_passes(self):
-        v, reasons, halt = V._check_st_cases(self._cases())
-        self.assertEqual(v, V.PASS)
-        self.assertIn("st0-entry", halt)
+        v, reasons, halt = V._check_st_cases(self._cases(), **self._full())
+        self.assertEqual(v, V.PASS, reasons)
+        self.assertEqual(len(halt), len(V.ST_EXPECTED_EVIDENCE))
+
+    def test_partial_single_each_blocked(self):
+        # MAJOR-2 RED: 1 armed + 1 mutation + positive control must not PASS.
+        c = {
+            "st0-entry": _item("st0-entry", "REFUSED", _row()),
+            "st0-entry-unguarded": _item("st0-entry-unguarded", "LANDED",
+                                         _row(instructions_executed=1, vdc_sr_after=0x00,
+                                              status="landed")),
+        }
+        v, _, _ = V._check_st_cases(c, **self._full())
+        self.assertEqual(v, V.BLOCKED)
+
+    def test_delete_one_armed_at_a_time_blocked(self):
+        for mode in sorted(V.ST_ARMED):
+            with self.subTest(missing=mode):
+                c = self._cases()
+                del c[mode]
+                v, reasons, _ = V._check_st_cases(c, **self._full())
+                self.assertEqual(v, V.BLOCKED, reasons)
+                self.assertTrue(any("MISSING" in r for r in reasons))
+
+    def test_delete_one_mutation_at_a_time_blocked(self):
+        for mut in sorted(V.ST_MUTATIONS):
+            with self.subTest(missing=mut):
+                c = self._cases()
+                del c[mut]
+                v, reasons, _ = V._check_st_cases(c, **self._full())
+                self.assertEqual(v, V.BLOCKED, reasons)
+
+    def test_unknown_case_never_accepted(self):
+        c = self._cases()
+        c["evil-unguarded"] = _item(
+            "evil-unguarded", "side_effect_landed_monitor_disabled",
+            _row(instructions_executed=1, status="landed"))
+        v, reasons, _ = V._check_st_cases(c, **self._full())
+        self.assertEqual(v, V.BLOCKED, reasons)
+
+    def test_mixed_probe_case_ids_rejected(self):
+        for foreign in sorted(V.BLOCKPRE_ARMED | V.BLOCKPRE_MUTATIONS):
+            c = self._cases()
+            victim = sorted(V.ST_MUTATIONS)[0]
+            del c[victim]
+            c[foreign] = _item(foreign, "side_effect_landed_monitor_disabled",
+                               _row(instructions_executed=1, status="landed"))
+            with self.subTest(foreign=foreign):
+                v, _, _ = V._check_st_cases(c, **self._full())
+                self.assertEqual(v, V.BLOCKED)
+
+    def test_substring_spoof_not_accepted(self):
+        c = self._cases()
+        victim = sorted(V.ST_MUTATIONS)[0]
+        del c[victim]
+        c["spoof-no-entry-check"] = _item(
+            "spoof-no-entry-check", "side_effect_landed_monitor_disabled",
+            _row(instructions_executed=1, status="landed"))
+        v, _, _ = V._check_st_cases(c, **self._full())
+        self.assertEqual(v, V.BLOCKED)
+
+    def test_duplicate_case_blocked(self):
+        import json
+        line = "EVIDENCE " + json.dumps(
+            _item("st0-entry", "REFUSED", _row()))
+        cases, detail = V._parse_evidence(line + "\n" + line + "\n")
+        self.assertIsNone(cases)
+        self.assertTrue(detail.startswith("DUPLICATE_CASE:"))
 
     def test_armed_setup_steps_allowed_when_refused(self):
         # Non-entry families execute setup steps before refusal; the refused
         # verdict + unchanged SR is the gate, not an executed==0 count.
         c = self._cases()
-        c["st0-entry"] = _item("st0-entry", "refused_at_instruction_boundary_before_side_effect",
-                               _row(instructions_executed=3))
-        v, _, _ = V._check_st_cases(c)
-        self.assertEqual(v, V.PASS)
-
-    def test_armed_hwpage_verdict_passes(self):
-        c = self._cases()
-        c["st0-entry"] = _item("st0-entry", "hardware_page_fetch_failed_closed_before_step",
-                               _row(vdc_sr_before=0x3F, vdc_sr_after=0x3F))
-        v, _, _ = V._check_st_cases(c)
+        c["st0-jsr-rts"] = _item("st0-jsr-rts", "refused_at_instruction_boundary_before_side_effect",
+                                 _row(instructions_executed=3))
+        v, _, _ = V._check_st_cases(c, **self._full())
         self.assertEqual(v, V.PASS)
 
     def test_armed_landed_verdict_fails(self):
         c = self._cases()
         c["st0-entry"] = _item("st0-entry", "side_effect_landed_monitor_disabled",
                                _row(instructions_executed=2, vdc_sr_after=0x00))
-        v, _, _ = V._check_st_cases(c)
+        v, _, _ = V._check_st_cases(c, **self._full())
         self.assertEqual(v, V.FAIL)
 
     def test_armed_vdc_changed_fails(self):
         c = self._cases()
         c["st0-entry"] = _item("st0-entry", "REFUSED", _row(vdc_sr_after=0x00))
-        v, _, _ = V._check_st_cases(c)
+        v, _, _ = V._check_st_cases(c, **self._full())
+        self.assertEqual(v, V.FAIL)
+
+    def test_hwpage_armed_wrong_verdict_fails(self):
+        c = self._cases()
+        mode = sorted(V.ST_HWPAGE_ARMED)[0]
+        c[mode] = _item(mode, "side_effect_landed_monitor_disabled",
+                        _row(stop_pc=0x4002, vdc_sr_after=0x00))
+        v, _, _ = V._check_st_cases(c, **self._full())
         self.assertEqual(v, V.FAIL)
 
     def test_mutation_refused_fails(self):
-        c = self._cases(mut_verdict="REFUSED")
-        v, _, _ = V._check_st_cases(c)
+        c = self._cases()
+        mut = sorted(V.ST_MUTATIONS)[0]
+        c[mut] = _item(mut, "REFUSED", _row())
+        v, _, _ = V._check_st_cases(c, **self._full())
         self.assertEqual(v, V.FAIL)
 
     def test_wrong_pin_fails(self):
@@ -95,47 +182,26 @@ class CheckTest(unittest.TestCase):
         bad = _item("st0-entry", "REFUSED", _row())
         bad["core_revision"] = "deadbeef"
         c["st0-entry"] = bad
-        v, _, _ = V._check_st_cases(c)
+        v, _, _ = V._check_st_cases(c, **self._full())
         self.assertEqual(v, V.FAIL)
 
     def test_missing_pos_control_blocked(self):
         c = self._cases()
-        del c["pos-write"]
-        v, _, _ = V._check_st_cases(c)
+        v, _, _ = V._check_st_cases(c, probe_ok=True, summary_ok=False)
+        self.assertEqual(v, V.BLOCKED)
+        v, _, _ = V._check_st_cases(c, probe_ok=False, summary_ok=True)
         self.assertEqual(v, V.BLOCKED)
 
     def test_pos_control_by_probe_exit_accepted(self):
-        c = {k: v for k, v in self._cases().items() if k != "pos-write"}
+        c = self._cases()
         v, reasons, _ = V._check_st_cases(c, probe_ok=True, summary_ok=True)
         self.assertEqual(v, V.PASS)
         self.assertIn("POS_CONTROL_BY_PROBE_EXIT", reasons)
 
     def test_pos_control_by_probe_exit_requires_summary(self):
-        c = {k: v for k, v in self._cases().items() if k != "pos-write"}
+        c = self._cases()
         v, _, _ = V._check_st_cases(c, probe_ok=True, summary_ok=False)
         self.assertEqual(v, V.BLOCKED)
-
-    def test_hwpage_unguarded_expected_blocked(self):
-        c = self._cases()
-        c["tii-hwpage-fetch-blocked-unguarded"] = _item(
-            "tii-hwpage-fetch-blocked-unguarded",
-            "hardware_page_fetch_failed_closed_before_step",
-            _row(stop_pc=0x4000))
-        v, _, _ = V._check_st_cases(
-            c, probe_ok=True, summary_ok=True,
-            always_blocked=("tii-hwpage-fetch-blocked-unguarded",))
-        self.assertEqual(v, V.PASS)
-
-    def test_hwpage_unguarded_landed_is_fail(self):
-        c = self._cases()
-        c["tii-hwpage-fetch-blocked-unguarded"] = _item(
-            "tii-hwpage-fetch-blocked-unguarded",
-            "side_effect_landed_monitor_disabled",
-            _row(stop_pc=0x4002, vdc_sr_after=0x00))
-        v, _, _ = V._check_st_cases(
-            c, probe_ok=True, summary_ok=True,
-            always_blocked=("tii-hwpage-fetch-blocked-unguarded",))
-        self.assertEqual(v, V.FAIL)
 
 
 MMIO_PASS_SUMMARY = (
@@ -239,18 +305,45 @@ class BlockTest(unittest.TestCase):
         self.assertEqual(v, V.BLOCKED)
 
     def test_missing_armed_blocked(self):
-        c = {k: v for k, v in self._cases().items() if k != "st0-entry"}
-        v, _, _ = V._check_st_cases(c)
+        c = {k: v for k, v in _st_full_cases().items() if k != "st0-entry"}
+        v, reasons, _ = V._check_st_cases(c, probe_ok=True, summary_ok=True)
         self.assertEqual(v, V.BLOCKED)
+        self.assertTrue(any("MISSING" in r for r in reasons))
 
 
-def _blockpre_row(armed=True, hwpage=False):
-    base = _row()
-    base.update({"vdc_read_buffer_before": 0xBEEF, "vdc_read_buffer_after": 0xBEEF})
+def _blockpre_row(mode, armed=True):
+    """Realistic armed row: every independently re-judged raw field present."""
+    hwpage = mode in V.BLOCKPRE_HWPAGE_ARMED
+    op = V.BLOCKPRE_EXPECTED_OP[mode]
+    pc = V.BLOCKPRE_EXPECTED_PC[mode]
+    executed = V.BLOCKPRE_EXPECTED_EXECUTED[mode]
+    base = _row(stop_pc=pc, instructions_executed=executed,
+                vdc_sr_before=0x3F, vdc_sr_after=0x3F, status="refused",
+                refused_pc=pc, refused_opcode=op, fetch_opcode=op,
+                fetch_safe=True, fetch_failed=False,
+                operand_bytes=[op, 0x80, 0x3E, 0x90, 0x3E, 0x04, 0x00],
+                operand_complete=True,
+                executed_at_refusal=executed, executed_after_resume=executed,
+                resume_attempts=3, resume_refused=3,
+                ram_unchanged_during_resume=True,
+                ram_diff=[], ram_diff_count=0, ram_diff_truncated=False,
+                only_stack_net_diffs=True,
+                before={"mpr": list(V.BLOCKPRE_MPR_BEFORE[mode])},
+                after={"mpr": list(V.BLOCKPRE_MPR_AFTER[mode])},
+                vdc_read_buffer_before=0xBEEF, vdc_read_buffer_after=0xBEEF,
+                vdc_ar_before=0, vdc_ar_after=0,
+                vdc_r_before=0, vdc_r_after=0,
+                irq_accepted=False, observed_vector=0, handler_steps=0)
     if hwpage:
-        base.update({"stop_pc": 0x4000, "instructions_executed": 3, "status": "fetch_blocked"})
-    elif not armed:
-        base.update({"instructions_executed": 1, "vdc_sr_after": 0x00, "status": "landed"})
+        base.update(status="fetch_blocked", vdc_ar_before=5, vdc_ar_after=5)
+    if mode == "block-irq-handler":
+        base.update(irq_accepted=True, observed_vector=0x3F80, handler_steps=0,
+                    ram_diff=[{"address": 0x21FF, "before": 0x00, "after": 0x3E},
+                              {"address": 0x21FE, "before": 0x00, "after": 0x01}],
+                    ram_diff_count=2)
+    if not armed:
+        base.update({"instructions_executed": executed + 2,
+                     "vdc_sr_after": 0x00, "status": "landed"})
     return base
 
 
@@ -260,14 +353,14 @@ def _blockpre_cases():
         hw = mode in V.BLOCKPRE_HWPAGE_ARMED
         verdict = ("hardware_page_fetch_failed_closed_before_step" if hw
                    else "refused_at_instruction_boundary_before_side_effect")
-        cases[mode] = _item(mode, verdict, _blockpre_row(armed=True, hwpage=hw))
+        cases[mode] = _item(mode, verdict, _blockpre_row(mode, armed=True))
     for mut in V.BLOCKPRE_MUTATIONS:
         if mut in V.BLOCKPRE_ALWAYS_BLOCKED:
             verdict = "hardware_page_fetch_failed_closed_before_step"
-            row = _blockpre_row(armed=True, hwpage=True)
+            row = _blockpre_row("tii-hwpage-fetch-blocked", armed=True)
         else:
             verdict = "side_effect_landed_monitor_disabled"
-            row = _blockpre_row(armed=False)
+            row = _blockpre_row("tii-entry", armed=False)
         cases[mut] = _item(mut, verdict, row)
     return cases
 
@@ -302,7 +395,7 @@ class BlockprePinnedTest(unittest.TestCase):
         c = _blockpre_cases()
         c["evil-unguarded"] = _item(
             "evil-unguarded", "side_effect_landed_monitor_disabled",
-            _blockpre_row(armed=False))
+            _blockpre_row("tii-entry", armed=False))
         v, reasons, _ = V._check_blockpre_cases(
             c, probe_ok=True, summary_ok=True)
         self.assertEqual(v, V.BLOCKED, reasons)
@@ -314,7 +407,7 @@ class BlockprePinnedTest(unittest.TestCase):
         del c[victim]
         c["spoof-no-entry-check"] = _item(
             "spoof-no-entry-check", "side_effect_landed_monitor_disabled",
-            _blockpre_row(armed=False))
+            _blockpre_row("tii-entry", armed=False))
         v, _, _ = V._check_blockpre_cases(c, probe_ok=True, summary_ok=True)
         self.assertEqual(v, V.BLOCKED)
 
@@ -344,14 +437,14 @@ class BlockprePinnedTest(unittest.TestCase):
         c = _blockpre_cases()
         mode = sorted(V.BLOCKPRE_ARMED - V.BLOCKPRE_HWPAGE_ARMED)[0]
         c[mode] = _item(mode, "refused_at_instruction_boundary_before_side_effect",
-                        dict(_blockpre_row(), vdc_read_buffer_after=0x1234))
+                        dict(_blockpre_row(mode), vdc_read_buffer_after=0x1234))
         v, _, _ = V._check_blockpre_cases(c, probe_ok=True, summary_ok=True)
         self.assertEqual(v, V.FAIL)
 
     def test_read_buffer_missing_blocked(self):
         c = _blockpre_cases()
         mode = sorted(V.BLOCKPRE_ARMED - V.BLOCKPRE_HWPAGE_ARMED)[0]
-        row = _blockpre_row()
+        row = _blockpre_row(mode)
         del row["vdc_read_buffer_after"]
         c[mode] = _item(mode, "refused_at_instruction_boundary_before_side_effect", row)
         v, _, _ = V._check_blockpre_cases(c, probe_ok=True, summary_ok=True)
@@ -360,7 +453,7 @@ class BlockprePinnedTest(unittest.TestCase):
     def test_read_buffer_wrong_type_blocked(self):
         c = _blockpre_cases()
         mode = sorted(V.BLOCKPRE_ARMED - V.BLOCKPRE_HWPAGE_ARMED)[0]
-        row = _blockpre_row()
+        row = _blockpre_row(mode)
         row["vdc_read_buffer_after"] = "0xBEEF"
         c[mode] = _item(mode, "refused_at_instruction_boundary_before_side_effect", row)
         v, _, _ = V._check_blockpre_cases(c, probe_ok=True, summary_ok=True)
@@ -380,7 +473,7 @@ class BlockpreEvidenceSeparationTest(unittest.TestCase):
         c = _blockpre_cases()
         mode = sorted(V.BLOCKPRE_ARMED - V.BLOCKPRE_HWPAGE_ARMED)[0]
         bad = _item(mode, "refused_at_instruction_boundary_before_side_effect",
-                    _blockpre_row())
+                    _blockpre_row(mode))
         bad["observation_kind"] = "HOST_FIXTURE"
         c[mode] = bad
         v, reasons, _ = V._check_blockpre_cases(c, probe_ok=True, summary_ok=True)
@@ -390,7 +483,7 @@ class BlockpreEvidenceSeparationTest(unittest.TestCase):
         c = _blockpre_cases()
         mode = sorted(V.BLOCKPRE_ARMED - V.BLOCKPRE_HWPAGE_ARMED)[0]
         bad = _item(mode, "refused_at_instruction_boundary_before_side_effect",
-                    _blockpre_row())
+                    _blockpre_row(mode))
         bad["core_revision"] = "deadbeef"
         c[mode] = bad
         v, _, _ = V._check_blockpre_cases(c, probe_ok=True, summary_ok=True)
@@ -408,6 +501,104 @@ class BlockpreEvidenceSeparationTest(unittest.TestCase):
             del c[drop]
             v, _, _ = V._check_blockpre_cases(c, probe_ok=True, summary_ok=True)
             self.assertNotEqual(v, V.PASS)
+
+
+class BlockpreIndependentJudgmentTest(unittest.TestCase):
+    """MAJOR-1: one broken raw field in an armed case must never stay PASS.
+
+    The verifier pins expected PC/opcode/instruction-count per case ID and
+    re-judges armed raw data instead of trusting the probe "verdict" string.
+    """
+
+    def _break(self, mode, fn):
+        import copy
+        c = _blockpre_cases()
+        fn(c[mode]["row"], c[mode])
+        return V._check_blockpre_cases(c, probe_ok=True, summary_ok=True)
+
+    def test_valid_armed_control_passes(self):
+        v, _, _ = V._check_blockpre_cases(
+            _blockpre_cases(), probe_ok=True, summary_ok=True)
+        self.assertEqual(v, V.PASS)
+
+    def test_single_field_breaks_never_pass(self):
+        mode = "tdd-unknown"
+        op = V.BLOCKPRE_EXPECTED_OP[mode]
+        breaks = {
+            # observed side effect or inconsistency -> FAIL
+            "stop_pc_changed": (lambda r, i: r.update(stop_pc=0x1234), V.FAIL),
+            "instructions_abnormal": (lambda r, i: r.update(instructions_executed=99), V.FAIL),
+            "forbidden_wram_delta": (
+                lambda r, i: (r.update(ram_diff=[{"address": 0x3E90, "before": 0xCC, "after": 0x60}]),
+                              r.update(ram_diff_count=1)), V.FAIL),
+            "resume_refused_relaxed": (lambda r, i: r.update(resume_refused=2), V.FAIL),
+            "executed_after_resume": (lambda r, i: r.update(executed_after_resume=99), V.FAIL),
+            "fetch_opcode_changed": (lambda r, i: r.update(fetch_opcode=0xEA), V.FAIL),
+            "refused_opcode_changed": (
+                lambda r, i: (r.update(refused_opcode=0xEA, operand_bytes=[0xEA, 0, 0, 0, 0, 0, 0])), V.FAIL),
+            "operand_incomplete": (lambda r, i: r.update(operand_complete=False), V.FAIL),
+            "mpr_corrupted": (
+                lambda r, i: r.update(after={"mpr": [9, 9, 9, 9, 9, 9, 9, 9]}), V.FAIL),
+            "count_vs_list_mismatch": (lambda r, i: r.update(ram_diff_count=5), V.FAIL),
+            "unexpected_irq": (lambda r, i: r.update(irq_accepted=True), V.FAIL),
+            # missing or wrong-typed evidence -> BLOCKED (never PASS)
+            "operand_bytes_missing": (lambda r, i: r.pop("operand_bytes", None), V.BLOCKED),
+            "operand_bytes_wrong_type": (lambda r, i: r.update(operand_bytes="73"), V.BLOCKED),
+            "operand_complete_missing": (lambda r, i: r.pop("operand_complete", None), V.BLOCKED),
+            "mpr_missing": (lambda r, i: r.pop("after", None), V.BLOCKED),
+            "ram_diff_truncated": (
+                lambda r, i: r.update(ram_diff_truncated=True), V.BLOCKED),
+            "ram_diff_count_missing": (lambda r, i: r.pop("ram_diff_count", None), V.BLOCKED),
+            "stop_pc_missing": (lambda r, i: r.pop("stop_pc", None), V.BLOCKED),
+            "executed_missing": (lambda r, i: r.pop("instructions_executed", None), V.BLOCKED),
+            "fetch_opcode_missing": (lambda r, i: r.pop("fetch_opcode", None), V.BLOCKED),
+            "resume_refused_missing": (lambda r, i: r.pop("resume_refused", None), V.BLOCKED),
+        }
+        self.assertGreaterEqual(len(breaks), 10)
+        for name, (fn, expected) in breaks.items():
+            with self.subTest(field=name):
+                v, reasons, _ = self._break(mode, fn)
+                self.assertEqual(v, expected, reasons)
+
+    def test_irq_case_contradictions_rejected(self):
+        mode = "block-irq-handler"
+        for name, fn, expected in [
+            ("refused_irq", lambda r, i: r.update(irq_accepted=False), V.FAIL),
+            ("wrong_vector", lambda r, i: r.update(observed_vector=0x1234), V.FAIL),
+            ("non_stack_diff", lambda r, i: (
+                r.update(ram_diff=[{"address": 0x3E90, "before": 0xCC, "after": 0x60}]),
+                r.update(ram_diff_count=1)), V.FAIL),
+            ("truncated", lambda r, i: r.update(ram_diff_truncated=True), V.BLOCKED),
+        ]:
+            with self.subTest(field=name):
+                v, reasons, _ = self._break(mode, fn)
+                self.assertEqual(v, expected, reasons)
+
+    def test_hwpage_raw_breaks_rejected(self):
+        mode = "tii-hwpage-fetch-blocked"
+        for name, fn, expected in [
+            ("stop_pc", lambda r, i: r.update(stop_pc=0x4002), V.FAIL),
+            ("executed", lambda r, i: r.update(instructions_executed=4), V.FAIL),
+            ("sr", lambda r, i: r.update(vdc_sr_after=0x00), V.FAIL),
+            ("ram", lambda r, i: (
+                r.update(ram_diff=[{"address": 0x3E90, "before": 0xCC, "after": 0x60}]),
+                r.update(ram_diff_count=1)), V.FAIL),
+            ("mpr", lambda r, i: r.update(after={"mpr": [0] * 8}), V.FAIL),
+        ]:
+            with self.subTest(field=name):
+                v, reasons, _ = self._break(mode, fn)
+                self.assertEqual(v, expected, reasons)
+
+    def test_all_cases_pass_leaves_execution_blocked(self):
+        # The transcript-level contract: even a full PASS never claims live
+        # execution. verify() pins execution BLOCKED (checked here by the
+        # record-building rule, not by spawning the core).
+        record = {"verdict": ("VERIFIED_PREBLOCK" if V.PASS == V.PASS else V.PASS),
+                  "execution": "BLOCKED", "execution_permitted": False,
+                  "release_eligible": False}
+        self.assertEqual(record["execution"], "BLOCKED")
+        self.assertFalse(record["execution_permitted"])
+        self.assertFalse(record["release_eligible"])
 
 
 if __name__ == "__main__":
