@@ -1429,5 +1429,74 @@ class StMutationFetchIntegrityTests(unittest.TestCase):
                 self.assertEqual(checker(row, mode), st.LANDED_VERDICT)
 
 
+class StV2PositiveControlTests(unittest.TestCase):
+    """Positive-control evidence: completeness, live re-judgment, tamper detection (Issue #365).
+
+    The v2 fixture holds the 40 measured REAL_CORE_EXECUTION rows (armed 17 + mutation 22 +
+    pos-write 1). The positive control proves the rig can observe a landed allowlisted store:
+    without it, a rig that refuses everything would still pass the armed checks (GREEN without
+    a positive). Every tamper below must fail loudly (RED contract for the positive leg).
+    """
+
+    def setUp(self):
+        record = json.loads((ROOT / "tests" / "fixtures" / "365-st-boundary-v2-evidence.json")
+                            .read_text(encoding="utf-8"))
+        self.record = record
+        self.rows = {case["case"]: case["row"] for case in record["cases"]}
+        self.verdicts = {case["case"]: case["verdict"] for case in record["cases"]}
+
+    def test_fixture_covers_all_40_measured_cases(self):
+        expected = (set(st.ARMED_MODES)
+                    | {mutation for mode in st.ARMED_MODES for mutation in st.MUTATIONS[mode]}
+                    | {"pos-write"})
+        self.assertEqual(len(st.ARMED_MODES), 17)
+        self.assertEqual(sum(len(st.MUTATIONS[mode]) for mode in st.ARMED_MODES), 22)
+        self.assertEqual(set(self.rows), expected)
+        self.assertEqual(len(self.rows), 40)
+
+    def test_provenance_headers(self):
+        self.assertEqual(self.record["observation_kind"], "REAL_CORE_EXECUTION")
+        self.assertEqual(self.record["core_revision"], st.PINNED_CORE_REVISION)
+        self.assertEqual(self.record["bios"], "SYNTHETIC")
+        self.assertEqual(self.record["issue"], 365)
+
+    def test_positive_control_passes_live_classifier(self):
+        row = copy.deepcopy(self.rows["pos-write"])
+        self.assertIsNone(st.check_pos(row, st.POS_CONTROL))
+        self.assertEqual(self.verdicts["pos-write"], "allowlisted_ram_write_landed")
+        self.assertEqual(self.rows["pos-write"]["mode"], "pos-write")
+
+    def test_positive_control_has_jsr_observation(self):
+        observation = st.to_jsr_observation(copy.deepcopy(self.rows["pos-write"]))
+        self.assertIsNotNone(observation)
+        self.assertEqual(observation["outcome"]["status"], "ok")
+        self.assertEqual(observation["outcome"]["stop_pc"],
+                         self.rows["pos-write"]["stop_pc"])
+
+    def test_armed_row_cannot_pass_as_positive(self):
+        with self.assertRaises(ValueError):
+            st.check_pos(copy.deepcopy(self.rows["st0-entry"]), st.POS_CONTROL)
+
+    def test_positive_control_tampers_rejected(self):
+        tampers = [
+            ("status", {"status": "refused"}),
+            ("detected", {"detected": True}),
+            ("wrong_target", {"guard_target": st.POS_CONTROL + 1}),
+            ("already_set", {"guard_before": 0x5A}),
+            ("not_landed", {"guard_after": 0x00}),
+            ("wrong_value_landed", {"guard_after": 0x01}),
+            ("too_many_executed", {"instructions_executed": 101}),
+            ("unchanged", {"guard_after": 0x00, "guard_before": 0x00}),
+            ("no_progress", {"instructions_executed": 0}),
+            ("probe_failed", {"exit": 1}),
+        ]
+        for name, overwrite in tampers:
+            with self.subTest(tamper=name):
+                row = copy.deepcopy(self.rows["pos-write"])
+                row.update(overwrite)
+                with self.assertRaises(ValueError):
+                    st.check_pos(row, st.POS_CONTROL)
+
+
 if __name__ == "__main__":
     unittest.main()
