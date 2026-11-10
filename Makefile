@@ -58,6 +58,14 @@ integration: build
 	$(MAKE) stack-mpr-buffer
 	$(MAKE) caller-stack-contract
 	$(MAKE) st-boundary
+	$(MAKE) block-preblock
+
+# Issue #742 (#737 E4): block-transfer whole-instruction preblock (TII/TDD/TIN/TAI/TIA
+# refused before the first step, synthetic media, debugger build, verify-only probe).
+# Not a production mechanism. Runs in `integration`.
+.PHONY: block-preblock
+block-preblock:
+	$(PYTHON) tests/integration/geargrafx_block_preblock.py
 
 # Issue #365: ST0/ST1/ST2 single-step instruction-boundary monitor on the pinned core (v2 probe,
 # synthetic media). Seventeen armed families (entry, unknown-PC, data-dependent branch, JSR/RTS return,
