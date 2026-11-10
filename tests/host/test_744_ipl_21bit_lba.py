@@ -26,6 +26,7 @@ from tools.ipl_lba21_model import (  # noqa: E402
     CODE_LBA_RANGE,
     cdb_for,
     decide,
+    info_lba,
 )
 
 SEL = 0x0109  # synthetic INDEX 01 LBA embedded by the integration driver
@@ -170,6 +171,43 @@ class CdbEncodingTests(unittest.TestCase):
         self.assertEqual(result["sectors"][-1], cdb_for(0x10004))
 
 
+class InfoSectorBoundaryTests(unittest.TestCase):
+    """Issue #744 MAJOR-1: INDEX01 -> information-sector LBA (SEL+1, 24-bit).
+
+    The guest computes INDEX01+1 at runtime with the 16-bit carry preserved
+    into the high byte. Every boundary below must produce the full-width LBA
+    and its exact 21-bit READ(6) CDB; the old 16-bit truncation read 0x000000
+    for SEL=0xFFFF.
+    """
+
+    def test_index01_boundaries(self):
+        for sel, want in ((0x0000, 0x000001), (0x0109, 0x00010A),
+                          (0xFFFE, 0x00FFFF), (0xFFFF, 0x010000)):
+            with self.subTest(sel=hex(sel)):
+                self.assertEqual(info_lba(sel), want)
+                self.assertEqual(cdb_for(info_lba(sel)), cdb_for(want))
+
+    def test_index01_cdb_bytes_exact(self):
+        self.assertEqual(cdb_for(info_lba(0x0000)), [0x08, 0x00, 0x00, 0x01, 0x01, 0x00])
+        self.assertEqual(cdb_for(info_lba(0x0109)), [0x08, 0x00, 0x01, 0x0A, 0x01, 0x00])
+        self.assertEqual(cdb_for(info_lba(0xFFFE)), [0x08, 0x00, 0xFF, 0xFF, 0x01, 0x00])
+        self.assertEqual(cdb_for(info_lba(0xFFFF)), [0x08, 0x01, 0x00, 0x00, 0x01, 0x00])
+        self.assertEqual((cdb_for(info_lba(0xFFFF))[1] >> 4), 0,
+                         "CDB byte 1 must never carry LUN/high bits")
+
+    def test_no_16bit_truncation_at_ffff(self):
+        # The pre-#744 guest evaluated #>(IPL_SEL+1) at assembly time with a
+        # zero high byte, reading sector 0x000000 instead of 0x010000.
+        self.assertNotEqual(info_lba(0xFFFF), (0xFFFF + 1) & 0xFFFF)
+        self.assertEqual(info_lba(0xFFFF), 0x010000)
+
+    def test_info_lba_rejects_out_of_range_sel(self):
+        for bad in (-1, 0x10000, 0x1FFFFF, "0xFFFF", None):
+            with self.subTest(bad=repr(bad)):
+                with self.assertRaises(ValueError):
+                    info_lba(bad)
+
+
 @requires_cc65
 class RomArtifactTests(unittest.TestCase):
     """The assembled loader must implement the model above (decision B).
@@ -201,6 +239,32 @@ class RomArtifactTests(unittest.TestCase):
         self.assertIsNotNone(re.search(rb"\xa5.\x29\x1f\x8d\x11\x2f", self.image))
         # Old 16-bit form: LDA #0 / STA $2F11 (high LBA byte ignored).
         self.assertNotIn(bytes([0xA9, 0x00, 0x8D, 0x11, 0x2F]), self.image)
+
+    def test_info_lba_carry_chain_present_and_truncation_absent(self):
+        # Reset path must carry INDEX01+1 out of 16 bits into lbahi ($03):
+        # LDA #0 / ADC #0 / STA $03. The old truncation was LDA #0 / STA $03
+        # (high byte forced to 0, so SEL=$FFFF read sector $000000).
+        self.assertIn(bytes([0x69, 0x00, 0x85, 0x03]), self.image)
+        self.assertNotIn(bytes([0xA9, 0x00, 0x85, 0x03]), self.image)
+
+    def test_ffff_sel_assembles_to_8kib(self):
+        import subprocess
+        import tempfile
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        out = Path(tmp.name)
+        ca65, ld65 = executable("ca65"), executable("ld65")
+        obj, rom = out / "ipl_ffff.o", out / "ipl_ffff.pce"
+        subprocess.run([ca65, str(ROOT / "tests" / "integration" / "ipl_loader_rom.s"),
+                        "-D", "IPL_SEL=$FFFF", "-o", str(obj), "-g"], check=True)
+        subprocess.run([ld65, "-C", str(ROOT / "tests" / "integration" / "ipl_loader_rom.cfg"),
+                        "-o", str(rom), str(obj)], check=True)
+        image = rom.read_bytes()
+        self.assertEqual(len(image), 0x2000)
+        # Carry chain and CDB encoding are SEL-independent machine code.
+        self.assertIn(bytes([0x69, 0x00, 0x85, 0x03]), image)
+        self.assertNotIn(bytes([0xA9, 0x00, 0x85, 0x03]), image)
 
 
 if __name__ == "__main__":

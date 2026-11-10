@@ -31,6 +31,17 @@ def cdb_for(lba):
     return [0x08, (lba >> 16) & 0x1F, (lba >> 8) & 0xFF, lba & 0xFF, 0x01, 0x00]
 
 
+def info_lba(sel):
+    """Information-sector LBA for a 16-bit INDEX 01 LBA: sel + 1, full width.
+
+    The guest adds at runtime with the 16-bit carry preserved into the high
+    byte (ipl_loader_rom.s reset path), so sel=0xFFFF yields 0x010000, never
+    a 16-bit-truncated 0x000000. The result always fits 24 bits.
+    """
+    _check_int(sel, "sel", 0, 0xFFFF)
+    return sel + 1
+
+
 def decide(sel, b0, b1, b2, nsec, dev=True):
     """Mirror the loader's validate_info LBA decision.
 

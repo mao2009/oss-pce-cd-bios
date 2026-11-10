@@ -116,11 +116,15 @@ reset:
     sta R_MSG
     lda #2
     sta R_STAGE
-    lda #<(IPL_SEL+1)        ; information sector = data-relative sector 1
+    lda #<IPL_SEL              ; information sector = INDEX01 + 1, 24-bit
+    clc                        ; (Issue #744: the 16-bit carry out of IPL_SEL+1
+    adc #1                     ; must reach the high byte; IPL_SEL=$FFFF -> $010000)
     sta lbalo
-    lda #>(IPL_SEL+1)
+    lda #>IPL_SEL
+    adc #0
     sta lbamid
-    lda #0                     ; IPL_SEL is 16-bit, so the high byte is 0
+    lda #0
+    adc #0
     sta lbahi
     jsr read_sector
     jsr validate_info
