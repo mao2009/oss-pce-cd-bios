@@ -87,8 +87,11 @@ def check(label, rows, halt, a, x, y, p, sp):
     def at(addr):
         return wram[addr - WRAM_BASE]
 
+    # The LDA #a after PLP refreshes N/Z from A: fold that into the expectation.
+    # (B/T are masked out: PHP always pushes B=1 and the pinned core pushes T=0.)
+    want_p = (p & 0x7D) | (0x80 if a & 0x80 else 0) | (0x02 if a == 0 else 0)
     got = (at(STORE), at(STORE + 1) & P_MASK, at(STORE + 2), at(STORE + 3))
-    want = (a, p & P_MASK, x, y)
+    want = (a, want_p & P_MASK, x, y)
     if got != want:
         raise ValueError(f"{label}: A/P/X/Y observed {[f'${v:02X}' for v in got]}, "
                          f"expected {[f'${v:02X}' for v in want]}")
