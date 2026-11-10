@@ -299,6 +299,49 @@ def verify_stub_bytes(rom_path: Path, stub_addr: int) -> bool:
     return True
 
 
+def resolve_commercial_stub(labels_path, rom_path):
+    """Resolve and verify the commercial stub label against the executed ROM.
+
+    Returns the verified api_unimplemented address, or None when the labels
+    file parses but carries no api_unimplemented key (observation may proceed
+    with facts preserved; confirmation is then capped at UNKNOWN). Raises
+    ValueError on an unreadable file, malformed lines, contradictory
+    addresses, or a present-but-unverifiable stub (window/bytes mismatch), so
+    a bad labels file can never be silently treated as empty.
+    """
+    try:
+        labels = parse_probe_labels(labels_path)
+    except OSError as error:
+        raise ValueError(f"commercial labels unreadable: {error}") from None
+    stub = labels.get("api_unimplemented")
+    if stub is None:
+        return None
+    verify_stub_bytes(rom_path, stub)
+    return stub
+
+
+def check_direct_cycle(call, run, stub_addr, cycle, name):
+    """Fail-closed DIRECT positive-control judgment for one cold/warm cycle.
+
+    Verifies the observed classification itself (method == DIRECT), the entry
+    PC against the verified stub, strict non-table membership, and the stub
+    halt (reason + X). Every field uses .get so a missing key fails instead
+    of raising. Returns the list of failures (empty means the cycle passes).
+    JSR/JMP/NOCALL/SPIN paths are untouched by this helper.
+    """
+    fails = []
+    method = classify_apicall(call, stub_addr)
+    if method != "DIRECT":
+        fails.append(f"{cycle}: method {method} != DIRECT (delta {call.get('sp_delta')})")
+    if call.get("in_table") is not False:
+        fails.append(f"{cycle}: direct stub was classified as table entry")
+    if call.get("entry_pc") != stub_addr:
+        fails.append(f"{cycle}: entry {call.get('entry_pc')!r} != stub ${stub_addr:04X}")
+    if run.get("reason") != "api_unimplemented" or run.get("x") != 2:
+        fails.append(f"{cycle}: direct stub halt {run.get('reason')} x={run.get('x')}")
+    return fails
+
+
 def classify_apicall(call, stub_addr):
     """Return JSR/JMP/INTERRUPT/DIRECT/IRQ/OTHER based on SP delta and entry PC.
 
@@ -319,9 +362,13 @@ def classify_apicall(call, stub_addr):
             return "INTERRUPT"
         return "OTHER"
     # Non-table BIOS entry: stub direct vs interrupt vector vs other.
-    if call.get("entry_pc") == stub_addr:
+    # LOW-1: the stub comparison is guarded so stub None + missing entry
+    # (None == None) can never be DIRECT; a missing/non-int entry_pc falls
+    # through fail-closed to IRQ/OTHER_DIRECT without raising.
+    entry = call.get("entry_pc")
+    if stub_addr is not None and entry == stub_addr:
         return "DIRECT"
-    if call["sp_delta"] == 3 or call.get("entry_pc", 0) >= 0xFFF0:
+    if call["sp_delta"] == 3 or (type(entry) is int and entry >= 0xFFF0):
         return "IRQ"
     return "OTHER_DIRECT"
 
@@ -340,7 +387,9 @@ def classify_commercial(records, stub_addr):
 
     stub_addr is the verified api_unimplemented address for the executed ROM,
     or None when no usable label exists. An explicit None never yields DIRECT;
-    table JSR/JMP confirmation does not consult the stub. Returns (verdict,
+    table JSR/JMP confirmation does not consult the stub. CONFIRMED additionally
+    requires a verified (non-None) stub and halt PCs at that stub: table JSRs
+    with an unverified stub stay UNKNOWN. Returns (verdict,
     detail) where verdict is one of
     API_ENTRY_CONFIRMED / PRE_API_BLOCKER_OBSERVED / UNKNOWN / INCOMPLETE / BUDGET / FAIL.
     Never promotes a budget or a truncated trace to a confirmation.
@@ -394,6 +443,13 @@ def classify_commercial(records, stub_addr):
         return "UNKNOWN", "cold/warm entries differ"
     if cold_run["reason"] != "api_unimplemented" or warm_run["reason"] != "api_unimplemented":
         return "UNKNOWN", "entry does not lead to stub halt"
+    # MEDIUM-1: CONFIRMED additionally requires a verified stub and halt PCs
+    # at that stub. Table JSRs with an unverified stub (or a halt elsewhere
+    # that merely names the stub) stay UNKNOWN; observed facts are preserved.
+    if stub_addr is None:
+        return "UNKNOWN", "stub address unverified; table entry observed but stub halt unconfirmed"
+    if cold_run.get("pc") != stub_addr or warm_run.get("pc") != stub_addr:
+        return "UNKNOWN", "halt PC is not the verified stub address"
     if len(cold_seq) == 1:
         return "API_ENTRY_CONFIRMED", f"first table entry slot {cold_seq[0][0]} {cold_seq[0][1]} in both cycles"
     return ("API_ENTRY_CONFIRMED",
@@ -588,10 +644,10 @@ def synthetic_case(tmp: Path, probe, bios, stub, name, defines, expect_slot, exp
             call = calls[0]
             method = classify_apicall(call, stub["api_unimplemented"])
             if expect_method == "DIRECT":
-                if call["in_table"]:
-                    fails.append(f"{v['cycle']}: direct stub was classified as table entry")
-                if run["reason"] != "api_unimplemented" or run["x"] != 2:
-                    fails.append(f"{v['cycle']}: direct stub halt X!=2")
+                # MEDIUM-2: the positive control must verify its own observed
+                # classification, entry PC, and non-table membership — not just
+                # the halt. A misobserved entry with a stub halt still fails.
+                fails.extend(check_direct_cycle(call, run, stub_addr, v["cycle"], name))
             else:
                 if not call["in_table"] or call["slot"] != expect_slot:
                     fails.append(f"{v['cycle']}: slot {call} != {expect_slot}")
@@ -708,19 +764,17 @@ def main():
             except ValueError as error:
                 raise SystemExit(f"FAIL commercial labels: {error}")
         probe = compile_probe(out, "geargrafx_api_entry_probe.cpp", "geargrafx-api-entry-probe")
-        # MAJOR-2/3: the commercial stub comes from the labels for the executed
-        # ROM and is verified against its bytes. No usable label -> explicit
-        # None (never an unfounded DIRECT); a mismatched label+ROM is refused.
+        # MAJOR-2/3 + MEDIUM-1: the commercial stub comes from the labels for
+        # the executed ROM and is verified against its bytes. Malformed files,
+        # unreadable files, and present-but-mismatched stubs are refused
+        # before the probe runs, so Python and the C++ probe (which reads the
+        # same file) can never disagree. A parsed file without
+        # api_unimplemented yields explicit None: observation proceeds with
+        # facts preserved, but stub reach can never be confirmed.
         try:
-            commercial_labels = parse_probe_labels(labels_path)
-        except ValueError:
-            commercial_labels = {}
-        commercial_stub = commercial_labels.get("api_unimplemented")
-        if commercial_stub is not None:
-            try:
-                verify_stub_bytes(commercial_rom, commercial_stub)
-            except ValueError as error:
-                raise SystemExit(f"FAIL commercial stub mismatch: {error}")
+            commercial_stub = resolve_commercial_stub(labels_path, commercial_rom)
+        except ValueError as error:
+            raise SystemExit(f"FAIL commercial labels: {error}")
         budget = 80_000_000
         try:
             records = run_probe(probe, commercial_rom, cue_path, labels_path, budget, "commercial")

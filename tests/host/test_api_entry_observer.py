@@ -122,9 +122,9 @@ class ProbeObservationOnlyTests(unittest.TestCase):
         self.assertNotIn('"stack_word"', src)
 
 
-def records(calls_cold, calls_warm, reason="api_unimplemented", halted=True, truncated=False):
+def records(calls_cold, calls_warm, reason="api_unimplemented", halted=True, truncated=False, stub=0xE245):
     def run(cycle, calls):
-        return {"cycle": cycle, "reason": reason, "pc": 0xE24F, "x": 2,
+        return {"cycle": cycle, "reason": reason, "pc": stub, "x": 2,
                 "halt_confirmed": halted, "step": 100, "apicall_truncated": truncated}
     apis = ([dict(c, cycle="cold") for c in calls_cold]
             + [dict(c, cycle="warm") for c in calls_warm])
@@ -599,6 +599,163 @@ class StubAddressHardeningTests(unittest.TestCase):
             short_rom.write_bytes(bytes(8192))
             with self.assertRaises(ValueError):
                 verify_stub_bytes(short_rom, 0xE245)
+
+
+class CommercialLabelResolutionTests(unittest.TestCase):
+    """MEDIUM-1: malformed labels are refused, never swallowed into {}."""
+
+    def _write(self, tmp, text):
+        path = Path(tmp) / "labels.txt"
+        path.write_text(text, encoding="ascii")
+        return path
+
+    def _rom(self, tmp, stub=0xE245):
+        rom = Path(tmp) / "fake.pce"
+        data = bytearray(256 * 1024)
+        off = stub - 0xE000
+        data[off] = 0x80
+        data[off + 1] = 0xFE
+        rom.write_bytes(bytes(data))
+        return rom
+
+    def test_trailing_garbage_rejected(self):
+        # MEDIUM-1 RED: helper missing on old code (ImportError).
+        import tempfile
+        from geargrafx_api_entry import resolve_commercial_stub
+        with tempfile.TemporaryDirectory() as tmp:
+            labels = self._write(tmp, "api_unimplemented e245\ncd_halt_fail f000\nNOT A LINE\n")
+            with self.assertRaises(ValueError):
+                resolve_commercial_stub(labels, self._rom(tmp))
+
+    def test_contradictory_label_rejected(self):
+        import tempfile
+        from geargrafx_api_entry import resolve_commercial_stub
+        with tempfile.TemporaryDirectory() as tmp:
+            labels = self._write(tmp, "api_unimplemented e245\napi_unimplemented e250\n")
+            with self.assertRaises(ValueError):
+                resolve_commercial_stub(labels, self._rom(tmp))
+
+    def test_missing_stub_returns_none(self):
+        # Label file parses but carries no api_unimplemented: observation may
+        # proceed, confirmation is capped at UNKNOWN (facts preserved).
+        import tempfile
+        from geargrafx_api_entry import resolve_commercial_stub
+        with tempfile.TemporaryDirectory() as tmp:
+            labels = self._write(tmp, "cd_halt_fail f000\ncd_halt_ok e000\n")
+            self.assertIsNone(resolve_commercial_stub(labels, self._rom(tmp)))
+
+    def test_stub_bytes_mismatch_rejected(self):
+        import tempfile
+        from geargrafx_api_entry import resolve_commercial_stub
+        with tempfile.TemporaryDirectory() as tmp:
+            labels = self._write(tmp, "api_unimplemented e250\n")
+            with self.assertRaises(ValueError):
+                resolve_commercial_stub(labels, self._rom(tmp))
+
+    def test_verified_stub_returned(self):
+        import tempfile
+        from geargrafx_api_entry import resolve_commercial_stub
+        with tempfile.TemporaryDirectory() as tmp:
+            labels = self._write(tmp, "api_unimplemented e245\ncd_halt_fail f000\n")
+            self.assertEqual(resolve_commercial_stub(labels, self._rom(tmp)), 0xE245)
+
+    def test_unverified_stub_never_confirmed(self):
+        # MEDIUM-1: cold/warm table JSRs but stub unverified must not CONFIRM.
+        from geargrafx_api_entry import classify_commercial as classify_comm
+        recs = records([call()], [call()])
+        verdict, _detail = classify_comm(recs, stub_addr=None)
+        self.assertNotEqual(verdict, "API_ENTRY_CONFIRMED")
+        self.assertEqual(verdict, "UNKNOWN")
+
+    def test_halt_pc_mismatch_not_confirmed(self):
+        # Halt reason names the stub but the stop PC is elsewhere: no confirm.
+        from geargrafx_api_entry import classify_commercial as classify_comm
+        recs = records([call()], [call()], stub=0xE245)
+        recs["RUN"][0]["pc"] = 0xE24F
+        recs["RUN"][1]["pc"] = 0xE24F
+        verdict, _detail = classify_comm(recs, stub_addr=0xE245)
+        self.assertNotEqual(verdict, "API_ENTRY_CONFIRMED")
+        self.assertEqual(verdict, "UNKNOWN")
+
+
+class DirectCycleJudgmentTests(unittest.TestCase):
+    """MEDIUM-2: the DIRECT positive control must verify its own classification."""
+
+    def _run(self, reason="api_unimplemented", x=2):
+        return {"cycle": "cold", "reason": reason, "pc": 0xE245, "x": x,
+                "halt_confirmed": True, "step": 100, "apicall_truncated": False}
+
+    def test_good_direct_passes(self):
+        # MEDIUM-2 RED: helper missing on old code (ImportError).
+        from geargrafx_api_entry import check_direct_cycle
+        stub = 0xE245
+        call_row = call(in_table=False, entry=stub)
+        self.assertEqual(check_direct_cycle(call_row, self._run(), stub, "cold", "direct_stub"), [])
+
+    def test_entry_not_stub_rejected(self):
+        from geargrafx_api_entry import check_direct_cycle
+        stub = 0xE245
+        call_row = call(in_table=False, entry=0xE250)
+        self.assertNotEqual(check_direct_cycle(call_row, self._run(), stub, "cold", "direct_stub"), [])
+
+    def test_entry_missing_rejected(self):
+        from geargrafx_api_entry import check_direct_cycle
+        stub = 0xE245
+        call_row = call(in_table=False, entry=stub)
+        del call_row["entry_pc"]
+        self.assertNotEqual(check_direct_cycle(call_row, self._run(), stub, "cold", "direct_stub"), [])
+
+    def test_in_table_rejected(self):
+        from geargrafx_api_entry import check_direct_cycle
+        stub = 0xE245
+        call_row = call(in_table=True, slot=2, entry=stub)
+        self.assertNotEqual(check_direct_cycle(call_row, self._run(), stub, "cold", "direct_stub"), [])
+
+    def test_other_direct_row_rejected(self):
+        # entry+halt disagree: an OTHER_DIRECT row at a stub halt still fails.
+        from geargrafx_api_entry import check_direct_cycle
+        stub = 0xE245
+        call_row = call(in_table=False, delta=0, entry=0x4000)
+        self.assertNotEqual(check_direct_cycle(call_row, self._run(), stub, "cold", "direct_stub"), [])
+
+    def test_irq_row_rejected(self):
+        from geargrafx_api_entry import check_direct_cycle
+        stub = 0xE245
+        call_row = call(in_table=False, delta=3, entry=0xFFF8)
+        self.assertNotEqual(check_direct_cycle(call_row, self._run(), stub, "cold", "direct_stub"), [])
+
+    def test_warm_bad_rejected(self):
+        from geargrafx_api_entry import check_direct_cycle
+        stub = 0xE245
+        good = call(in_table=False, entry=stub)
+        bad = call(in_table=False, entry=0xE250)
+        self.assertEqual(check_direct_cycle(good, self._run(), stub, "cold", "direct_stub"), [])
+        self.assertNotEqual(check_direct_cycle(bad, self._run(), stub, "warm", "direct_stub"), [])
+
+
+class NoneEntryClassificationTests(unittest.TestCase):
+    """LOW-1: None/missing entry_pc must never be DIRECT and never raise."""
+
+    def test_none_stub_missing_entry_not_direct(self):
+        # LOW-1 RED: old `None == None` classified this as DIRECT.
+        from geargrafx_api_entry import classify_apicall as classify
+        call_row = call(in_table=False, entry=0xE245)
+        del call_row["entry_pc"]
+        self.assertNotEqual(classify(call_row, None), "DIRECT")
+
+    def test_none_entry_with_stub_not_direct(self):
+        from geargrafx_api_entry import classify_apicall as classify
+        call_row = call(in_table=False, entry=0xE245)
+        call_row["entry_pc"] = None
+        self.assertEqual(classify(call_row, 0xE245), "OTHER_DIRECT")
+
+    def test_bad_type_entry_fail_closed(self):
+        from geargrafx_api_entry import classify_apicall as classify
+        for bad in ("E245", True, 3.5, [0xE245]):
+            with self.subTest(entry=bad):
+                call_row = call(in_table=False, entry=0xE245)
+                call_row["entry_pc"] = bad
+                self.assertIn(classify(call_row, 0xE245), ("OTHER_DIRECT", "IRQ"))
 
 
 if __name__ == "__main__":
