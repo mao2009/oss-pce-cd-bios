@@ -71,45 +71,71 @@ Issue #744 以前の扱い (履歴):
 - 推奨: (A)。実行時情報だけで成立し、公開仕様も #668 契約も変えない。(B)/(C) はホスト情報を信頼する別問題で、
   トラック長の出所 (CUE 解析) の整合性検証が前提になる。
 
-## 4. LBA 上限境界の検証 (混同の整理)
+## 4. LBA 上限境界の検証 (現行仕様, Issue #744)
 
 用語を分離する:
-- 絶対 LBA = `IPL_SEL (0x0109) + IPLBLK (相対)`。
-- 相対 IPLBLK = データトラック相対セクタ番号 (24bit フィールド)。
+- 絶対 LBA = `IPL_SEL (16bit INDEX 01 LBA) + IPLBLK (相対)` を 24bit 加算した body base。
+- 相対 IPLBLK = データトラック相対セクタ番号 (24bit ビッグエンディアン)。
 - 最終読み込みセクタ = 絶対 LBA の末尾 (`base + nsec - 1`)。
 - exclusive end = `base + nsec`。
 
-現行検証:
-- 絶対 base が 16bit を超えない: `IPL_SEL + IPLBLK` の加算で carry 発生 → 拒否 (code 27)。
-  例: `0x0109 + 0xFFFF = 0x10108` → 16bit 範囲超過で拒否。したがって `IPLBLK=0xFFFF` 単体 (n=1) は
-  **受理されない** (§2 以前の誤記を訂正)。
-- ラップ拒否: `bodyl + nsec <= 0xFFFF` (exclusive end が 16bit を超えない)。最終セクタが `0xFFFF` に
-  ちょうど一致する場合 (`base + nsec == 0x10000`) も保守的に拒否される。
-- 確認テスト: `neg_body_lba_overflows_16bit` (IPLBLK=0xFFFF), `neg_body_lba_tail_wraps_16bit`
-  (IPLBLK=0xFEF5, n=3), `neg_body_lba_final_sector_at_ffff` (0xFEF5, n=2), `neg_lba_ffff_n1_width_refused`
-  (0xFEF6, n=1, 絶対 LBA 0xFFFF で拒否)。
-- 幅検査を通る上限は `bodyl + nsec <= 0xFFFF`。`neg_lba_fffe_n1_passes_width_fails_media_probe` (絶対 LBA 0xFFFE, n=1) は
-  幅検査 (code 27) を通過し、媒体先読みで code 5 / copied=0 で拒否されることを示す (合成媒体は 300 フレームのため)。
-- 媒体終端の境界 (合成ディスク最終フレーム = 絶対 LBA 299): `pos_last_body_sector_is_last_disc_frame` (受理),
-  `neg_last_body_sector_one_past_disc_end`, `neg_single_sector_at_first_frame_past_end`, `neg_body_entirely_beyond_disc`,
-  `neg_iplblk_0100_passes_lba_checks_fails_media_probe` (いずれも code 5 / copied=0)。
-- 24bit 上位バイト: `neg_iplblk_high_byte_nonzero` (0x01), `_80`, `_ff` (code 21)。
-- 16bit を超える受理 (絶対 LBA > 0xFFFF): 小ディスク suite では媒体先読み拒否まで (受理ロードは
-  65536 フレーム超の合成媒体を要するため別途 Issue #744 で実コア確認; BIN 約 155 MB、§9.2)。
-
-不足点:
-- 上限の基準が 21bit 幅と媒体先読みであり、実際のデータトラック長ではない (§3)。
-- 最終セクタが 21bit 上限に一致する境界 (`base + nsec - 1 == 0x1FFFFF`, end `== 0x200000`) は受理される。
-  end `> 0x200000` および 24bit 桁溢れは code 27 で拒否 (Issue #744)。
-- 24bit 高位バイト (§2): Issue #744 (Owner decision B) により、IPLBLK 高位 8bit が非零でも
-  絶対 body が 21bit READ(6) 範囲内なら受理される。範囲外は code 27 でコピー前に拒否。
-  ただし「0x1FFFFF 以下なら受理される」という単純な条件ではない。受理には少なくとも次を
-  満たす必要がある:
+現行仕様 (Issue #744, Owner decision B):
+- IPLBLK は 24bit ビッグエンディアン。
+- INDEX01 は 16bit LBA (`0x0000..0xFFFF`)。
+- 情報セクタ LBA は INDEX01+1 (24bit 加算、16bit 桁上がり保持)。INDEX01=`$FFFF` なら情報セクタ LBA=`$010000`。
+- body base は 24bit 加算。24bit 桁溢れ (`body > 0xFFFFFF`) は拒否 (code 27)。
+- READ(6) LBA は 21bit。最大 LBA は `0x1FFFFF`。
+- `body + nsec <= 0x200000` (exclusive end)。最終セクタが 21bit 上限に一致する境界
+  (`base + nsec - 1 == 0x1FFFFF`, end `== 0x200000`) は受理される。
+- end `> 0x200000` および 24bit 桁溢れは code 27 でコピー前に拒否。
+- 16bit 境界を跨ぐだけでは拒否しない。16bit を超える絶対 LBA も範囲内なら受理される。
+- ただし媒体が実際に存在しなければ最終セクタ先読み (§3.1) で拒否される (code 5 / copied=0 / stage=4)。
+- 受理には少なくとも次を満たす必要がある:
     - 相対 IPLBLK が 2 以上
     - IPL_SEL + IPLBLK (24bit 加算、桁溢れなし) の body base が範囲内
     - IPL_SEL + IPLBLK + nsec (exclusive end) が $200000 以下、24bit 桁溢れなし
     - その他のヘッダ・ロード先・実行開始値の検証も通過する
   相対 LBA (IPLBLK) と絶対 LBA (IPL_SEL + IPLBLK) を混同しないこと。
+
+現行確認テスト (いずれも `tests/integration/geargrafx_ipl_loader.py`, `tools/ipl_lba21_model.py` と一致):
+- 16bit 境界跨ぎの受理: `neg_abs_010108_crosses_16bit_probe_refused` (IPLBLK=0xFFFF, 絶対 0x10108 → 幅は通り媒体先読み拒否),
+  `neg_abs_00fffe_tail_crosses_16bit_probe_refused` (0xFEF5, n=3), `neg_abs_last_ffff_probe_refused` (0xFEF5, n=2),
+  `neg_lba_ffff_probe_refused` (0xFEF6, 絶対 0xFFFF), `neg_lba_fffe_n1_passes_width_fails_media_probe` (0xFEF5, 絶対 0xFFFE → code 5)。
+- 24bit IPLBLK: `neg_iplblk_high_byte_01_in_range_probe_refused` (高位 `0x01`, 範囲内 → code 5),
+  `neg_iplblk_high_byte_80_over_range_refused` / `neg_iplblk_high_byte_ff_over_range_refused` (範囲外 → code 27),
+  `neg_iplblk_0100_passes_lba_checks_fails_media_probe` (0x100 → code 5)。
+- 21bit 最大境界: `neg_abs_1fffff_n1_passes_width_fails_media_probe` (body `0x1FFFFF`, end `0x200000` → code 5),
+  `expect_cdb_last=[0x08, 0x1F, 0xFF, 0xFF, 0x01, 0x00]` で 21bit バス符号を確認。
+- `0x200000` 拒否: `neg_abs_1fffff_n2_tail_over_width_refused` (end `0x200001` → code 27),
+  `neg_abs_200000_over_width_refused` (body `0x200000` → code 27)。
+- 24bit carry out: `neg_iplblk_ffffff_carry_out_width_refused` (code 27)。
+- 最終セクタ先読み: `pos_last_body_sector_is_last_disc_frame` (受理),
+  `neg_last_body_sector_one_past_disc_end`, `neg_single_sector_at_first_frame_past_end`,
+  `neg_body_entirely_beyond_disc`, `neg_body_tail_beyond_disc_refused_before_copy` (いずれも code 5 / copied=0 / stage=4)。
+- 媒体終端の境界 (合成ディスク最終フレーム = 絶対 LBA 299) も上記 code 5 ケースで確認。
+
+不足点:
+- 上限の基準が 21bit 幅と媒体先読みであり、実際のデータトラック長ではない (§3)。
+- 大容量合成媒体による 16bit 跨ぎ受理ロードは別 suite (BIN 約 155 MB、§9.2)。
+
+### 4.1 旧仕様・履歴 (pre-#744, 現行検証ではない)
+
+Issue #744 以前は 16bit 契約だったため、以下は**旧仕様**としてのみ記録する。現行検証の根拠にしないこと:
+- 旧: 絶対 base が 16bit を超えると拒否 (`IPL_SEL + IPLBLK` の carry で code 27)。
+  例: `0x0109 + 0xFFFF = 0x10108` → 16bit 範囲超過で拒否。`IPLBLK=0xFFFF` 単体は受理されなかった。
+- 旧: `bodyl + nsec <= 0xFFFF` (exclusive end が 16bit を超えない)。
+  最終セクタが `0xFFFF` に一致する場合 (`base + nsec == 0x10000`) も保守的に拒否された。
+- 旧テスト名 (現行名称へ置換済み): `neg_body_lba_overflows_16bit` → `neg_abs_010108_crosses_16bit_probe_refused`,
+  `neg_body_lba_tail_wraps_16bit` → `neg_abs_00fffe_tail_crosses_16bit_probe_refused`,
+  `neg_body_lba_final_sector_at_ffff` → `neg_abs_last_ffff_probe_refused`,
+  `neg_lba_ffff_n1_width_refused` → `neg_lba_ffff_probe_refused`,
+  `neg_iplblk_high_byte_nonzero` (code 21) → `neg_iplblk_high_byte_01_in_range_probe_refused` (code 5) /
+  `_80`・`_ff_over_range_refused` (code 27)。
+- 旧: 24bit IPLBLK の上位バイトが非ゼロなら拒否 (code 21)。
+- 旧: 16bit 境界を跨ぐと code 27 で拒否。
+
+旧仕様の記述 (§2 以前の誤記を含む) は訂正済み。現行契約は本 §4 冒頭および `tools/ipl_lba21_model.py`・
+`tests/integration/ipl_loader_rom.s` の実装を正とする。
 
 ## 5. 本 PR の変更範囲 (最小)
 
@@ -149,7 +175,8 @@ Issue #744 以前の扱い (履歴):
   24bit IPLBLK フィールドを READ(6) の 21bit LBA フィールドにそのまま拡張する表現は誤り。
   16bit 内部 LBA の拡張と、READ(6) の 21bit 限界を超える場合の別方式 (READ(10)/READ(12) 等)
   の選択を区別する。READ(10)/READ(12) の対応可否は未確認のため UNKNOWN。
-- 現行ローダーの内部 LBA は 16bit であり、READ(6) の 21bit 能力も未使用。
+- 現行ローダーの内部 LBA は 24bit 計算 (Issue #744) であり、READ(6) 発行時に 21bit 範囲
+  (`body + nsec <= $200000`) を強制する。旧 16bit 内部 LBA の記述は §4.1 の履歴を参照。
 - Geargrafx プローブ/実装が READ(10)/READ(12) をサポートするかは **UNKNOWN** (未確認)。本 PR では調査のみ。
 - 対応方式が未確定のため、24bit 全域対応は **BLOCKED (Owner 判断待ち)** とする。
 
