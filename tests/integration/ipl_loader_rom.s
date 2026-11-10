@@ -237,8 +237,13 @@ validate_info:
     ora lbalo
     beq @tailok
 @tailbad:
+.ifndef IPL_MUTANT_NORANGE
     lda #27
     jmp fail
+.endif
+    ; TEST-ONLY hook (IPL_MUTANT_NORANGE): with the 21-bit tail gate
+    ; disabled the over-width case falls through and fails later at the
+    ; final-sector pre-read. Never defined in production ROMs.
 @tailok:
     ; IPLSTA: little-endian load address, must be in $3000-$7FFF and fit
     lda BUF+4

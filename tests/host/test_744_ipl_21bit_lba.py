@@ -247,6 +247,29 @@ class RomArtifactTests(unittest.TestCase):
         self.assertIn(bytes([0x69, 0x00, 0x85, 0x03]), self.image)
         self.assertNotIn(bytes([0xA9, 0x00, 0x85, 0x03]), self.image)
 
+    def test_norange_mutant_disables_tail_gate_only(self):
+        # Refusal-code attribution: LDA #27 (A9 1B) appears twice in the
+        # production ROM (24-bit base carry-out + exclusive-end tail gate).
+        # The TEST-ONLY IPL_MUTANT_NORANGE ROM must keep exactly the base
+        # carry refusal and drop the tail one.
+        import subprocess
+        import tempfile
+
+        self.assertEqual(self.image.count(bytes([0xA9, 0x1B])), 2)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        out = Path(tmp.name)
+        ca65, ld65 = executable("ca65"), executable("ld65")
+        obj, rom = out / "ipl_norange.o", out / "ipl_norange.pce"
+        subprocess.run([ca65, str(ROOT / "tests" / "integration" / "ipl_loader_rom.s"),
+                        "-D", f"IPL_SEL=${SEL:04X}", "-D", "IPL_MUTANT_NORANGE",
+                        "-o", str(obj), "-g"], check=True)
+        subprocess.run([ld65, "-C", str(ROOT / "tests" / "integration" / "ipl_loader_rom.cfg"),
+                        "-o", str(rom), str(obj)], check=True)
+        mutant = rom.read_bytes()
+        self.assertEqual(len(mutant), 0x2000)
+        self.assertEqual(mutant.count(bytes([0xA9, 0x1B])), 1)
+
     def test_ffff_sel_assembles_to_8kib(self):
         import subprocess
         import tempfile

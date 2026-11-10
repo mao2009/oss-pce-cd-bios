@@ -469,10 +469,30 @@ def main():
                 results[case["name"]] = run_case(probe, case_rom, labels, case, code, tmp)
             except ValueError as error:
                 raise SystemExit(f"FAIL {case['name']}: {error}") from error
-        # NOTE (Issue #744): the IPL_MUTANT_HIGHBYTE refusal guard is deleted; the 24-bit
-        # IPLBLK high byte is now a range-checked address byte. Its coverage moved into
-        # CASES (neg_iplblk_high_byte_01_in_range_probe_refused, _80/_ff_over_range_refused),
-        # so the old mutant check (which would now pass trivially) is removed, not kept.
+        # Mutation check (Issue #745 review): with the 21-bit tail gate disabled
+        # (IPL_MUTANT_NORANGE), the over-width case must no longer refuse with
+        # code 27: the loader proceeds to the final-sector pre-read, which fails
+        # on the 300-frame synthetic disc. judge() must therefore raise on the
+        # expectation mismatch -- proving code 27 came from the tail gate.
+        tail_case = next(c for c in CASES
+                         if c["name"] == "neg_abs_1fffff_n2_tail_over_width_refused")
+        norange, norange_labels = build_loader(out, SEL, "norange_mutant",
+                                               ["-D", "IPL_MUTANT_NORANGE"])
+        norange_labels_path = tmp / "norange_mutant.labels"
+        norange_labels_path.write_text(
+            f"cd_halt_ok {payloads[tail_case['pay']][1]:04x}\n"
+            f"cd_halt_fail {norange_labels['cd_halt_fail']:04x}\n"
+            f"cd_unexpected_interrupt {norange_labels['cd_unexpected_interrupt']:04x}\n",
+            encoding="ascii")
+        try:
+            run_case(probe, norange, norange_labels_path, tail_case,
+                     payloads[tail_case["pay"]][0], tmp)
+        except ValueError:
+            pass  # expected: mutant no longer refuses with code 27
+        else:
+            raise SystemExit("FAIL norange mutant: over-width case still "
+                             "refused with code 27")
+        norange_sha = hashlib.sha256(norange.read_bytes()).hexdigest()
 
         if hashlib.sha256(rom.read_bytes()).hexdigest() != rom_sha:
             raise SystemExit("FAIL: loader ROM changed during the test")
@@ -481,6 +501,8 @@ def main():
         if hashlib.sha256(public.read_bytes()).hexdigest() != public_sha or \
                 hashlib.sha256(public_mutant.read_bytes()).hexdigest() != public_mutant_sha:
             raise SystemExit("FAIL: public loader ROM changed during the test")
+        if hashlib.sha256(norange.read_bytes()).hexdigest() != norange_sha:
+            raise SystemExit("FAIL: norange mutant ROM changed during the test")
         passed = len(results)  # every case that did not match its expectation raised above
     evidence = {"scope": "DEV-only multi-sector IPL loader, synthetic media only; NOT compatible, NOT a BIOS ABI",
                 "geargrafx_probe": "geargrafx_cdread_probe.cpp (pinned)", "mode": args.mode,
