@@ -2,8 +2,9 @@
 """CD_BASE (Issue #11) measurement harness: fixture disc, observation plan and judge. DIAGNOSTIC ONLY.
 
 This module does not run, emulate or describe the System Card CD_BASE / CD_READ callee and
-establishes no BIOS ABI. It defines (a) an original synthetic disc whose INDEX 01 is NOT LBA 0,
-(b) what must be observed on an executed callee to answer the six questions of
+establishes no BIOS ABI. It defines (a) original synthetic discs: one whose INDEX 01 is NOT
+LBA 0 plus an INDEX01=0 no-pregap control (Issue #735), (b) what must be observed on an
+executed callee to answer the six questions of
 docs/cd-base-abi-ledger.md, and (c) a judge that turns such observations into per-question
 statuses. The judge never outputs VERIFIED: an executed observation becomes OBSERVED (the
 recorded value, verbatim, or the candidate models it is consistent with). Anything not
