@@ -18,7 +18,7 @@
 - `jsr_slot02`: table `$E006`、slot2、delta2=JSR、戻り=`caller+2`、entry regs preset、halt X=2
 - `jsr_slot03`: 同様にslot3
 - `jmp_slot02`: table `$E006`、slot2、delta0=JMP
-- `direct_stub`: tableでない（`$E24F`直達）、X=2でもDIRECTとして識別（停止時Xのみの判定との差を実証）
+- `direct_stub`: tableでない（ローダーBIOSラベル由来のstubへ直達、レイアウト移動対応）、X=2でもDIRECTとして識別（停止時Xのみの判定との差を実証）
 - `nocall`: APICALL 0件、`cd_halt_ok` halt
 - `spin`: APICALL 0件、`budget`（haltでない。harnessは予算をPASSしない）
 

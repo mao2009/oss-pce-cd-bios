@@ -252,8 +252,107 @@ def save_commercial_evidence(dest, text, root=ROOT, private_parent=None):
     return out
 
 
-def classify_apicall(call):
-    """Return JSR/JMP/INTERRUPT/DIRECT/IRQ/OTHER based on SP delta and entry PC."""
+def parse_probe_labels(path: Path) -> dict:
+    """Map label name -> address from a probe labels file (`name hexaddr` per line)."""
+    labels = {}
+    for line in path.read_text(encoding="ascii").splitlines():
+        parts = line.split()
+        if not parts:
+            continue
+        if len(parts) != 2:
+            raise ValueError(f"labels file malformed line: {line!r}")
+        name, value = parts
+        try:
+            address = int(value, 16)
+        except ValueError:
+            raise ValueError(f"labels file bad address for {name}") from None
+        if type(address) is not int or not 0 <= address <= 0xFFFF:
+            raise ValueError(f"labels file address out of range for {name}")
+        if name in labels and labels[name] != address:
+            raise ValueError(f"contradictory addresses for label {name}")
+        labels[name] = address
+    return labels
+
+
+def verify_stub_bytes(rom_path: Path, stub_addr: int) -> bool:
+    """Verify the label-derived stub against the executed ROM bytes (fail-closed).
+
+    The DEV `api_unimplemented` stub is a nonreturning BRA self-loop (`80 FE`);
+    a stale label (or a label from another build) points at bytes that are not
+    this loop and must be rejected. The address must lie in the BIOS window
+    ($E000-$FFFF, bank-0 file offset `addr - $E000`) and the ROM must be a full
+    256 KiB image. Returns True on match; raises ValueError otherwise.
+    """
+    if type(stub_addr) is not int or not 0xE000 <= stub_addr <= 0xFFFF:
+        raise ValueError(f"stub address {stub_addr!r} outside BIOS window $E000-$FFFF")
+    try:
+        data = Path(rom_path).read_bytes()
+    except OSError:
+        raise ValueError("stub ROM unreadable") from None
+    if len(data) != 256 * 1024:
+        raise ValueError("stub ROM is not a 256 KiB image")
+    offset = stub_addr - 0xE000
+    if offset + 2 > 0x2000:
+        raise ValueError("stub address outside bank-0 window")
+    if bytes(data[offset:offset + 2]) != bytes((0x80, 0xFE)):
+        raise ValueError(f"stub bytes at ${stub_addr:04X} are not the BRA self-loop")
+    return True
+
+
+def resolve_commercial_stub(labels_path, rom_path):
+    """Resolve and verify the commercial stub label against the executed ROM.
+
+    Returns the verified api_unimplemented address, or None when the labels
+    file parses but carries no api_unimplemented key (observation may proceed
+    with facts preserved; confirmation is then capped at UNKNOWN). Raises
+    ValueError on an unreadable file, malformed lines, contradictory
+    addresses, or a present-but-unverifiable stub (window/bytes mismatch), so
+    a bad labels file can never be silently treated as empty.
+    """
+    try:
+        labels = parse_probe_labels(labels_path)
+    except OSError as error:
+        raise ValueError(f"commercial labels unreadable: {error}") from None
+    stub = labels.get("api_unimplemented")
+    if stub is None:
+        return None
+    verify_stub_bytes(rom_path, stub)
+    return stub
+
+
+def check_direct_cycle(call, run, stub_addr, cycle, name):
+    """Fail-closed DIRECT positive-control judgment for one cold/warm cycle.
+
+    Verifies the observed classification itself (method == DIRECT), the entry
+    PC against the verified stub, strict non-table membership, and the stub
+    halt (reason + X). Every field uses .get so a missing key fails instead
+    of raising. Returns the list of failures (empty means the cycle passes).
+    JSR/JMP/NOCALL/SPIN paths are untouched by this helper.
+    """
+    fails = []
+    method = classify_apicall(call, stub_addr)
+    if method != "DIRECT":
+        fails.append(f"{cycle}: method {method} != DIRECT (delta {call.get('sp_delta')})")
+    if call.get("in_table") is not False:
+        fails.append(f"{cycle}: direct stub was classified as table entry")
+    if call.get("entry_pc") != stub_addr:
+        fails.append(f"{cycle}: entry {call.get('entry_pc')!r} != stub ${stub_addr:04X}")
+    if run.get("reason") != "api_unimplemented" or run.get("x") != 2:
+        fails.append(f"{cycle}: direct stub halt {run.get('reason')} x={run.get('x')}")
+    return fails
+
+
+def classify_apicall(call, stub_addr):
+    """Return JSR/JMP/INTERRUPT/DIRECT/IRQ/OTHER based on SP delta and entry PC.
+
+    stub_addr is the verified loader BIOS api_unimplemented address for the
+    executed ROM (explicit, never a stale default). Omission raises TypeError;
+    an explicit None means the stub is unknown and never yields DIRECT.
+    Table entries (JSR/JMP/INTERRUPT) never consult the stub.
+    """
+    if stub_addr is not None:
+        if type(stub_addr) is not int or not 0xE000 <= stub_addr <= 0xFFFF:
+            raise ValueError(f"stub address {stub_addr!r} outside BIOS window $E000-$FFFF")
     if call["in_table"]:
         if call["sp_delta"] == 2:
             return "JSR"
@@ -263,9 +362,13 @@ def classify_apicall(call):
             return "INTERRUPT"
         return "OTHER"
     # Non-table BIOS entry: stub direct vs interrupt vector vs other.
-    if call.get("entry_pc") == 0xE24F:
+    # LOW-1: the stub comparison is guarded so stub None + missing entry
+    # (None == None) can never be DIRECT; a missing/non-int entry_pc falls
+    # through fail-closed to IRQ/OTHER_DIRECT without raising.
+    entry = call.get("entry_pc")
+    if stub_addr is not None and entry == stub_addr:
         return "DIRECT"
-    if call["sp_delta"] == 3 or call.get("entry_pc", 0) >= 0xFFF0:
+    if call["sp_delta"] == 3 or (type(entry) is int and entry >= 0xFFF0):
         return "IRQ"
     return "OTHER_DIRECT"
 
@@ -279,10 +382,15 @@ def jsr_confirmed(call):
             and call["mpr"][1] == 0xF8)
 
 
-def classify_commercial(records):
+def classify_commercial(records, stub_addr):
     """Verdict for a commercial run: distinguish confirmed entry from pre-API blocks.
 
-    Returns (verdict, detail) where verdict is one of
+    stub_addr is the verified api_unimplemented address for the executed ROM,
+    or None when no usable label exists. An explicit None never yields DIRECT;
+    table JSR/JMP confirmation does not consult the stub. CONFIRMED additionally
+    requires a verified (non-None) stub and halt PCs at that stub: table JSRs
+    with an unverified stub stay UNKNOWN. Returns (verdict,
+    detail) where verdict is one of
     API_ENTRY_CONFIRMED / PRE_API_BLOCKER_OBSERVED / UNKNOWN / INCOMPLETE / BUDGET / FAIL.
     Never promotes a budget or a truncated trace to a confirmation.
     """
@@ -317,7 +425,7 @@ def classify_commercial(records):
             return None
         seq = []
         for idx, call in enumerate(calls):
-            method = classify_apicall(call)
+            method = classify_apicall(call, stub_addr)
             if method == "JSR":
                 if not jsr_confirmed(call):
                     return None
@@ -335,6 +443,13 @@ def classify_commercial(records):
         return "UNKNOWN", "cold/warm entries differ"
     if cold_run["reason"] != "api_unimplemented" or warm_run["reason"] != "api_unimplemented":
         return "UNKNOWN", "entry does not lead to stub halt"
+    # MEDIUM-1: CONFIRMED additionally requires a verified stub and halt PCs
+    # at that stub. Table JSRs with an unverified stub (or a halt elsewhere
+    # that merely names the stub) stay UNKNOWN; observed facts are preserved.
+    if stub_addr is None:
+        return "UNKNOWN", "stub address unverified; table entry observed but stub halt unconfirmed"
+    if cold_run.get("pc") != stub_addr or warm_run.get("pc") != stub_addr:
+        return "UNKNOWN", "halt PC is not the verified stub address"
     if len(cold_seq) == 1:
         return "API_ENTRY_CONFIRMED", f"first table entry slot {cold_seq[0][0]} {cold_seq[0][1]} in both cycles"
     return ("API_ENTRY_CONFIRMED",
@@ -450,7 +565,25 @@ def synthetic_case(tmp: Path, probe, bios, stub, name, defines, expect_slot, exp
                    origin=0x3000, sta=0x3000, entry=None, nsec=1, public=False):
     if entry is None:
         entry = origin
+    stub_addr = stub["api_unimplemented"]
+    if type(stub_addr) is not int or not 0xE000 <= stub_addr <= 0xFFFF:
+        raise ValueError(f"{name}: stub address {stub_addr!r} outside BIOS window $E000-$FFFF")
+    # MAJOR-3: the label must describe the executed ROM (stale labels from
+    # another build point at bytes that are not the BRA self-loop).
+    verify_stub_bytes(bios, stub_addr)
+    defines = list(defines)
+    if "-DDIRECT_STUB" in defines:
+        # The DIRECT payload jumps at the real stub, not a hardcoded address:
+        # the loader layout (hence the stub) moves with DEV changes (#744).
+        defines.append(f"-DSTUB=${stub_addr:04X}")
     code = build_payload(tmp, name, defines, origin=origin)
+    if "-DDIRECT_STUB" in defines:
+        # MAJOR-1: the assembled payload must jump at the label-derived stub
+        # (JMP absolute at code offset 11: 4C lo hi); a mismatch means the
+        # executed ROM and the payload disagree about the stub.
+        if len(code) < 14 or code[11] != 0x4C or code[12] != (stub_addr & 0xFF) \
+                or code[13] != ((stub_addr >> 8) & 0xFF):
+            raise ValueError(f"{name}: payload JMP target does not match label ${stub_addr:04X}")
     if origin == sta:
         body = L.body_for(code, nsec)
     else:
@@ -509,12 +642,12 @@ def synthetic_case(tmp: Path, probe, bios, stub, name, defines, expect_slot, exp
                 fails.append(f"{v['cycle']}: expected exactly one APICALL, got {len(calls)}")
                 continue
             call = calls[0]
-            method = classify_apicall(call)
+            method = classify_apicall(call, stub["api_unimplemented"])
             if expect_method == "DIRECT":
-                if call["in_table"]:
-                    fails.append(f"{v['cycle']}: direct stub was classified as table entry")
-                if run["reason"] != "api_unimplemented" or run["x"] != 2:
-                    fails.append(f"{v['cycle']}: direct stub halt X!=2")
+                # MEDIUM-2: the positive control must verify its own observed
+                # classification, entry PC, and non-table membership — not just
+                # the halt. A misobserved entry with a stub halt still fails.
+                fails.extend(check_direct_cycle(call, run, stub_addr, v["cycle"], name))
             else:
                 if not call["in_table"] or call["slot"] != expect_slot:
                     fails.append(f"{v['cycle']}: slot {call} != {expect_slot}")
@@ -631,6 +764,17 @@ def main():
             except ValueError as error:
                 raise SystemExit(f"FAIL commercial labels: {error}")
         probe = compile_probe(out, "geargrafx_api_entry_probe.cpp", "geargrafx-api-entry-probe")
+        # MAJOR-2/3 + MEDIUM-1: the commercial stub comes from the labels for
+        # the executed ROM and is verified against its bytes. Malformed files,
+        # unreadable files, and present-but-mismatched stubs are refused
+        # before the probe runs, so Python and the C++ probe (which reads the
+        # same file) can never disagree. A parsed file without
+        # api_unimplemented yields explicit None: observation proceeds with
+        # facts preserved, but stub reach can never be confirmed.
+        try:
+            commercial_stub = resolve_commercial_stub(labels_path, commercial_rom)
+        except ValueError as error:
+            raise SystemExit(f"FAIL commercial labels: {error}")
         budget = 80_000_000
         try:
             records = run_probe(probe, commercial_rom, cue_path, labels_path, budget, "commercial")
@@ -640,7 +784,7 @@ def main():
             verify_media_unchanged(snap)
         except ValueError as error:
             raise SystemExit(str(error))
-        verdict, detail = classify_commercial(records)
+        verdict, detail = classify_commercial(records, commercial_stub)
         # Structural summary only (no paths/hashes/bytes; no stack values).
         for cycle in ("cold", "warm"):
             calls = [c for c in records["APICALL"] if c["cycle"] == cycle]
@@ -649,7 +793,7 @@ def main():
             print(f"cycle={cycle} apicalls={len(calls)} truncated={trunc} runs={[(r['reason'], r['halt_confirmed']) for r in runs]}")
             for c in calls:
                 print(f"  caller={hex(c['caller_pc'])} entry={hex(c['entry_pc'])} table={c['in_table']} slot={c['slot']} "
-                      f"delta={c['sp_delta']} method={classify_apicall(c)} return={c.get('stack_check')}")
+                      f"delta={c['sp_delta']} method={classify_apicall(c, commercial_stub)} return={c.get('stack_check')}")
         evidence = {"verdict": verdict, "detail": detail, "apicalls": records["APICALL"],
                     "runs": [{k: r[k] for k in ("cycle", "reason", "pc", "x", "halt_confirmed", "step")} |
                              {"apicall_truncated": r.get("apicall_truncated", False)} for r in records["RUN"]]}
@@ -670,8 +814,9 @@ def main():
     for needed in ("api_unimplemented", "cd_halt_fail", "cd_unexpected_interrupt"):
         if needed not in stub:
             raise SystemExit(f"BLOCKED: label {needed} missing")
-    if stub["api_unimplemented"] != 0xE24F:
-        raise SystemExit(f"FAIL: payload STUB $E24F != BIOS stub {hex(stub['api_unimplemented'])}")
+    # The stub address is layout-derived (it moved $E24F -> $E245 with the #744
+    # loader growth); pinning a constant here is what staled the harness.
+    # synthetic_case re-checks the BIOS-window range per case.
     probe = compile_probe(out, "geargrafx_api_entry_probe.cpp", "geargrafx-api-entry-probe")
     with tempfile.TemporaryDirectory(prefix="pce-api-entry-") as tmp:
         tmp = Path(tmp)
@@ -691,6 +836,12 @@ def main():
         # sta stays $3000 so the DEV sta-range check is not the variable under
         # test; entry is the payload origin in the high region.
         pub_bios, _ = build_ipl_loader_bios(original, out, L.SEL, args.mode, "public", ["-D", "IPL_PUBLIC"])
+        # The PUBLIC loader is a different build with its own labels: the DEV/PUBLIC
+        # stub addresses must not be mixed (each case uses its executed ROM's labels).
+        pub_stub = parse_labels(out / "ipl-loader-bios-public.lbl")
+        for needed in ("api_unimplemented", "cd_halt_fail", "cd_unexpected_interrupt"):
+            if needed not in pub_stub:
+                raise SystemExit(f"BLOCKED: public label {needed} missing")
         # nsec covers (entry - $3000) + one payload sector, rounded up.
         high_cases = [
             ("jsr_slot02_at_8000", [f"-DJSR_SLOT=${entry_of(0x02):04X}"], 0x02, "JSR", 0x8000, 11),
@@ -701,7 +852,7 @@ def main():
         ]
         for name, defines, slot, method, origin, nsec in high_cases:
             budget = 500_000 if method == "SPIN" else 20_000_000
-            synthetic_case(tmp, probe, pub_bios, stub, name, defines, slot, method, budget,
+            synthetic_case(tmp, probe, pub_bios, pub_stub, name, defines, slot, method, budget,
                            origin=origin, sta=0x3000, entry=origin, nsec=nsec, public=True)
             print(f"PASS {name} cold/warm method={method} slot={slot} origin=${origin:04X}")
     print("PASS synthetic API-entry controls (JSR/JMP/DIRECT/NOCALL/SPIN distinguished, incl. $8000/$9000/$C000 callers)")

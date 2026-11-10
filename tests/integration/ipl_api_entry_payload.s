@@ -2,7 +2,8 @@
 ; Modes via defines:
 ;   JSR_SLOT  : JSR to the DEV jump-table entry for the given slot
 ;   JMP_SLOT  : JMP to the same entry (no return)
-;   DIRECT_STUB : LDX #$02 then JMP to the common stub $E24F (no table entry)
+;   DIRECT_STUB : LDX #$02 then JMP to the common stub (STUB, provided by the
+;                 harness as -DSTUB from the loader BIOS labels; no fallback).
 ;   NOCALL    : no BIOS entry; write marker and halt
 ;   SPIN      : non-halting loop (budget negative; never a halt label)
 ; Registers are preset so the entry observer can prove caller state is seen.
@@ -11,7 +12,6 @@
 
 PRES = $2F80
 MARK = $AB
-STUB = $E24F
 
 .ifdef SPIN
 payload_entry:
@@ -41,6 +41,9 @@ payload_halt:
     bra payload_halt
   .else
     .ifdef DIRECT_STUB
+.ifndef STUB
+.error "DIRECT_STUB requires -DSTUB from the loader BIOS api_unimplemented label"
+.endif
 payload_entry:
     lda #$AA
     ldx #$02
