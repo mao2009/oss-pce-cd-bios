@@ -7,8 +7,6 @@ explicit reason instead of failing the suite: a missing toolchain or ROM is
 environmental, never a pass.
 
 For each boundary INDEX 01 (0x0000, 0x0109, 0xFFF0, 0xFFFE, 0xFFFF),
-
-For each boundary INDEX 01 (0x0000, 0x0109, 0xFFF0, 0xFFFE, 0xFFFF),
 tools/build_dev_ipl_loader_bios.build_ipl_loader_bios must assemble and link
 a 262144-byte DEV loader BIOS: manifest carries the exact SEL, the info-LBA
 carry chain (LDA #0 / ADC #0 / STA $03) is present in bank 0, and the images
