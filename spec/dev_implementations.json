@@ -561,16 +561,25 @@
       "candidate_name": "EX_JOYREP",
       "state": "NOT_READY",
       "abi_contract": {
-        "status": "UNKNOWN",
-        "note": "reference System Card contract not verified; DEV-only project spec"
+        "status": "PROJECT_SPEC_ONLY",
+        "note": "reference System Card contract not verified; DEV-only project spec (Issue #44: literature describes a plain RTS; DEV contract preserves A/X/Y/P/SP/MPR with no RAM or I/O side effects)"
       },
-      "implementation": null,
-      "host_evidence": [],
-      "real_core_evidence": [],
+      "implementation": {
+        "source": "src/overrides/slot_22.s",
+        "license": "MIT (repository LICENSE)",
+        "provenance": "project-own contract, Issue #44 (plain-RTS description from the published literature; no reference code used)"
+      },
+      "host_evidence": [
+        "tests/host/test_api_joyrep_dev.py"
+      ],
+      "real_core_evidence": [
+        "tests/integration/geargrafx_dev_joyrep.py"
+      ],
       "approval": {
         "approved_by": null,
         "review_ref": null
-      }
+      },
+      "note": "DEV ROM implemented and host-tested; real-core evidence runs on the pinned Geargrafx core via make dev-integration (CI/Linux gate). NOT_READY until owner approval is recorded"
     },
     {
       "id": 35,

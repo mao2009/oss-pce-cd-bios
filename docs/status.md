@@ -4,7 +4,9 @@ This is an **evidence-scoped, dated** snapshot of [main at 5a8dc5a](https://gith
 
 **Verdict:** development-only diagnostic firmware; no release-eligible System Card BIOS, reference-ABI-verified APIs, independently established commercial-CD boot or game playability.
 
-Current DEV implementation count: 14/81; current stubs: 67/81; owner-approved DEV_CALLABLE: 0; reference ABI VERIFIED: 0/81; reference JSR permitted: 0/81.
+Historical main `5a8dc5a` (2026-11-06) has 14/81 DEV implementations and 67 stubs. This revision (EX_JOYREP $22, Issue #44) has 15/81 DEV implementations and 66 stubs.
+
+Current DEV implementation count: 15/81; current stubs: 66/81; owner-approved DEV_CALLABLE: 0; reference ABI VERIFIED: 0/81; reference JSR permitted: 0/81.
 
 ## Distinct status metrics
 
@@ -12,15 +14,15 @@ Derived from `spec/dev_implementations.json`, `src/overrides/slot_*.s` and `spec
 
 | Metric | Status | What it proves |
 | --- | ---: | --- |
-| DEV implementation count | **14/81** | Project-defined diagnostic routines, **not** verified commercial ABI |
-| Nonreturning stubs | **67/81** | Remaining candidate entries do not provide callable services |
+| DEV implementation count | **15/81** | Project-defined diagnostic routines, **not** verified commercial ABI |
+| Nonreturning stubs | **66/81** | Remaining candidate entries do not provide callable services |
 | Owner-approved DEV_CALLABLE | **0** | No implementation has owner approval for general callable use |
 | Reference ABI VERIFIED | **0/81** | No independently verified reference-BIOS ABI contract |
 | Reference JSR permitted | **0/81** | Gate is closed; synthetic evidence does not grant permission |
 | Commercial BIOS-mediated boots | **0 demonstrated** | No retail-title compatibility established |
 | Firmware release | **`release_eligible: false`** | Release gates intentionally refuse publication |
 
-The 14 installed development routines are `EX_GETVER` ($1E), `EX_SETWRT` ($3A), `EX_BINBCD` ($3C), `EX_BCDBIN` ($3D), `EX_RND` ($3E), `MA_MUL8U` ($3F), `MA_MUL8S` ($40), `MA_MUL16U` ($41), `MA_DIV16S` ($42), `MA_DIV16U` ($43), `MA_SQRT` ($44), `MA_SIN` ($45), `MA_COS` ($46) and `MA_MUL16S` ($4F). Every routine has **DEV-only** evidence and no promotion to reference ABI VERIFIED.
+The 15 installed development routines are `EX_GETVER` ($1E), `EX_JOYREP` ($22), `EX_SETWRT` ($3A), `EX_BINBCD` ($3C), `EX_BCDBIN` ($3D), `EX_RND` ($3E), `MA_MUL8U` ($3F), `MA_MUL8S` ($40), `MA_MUL16U` ($41), `MA_DIV16S` ($42), `MA_DIV16U` ($43), `MA_SQRT` ($44), `MA_SIN` ($45), `MA_COS` ($46) and `MA_MUL16S` ($4F). Every routine has **DEV-only** evidence and no promotion to reference ABI VERIFIED.
 
 ## Boot and media paths
 
@@ -38,7 +40,7 @@ The two multi-sector paths are **not** a replacement for the existing single-sec
 
 ## Changes reflected through 2026-11-06
 
-- [PR #524](https://github.com/mao2009/oss-pce-cd-bios/pull/524) merged EX_SETWRT on 2026-10-28; the current source ledger has 14 DEV implementations.
+- [PR #524](https://github.com/mao2009/oss-pce-cd-bios/pull/524) merged EX_SETWRT on 2026-10-28; historical main `5a8dc5a` (2026-11-06) has 14 DEV implementations and 67 stubs. This revision adds EX_JOYREP ($22, Issue #44): 15 DEV implementations and 66 stubs.
 - [PR #610](https://github.com/mao2009/oss-pce-cd-bios/pull/610) and [PR #614](https://github.com/mao2009/oss-pce-cd-bios/pull/614) added pinned ST/MPR and 51-case multi-byte block-transfer safety diagnostics. These do not establish a safe production calling convention.
 - [PR #620](https://github.com/mao2009/oss-pce-cd-bios/pull/620) added frame-tracer measurement accounting. Capacity reported by the core differs from measured loss; missing/discontinuous entries must not be reported as exact per-frame maxima. See [frame-tracer measurements](frame-tracer-measurements.md).
 - [PR #621](https://github.com/mao2009/oss-pce-cd-bios/pull/621) and [PR #590](https://github.com/mao2009/oss-pce-cd-bios/pull/590) improved the destructive-command guard and trusted-main CI separation. Neither constitutes an OS sandbox; [limitations](claude-destructive-guard.md) remain.

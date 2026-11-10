@@ -1,10 +1,10 @@
 # Roadmap — evidence-graded milestones (no date promises)
 
-**Current main snapshot (2026-11-06, `5a8dc5a`):** DEV implementation count **14/81**, **67 stubs**; owner-approved DEV_CALLABLE **0**, reference ABI VERIFIED **0/81**, reference JSR permitted **0/81**. These are not compatible BIOS API counts and release remains blocked. See [status](status.md).
+**Historical main snapshot (2026-11-06, `5a8dc5a`):** DEV implementation count **14/81**, **67 stubs**; owner-approved DEV_CALLABLE **0**, reference ABI VERIFIED **0/81**, reference JSR permitted **0/81**. This revision (EX_JOYREP $22, Issue #44) has **15/81** DEV implementations and **66 stubs**. These are not compatible BIOS API counts and release remains blocked. See [status](status.md).
 
 Historical main `f90c16b` had 9 DEV implementations and 72 stubs; historical main `2954e90` had 13 DEV implementations and 68 stubs. [PR #524](https://github.com/mao2009/oss-pce-cd-bios/pull/524) is **merged**, not an outstanding Draft. Synthetic disc and ABI experiments do not prove System Card or retail compatibility.
 
-Current DEV implementation count: 14/81; current stubs: 67/81; owner-approved DEV_CALLABLE: 0; reference ABI VERIFIED: 0/81; reference JSR permitted: 0/81.
+Current DEV implementation count: 15/81; current stubs: 66/81; owner-approved DEV_CALLABLE: 0; reference ABI VERIFIED: 0/81; reference JSR permitted: 0/81.
 
 ## M0 — Foundation and diagnostics
 
