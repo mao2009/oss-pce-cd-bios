@@ -45,7 +45,4 @@ api_slot_2E:
     ply                       ; Y = caller Y
     plp                       ; restores caller flags incl. C
     clc                       ; contract result: C=0 (no other flag is changed here)
-    nop                       ; layout pad: keeps the OVERRIDES segment end odd so the
-                              ; MA_MUL16S real-core trampoline still lands at its PC
-                              ; window (see tests/integration/geargrafx_dev_mul16s.py)
     rts
