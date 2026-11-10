@@ -22,33 +22,36 @@ def call(in_table=True, slot=2, delta=2, caller=0x3006, entry=None,
 
 class ClassifyTests(unittest.TestCase):
     def test_jsr_to_table(self):
-        self.assertEqual(classify_apicall(call()), "JSR")
+        self.assertEqual(classify_apicall(call(), stub_addr=0xE245), "JSR")
 
     def test_jmp_to_table(self):
-        self.assertEqual(classify_apicall(call(delta=0)), "JMP")
+        self.assertEqual(classify_apicall(call(delta=0), stub_addr=0xE245), "JMP")
 
     def test_interrupt_delta(self):
-        self.assertEqual(classify_apicall(call(delta=3)), "INTERRUPT")
+        self.assertEqual(classify_apicall(call(delta=3), stub_addr=0xE245), "INTERRUPT")
 
     def test_direct_not_table(self):
-        self.assertEqual(classify_apicall(call(in_table=False)), "DIRECT")
+        self.assertEqual(classify_apicall(call(in_table=False), stub_addr=0xE24F), "DIRECT")
 
     def test_direct_uses_label_derived_stub(self):
         # The stub address moves with the loader layout (#744 moved it off
         # $E24F); classification must follow the label-derived address.
         moved = call(in_table=False, entry=0xE245)
         self.assertEqual(classify_apicall(moved, stub_addr=0xE245), "DIRECT")
-        # ... and must NOT match the stale constant under the default.
-        self.assertEqual(classify_apicall(moved), "OTHER_DIRECT")
+        # ... a stale explicit address must NOT match the moved stub ...
+        self.assertEqual(classify_apicall(moved, stub_addr=0xE24F), "OTHER_DIRECT")
+        # ... and omitting the address fails closed instead of using $E24F.
+        with self.assertRaises(TypeError):
+            classify_apicall(moved)
 
     def test_irq_vector(self):
-        self.assertEqual(classify_apicall(call(in_table=False, delta=3, entry=0xFFF8)), "IRQ")
+        self.assertEqual(classify_apicall(call(in_table=False, delta=3, entry=0xFFF8), stub_addr=0xE245), "IRQ")
 
     def test_other_direct(self):
-        self.assertEqual(classify_apicall(call(in_table=False, delta=0, entry=0x4000)), "OTHER_DIRECT")
+        self.assertEqual(classify_apicall(call(in_table=False, delta=0, entry=0x4000), stub_addr=0xE245), "OTHER_DIRECT")
 
     def test_other_delta(self):
-        self.assertEqual(classify_apicall(call(delta=7)), "OTHER")
+        self.assertEqual(classify_apicall(call(delta=7), stub_addr=0xE245), "OTHER")
 
 
 class JsrReturnTests(unittest.TestCase):
@@ -75,7 +78,7 @@ class MutationTests(unittest.TestCase):
     def test_misaligned_entry_is_not_table(self):
         # An entry at $E001 (not slot-aligned) must not be in_table.
         misaligned = call(entry=0xE001, in_table=False, delta=2)
-        self.assertEqual(classify_apicall(misaligned), "OTHER_DIRECT")
+        self.assertEqual(classify_apicall(misaligned, stub_addr=0xE245), "OTHER_DIRECT")
 
     def test_truncated_flag_present_in_run_schema(self):
         # Probe emits apicall_truncated; harness must see it (checked in commercial path).
@@ -130,63 +133,63 @@ def records(calls_cold, calls_warm, reason="api_unimplemented", halted=True, tru
 
 class CommercialVerdictTests(unittest.TestCase):
     def test_confirmed_needs_table_jsr_and_stub(self):
-        verdict, _ = classify_commercial(records([call()], [call()]))
+        verdict, _ = classify_commercial(records([call()], [call()]), 0xE245)
         self.assertEqual(verdict, "API_ENTRY_CONFIRMED")
 
     def test_zero_calls_with_fail_is_pre_api_not_confirmed(self):
-        verdict, _ = classify_commercial(records([], [], reason="cd_halt_fail"))
+        verdict, _ = classify_commercial(records([], [], reason="cd_halt_fail"), 0xE245)
         self.assertEqual(verdict, "PRE_API_BLOCKER_OBSERVED")
         self.assertNotEqual(verdict, "API_ENTRY_CONFIRMED")
 
     def test_zero_calls_unclear_is_unknown_not_confirmed(self):
-        verdict, _ = classify_commercial(records([], [], reason="cd_halt_ok"))
+        verdict, _ = classify_commercial(records([], [], reason="cd_halt_ok"), 0xE245)
         self.assertEqual(verdict, "UNKNOWN")
 
     def test_truncated_never_confirmed(self):
-        verdict, _ = classify_commercial(records([call()], [call()], truncated=True))
+        verdict, _ = classify_commercial(records([call()], [call()], truncated=True), 0xE245)
         self.assertEqual(verdict, "INCOMPLETE")
 
     def test_budget_never_confirmed(self):
-        verdict, _ = classify_commercial(records([call()], [call()], reason="budget", halted=False))
+        verdict, _ = classify_commercial(records([call()], [call()], reason="budget", halted=False), 0xE245)
         self.assertEqual(verdict, "BUDGET")
 
     def test_return_mismatch_never_confirmed(self):
         bad = call(stack_check="MISMATCH", ret_match=False)
-        verdict, _ = classify_commercial(records([bad], [bad]))
+        verdict, _ = classify_commercial(records([bad], [bad]), 0xE245)
         self.assertEqual(verdict, "UNKNOWN")
 
     def test_mpr1_mismatch_never_confirmed(self):
         bad = call(mpr1=0xFF)
-        verdict, _ = classify_commercial(records([bad], [bad]))
+        verdict, _ = classify_commercial(records([bad], [bad]), 0xE245)
         self.assertEqual(verdict, "UNKNOWN")
 
     def test_cold_warm_mismatch_is_unknown(self):
-        verdict, _ = classify_commercial(records([call()], [call(slot=3)]))
+        verdict, _ = classify_commercial(records([call()], [call(slot=3)]), 0xE245)
         self.assertEqual(verdict, "UNKNOWN")
 
     def test_multi_call_jsr_sequence_confirmed(self):
         # Earlier JSR calls that returned (e.g. to an implemented slot), then a
         # stub JSR: same sequence cold/warm, all JSR-confirmed, stub halt.
         seq = [call(slot=2), call(slot=3)]
-        verdict, detail = classify_commercial(records(seq, seq))
+        verdict, detail = classify_commercial(records(seq, seq), 0xE245)
         self.assertEqual(verdict, "API_ENTRY_CONFIRMED")
         self.assertIn("sequence", detail)
 
     def test_multi_call_sequence_mismatch_is_unknown(self):
         cold = [call(slot=2), call(slot=3)]
         warm = [call(slot=2), call(slot=4)]
-        verdict, _ = classify_commercial(records(cold, warm))
+        verdict, _ = classify_commercial(records(cold, warm), 0xE245)
         self.assertEqual(verdict, "UNKNOWN")
 
     def test_multi_call_with_bad_return_is_unknown(self):
         bad = call(slot=2, stack_check="MISMATCH", ret_match=False)
         seq = [bad, call(slot=3)]
-        verdict, _ = classify_commercial(records(seq, seq))
+        verdict, _ = classify_commercial(records(seq, seq), 0xE245)
         self.assertEqual(verdict, "UNKNOWN")
 
     def test_multi_call_jmp_not_last_is_unknown(self):
         seq = [call(delta=0), call(slot=3)]
-        verdict, _ = classify_commercial(records(seq, seq))
+        verdict, _ = classify_commercial(records(seq, seq), 0xE245)
         self.assertEqual(verdict, "UNKNOWN")
 
 
@@ -345,15 +348,15 @@ class InformationProtectionMutationTests(unittest.TestCase):
         self.assertIn('if (!commercial) hex("buffer_head_hex"', src)
 
     def test_mutant_zero_calls_confirmed(self):
-        verdict, _ = classify_commercial(records([], [], reason="cd_halt_fail"))
+        verdict, _ = classify_commercial(records([], [], reason="cd_halt_fail"), 0xE245)
         self.assertNotEqual(verdict, "API_ENTRY_CONFIRMED")
 
     def test_mutant_truncated_confirmed(self):
-        verdict, _ = classify_commercial(records([call()], [call()], truncated=True))
+        verdict, _ = classify_commercial(records([call()], [call()], truncated=True), 0xE245)
         self.assertNotEqual(verdict, "API_ENTRY_CONFIRMED")
 
     def test_mutant_timeout_as_halt(self):
-        verdict, _ = classify_commercial(records([call()], [call()], reason="budget", halted=False))
+        verdict, _ = classify_commercial(records([call()], [call()], reason="budget", halted=False), 0xE245)
         self.assertNotEqual(verdict, "API_ENTRY_CONFIRMED")
 
     def test_mutant_missing_output_starts_commercial(self):
@@ -495,6 +498,90 @@ class SaveEvidenceTests(unittest.TestCase):
             with mock.patch.object(os, "O_NOFOLLOW", None, create=True):
                 with self.assertRaises(ValueError):
                     save_commercial_evidence(p, "{}", private_parent=Path(tmp))
+
+
+class StubAddressHardeningTests(unittest.TestCase):
+    """MAJOR-1/2/3: no stale $E24F fallback; label-derived stub verified vs ROM bytes."""
+
+    def test_direct_stub_without_stub_define_fails_assembly(self):
+        # MAJOR-1 RED: DIRECT_STUB with no -DSTUB must fail (old code silently used $E24F).
+        import subprocess
+        import tempfile
+        sys.path.insert(0, str(ROOT / "tools"))
+        from environment import executable
+        ca65 = executable("ca65")
+        with tempfile.TemporaryDirectory() as tmp:
+            obj = str(Path(tmp) / "payload.o")
+            with self.assertRaises(subprocess.CalledProcessError):
+                subprocess.run([ca65, str(ROOT / "tests" / "integration" / "ipl_api_entry_payload.s"),
+                                "-DDIRECT_STUB", "-o", obj],
+                               check=True, capture_output=True, text=True)
+
+    def test_other_modes_assemble_without_stub(self):
+        # MAJOR-1: JSR/JMP/NOCALL/SPIN must not be constrained by the STUB requirement.
+        import subprocess
+        import tempfile
+        sys.path.insert(0, str(ROOT / "tools"))
+        from environment import executable
+        ca65 = executable("ca65")
+        with tempfile.TemporaryDirectory() as tmp:
+            for defines in (["-DNOCALL"], ["-DSPIN"]):
+                obj = str(Path(tmp) / "payload.o")
+                subprocess.run([ca65, str(ROOT / "tests" / "integration" / "ipl_api_entry_payload.s"),
+                                *defines, "-o", obj],
+                               check=True, capture_output=True, text=True)
+
+    def test_classify_requires_explicit_stub(self):
+        # MAJOR-2 RED: omitting stub_addr must not fall back to stale $E24F.
+        with self.assertRaises(TypeError):
+            classify_apicall(call(in_table=False))  # noqa: no stub_addr
+
+    def test_stale_stub_is_not_direct(self):
+        # A call at the stale constant is not DIRECT when the real stub moved.
+        from geargrafx_api_entry import classify_apicall as classify
+        moved_stub = 0xE245
+        stale_call = call(in_table=False, entry=0xE24F)
+        self.assertEqual(classify(stale_call, stub_addr=moved_stub), "OTHER_DIRECT")
+        real_call = call(in_table=False, entry=moved_stub)
+        self.assertEqual(classify(real_call, stub_addr=moved_stub), "DIRECT")
+
+    def test_commercial_without_stub_is_unknown(self):
+        # MAJOR-2: no usable label -> explicit UNKNOWN, never an unfounded DIRECT.
+        from geargrafx_api_entry import classify_commercial as classify_comm
+        recs = records([call(in_table=False, entry=0xE245)],
+                       [call(in_table=False, entry=0xE245)])
+        verdict, _detail = classify_comm(recs, stub_addr=None)
+        self.assertEqual(verdict, "UNKNOWN")
+
+    def test_stub_bytes_match_real_rom(self):
+        # MAJOR-3 RED: helper missing on old code (ImportError); after fix it
+        # verifies label bytes (BRA self-loop) vs the executed ROM.
+        import tempfile
+        from geargrafx_api_entry import verify_stub_bytes
+        with tempfile.TemporaryDirectory() as tmp:
+            rom = Path(tmp) / "fake.pce"
+            data = bytearray(256 * 1024)
+            stub = 0xE245
+            off = stub - 0xE000
+            data[off] = 0x80
+            data[off + 1] = 0xFE
+            rom.write_bytes(bytes(data))
+            self.assertTrue(verify_stub_bytes(rom, stub))
+            with self.assertRaises(ValueError):
+                verify_stub_bytes(rom, 0xE24F)  # stale: bytes are not the stub loop
+
+    def test_label_rom_mismatch_rejected(self):
+        # MAJOR-3: label from another build (bytes differ) must be rejected.
+        import tempfile
+        from geargrafx_api_entry import verify_stub_bytes
+        with tempfile.TemporaryDirectory() as tmp:
+            rom = Path(tmp) / "fake.pce"
+            data = bytearray(256 * 1024)
+            data[0x245] = 0x80
+            data[0x245 + 1] = 0xFE
+            rom.write_bytes(bytes(data))
+            with self.assertRaises(ValueError):
+                verify_stub_bytes(rom, 0xE250)  # label points elsewhere
 
 
 if __name__ == "__main__":
