@@ -309,19 +309,23 @@ def _require_landed_trace(row, mode, expected=None):
     return seen
 
 
-def check_unguarded_landed(row, mode):
+def check_unguarded_landed(row, mode, expected_case=None):
     """Validate the sensitivity control: bypassed/unmonitored, the transfer lands.
 
     Pure -unguarded runs have armed=false; bypass mutations (-no-entry-check,
     -no-recheck, -wrong-opcode, -knownpc-only, -resume-allowed) run with the
     monitor armed but a check removed. Either way the transfer must land and
     the run must halt cleanly: that is the sensitivity proof. A timed-out,
-    refused, or fetch-blocked run is never a landed proof, no matter what the
+    refused, or fetch-blocked run is never landed, no matter what the
     VDC/RAM trace shows.
+
+    The observed case id must exactly equal the requested one: a different
+    mutation with the same base (e.g. -wrong-opcode observed when
+    -no-recheck was requested) never counts, even if every other field
+    matches. Pass expected_case explicitly; it defaults to the base mode
+    only for backward-compatible host fixtures.
     """
     _require_ok_exit(row, mode)
-    # Common landed-run gates first: only a clean halt counts. In particular
-    # budget_exhausted and fetch_blocked can never pass as landed.
     if not isinstance(row.get("status"), str):
         raise ValueError(f"{mode}: status missing/non-string: {row.get('status')!r}")
     if row.get("status") != "ok":
@@ -330,15 +334,14 @@ def check_unguarded_landed(row, mode):
         if not isinstance(row.get("reason"), str):
             raise ValueError(f"{mode}: halt reason missing/non-string: {row.get('reason')!r}")
         raise ValueError(f"{mode}: unexpected halt reason: {row.get('reason')!r}")
+    if row.get("refused") is not True and row.get("refused") is not False:
+        raise ValueError(f"{mode}: refused flag missing/non-bool: {row.get('refused')!r}")
     if row.get("refused") is not False:
         raise ValueError(f"{mode}: bypassed run was refused: monitor still armed")
+    want_case = mode if expected_case is None else expected_case
     full = row.get("mode")
-    # Only the probe's own case ids are accepted: the base mode itself (host
-    # fixtures) or base plus one of its declared mutation suffixes. A bare
-    # prefix match would accept forged ids like "tii-entry-evil".
-    allowed = {mode} | {mode + suffix for suffix in MUTATIONS.get(mode, ())}
-    if not isinstance(full, str) or full not in allowed:
-        raise ValueError(f"{mode}: measured wrong mode {full!r}")
+    if not isinstance(full, str) or full != want_case:
+        raise ValueError(f"{mode}: measured wrong case {full!r}, expected {want_case!r}")
     if row.get("armed") is not (not full.endswith("-unguarded")):
         raise ValueError(f"{mode}: armed flag inconsistent with {full!r}")
     _int_fields(row, ("instructions_executed", "stop_pc"))
@@ -398,6 +401,9 @@ def check_resume_allowed_landed(row, mode):
         raise ValueError(f"{mode}: resume-allowed never refused at first")
     if row.get("armed") is not True:
         raise ValueError(f"{mode}: resume-allowed run was not monitored")
+    if row.get("mode") != mode + "-resume-allowed":
+        raise ValueError(f"{mode}: measured wrong case {row.get('mode')!r}, "
+                         f"expected {mode + '-resume-allowed'!r}")
     if row.get("status") != "ok":
         raise ValueError(f"{mode}: resume-allowed run did not halt cleanly: "
                          f"{row.get('status')!r}")
@@ -651,7 +657,8 @@ def main():
                 elif mode in HWPAGE_MODES:
                     verdicts[mode + mutation] = check_hwpage_unguarded_still_blocked(landed_row, mode)
                 else:
-                    verdicts[mode + mutation] = check_unguarded_landed(landed_row, mode)
+                    verdicts[mode + mutation] = check_unguarded_landed(
+                        landed_row, mode, mode + mutation)
                 mutations.append((mode + mutation, verdicts[mode + mutation], landed_row))
             for mutation, _verdict, hazard_row in mutations:
                 try:

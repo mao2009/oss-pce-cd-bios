@@ -154,7 +154,7 @@ class UnarmedTest(unittest.TestCase):
         return row
 
     def test_unguarded_lands(self):
-        self.assertEqual(B.check_unguarded_landed(self._landed(), "tii-entry"), B.LANDED_VERDICT)
+        self.assertEqual(B.check_unguarded_landed(self._landed(), "tii-entry", "tii-entry-unguarded"), B.LANDED_VERDICT)
 
     def test_count_bool_rejected(self):
         # isinstance(True, int) is True: the count gate must use strict typing,
@@ -162,7 +162,7 @@ class UnarmedTest(unittest.TestCase):
         row = self._landed("tin-unknown-far")
         row.update({"ram_diff_count": True})
         with self.assertRaises(ValueError):
-            B.check_unguarded_landed(row, "tin-unknown-far")
+            B.check_unguarded_landed(row, "tin-unknown-far", "tin-unknown-far-unguarded")
 
     def test_wrap_unguarded_vdc_trace(self):
         # Measured pinned-core contract (preset AR=5/SR=0x3F): the 4-byte VDC
@@ -172,13 +172,13 @@ class UnarmedTest(unittest.TestCase):
                     "ram_diff_count": 1, "ram_diff_truncated": False,
                     "vdc_ar_before": 5, "vdc_ar_after": 2,
                     "vdc_sr_before": 0x3F, "vdc_sr_after": 0x3F})
-        self.assertEqual(B.check_unguarded_landed(row, "tia-wrap-forbidden"), B.LANDED_VERDICT)
+        self.assertEqual(B.check_unguarded_landed(row, "tia-wrap-forbidden", "tia-wrap-forbidden-unguarded"), B.LANDED_VERDICT)
 
     def test_wrap_unguarded_without_trace_blocked(self):
         row = self._landed("tia-wrap-forbidden")
         row.update({"ram_diff": [], "ram_diff_count": 0, "vdc_ar_before": 5, "vdc_ar_after": 5})
         with self.assertRaises(ValueError):
-            B.check_unguarded_landed(row, "tia-wrap-forbidden")
+            B.check_unguarded_landed(row, "tia-wrap-forbidden", "tia-wrap-forbidden-unguarded")
 
     def test_wrap_forgery_rejected(self):
         base = self._landed("tia-wrap-forbidden")
@@ -218,7 +218,7 @@ class UnarmedTest(unittest.TestCase):
                 if name == "ar_missing":
                     del row["vdc_ar_after"]
                 with self.assertRaises(ValueError):
-                    B.check_unguarded_landed(row, "tia-wrap-forbidden")
+                    B.check_unguarded_landed(row, "tia-wrap-forbidden", "tia-wrap-forbidden-unguarded")
 
     def test_common_landed_gates_reject_forgeries(self):
         # Every landed family passes through the same entry gates: only a
@@ -270,7 +270,46 @@ class UnarmedTest(unittest.TestCase):
                     else:
                         row.update(change)
                     with self.assertRaises(ValueError):
-                        B.check_unguarded_landed(row, mode)
+                        B.check_unguarded_landed(row, mode, mode + "-unguarded")
+
+    def test_cross_mutation_swap_rejected(self):
+        # A different valid suffix for the same base must not satisfy a request
+        # for another one -- not even between two bypass variants, and never
+        # across bases. The exact requested case id is required.
+        swaps = [
+            ("tai-mpr2-unknown", "-no-recheck", "-wrong-opcode"),
+            ("tai-mpr2-unknown", "-wrong-opcode", "-no-recheck"),
+            ("tii-entry", "-unguarded", "-no-entry-check"),
+            ("tii-entry", "-no-entry-check", "-unguarded"),
+            ("tin-unknown-far", "-unguarded", "-knownpc-only"),
+            ("tdd-unknown", "-unguarded", "-resume-allowed"),
+        ]
+        for base, requested, observed in swaps:
+            with self.subTest(base=base, requested=requested, observed=observed):
+                row = self._landed(base, observed)
+                with self.assertRaises(ValueError):
+                    B.check_unguarded_landed(row, base, base + requested)
+
+    def test_case_id_shape_rejected(self):
+        # Suffix-less base, unknown suffix, cross-base id, and non-string
+        # modes never satisfy an exact case-id request.
+        cases = [
+            ("tii-entry", "tii-entry-unguarded", "tii-entry"),
+            ("tii-entry", "tii-entry-unguarded", "tii-entry-no-such-check"),
+            ("tii-entry", "tii-entry-unguarded", "tdd-unknown-unguarded"),
+        ]
+        for base, requested, observed in cases:
+            with self.subTest(base=base, requested=requested, observed=observed):
+                row = self._landed(base)
+                row.update(mode=observed, armed=not observed.endswith("-unguarded"))
+                with self.assertRaises(ValueError):
+                    B.check_unguarded_landed(row, base, requested)
+        for bad in (None, True, 0, ["tii-entry-unguarded"], {"mode": "tii-entry"}):
+            with self.subTest(bad=repr(bad)):
+                row = self._landed("tii-entry")
+                row.update(mode=bad)
+                with self.assertRaises(ValueError):
+                    B.check_unguarded_landed(row, "tii-entry", "tii-entry-unguarded")
 
     def test_refused_mutant_rejected(self):
         row = self._landed()
@@ -415,44 +454,50 @@ class ExitValidationTest(unittest.TestCase):
                        "ram_diff_count": 4, "ram_diff_truncated": False,
                        "ram_unchanged_during_resume": False})
         return [
-            (B.check_armed, _armed_row("tii-entry"), "tii-entry"),
-            (B.check_unguarded_landed, landed, "tii-entry"),
-            (B.check_resume_allowed_landed, resume, "tdd-unknown"),
-            (B.check_hwpage_armed, hw, "tii-hwpage-fetch-blocked"),
+            (B.check_armed, _armed_row("tii-entry"), "tii-entry", None),
+            (B.check_unguarded_landed, landed, "tii-entry", "tii-entry-unguarded"),
+            (B.check_resume_allowed_landed, resume, "tdd-unknown", None),
+            (B.check_hwpage_armed, hw, "tii-hwpage-fetch-blocked", None),
             (B.check_hwpage_unguarded_still_blocked, hw_unguarded,
-             "tii-hwpage-fetch-blocked"),
+             "tii-hwpage-fetch-blocked", None),
         ]
 
+    def _call(self, fn_row_mode):
+        fn, row, mode, expected = fn_row_mode
+        if expected is None:
+            return fn(copy.deepcopy(row), mode)
+        return fn(copy.deepcopy(row), mode, expected)
+
     def test_exit_zero_passes(self):
-        for fn, row, mode in self._classifiers():
-            with self.subTest(fn=fn.__name__):
-                fn(copy.deepcopy(row), mode)  # must not raise
+        for entry in self._classifiers():
+            with self.subTest(fn=entry[0].__name__):
+                self._call(entry)  # must not raise
 
     def test_exit_missing_rejected(self):
-        for fn, row, mode in self._classifiers():
-            with self.subTest(fn=fn.__name__):
-                bad = copy.deepcopy(row)
+        for entry in self._classifiers():
+            with self.subTest(fn=entry[0].__name__):
+                bad = copy.deepcopy(entry[1])
                 del bad["exit"]
                 with self.assertRaises(ValueError):
-                    fn(bad, mode)
+                    self._call((entry[0], bad, entry[2], entry[3]))
 
     def test_exit_non_int_rejected(self):
         for bad in (None, True, False, "0", 0.0, [0]):
-            for fn, row, mode in self._classifiers():
-                with self.subTest(fn=fn.__name__, bad=bad):
-                    broken = copy.deepcopy(row)
+            for entry in self._classifiers():
+                with self.subTest(fn=entry[0].__name__, bad=bad):
+                    broken = copy.deepcopy(entry[1])
                     broken["exit"] = bad
                     with self.assertRaises(ValueError):
-                        fn(broken, mode)
+                        self._call((entry[0], broken, entry[2], entry[3]))
 
     def test_exit_nonzero_rejected(self):
         for bad in (1, -1, 8):
-            for fn, row, mode in self._classifiers():
-                with self.subTest(fn=fn.__name__, bad=bad):
-                    broken = copy.deepcopy(row)
+            for entry in self._classifiers():
+                with self.subTest(fn=entry[0].__name__, bad=bad):
+                    broken = copy.deepcopy(entry[1])
                     broken["exit"] = bad
                     with self.assertRaises(ValueError):
-                        fn(broken, mode)
+                        self._call((entry[0], broken, entry[2], entry[3]))
 
 
 class MprTransitionTest(unittest.TestCase):
