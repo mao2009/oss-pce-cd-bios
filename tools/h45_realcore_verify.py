@@ -171,6 +171,12 @@ BLOCKPRE_RESUME_ATTEMPTS = 3
 # Measured tia-wrap-forbidden transfer (pinned core, preset AR=5/SR=0x3F):
 # the 4-byte VDC transfer moves AR 5 -> 2, and the only WRAM delta is the
 # single stack cell 0x21FE 0x00 -> 0xFF. An unrelated RAM change is rejected.
+# Provenance note: the guest performs no stack operation (LDA/TAM/TIA/BRA)
+# and SP never moves, so no guest instruction explains this byte; it is
+# repeatable on the pinned core (identical in every tia-wrap run, including
+# knownpc-only) and treated as part of the measured transfer signature, not
+# as a proved mechanism. Re-check against fresh probe output if the pinned
+# core revision ever changes.
 BLOCKPRE_TIA_WRAP_VDC_AR_BEFORE = 5
 BLOCKPRE_TIA_WRAP_VDC_AR_AFTER = 2
 BLOCKPRE_TIA_WRAP_RAM_TRACE = [(0x21FE, 0x00, 0xFF)]
@@ -524,7 +530,7 @@ def _blockpre_check_landed_trace(row, base, case, expected=None):
     for triple in expected:
         if triple not in seen:
             return "FAIL", f"MUTATION_TRACE_MISSING:{case}:{triple[0]:#x}"
-    if base == "tia-wrap-forbidden" and len(seen) != len(expected):
+    if base == "tia-wrap-forbidden" and len(diffs) != len(expected):
         # The measured tia-wrap transfer leaves exactly the one legitimate
         # stack-cell delta; any extra RAM change is unrelated to the transfer.
         return "FAIL", f"MUTATION_TRACE_EXTRA:{case}"

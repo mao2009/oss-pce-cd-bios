@@ -1061,6 +1061,9 @@ class BlockpreReview743Test(unittest.TestCase):
             ("extra_ram", lambda r: r.update(
                 ram_diff=good_trace + [{"address": 0x3E90, "before": 0xCC, "after": 0x60}],
                 ram_diff_count=2), V.FAIL),
+            ("duplicated_entry", lambda r: r.update(
+                ram_diff=good_trace + [dict(good_trace[0])],
+                ram_diff_count=2), V.FAIL),
             ("no_trace", lambda r: r.update(ram_diff=[], ram_diff_count=0,
                                             vdc_ar_after=5), V.FAIL),
             ("ar_unchanged", lambda r: r.update(vdc_ar_after=5), V.FAIL),
