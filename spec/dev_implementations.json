@@ -780,7 +780,7 @@
         "approved_by": null,
         "review_ref": null
       },
-      "note": "DEV ROM implemented and host-tested; real-core evidence runs on the pinned Geargrafx core via make dev-integration (CI/Linux gate). NOT_READY until owner approval is recorded. Sync discipline (MEDIUM-2): $2503==$A5 is an initialization marker only, not a CR-match guarantee; the caller must not write VDC CR directly while using this family and must re-seed $2502/$2503 after any bypassing CR write; desync is out of contract (stale shadow is applied without error). EX_SETWRT (slot $3A) touches only MAWR and never CR; no other in-tree routine writes CR."
+      "note": "DEV ROM implemented and host-tested; real-core evidence runs on the pinned Geargrafx core via make dev-integration (CI/Linux gate). NOT_READY until owner approval is recorded. Sync discipline (MEDIUM-2): $2503==$A5 is an initialization marker only, not a CR-match guarantee; the caller must not write VDC CR directly while using this family and must re-seed $2502/$2503 after any bypassing CR write; desync is out of contract (stale shadow is applied without error). EX_SETWRT (slot $3A) touches only MAWR and never CR; no other in-tree routine writes CR. Stack: the call's own transient pushes (JSR+PHP+PHA[+MPR0]) write only $21(SP-4)..$21(SP), balanced before RTS; no other RAM is written on either path."
     },
     {
       "id": 47,

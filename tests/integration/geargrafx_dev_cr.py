@@ -136,10 +136,38 @@ def check(label, rows, halt, a, x, y, p, sp, cr_low, cr_high, set_mask, clear_ma
     if at(STORE + 4) != sp or cold["sp"] != sp:
         raise ValueError(f"{label}: stack not balanced (SP after ${at(STORE + 4):02X}, halt ${cold['sp']:02X}, "
                          f"want ${sp:02X})")
+    # Full-RAM invariance outside the owned cells FIRST (before the value
+    # checks, so a stray write is reported as such): diff loaded (pre-guest)
+    # vs cold (post-guest). Owned writes are the STORE record, the seeded
+    # shadow bytes, the guest-filled sentinel (verified below) and exactly the
+    # stack slots the call may push: JSR return address + PHP + PHA always,
+    # plus the MPR0 save on the ok path — i.e. $21(SP-3)..$21(SP) on reject,
+    # $21(SP-4)..$21(SP) on ok (MEDIUM-1: PHP/PHA/JSR do write stack RAM, so
+    # "zero RAM writes" would be inaccurate; the rest of the stack page stays
+    # checked, not blanket-excluded). Anything else changing means the API
+    # wrote where it must not.
+    loaded = next((r for r in rows if r["phase"] == "loaded"), None)
+    if loaded is not None and "work_ram_hex" in loaded:
+        before = bytes.fromhex(loaded["work_ram_hex"])
+        if len(before) >= 0x2000:
+            depth = 4 if seed_shadow else 3  # ok: JSR(2)+PHP+PHA+MPR0; reject: minus MPR0
+            owned = set(range(STORE - WRAM_BASE, STORE - WRAM_BASE + 8))
+            owned |= {SHADOW_LO - WRAM_BASE, SHADOW_MAGIC - WRAM_BASE}
+            owned |= {SENTINEL - WRAM_BASE + i for i in range(SENTINEL_LEN)}
+            owned |= {0x100 + i for i in range(sp - depth, sp + 1)}
+            # STORE_MPR0 ($2207) is inside the STORE window already.
+            bad = [WRAM_BASE + i for i in range(0x2000)
+                   if before[i] != wram[i] and i not in owned]
+            # Sentinel cells are verified separately below; report the rest.
+            bad = [a for a in bad if not (SENTINEL <= a < SENTINEL + SENTINEL_LEN)]
+            if bad:
+                shown = " ".join(f"${a:04X}" for a in bad[:8])
+                raise ValueError(f"{label}: out-of-contract RAM write at {shown}"
+                                 f" ({len(bad)} bytes differ outside owned cells)")
     want_lo = (cr_low & ~clear_mask) | set_mask
     want_shadow_lo = want_lo if seed_shadow else 0xFF
     want_magic = SHADOW_VALID if seed_shadow else 0x00
-    # Authoritative oracle FIRST: the VDC's actual CR state from the probe
+    # Authoritative oracle: the VDC's actual CR state from the probe
     # (GetState()->R[5]), independent of any port read (MAJOR-2). No guest
     # port readback is asserted: on the pinned core CR reads return stale
     # data, so such an expectation would be vacuous (MAJOR-1).
@@ -148,20 +176,23 @@ def check(label, rows, halt, a, x, y, p, sp, cr_low, cr_high, set_mask, clear_ma
     # Pre-call state is known by construction: the guest selects AR=5 and
     # programs the case pattern through the window immediately before the JSR.
     # Post-call state is the cold observation. On the reject path the two must
-    # match exactly (zero VDC writes); the probe exposes no write-event trace,
-    # so zero-write is inferred from (CR, AR, shadow, RAM) invariance.
+    # match exactly (no VDC writes); the probe exposes no write-event trace,
+    # so this is inferred from (CR, AR, shadow, RAM) invariance.
     pre_vdc = ((cr_high & 0x1F) << 8) | cr_low
     if cold["vdc_ar"] != 5:
         raise ValueError(f"{label}: VDC AR ${cold['vdc_ar']:02X}, want $05 (contract: AR left at CR)")
+    # LOW-1: the reject-specific CR invariance check runs BEFORE the generic
+    # expectation (they coincide when unseeded, so the generic check would
+    # otherwise shadow it and the rejection would never name its cause).
+    if not seed_shadow and cold["vdc_cr"] != pre_vdc:
+        raise ValueError(f"{label}: reject path changed VDC CR ${pre_vdc:04X} -> "
+                         f"${cold['vdc_cr']:04X} (contract: no VDC write on reject)")
     # CR high bits 13-15 are unwritable (k_register_mask[R05] = 0x1FFF) and read
     # back as 0; mask the expectation the same way the hardware does.
     want_vdc = (((cr_high & 0x1F) << 8) | (want_lo if seed_shadow else cr_low))
     if cold["vdc_cr"] != want_vdc:
         raise ValueError(f"{label}: VDC CR ${cold['vdc_cr']:04X}, "
                          f"want ${want_vdc:04X} (independent hardware oracle)")
-    if not seed_shadow and cold["vdc_cr"] != pre_vdc:
-        raise ValueError(f"{label}: reject path changed VDC CR ${pre_vdc:04X} -> "
-                         f"${cold['vdc_cr']:04X} (contract: no VDC write on reject)")
     if at(SHADOW_LO) != want_shadow_lo or at(SHADOW_MAGIC) != want_magic:
         raise ValueError(f"{label}: shadow ${at(SHADOW_MAGIC):02X}{at(SHADOW_LO):02X}, "
                          f"want ${want_magic:02X}{want_shadow_lo:02X}")
@@ -186,28 +217,5 @@ def check(label, rows, halt, a, x, y, p, sp, cr_low, cr_high, set_mask, clear_ma
     want_sentinel = bytes(sentinel_byte(i) for i in range(SENTINEL_LEN))
     if sentinel != want_sentinel:
         raise ValueError(f"{label}: RAM sentinel ${SENTINEL:04X} changed")
-    # Full-RAM invariance outside the owned cells: diff loaded (pre-guest) vs
-    # cold (post-guest). Owned writes are the STORE record, the seeded shadow
-    # bytes, the guest-filled sentinel (verified above) and the stack page
-    # $2100-$21FF (pushes/RTS traffic). Anything
-    # else changing means the API wrote where it must not, including on the
-    # reject path (which must perform zero RAM writes).
-    loaded = next((r for r in rows if r["phase"] == "loaded"), None)
-    if loaded is not None and "work_ram_hex" in loaded:
-        before = bytes.fromhex(loaded["work_ram_hex"])
-        if len(before) >= 0x2000:
-            owned = set(range(STORE - WRAM_BASE, STORE - WRAM_BASE + 8))
-            owned |= {SHADOW_LO - WRAM_BASE, SHADOW_MAGIC - WRAM_BASE}
-            owned |= {SENTINEL - WRAM_BASE + i for i in range(SENTINEL_LEN)}
-            owned |= {0x100 + i for i in range(0x100)}  # stack page $2100-$21FF
-            # STORE_MPR0 ($2207) is inside the STORE window already.
-            bad = [WRAM_BASE + i for i in range(0x2000)
-                   if before[i] != wram[i] and i not in owned]
-            # Sentinel/stack/shadow cells verified separately; report the rest.
-            bad = [a for a in bad if not (SENTINEL <= a < SENTINEL + SENTINEL_LEN)]
-            if bad:
-                shown = " ".join(f"${a:04X}" for a in bad[:8])
-                raise ValueError(f"{label}: out-of-contract RAM write at {shown}"
-                                 f" ({len(bad)} bytes differ outside owned cells)")
     return {"a": a, "x": x, "y": y, "p": f"{p:02X}", "sp": f"{sp:02X}",
             "cr": f"{want_vdc:04X}"}

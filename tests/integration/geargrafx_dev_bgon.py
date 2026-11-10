@@ -8,11 +8,13 @@ preserved (C=0), VDC AR left at 5 (CR select), stack balanced (SP=$FF and the
 $07 boundary), MPR0/MPR1/MPR7 intact and the RAM sentinel untouched.
 NOT the reference System Card EX_BGON. ABI stays UNVERIFIED.
 
-Five mutants that must each be rejected on the real core: BB not set
+Six mutants that must each be rejected on the real core: BB not set
 (ORA #$80 -> ORA #$00), spurious SB (ORA #$80 -> ORA #$C0), other bits
 destroyed (ORA #$80 -> ORA #$FF), CR high byte rewritten (STA $0002 -> STA $0003),
-and reject-bypass (CMP #$A5 -> CMP #$00: the unseeded reject path takes the ok
-path and must be caught by the CR/shadow/RAM invariance checks).
+stack smash (STA $2502 -> STA $2100: out-of-contract stack-page write caught by
+the narrowed RAM diff), and reject-bypass (CMP #$A5 -> CMP #$00: the unseeded
+reject path takes the ok path and must be caught by the CR/shadow/RAM
+invariance checks).
 Run: python3 tests/integration/geargrafx_dev_bgon.py --rom build/<mode>/bios-dev/dev-only-not-compatible-syscard3.pce
 Needs the pinned cc65 and Geargrafx core (TOOLS_DIR). Missing tools exit 3 (BLOCKED).
 """
@@ -41,6 +43,12 @@ MUTANTS = [
     ("sb_spurious", bytes([0x09, 0x80]), bytes([0x09, 0xC0])),  # ORA #$80 -> ORA #$C0
     ("other_bits", bytes([0x09, 0x80]), bytes([0x09, 0xFF])),   # ORA #$80 -> ORA #$FF
     ("high_rewritten", bytes([0x8D, 0x02, 0x00]), bytes([0x8D, 0x03, 0x00])),  # STA $0002 -> STA $0003
+    # MEDIUM-1: STA $2502 (shadow publish) -> STA $2100. The image never
+    # reaches the shadow while an out-of-contract stack-page byte is written;
+    # the narrowed loaded/cold RAM diff (only STORE/shadow/sentinel/used
+    # stack slots owned) must reject it. The old full-stack-page blanket
+    # exclusion would have missed this write (RED).
+    ("stack_smash", bytes([0x8D, 0x02, 0x25]), bytes([0x8D, 0x00, 0x21])),
 ]
 MUTANT_CASE = (("ex-kept", 0x30, 0x00), (0x12, 0x34, 0x56, 0x34, 0xFF))
 # Reject-path mutants: run against the unseeded (uninit) case and must be

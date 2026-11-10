@@ -42,7 +42,8 @@
 ;   ok (shadow initialized): VDC CR low = shadow | $80; shadow updated; CR high
 ;        untouched; C=0 (same result convention as EX_SETWRT). A, X, Y, MPRs,
 ;        N/Z/V/D/I/T preserved.
-;   reject (shadow not initialized): no VDC write, no RAM write, C=1. A, X, Y,
+;   reject (shadow not initialized): no VDC write and no RAM write outside the
+;        call's own transient stack slots (see below), C=1. A, X, Y,
 ;        MPRs and other flags preserved. Seed $2502/$2503 from work RAM before
 ;        the first call (the harness does this).
 ;   side effects: ST0 selects VDC register 5 (AR left at 5, documented per the
@@ -57,6 +58,17 @@
 ;        straight-line run (static-analysis contract).
 ;   stack: max 3 bytes simultaneous below the JSR return (flags, A, MPR0);
 ;        caller SP (before JSR) must be >= $05. SP=$04 or lower is out of contract.
+;        PHP/PHA (and the caller's own JSR) DO write stack RAM, so "no RAM write"
+;        would be inaccurate: the transient pushes touch exactly
+;        $21(caller_SP)..$21(caller_SP-3) on the reject path (JSR return address
+;        + PHP + PHA) and additionally $21(caller_SP-4) on the ok path (MPR0
+;        save), all inside the caller's own stack area and balanced before RTS
+;        (SP restored; the written bytes keep their pushed values). No other
+;        RAM is written on either path: no shadow, sentinel, zero-page, VRAM,
+;        joypad, CD, ADPCM or BURAM access. The real-core harness therefore
+;        allows only STORE, shadow, sentinel and $21(SP-4)..$21(SP) in its
+;        loaded/cold RAM diff — the rest of the stack page is checked, not
+;        blanket-excluded.
 ;   ABI remains UNVERIFIED and this ROM stays DEV ONLY (release_eligible: false).
 ; Real-core evidence: tests/integration/geargrafx_dev_bgon.py (pinned Geargrafx, DEV ROM),
 ;        judged against the independent vdc_cr probe observation (GetState()->R[5]).

@@ -3,7 +3,8 @@ Not the System Card ABI.
 
 This slot sets the HuC6270 background-blanking bit (VDC CR R05, bit 7),
 preserves every other CR bit and register (A/X/Y/P; C=0 on ok, C=1 when the
-shadow is uninitialized), balances the stack and touches nothing else.
+shadow is uninitialized), balances the stack and writes no RAM outside its own
+transient stack slots (PHP/PHA/JSR do write stack RAM — see src/overrides/slot_2E.s).
 Because the pinned core returns stale data for CR port reads (MAJOR-1), the
 routine owns CR low in the work-RAM shadow at $2502 (magic $A5 at $2503)
 instead of reading the port. This host test checks a Python model of that
@@ -17,6 +18,7 @@ observation. Keep host model checks and real-core checks distinct.
 """
 import json
 import re
+import sys
 import unittest
 from pathlib import Path
 
@@ -24,10 +26,15 @@ ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "src" / "overrides" / "slot_2E.s"
 SPEC = ROOT / "spec" / "dev_implementations.json"
 
+sys.path.insert(0, str(ROOT / "tests" / "integration"))
+import geargrafx_dev_cr as dev_cr  # noqa: E402
+
 
 def cr_model(shadow_lo, magic):
     """Project-own DEV contract: initialized shadow -> set BB, C=0 (SETWRT-style
-    result convention); uninitialized shadow -> reject with C=1 and no writes.
+    result convention); uninitialized shadow -> reject with C=1 and no VDC or
+    non-stack RAM writes (the call's own transient PHP/PHA/JSR stack slots are
+    written and balanced, as documented in src/overrides/slot_2E.s).
     Returns (new_shadow_lo, new_magic, carry, vdc_written_or_None)."""
     if magic != 0xA5:
         return shadow_lo, magic, 1, None
@@ -56,6 +63,64 @@ class ModelContractTests(unittest.TestCase):
         # C=0 (no error reported) — hence the re-seed discipline.
         stale, magic, carry, written = cr_model(0x00, 0xA5)
         self.assertEqual((carry, written), (0, 0x80))
+
+
+class RamDiffScopeTests(unittest.TestCase):
+    """LOW-2/MEDIUM-1: the loaded/cold RAM diff owns exactly STORE, shadow,
+    sentinel and the used stack slots — an unused stack-page byte changing
+    must be reported, while the deepest allowed slot ($21(SP-4)) must pass."""
+
+    HALT = 0xF000
+    A, X, Y, P, SP = 0x12, 0x34, 0x56, 0x34, 0xFF
+
+    def _rows(self, loaded_mut=None):
+        cold = bytearray(0x2000)
+        base = dev_cr.STORE - dev_cr.WRAM_BASE
+        cold[base:base + 5] = bytes([self.A, self.P, self.X, self.Y, self.SP])
+        cold[base + 7] = 0x00  # STORE_MPR0 == caller MPR0
+        cold[dev_cr.SHADOW_LO - dev_cr.WRAM_BASE] = 0xB0
+        cold[dev_cr.SHADOW_MAGIC - dev_cr.WRAM_BASE] = dev_cr.SHADOW_VALID
+        for i in range(dev_cr.SENTINEL_LEN):
+            cold[dev_cr.SENTINEL - dev_cr.WRAM_BASE + i] = dev_cr.sentinel_byte(i)
+        # The call's own transient pushes leave values in the used slots.
+        for i in range(self.SP - 4, self.SP + 1):
+            cold[0x100 + i] = 0xAA
+        loaded = bytearray(cold)
+        # Revert the guest's own writes to simulate the pre-guest dump.
+        for i in range(8):
+            loaded[base + i] = 0x00
+        loaded[dev_cr.SHADOW_LO - dev_cr.WRAM_BASE] = 0x00
+        loaded[dev_cr.SHADOW_MAGIC - dev_cr.WRAM_BASE] = 0x00
+        for i in range(dev_cr.SENTINEL_LEN):
+            loaded[dev_cr.SENTINEL - dev_cr.WRAM_BASE + i] = 0x00
+        for i in range(self.SP - 4, self.SP + 1):
+            loaded[0x100 + i] = 0x00
+        if loaded_mut is not None:
+            addr, value = loaded_mut
+            loaded[addr - dev_cr.WRAM_BASE] = value
+        cold_row = {"phase": "cold", "pc": self.HALT, "sp": self.SP,
+                    "mpr": [0x00, 0xF8, 0, 0, 0, 0, 0, 0],
+                    "vdc_ar": 5, "vdc_cr": 0x00B0,
+                    "work_ram_hex": bytes(cold).hex()}
+        loaded_row = {"phase": "loaded", "work_ram_hex": bytes(loaded).hex()}
+        return [loaded_row, cold_row]
+
+    def _check(self, rows):
+        return dev_cr.check("synthetic", rows, self.HALT, self.A, self.X,
+                            self.Y, self.P, self.SP, 0x30, 0x00, 0x80, 0x00,
+                            seed_shadow=True)
+
+    def test_clean_diff_passes(self):
+        self._check(self._rows())
+
+    def test_unused_stack_page_write_is_reported(self):
+        # $2100 is stack page but outside the used $21FB-$21FF window.
+        with self.assertRaisesRegex(ValueError, r"out-of-contract RAM write.*\$2100"):
+            self._check(self._rows(loaded_mut=(0x2100, 0xFF)))
+
+    def test_deepest_allowed_slot_passes(self):
+        # $21FB == $21(SP-4): the MPR0 save on the ok path. Owned, so no error.
+        self._check(self._rows(loaded_mut=(0x21FB, 0xFF)))
 
 
 class AssemblyStaticTests(unittest.TestCase):
@@ -112,7 +177,8 @@ class AssemblyStaticTests(unittest.TestCase):
         # conditional-callability limit must all be stated in the source.
         for phrase in ("initialization marker", "re-seed $2502/$2503",
                        "out of contract", "slot $3A",
-                       "generally callable ONLY"):
+                       "generally callable ONLY",
+                       "caller_SP-4", "balanced before RTS"):
             self.assertIn(phrase, src)
 
     def test_no_zero_page_ram_stack_or_branch_side_effects(self):
