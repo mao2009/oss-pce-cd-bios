@@ -1,32 +1,41 @@
-"""Shared real-core harness for the six DEV VDC CR display APIs (slots $2E-$33).
+"""Shared real-core harness for the DEV VDC CR display APIs (slot $2E EX_BGON;
+the $2F-$33 family shares this discipline once the ROM layout allows it).
 
-Each API preserves A/X/Y/P (C=0), balances the stack and rewrites only the BB/SB
-bits of VDC CR (R05) selected by (set_mask, clear_mask), leaving every other CR
-bit untouched. This module builds the guest program and checks one run; the six
-thin wrappers (geargrafx_dev_{bgon,bgoff,spron,sproff,dspon,dspoff}.py) supply the
-slot, masks and evidence file name.
+Each API preserves A/X/Y/P (C=0 on ok, C=1 on uninitialized-shadow reject),
+balances the stack and rewrites only the BB/SB bits of VDC CR (R05) selected by
+(set_mask, clear_mask), leaving every other CR bit untouched — via the work-RAM
+shadow at $2502/$2503 (magic $A5), because the pinned core returns stale data
+for CR port reads (MAJOR-1). This module builds the guest program and checks one
+run; thin wrappers supply the slot, masks and evidence file name.
 
 Guest program (reset-replacement code):
   1. SEI; CLD; MPR1 = work RAM ($F8); SP = case value; fill the $2300 sentinel.
-  2. Save the original MPR0, open the MPR0=$FF window and program VDC CR to the
+  2. Seed the shadow ($2502 = pattern low or garbage, $2503 = $A5 or $00) and
+     save the original MPR0, open the MPR0=$FF window and program VDC CR to the
      case pattern (low/high), then restore MPR0.
-  3. Preset P (PLP, I=1 in every case), X, Y, A; JSR the slot entry; PHP and
-     record A/P/X/Y/SP-after at $2200..$2205 (SEI right after PHP keeps the tail
-     deterministic even if a pattern ever enabled a VDC interrupt source).
-  4. Re-open the window, read back CR low/high to $2206/$2207 region and restore
-     MPR0. The original MPR0 is kept at $2208 for the MPR0-restored check.
+  3. Preset P (PHA/PLP, I=1 in every case), X, Y and A; JSR the slot entry; PHP and
+     record A/P/X/Y/SP-after at $2200..$2204. The original MPR0 is kept at $2207
+     for the MPR0-restored check.
+The authoritative oracle is the probe's independent vdc_cr observation
+(GetState()->R[5]); no guest port readback is asserted because the pinned core
+returns stale data for CR data-port reads, which would make such an expectation
+vacuous (MAJOR-1). The pre-call CR/AR state is known by construction (the guest
+programs the case pattern through the window with AR=5 immediately before the
+JSR); the post-call state is the probe's cold vdc_cr/vdc_ar observation.
 Test patterns never set CR interrupt-enable bits (0-3), so no IRQ can fire.
 
 Requires the pinned cc65 and Geargrafx core (TOOLS_DIR). Missing tools exit 3.
 """
 
-STORE = 0x2200            # A/P/X/Y/SP-after at STORE..STORE+4, CR low/high at +5/+6
-STORE_CR_LO = STORE + 5
-STORE_CR_HI = STORE + 6
+SHADOW_LO = 0x2502        # CR-low image (this DEV family is its single writer)
+SHADOW_MAGIC = 0x2503     # $A5 iff the shadow is initialized
+SHADOW_HI_RSVD = 0x2504   # reserved: CR-high image for the future $2F-$33 family
+SHADOW_VALID = 0xA5
+STORE = 0x2200            # A/P/X/Y/SP-after at STORE..STORE+4
 STORE_MPR0 = STORE + 7    # original MPR0 saved here (8 bytes total, inside the 64-byte window)
 SENTINEL = 0x2300         # 16-byte RAM sentinel, must be untouched
 SENTINEL_LEN = 16
-RUN_STEPS = 4096          # probe maximum (CR setup/readback roughly doubles the guest)
+RUN_STEPS = 1024          # probe cap is 2048; the guest is ~130 instructions
 WRAM_BASE = 0x2000        # full work-RAM dump (Issue #242) index 0 = CPU $2000
 P_MASK = 0xCF             # PHP sets B (bit 4) and bit 5; PLP ignores them
 
@@ -47,8 +56,9 @@ def window_close(store_addr):
                   0x53, 0x01])                              # TAM #$01
 
 
-def guest(reset, entry, cr_low, cr_high, a, x, y, p, sp):
-    """Reset-replacement code. Returns (code, halt)."""
+def guest(reset, entry, cr_low, cr_high, a, x, y, p, sp, seed_shadow=True):
+    """Reset-replacement code. seed_shadow=False leaves garbage ($FF) with a zero
+    magic to exercise the uninitialized-shadow reject path. Returns (code, halt)."""
     code = bytearray([0x78, 0xD8,                # SEI; CLD
                       0xA9, 0xF8, 0x53, 0x02,    # LDA #$F8; TAM #$02 -> MPR1 = work RAM
                       0xA2, sp, 0x9A])           # LDX #sp; TXS
@@ -61,6 +71,11 @@ def guest(reset, entry, cr_low, cr_high, a, x, y, p, sp):
     # Save original MPR0 to STORE_MPR0. TMA #$01 is opcode $43 (TAM #$01 is $53).
     code += bytes([0x43, 0x01,                   # TMA #$01 (A = caller MPR0)
                    0x8D, STORE_MPR0 & 0xFF, STORE_MPR0 >> 8])  # STA STORE_MPR0
+    # Seed the CR shadow (work RAM, MPR1=$F8 already maps it).
+    shadow_lo = cr_low if seed_shadow else 0xFF
+    shadow_magic = SHADOW_VALID if seed_shadow else 0x00
+    code += bytes([0xA9, shadow_lo, 0x8D, 0x02, 0x25,   # LDA #lo; STA $2502
+                   0xA9, shadow_magic, 0x8D, 0x03, 0x25])  # LDA #magic; STA $2503
     # Program the CR pattern through the window.
     code += window_open()
     code += bytes([0xA9, 0x05, 0x8D, 0x00, 0x00,  # LDA #5; STA $0000 (select CR)
@@ -72,7 +87,7 @@ def guest(reset, entry, cr_low, cr_high, a, x, y, p, sp):
                    0xA2, x, 0xA0, y,             # LDX #x; LDY #y
                    0xA9, a,                      # LDA #a
                    0x20, entry & 0xFF, entry >> 8,  # JSR entry
-                   0x08, 0x78,                   # PHP; SEI (record flags, then lock)
+                   0x08,                         # PHP (record flags)
                    0x8D, STORE & 0xFF, STORE >> 8,  # STA STORE (A)
                    0x68,                         # PLA
                    0x8D, (STORE + 1) & 0xFF, (STORE + 1) >> 8,  # STA STORE+1 (P)
@@ -80,14 +95,10 @@ def guest(reset, entry, cr_low, cr_high, a, x, y, p, sp):
                    0x8C, (STORE + 3) & 0xFF, (STORE + 3) >> 8,  # STY STORE+3 (Y)
                    0xBA,                         # TSX
                    0x8E, (STORE + 4) & 0xFF, (STORE + 4) >> 8])  # STX STORE+4 (SP)
-    # Read back CR through the window.
-    code += window_open()
-    code += bytes([0xA9, 0x05, 0x8D, 0x00, 0x00,  # LDA #5; STA $0000 (select CR)
-                   0xAD, 0x02, 0x00,             # LDA $0002 (CR low)
-                   0x8D, STORE_CR_LO & 0xFF, STORE_CR_LO >> 8,
-                   0xAD, 0x03, 0x00,             # LDA $0003 (CR high)
-                   0x8D, STORE_CR_HI & 0xFF, STORE_CR_HI >> 8])
-    code += window_close(STORE_MPR0)
+    # NOTE: no guest port readback of CR is asserted. On the pinned core a CR
+    # data-port read returns stale data, never the live register, so a readback
+    # expectation would be vacuous; the vdc_cr oracle in check() is the
+    # authoritative hardware observation. (MAJOR-1/MAJOR-2.)
     halt = reset + len(code)
     code += bytes([0x80, 0xFE])                  # BRA -2
     if reset + len(code) > 0xFFF6:
@@ -95,7 +106,8 @@ def guest(reset, entry, cr_low, cr_high, a, x, y, p, sp):
     return bytes(code), halt
 
 
-def check(label, rows, halt, a, x, y, p, sp, cr_low, cr_high, set_mask, clear_mask):
+def check(label, rows, halt, a, x, y, p, sp, cr_low, cr_high, set_mask, clear_mask,
+          seed_shadow=True):
     cold = next(r for r in rows if r["phase"] == "cold")
     if cold["pc"] != halt:
         raise ValueError(f"{label}: guest did not reach its halt loop (pc ${cold['pc']:04X}, want ${halt:04X})")
@@ -112,7 +124,10 @@ def check(label, rows, halt, a, x, y, p, sp, cr_low, cr_high, set_mask, clear_ma
         raise ValueError(f"{label}: MPR0 not restored (MPR0 ${cold['mpr'][0]:02X}, saved ${at(STORE_MPR0):02X})")
     # The LDA #a after PLP refreshes N/Z from A: fold that into the expectation.
     # (B/T are masked out: PHP always pushes B=1 and the pinned core pushes T=0.)
-    want_p = (p & 0x7D) | (0x80 if a & 0x80 else 0) | (0x02 if a == 0 else 0)
+    # C is the result bit (SETWRT convention): C=0 on ok, C=1 on reject.
+    want_p = (p & 0x7C) | (0x80 if a & 0x80 else 0) | (0x02 if a == 0 else 0)
+    if not seed_shadow:
+        want_p |= 0x01
     got = (at(STORE), at(STORE + 1) & P_MASK, at(STORE + 2), at(STORE + 3))
     want = (a, want_p & P_MASK, x, y)
     if got != want:
@@ -121,13 +136,86 @@ def check(label, rows, halt, a, x, y, p, sp, cr_low, cr_high, set_mask, clear_ma
     if at(STORE + 4) != sp or cold["sp"] != sp:
         raise ValueError(f"{label}: stack not balanced (SP after ${at(STORE + 4):02X}, halt ${cold['sp']:02X}, "
                          f"want ${sp:02X})")
+    # Full-RAM invariance outside the owned cells FIRST (before the value
+    # checks, so a stray write is reported as such): diff loaded (pre-guest)
+    # vs cold (post-guest). Owned writes are the STORE record, the seeded
+    # shadow bytes, the guest-filled sentinel (verified below) and exactly the
+    # stack slots the call may push: JSR return address + PHP + PHA always,
+    # plus the MPR0 save on the ok path — i.e. $21(SP-3)..$21(SP) on reject,
+    # $21(SP-4)..$21(SP) on ok (MEDIUM-1: PHP/PHA/JSR do write stack RAM, so
+    # "zero RAM writes" would be inaccurate; the rest of the stack page stays
+    # checked, not blanket-excluded). Anything else changing means the API
+    # wrote where it must not.
+    loaded = next((r for r in rows if r["phase"] == "loaded"), None)
+    if loaded is not None and "work_ram_hex" in loaded:
+        before = bytes.fromhex(loaded["work_ram_hex"])
+        if len(before) >= 0x2000:
+            depth = 4 if seed_shadow else 3  # ok: JSR(2)+PHP+PHA+MPR0; reject: minus MPR0
+            owned = set(range(STORE - WRAM_BASE, STORE - WRAM_BASE + 8))
+            owned |= {SHADOW_LO - WRAM_BASE, SHADOW_MAGIC - WRAM_BASE}
+            owned |= {SENTINEL - WRAM_BASE + i for i in range(SENTINEL_LEN)}
+            owned |= {0x100 + i for i in range(sp - depth, sp + 1)}
+            # STORE_MPR0 ($2207) is inside the STORE window already.
+            bad = [WRAM_BASE + i for i in range(0x2000)
+                   if before[i] != wram[i] and i not in owned]
+            # Sentinel cells are verified separately below; report the rest.
+            bad = [a for a in bad if not (SENTINEL <= a < SENTINEL + SENTINEL_LEN)]
+            if bad:
+                shown = " ".join(f"${a:04X}" for a in bad[:8])
+                raise ValueError(f"{label}: out-of-contract RAM write at {shown}"
+                                 f" ({len(bad)} bytes differ outside owned cells)")
     want_lo = (cr_low & ~clear_mask) | set_mask
-    if at(STORE_CR_LO) != want_lo or at(STORE_CR_HI) != cr_high:
-        raise ValueError(f"{label}: CR ${at(STORE_CR_HI):02X}{at(STORE_CR_LO):02X}, "
-                         f"want ${cr_high:02X}{want_lo:02X}")
+    want_shadow_lo = want_lo if seed_shadow else 0xFF
+    want_magic = SHADOW_VALID if seed_shadow else 0x00
+    # Authoritative oracle: the VDC's actual CR state from the probe
+    # (GetState()->R[5]), independent of any port read (MAJOR-2). No guest
+    # port readback is asserted: on the pinned core CR reads return stale
+    # data, so such an expectation would be vacuous (MAJOR-1).
+    if "vdc_cr" not in cold or "vdc_ar" not in cold:
+        raise ValueError(f"{label}: probe observation lacks vdc_cr/vdc_ar (probe too old?)")
+    # Pre-call state is known by construction: the guest selects AR=5 and
+    # programs the case pattern through the window immediately before the JSR.
+    # Post-call state is the cold observation. On the reject path the two must
+    # match exactly (no VDC writes); the probe exposes no write-event trace,
+    # so this is inferred from (CR, AR, shadow, RAM) invariance.
+    pre_vdc = ((cr_high & 0x1F) << 8) | cr_low
+    if cold["vdc_ar"] != 5:
+        raise ValueError(f"{label}: VDC AR ${cold['vdc_ar']:02X}, want $05 (contract: AR left at CR)")
+    # LOW-1: the reject-specific CR invariance check runs BEFORE the generic
+    # expectation (they coincide when unseeded, so the generic check would
+    # otherwise shadow it and the rejection would never name its cause).
+    if not seed_shadow and cold["vdc_cr"] != pre_vdc:
+        raise ValueError(f"{label}: reject path changed VDC CR ${pre_vdc:04X} -> "
+                         f"${cold['vdc_cr']:04X} (contract: no VDC write on reject)")
+    # CR high bits 13-15 are unwritable (k_register_mask[R05] = 0x1FFF) and read
+    # back as 0; mask the expectation the same way the hardware does.
+    want_vdc = (((cr_high & 0x1F) << 8) | (want_lo if seed_shadow else cr_low))
+    if cold["vdc_cr"] != want_vdc:
+        raise ValueError(f"{label}: VDC CR ${cold['vdc_cr']:04X}, "
+                         f"want ${want_vdc:04X} (independent hardware oracle)")
+    if at(SHADOW_LO) != want_shadow_lo or at(SHADOW_MAGIC) != want_magic:
+        raise ValueError(f"{label}: shadow ${at(SHADOW_MAGIC):02X}{at(SHADOW_LO):02X}, "
+                         f"want ${want_magic:02X}{want_shadow_lo:02X}")
+    # Reserved CR-high image: this family never writes it; any change is a bug.
+    # (Compared against the loaded pre-guest dump when available; otherwise the
+    # reset fill is expected to be $00 and any nonzero cold value is reported.)
+    loaded_rsvd = None
+    for r in rows:
+        if r["phase"] == "loaded" and "work_ram_hex" in r:
+            _b = bytes.fromhex(r["work_ram_hex"])
+            if len(_b) >= 0x2000:
+                loaded_rsvd = _b[SHADOW_HI_RSVD - WRAM_BASE]
+            break
+    if loaded_rsvd is not None:
+        if at(SHADOW_HI_RSVD) != loaded_rsvd:
+            raise ValueError(f"{label}: reserved shadow ${SHADOW_HI_RSVD:04X} "
+                             f"changed ${loaded_rsvd:02X} -> ${at(SHADOW_HI_RSVD):02X} (must be untouched)")
+    elif at(SHADOW_HI_RSVD) != 0x00:
+        raise ValueError(f"{label}: reserved shadow ${SHADOW_HI_RSVD:04X} "
+                         f"is ${at(SHADOW_HI_RSVD):02X} (must stay $00)")
     sentinel = bytes(wram[SENTINEL - WRAM_BASE:SENTINEL - WRAM_BASE + SENTINEL_LEN])
     want_sentinel = bytes(sentinel_byte(i) for i in range(SENTINEL_LEN))
     if sentinel != want_sentinel:
         raise ValueError(f"{label}: RAM sentinel ${SENTINEL:04X} changed")
     return {"a": a, "x": x, "y": y, "p": f"{p:02X}", "sp": f"{sp:02X}",
-            "cr": f"{cr_high:02X}{want_lo:02X}"}
+            "cr": f"{want_vdc:04X}"}

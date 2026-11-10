@@ -54,6 +54,7 @@
       "src/math/ma_mul8u.s",
       "src/overrides/slot_1E.s",
       "src/overrides/slot_22.s",
+      "src/overrides/slot_2E.s",
       "src/overrides/slot_3A.s",
       "src/overrides/slot_3C.s",
       "src/overrides/slot_3D.s",
@@ -248,6 +249,30 @@
       "role": "api",
       "tam": [],
       "transfers": []
+    },
+    "src/overrides/slot_2E.s": {
+      "role": "api",
+      "tam": [
+        {
+          "mask": "0x01",
+          "value": "0xFF",
+          "purpose": "MPR0 = hardware page for the VDC window (IRQ masked by SEI)"
+        },
+        {
+          "mask": "0x01",
+          "value": "restore",
+          "reason": "caller MPR0 saved by TMA #$01 and restored before return"
+        }
+      ],
+      "transfers": [],
+      "mmio": {
+        "device": "VDC address / data ports",
+        "addresses": [
+          "0x0000",
+          "0x0002"
+        ],
+        "mapping": "window"
+      }
     },
     "src/overrides/slot_3A.s": {
       "role": "api",
