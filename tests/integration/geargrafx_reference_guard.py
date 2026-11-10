@@ -123,24 +123,65 @@ def check_neg(row, target):
 
 
 def check_pos(row, target):
-    if row.get("exit", 0) != 0:
-        raise ValueError(f"pos-write ${target:04X} probe refused to run (exit {row.get('exit')}): {row.get('stderr','')[-300:]}")
+    # Fail-closed exit validation: only the integer 0 is accepted. A missing field,
+    # None, a bool, or a numeric string must never be treated as success.
+    exit_code = row.get("exit")
+    if type(exit_code) is not int or exit_code != 0:
+        raise ValueError(f"pos-write ${target:04X} probe refused to run (exit {exit_code!r}): {str(row.get('stderr', ''))[-300:]}")
     if row.get("status") != "ok":
         raise ValueError(f"allowed control store ${target:04X} failed: {row.get('reason')}")
     if row.get("detected") is not False:
         raise ValueError(f"allowed control store ${target:04X} was wrongly flagged by the write breakpoint")
     if row.get("guard_target") != target:
         raise ValueError(f"allowed control store ${target:04X} targeted wrong address: {row.get('guard_target')}")
-    if row.get("guard_before") == ALLOWED_VALUE:
+    guard_before = row.get("guard_before")
+    guard_after = row.get("guard_after")
+    if type(guard_before) is not int or not 0 <= guard_before <= 0xFF:
+        raise ValueError(f"allowed control store ${target:04X} guard_before malformed: {guard_before!r}")
+    if type(guard_after) is not int or not 0 <= guard_after <= 0xFF:
+        raise ValueError(f"allowed control store ${target:04X} guard_after malformed: {guard_after!r}")
+    if guard_before == ALLOWED_VALUE:
         raise ValueError(f"allowed control store ${target:04X} target was already {ALLOWED_VALUE:#x} before execution")
-    if row.get("guard_before") == row.get("guard_after"):
+    if guard_before == guard_after:
         raise ValueError(f"allowed control store ${target:04X} did not change the target byte")
-    if row.get("guard_after") != ALLOWED_VALUE:
+    if guard_after != ALLOWED_VALUE:
         raise ValueError(f"allowed control store ${target:04X} did not land; the guard drops every write")
     # Normal execution: a small positive instruction count, not a timeout.
     executed = row.get("instructions_executed")
     if type(executed) is not int or not 1 <= executed <= 100:
         raise ValueError(f"allowed control store ${target:04X} invalid instruction count: {executed}")
+    # The landed store must be visible as exactly one net RAM difference at the target,
+    # consistent with the guard bytes. An emptied/truncated diff must not pass as landed.
+    ram_diff = row.get("ram_diff")
+    if type(ram_diff) is not list or len(ram_diff) != 1:
+        raise ValueError(f"allowed control store ${target:04X} ram_diff must hold exactly one landed store: {ram_diff!r}")
+    entry = ram_diff[0]
+    if type(entry) is not dict:
+        raise ValueError(f"allowed control store ${target:04X} ram_diff entry malformed: {entry!r}")
+    address = entry.get("address")
+    before = entry.get("before")
+    after = entry.get("after")
+    if type(address) is not int or address != target:
+        raise ValueError(f"allowed control store ${target:04X} ram_diff.address mismatch: {address!r}")
+    if type(before) is not int or not 0 <= before <= 0xFF:
+        raise ValueError(f"allowed control store ${target:04X} ram_diff.before malformed: {before!r}")
+    if type(after) is not int or not 0 <= after <= 0xFF:
+        raise ValueError(f"allowed control store ${target:04X} ram_diff.after malformed: {after!r}")
+    if before == after:
+        raise ValueError(f"allowed control store ${target:04X} ram_diff entry is not a change")
+    if before != guard_before or after != guard_after:
+        raise ValueError(f"allowed control store ${target:04X} ram_diff inconsistent with guard bytes "
+                         f"({before:#x}->{after:#x} vs guard {guard_before:#x}->{guard_after:#x})")
+    if after != ALLOWED_VALUE:
+        raise ValueError(f"allowed control store ${target:04X} ram_diff.after {after!r} is not the allowlisted value")
+    if before == ALLOWED_VALUE:
+        raise ValueError(f"allowed control store ${target:04X} ram_diff.before was already the landed value")
+    # Count/truncation consistency when the probe reports them (st-boundary rows always do;
+    # the reference-JSR probe predates these fields and omits them).
+    if "ram_diff_count" in row and row["ram_diff_count"] != len(ram_diff):
+        raise ValueError(f"allowed control store ${target:04X} ram_diff_count {row['ram_diff_count']!r} != {len(ram_diff)}")
+    if "ram_diff_truncated" in row and row["ram_diff_truncated"] is not False:
+        raise ValueError(f"allowed control store ${target:04X} ram_diff_truncated is not False")
 
 
 def check_tam(row):
