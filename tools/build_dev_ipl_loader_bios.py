@@ -94,8 +94,16 @@ def build_ipl_loader_bios(original_path: Path, output: Path, sel: int, mode="deb
     synthetic manifest schema."""
     if mode not in ("debug", "release"):
         raise ValueError("MODE must be debug or release")
-    if not 0 < sel < 0xFFF0:
-        raise ValueError("IPL_SEL must be a 16-bit LBA with headroom for the loader's checks")
+    # API contract: `sel` is the 16-bit INDEX 01 LBA (0x0000..0xFFFF), strict int.
+    # The pre-#744 upper bound (0xFFF0, "headroom for the loader's checks") guarded
+    # the old 16-bit body computation against wraparound. Since #744 the guest
+    # computes the body base in 24 bits and refuses an over-range base or tail
+    # itself (code 27) before any load-area write, so the builder only enforces
+    # the 16-bit embedding contract. INDEX 01 = 0 is accepted here: whether LBA 0
+    # hosts a usable data track is a media property, refused in-guest (bad
+    # signature/range gate) when it does not -- never executed blindly.
+    if type(sel) is not int or not 0 <= sel <= 0xFFFF:
+        raise ValueError("IPL_SEL must be a 16-bit INDEX 01 LBA (0x0000..0xFFFF)")
     original = original_path.read_bytes()
     verify_dev_rom(original, manifest=original_path.parent / "manifest.json")
     ca65, ld65 = executable("ca65"), executable("ld65")

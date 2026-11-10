@@ -128,11 +128,34 @@ def apply_edits(buf: bytearray, edits):
     return buf
 
 
+def require_cold_warm_cycles(records: dict, name: str):
+    """Return the two RUN records after pinning the cold/warm multiset.
+
+    Exactly one "cold" and one "warm" record, in any order: duplicates,
+    unknown, missing, or non-string cycles are rejected (a bare count of 2
+    would accept cold+cold). Shared by judge() and the norange mutant kill.
+    """
+    runs = records.get("RUN") if isinstance(records, dict) else None
+    if not isinstance(runs, list) or len(runs) != 2:
+        count = len(runs) if isinstance(runs, list) else runs
+        raise ValueError(f"{name}: expected exactly 2 run records, got {count!r}")
+    cycles = []
+    for run in runs:
+        if not isinstance(run, dict):
+            raise ValueError(f"{name}: malformed run record: {run!r}")
+        cycle = run.get("cycle")
+        if type(cycle) is not str:
+            raise ValueError(f"{name}: run cycle missing/non-string: {cycle!r}")
+        cycles.append(cycle)
+    if sorted(cycles) != ["cold", "warm"]:
+        raise ValueError(f"{name}: expected one cold and one warm run, got {cycles!r}")
+    return runs
+
+
 def judge(records: dict, case: dict, body: bytes, payload_tag: int):
     """Judge the guest's result block, the visible load area, and the payload results; cold AND warm."""
-    if len(records["RUN"]) != 2:
-        raise ValueError(f"{case['name']}: expected cold and warm runs")
-    for run in records["RUN"]:
+    runs = require_cold_warm_cycles(records, case["name"])
+    for run in runs:
         cycle = run["cycle"]
         buf = bytes.fromhex(run["buffer_hex"])
         if len(buf) != 6144:
@@ -141,6 +164,14 @@ def judge(records: dict, case: dict, body: bytes, payload_tag: int):
             raise ValueError(f"{case['name']} {cycle}: stopped with {run['reason']} "
                              f"(halt_confirmed={run.get('halt_confirmed')}), expected {case['reason']}")
         code, copied = buf[RB], buf[RB + 2]
+        if "expect_cdb_last" in case:
+            # R_CDB holds the last READ(6) sent: the final body sector after a
+            # copy, the probe_last sector when the pre-read refused. This pins
+            # the 21-bit bus encoding, not just the loaded data.
+            got_cdb = list(buf[RB + 16:RB + 22])
+            if got_cdb != list(case["expect_cdb_last"]):
+                raise ValueError(f"{case['name']} {cycle}: R_CDB "
+                                 f"{bytes(got_cdb).hex()} != expected {bytes(case['expect_cdb_last']).hex()}")
         if "stage" in case and buf[RB + 1] != case["stage"]:
             raise ValueError(f"{case['name']} {cycle}: stopped in stage {buf[RB + 1]}, expected {case['stage']} "
                              f"(4 = final-sector pre-read, before any load-area write)")
@@ -203,7 +234,8 @@ def judge(records: dict, case: dict, body: bytes, payload_tag: int):
 CASES = [
     # ---- positive: same ROM, different payloads, boundary and load-address variants ----
     dict(name="pos_n5_3000_payloadA", pay="A", n=5, iplblk=2, sta=0x3000, entry=0x3000, mprs=MPRS_STD,
-         openmode=0, reason="cd_halt_ok", code=0, copied=5, payload_ran=True),
+         openmode=0, reason="cd_halt_ok", code=0, copied=5, payload_ran=True,
+         expect_cdb_last=[0x08, 0x00, 0x01, 0x0F, 0x01, 0x00]),
     dict(name="pos_n5_3000_payloadB_same_rom", pay="B", n=5, iplblk=2, sta=0x3000, entry=0x3000, mprs=MPRS_STD,
          openmode=0, reason="cd_halt_ok", code=0, copied=5, payload_ran=True),
     dict(name="pos_n8_crosses_4000_and_6000", pay="A", n=8, iplblk=2, sta=0x3000, entry=0x3000, mprs=MPRS_STD,
@@ -236,17 +268,22 @@ CASES = [
          openmode=1, reason="cd_halt_fail", code=26, copied=0, payload_ran=False),
     dict(name="neg_reserved_byte_nonzero", pay="A", n=5, iplblk=2, sta=0x3000, entry=0x3000, mprs=MPRS_STD,
          openmode=0, info_edits=[(20, 0x01)], reason="cd_halt_fail", code=28, copied=0, payload_ran=False),
-    dict(name="neg_body_lba_overflows_16bit", pay="A", n=5, iplblk=0xFFFF, sta=0x3000, entry=0x3000,
-         mprs=MPRS_STD, openmode=0, reason="cd_halt_fail", code=27, copied=0, payload_ran=False),
-    # base LBA fits, but the last body sector (IPL_SEL + IPLBLK + N - 1) would wrap past $FFFF
-    dict(name="neg_body_lba_tail_wraps_16bit", pay="A", n=3, iplblk=0xFEF5, sta=0x3000, entry=0x3000,
-         mprs=MPRS_STD, openmode=0, reason="cd_halt_fail", code=27, copied=0, payload_ran=False),
-    # final body sector lands exactly on 0xFFFF: exclusive end 0x10000 exceeds the 16-bit tail check
-    dict(name="neg_body_lba_final_sector_at_ffff", pay="A", n=2, iplblk=0xFEF5, sta=0x3000, entry=0x3000,
-         mprs=MPRS_STD, openmode=0, reason="cd_halt_fail", code=27, copied=0, payload_ran=False),
-    # 24-bit IPLBLK high byte is nonzero: the loader only supports the lower 16 bits (LBA width limit).
-    dict(name="neg_iplblk_high_byte_nonzero", pay="A", n=5, iplblk=2, sta=0x3000, entry=0x3000, mprs=MPRS_STD,
-         openmode=0, info_edits=[(0, 0x01)], reason="cd_halt_fail", code=21, copied=0, payload_ran=False),
+    # 16-bit LBA ceiling is gone (Issue #744, 21-bit path): bodies that cross 0xFFFF
+    # now pass the width checks and reach the media probe on the small disc.
+    dict(name="neg_abs_010108_crosses_16bit_probe_refused", pay="A", n=5, iplblk=0xFFFF, sta=0x3000, entry=0x3000,
+         mprs=MPRS_STD, openmode=0, reason="cd_halt_fail", code=5, copied=0, stage=4, payload_ran=False),
+    # base LBA fits, but the last body sector (IPL_SEL + IPLBLK + N - 1) crosses 0xFFFF
+    dict(name="neg_abs_00fffe_tail_crosses_16bit_probe_refused", pay="A", n=3, iplblk=0xFEF5, sta=0x3000,
+         entry=0x3000, mprs=MPRS_STD, openmode=0, reason="cd_halt_fail", code=5, copied=0, stage=4,
+         payload_ran=False),
+    # final body sector lands exactly on 0xFFFF: readable in principle, past this disc's end
+    dict(name="neg_abs_last_ffff_probe_refused", pay="A", n=2, iplblk=0xFEF5, sta=0x3000, entry=0x3000,
+         mprs=MPRS_STD, openmode=0, reason="cd_halt_fail", code=5, copied=0, stage=4, payload_ran=False),
+    # 24-bit IPLBLK high byte nonzero but the absolute body is in range: width checks pass,
+    # then the media probe refuses (small disc). Formerly code 21 before any discrimination.
+    dict(name="neg_iplblk_high_byte_01_in_range_probe_refused", pay="A", n=5, iplblk=2, sta=0x3000, entry=0x3000,
+         mprs=MPRS_STD, openmode=0, info_edits=[(0, 0x01)], reason="cd_halt_fail", code=5, copied=0, stage=4,
+         payload_ran=False),
     dict(name="neg_info_sector_eject_in_data", pay="A", n=5, iplblk=2, sta=0x3000, entry=0x3000, mprs=MPRS_STD,
          openmode=0, inject="eject-in-data", reason="cd_halt_fail", code=4, copied=0, payload_ran=False),
     # ---- post-copy and partial-copy: copied, NOT executed ----
@@ -260,7 +297,8 @@ CASES = [
     dict(name="pos_last_body_sector_is_last_disc_frame", pay="A", n=5, iplblk=30, sta=0x3000, entry=0x3000,
          mprs=MPRS_STD, openmode=0, reason="cd_halt_ok", code=0, copied=5, payload_ran=True),
     dict(name="neg_last_body_sector_one_past_disc_end", pay="A", n=5, iplblk=31, sta=0x3000, entry=0x3000,
-         mprs=MPRS_STD, openmode=0, reason="cd_halt_fail", code=5, copied=0, stage=4, payload_ran=False),
+         mprs=MPRS_STD, openmode=0, reason="cd_halt_fail", code=5, copied=0, stage=4, payload_ran=False,
+         expect_cdb_last=[0x08, 0x00, 0x01, 0x2C, 0x01, 0x00]),
     # formerly partial_read_beyond_disc_after_5_sectors (copied 5 AFTER the fact); now refused before any copy
     dict(name="neg_body_tail_beyond_disc_refused_before_copy", pay="A", n=10, iplblk=30, sta=0x3000, entry=0x3000,
          mprs=MPRS_STD, openmode=0, reason="cd_halt_fail", code=5, copied=0, stage=4, payload_ran=False),
@@ -268,15 +306,27 @@ CASES = [
          mprs=MPRS_STD, openmode=0, reason="cd_halt_fail", code=5, copied=0, stage=4, payload_ran=False),
     dict(name="neg_body_entirely_beyond_disc", pay="A", n=3, iplblk=100, sta=0x3000, entry=0x3000,
          mprs=MPRS_STD, openmode=0, reason="cd_halt_fail", code=5, copied=0, stage=4, payload_ran=False),
-    # IPLBLK middle byte nonzero (0x000100): passes the 16-bit LBA checks, then fails the media probe
+    # IPLBLK middle byte nonzero (0x000100): passes the LBA checks, then fails the media probe
     dict(name="neg_iplblk_0100_passes_lba_checks_fails_media_probe", pay="A", n=1, iplblk=0x100, sta=0x3000,
-         entry=0x3000, mprs=MPRS_STD, openmode=0, reason="cd_halt_fail", code=5, copied=0, stage=4, payload_ran=False),
-    # 16-bit LBA ceiling: bodyl+N must stay <= $FFFF. bodyl=$FFFE,N=1 passes the width checks (then media probe);
-    # bodyl=$FFFF,N=1 is refused by width (code 27) although its single sector is the last representable LBA.
+         entry=0x3000, mprs=MPRS_STD, openmode=0, reason="cd_halt_fail", code=5, copied=0, stage=4,
+         payload_ran=False, expect_cdb_last=[0x08, 0x00, 0x02, 0x09, 0x01, 0x00]),
+    # 21-bit LBA ceiling (Issue #744). body + nsec <= $200000 passes the width checks (then media probe);
+    # body + nsec > $200000 is refused by width (code 27) although its sectors are individually addressable.
+    dict(name="neg_abs_1fffff_n1_passes_width_fails_media_probe", pay="A", n=1, iplblk=0x1FFEF6, sta=0x3000,
+         entry=0x3000, mprs=MPRS_STD, openmode=0, reason="cd_halt_fail", code=5, copied=0, stage=4,
+         payload_ran=False, expect_cdb_last=[0x08, 0x1F, 0xFF, 0xFF, 0x01, 0x00]),
+    dict(name="neg_abs_1fffff_n2_tail_over_width_refused", pay="A", n=2, iplblk=0x1FFEF6, sta=0x3000,
+         entry=0x3000, mprs=MPRS_STD, openmode=0, reason="cd_halt_fail", code=27, copied=0, payload_ran=False),
+    dict(name="neg_abs_200000_over_width_refused", pay="A", n=1, iplblk=0x1FFEF7, sta=0x3000,
+         entry=0x3000, mprs=MPRS_STD, openmode=0, reason="cd_halt_fail", code=27, copied=0, payload_ran=False),
+    # 24-bit carry out of the base addition (0x109 + 0xFFFFFF): refused, never wrapped.
+    dict(name="neg_iplblk_ffffff_carry_out_width_refused", pay="A", n=1, iplblk=0xFFFFFF, sta=0x3000,
+         entry=0x3000, mprs=MPRS_STD, openmode=0, reason="cd_halt_fail", code=27, copied=0, payload_ran=False),
+    dict(name="neg_lba_ffff_probe_refused", pay="A", n=1, iplblk=0xFEF6, sta=0x3000,
+         entry=0x3000, mprs=MPRS_STD, openmode=0, reason="cd_halt_fail", code=5, copied=0, stage=4,
+         payload_ran=False),
     dict(name="neg_lba_fffe_n1_passes_width_fails_media_probe", pay="A", n=1, iplblk=0xFEF5, sta=0x3000,
          entry=0x3000, mprs=MPRS_STD, openmode=0, reason="cd_halt_fail", code=5, copied=0, stage=4, payload_ran=False),
-    dict(name="neg_lba_ffff_n1_width_refused", pay="A", n=1, iplblk=0xFEF6, sta=0x3000, entry=0x3000,
-         mprs=MPRS_STD, openmode=0, reason="cd_halt_fail", code=27, copied=0, payload_ran=False),
     # PUBLIC ROM (up to 31 sectors): the same probe; N=20 so the final sector is 19 past the first body sector
     dict(name="pub_pos_n20_final_sector_is_last_disc_frame", pay="A", n=20, iplblk=15, sta=0x3000, entry=0x3000,
          mprs=[0, 1, 2, 3, 4], openmode=0, rom="public", public=True, mpr_add=0x80, info_edits=[(14, 0), (15, 0)],
@@ -284,10 +334,12 @@ CASES = [
     dict(name="pub_neg_n20_tail_beyond_disc_refused_before_copy", pay="A", n=20, iplblk=16, sta=0x3000, entry=0x3000,
          mprs=[0, 1, 2, 3, 4], openmode=0, rom="public", public=True, info_edits=[(14, 0), (15, 0)],
          reason="cd_halt_fail", code=5, copied=0, stage=4, payload_ran=False),
-    dict(name="neg_iplblk_high_byte_80", pay="A", n=5, iplblk=2, sta=0x3000, entry=0x3000, mprs=MPRS_STD,
-         openmode=0, info_edits=[(0, 0x80)], reason="cd_halt_fail", code=21, copied=0, payload_ran=False),
-    dict(name="neg_iplblk_high_byte_ff", pay="A", n=5, iplblk=2, sta=0x3000, entry=0x3000, mprs=MPRS_STD,
-         openmode=0, info_edits=[(0, 0xFF)], reason="cd_halt_fail", code=21, copied=0, payload_ran=False),
+    dict(name="neg_iplblk_high_byte_80_over_range_refused", pay="A", n=5, iplblk=2, sta=0x3000, entry=0x3000,
+         mprs=MPRS_STD, openmode=0, info_edits=[(0, 0x80)], reason="cd_halt_fail", code=27, copied=0,
+         payload_ran=False),
+    dict(name="neg_iplblk_high_byte_ff_over_range_refused", pay="A", n=5, iplblk=2, sta=0x3000, entry=0x3000,
+         mprs=MPRS_STD, openmode=0, info_edits=[(0, 0xFF)], reason="cd_halt_fail", code=27, copied=0,
+         payload_ran=False),
     # error 31 fault injection: a TEST-ONLY mutant ROM writes each byte XOR 1, so the readback sum differs
     # from the disc-side sum. The guest must halt with 31 after the full copy and never jump to the entry.
     dict(name="fault_readback_mismatch_error31", pay="A", n=5, iplblk=2, sta=0x3000, entry=0x3000,
@@ -363,7 +415,13 @@ CASES = [
 ]
 
 
-def run_case(probe, rom, labels_path, case, pay_code, folder: Path, disc_prefix="card:", expect_loader=None):
+def prepare_case_disc(case, pay_code, folder: Path):
+    """Build the body and synthetic disc for one case (shared preamble).
+
+    Used by run_case() and by the norange mutant kill check so both exercise
+    the identical disc image; the verdict logic itself is not shared because
+    the mutant expects a different halt than the case table.
+    """
     body = body_for(pay_code, case["n"])
     body_written = bytearray(body)
     for sector, edits in case.get("body_edits", {}).items():
@@ -388,6 +446,59 @@ def run_case(probe, rom, labels_path, case, pay_code, folder: Path, disc_prefix=
     apply_edits(info, case.get("info_edits", []))
     disc = folder / case["name"]
     cue = make_disc(disc, case_disc(case, body_written, info))
+    return cue, body_written
+
+
+# Tail-gate kill expectation: with the 21-bit end gate disabled, the
+# over-width case (body 0x1FFFFF, nsec 2) reaches the final-sector pre-read at
+# LBA body+nsec-1 = 0x200000. On the 21-bit READ(6) bus that LBA is emitted as
+# [08,00,00,00,01,00] and the read fails on the 300-frame synthetic disc, so
+# the guest halts in stage 4 with code 5, nothing copied, payload never run.
+NORANGE_EXPECTED_CDB = [0x08, 0x00, 0x00, 0x00, 0x01, 0x00]
+
+
+def observe_run(run):
+    """Parse one probe RUN record into a plain observation dict."""
+    buf = bytes.fromhex(run["buffer_hex"])
+    if len(buf) != 6144:
+        raise ValueError(f"dump has {len(buf)} bytes, expected 6144")
+    pay = buf[PRES:PRES + 15]
+    return {"cycle": run["cycle"], "reason": run["reason"],
+            "halt_confirmed": run.get("halt_confirmed"),
+            "code": buf[RB], "stage": buf[RB + 1], "copied": buf[RB + 2],
+            "cdb": list(buf[RB + 16:RB + 22]),
+            "payload_ran": bool(any(pay))}
+
+
+def check_norange_mutant_obs(obs):
+    """Structured kill criterion for the IPL_MUTANT_NORANGE gate kill.
+
+    Only the exact expected halt counts as proof that the 21-bit tail gate
+    was the refusing element: code 5 in stage 4, nothing copied, payload
+    never ran, halt confirmed, and the over-width LBA on the bus. Anything
+    else (another code/stage, a copy, a payload trace, an unconfirmed halt,
+    a CDB mismatch) raises -- never counts as a kill.
+    """
+    for name in ("cycle", "reason", "halt_confirmed", "code", "stage",
+                 "copied", "cdb", "payload_ran"):
+        if name not in obs:
+            raise ValueError(f"norange mutant {obs.get('cycle')}: missing {name}")
+    if obs["reason"] != "cd_halt_fail" or obs["halt_confirmed"] is not True:
+        raise ValueError(f"norange mutant {obs['cycle']}: no confirmed halt "
+                         f"({obs['reason']}, halt_confirmed={obs['halt_confirmed']!r})")
+    if (obs["code"], obs["copied"], obs["stage"]) != (5, 0, 4):
+        raise ValueError(f"norange mutant {obs['cycle']}: code/copied/stage = "
+                         f"{obs['code']}/{obs['copied']}/{obs['stage']}, expected 5/0/4")
+    if obs["payload_ran"] is not False:
+        raise ValueError(f"norange mutant {obs['cycle']}: payload trace present")
+    if list(obs["cdb"]) != NORANGE_EXPECTED_CDB:
+        raise ValueError(f"norange mutant {obs['cycle']}: final-sector CDB "
+                         f"{bytes(obs['cdb']).hex()} != expected {bytes(NORANGE_EXPECTED_CDB).hex()}")
+    return True
+
+
+def run_case(probe, rom, labels_path, case, pay_code, folder: Path, disc_prefix="card:", expect_loader=None):
+    cue, body_written = prepare_case_disc(case, pay_code, folder)
     inject = case.get("inject")
     # "card:" = the pinned probe's paired-control path: the 8 KiB ROM is loaded as a HuCard and the CUE is
     # inserted afterwards with CD hardware enabled. The System Card BIOS path (LoadBiosFromBuffer) rejects
@@ -440,29 +551,41 @@ def main():
                 results[case["name"]] = run_case(probe, case_rom, labels, case, code, tmp)
             except ValueError as error:
                 raise SystemExit(f"FAIL {case['name']}: {error}") from error
-        # Mutation check (verification only): disable the high-byte rejection and confirm the high-byte case
-        # no longer refuses with code 21. This must not alter the production loader or the case count.
-        highbyte_case = next(c for c in CASES if c["name"] == "neg_iplblk_high_byte_nonzero")
-        hb_mutant, hb_labels = build_loader(out, SEL, "highbyte_mutant", ["-D", "IPL_MUTANT_HIGHBYTE"])
-        hb_labels_path = tmp / "highbyte_mutant.labels"
-        hb_labels_path.write_text(
-            f"cd_halt_ok {payloads[highbyte_case['pay']][1]:04x}\n"
-            f"cd_halt_fail {hb_labels['cd_halt_fail']:04x}\n"
-            f"cd_unexpected_interrupt {hb_labels['cd_unexpected_interrupt']:04x}\n", encoding="ascii")
-        # With only the high-byte refusal disabled, the valid low 16 bits (iplblk=2) must be
-        # accepted: run the same case through run_case()/judge() with normal-execution
-        # expectations, so halt_confirmed, code 0, copied 5, payload completion and the
-        # cold+warm readback/visible-memory checks are all verified -- not a substring match.
-        # Note: this proves the mutant accepts the low 16 bits; it is NOT 24-bit LBA support.
-        mutant_case = {**highbyte_case, "name": highbyte_case["name"] + "_mutant",
-                       "reason": "cd_halt_ok", "code": 0, "copied": 5, "payload_ran": True}
+        # Mutation check (Issue #745 review): with the 21-bit tail gate disabled
+        # (IPL_MUTANT_NORANGE), the over-width case must no longer refuse with
+        # code 27: the loader proceeds to the final-sector pre-read, which fails
+        # on the 300-frame synthetic disc. judge() must therefore raise on the
+        # expectation mismatch -- proving code 27 came from the tail gate.
+        tail_case = next(c for c in CASES
+                         if c["name"] == "neg_abs_1fffff_n2_tail_over_width_refused")
+        norange, norange_labels = build_loader(out, SEL, "norange_mutant",
+                                               ["-D", "IPL_MUTANT_NORANGE"])
+        norange_labels_path = tmp / "norange_mutant.labels"
+        norange_labels_path.write_text(
+            f"cd_halt_ok {payloads[tail_case['pay']][1]:04x}\n"
+            f"cd_halt_fail {norange_labels['cd_halt_fail']:04x}\n"
+            f"cd_unexpected_interrupt {norange_labels['cd_unexpected_interrupt']:04x}\n",
+            encoding="ascii")
+        # Structured kill check on the probe records (no error-string parsing):
+        # the mutant must halt exactly as the analysis predicts, proving the
+        # tail gate was the refusing element.
+        cue, _ = prepare_case_disc(tail_case, payloads[tail_case["pay"]][0], tmp)
+        records = execute(probe, norange, f"card:{cue}", norange_labels_path, BUDGET, None)
         try:
-            run_case(probe, hb_mutant, hb_labels_path, mutant_case, payloads[mutant_case["pay"]][0], tmp)
-        except ValueError as err:
-            raise SystemExit(f"FAIL mutation: mutant did not execute normally "
-                             f"(expected cd_halt_ok, code 0, copied 5, payload ran): {err}") from err
-        print(f"MUTATION CHECK high-byte (verification only): mutant executed normally "
-              f"(cd_halt_ok, code 0, copied 5, payload ran, cold+warm); case={highbyte_case['name']}")
+            runs = require_cold_warm_cycles(records, "norange mutant")
+        except ValueError as error:
+            raise SystemExit(f"FAIL norange mutant: {error}")
+        for run in runs:
+            try:
+                obs = observe_run(run)
+            except ValueError as error:
+                raise SystemExit(f"FAIL norange mutant {run.get('cycle')}: "
+                                 f"unparseable probe record: {error}")
+            try:
+                check_norange_mutant_obs(obs)
+            except ValueError as error:
+                raise SystemExit(f"FAIL norange mutant: kill not proven: {error}")
+        norange_sha = hashlib.sha256(norange.read_bytes()).hexdigest()
 
         if hashlib.sha256(rom.read_bytes()).hexdigest() != rom_sha:
             raise SystemExit("FAIL: loader ROM changed during the test")
@@ -471,13 +594,18 @@ def main():
         if hashlib.sha256(public.read_bytes()).hexdigest() != public_sha or \
                 hashlib.sha256(public_mutant.read_bytes()).hexdigest() != public_mutant_sha:
             raise SystemExit("FAIL: public loader ROM changed during the test")
+        if hashlib.sha256(norange.read_bytes()).hexdigest() != norange_sha:
+            raise SystemExit("FAIL: norange mutant ROM changed during the test")
         passed = len(results)  # every case that did not match its expectation raised above
     evidence = {"scope": "DEV-only multi-sector IPL loader, synthetic media only; NOT compatible, NOT a BIOS ABI",
                 "geargrafx_probe": "geargrafx_cdread_probe.cpp (pinned)", "mode": args.mode,
                 "loader_rom_sha256": rom_sha, "loader_symbols": {k: v for k, v in rom_labels.items()
                                                                    if k in ("reset", "fail", "cd_halt_fail")},
                 "cases": results, "status": "PASS",
-                "limitations": ["real-core LBA 0x000109 only; LBA is 16-bit in this loader (the tail wrap is refused)",
+                "limitations": ["real-core LBA 0x000109 only for the small-disc suite (300 frames, "
+                                "synthetic); the loader LBA path is 21-bit (READ(6)), and accepted loads "
+                                "above LBA 0xFFFF need a larger synthetic disc (Issue #744 big-disc runs, "
+                                "outside this suite)",
                                 "integrity is a DEV-only 16-bit additive sum: single-byte and most copy errors are "
                                 "detected; sum-preserving corruption (e.g. swapped bytes) is NOT detected",
                                 "the payload window sum is checked only when the body covers $4000-$5FFF",
@@ -488,10 +616,11 @@ def main():
                                 "(case pub_post_sum_preserving_change_accepted_documented_limit)",
                                 "PUBLIC format MPR rule: bank = raw + $80 for raw 0..7, observed black-box on the pinned "
                                 "core with the pure System Card BIOS (Issue #635 run); not a hardware observation",
-                                "IPLBLK is a 24-bit field but the LBA path is 16-bit: a nonzero high byte is refused (code 21); "
-                                "full 24-bit support requires Owner-approved widening of the internal LBA path; "
-                                "LBAs beyond the READ(6) 21-bit limit require a different command strategy, "
-                                "whose support is currently UNKNOWN",
+                                "IPLBLK is a 24-bit field and the loader LBA path is 21-bit (READ(6), Owner "
+                                "decision B): a body whose last sector is above 0x1FFFFF is refused (code 27) "
+                                "before any copy; LBAs beyond the READ(6) 21-bit limit need a different command "
+                                "strategy (no READ(10)/READ(12) on the pinned core path: unsupported, UNKNOWN); "
+                                "bit masking of CDB byte 1 to the low 5 bits is enforced by construction",
                                 "data-track length is not available to the guest. Before any load-area write the loader "
                                 "READ(6)s the FINAL body sector into the staging buffer (probe_last): media-end overruns are "
                                 "refused with copied=0. This is a reachability probe, NOT a track-boundary check: a following "
@@ -499,8 +628,9 @@ def main():
                                 "(a mid-body failure remains a post-partial-copy halt; unreachable with contiguous synthetic "
                                 "media). Track-length-based rejection is BLOCKED on Owner decision, see "
                                 "docs/670-ipl-information-data-block-acceptance.md",
-                                "synthetic disc has 300 frames: the 16-bit LBA ceiling is exercised only through width "
-                                "checks (code 27) and media-probe refusals; no accepted load above LBA 299 is tested"],
+                                "synthetic disc has 300 frames: the 21-bit LBA ceiling is exercised through "
+                                "width checks (code 27) and media-probe refusals (code 5); no accepted load "
+                                "above LBA 299 runs in this suite"],
                 "public_loader_rom_sha256": public_sha, "public_mutant_rom_sha256": public_mutant_sha}
     (out / "ipl-loader-evidence.json").write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(f"PASS multi-sector IPL loader, DEV and PUBLIC-format ROMs (synthetic): {passed}/{len(CASES)} cases "
