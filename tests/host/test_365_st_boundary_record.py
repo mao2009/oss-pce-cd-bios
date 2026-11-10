@@ -1429,5 +1429,283 @@ class StMutationFetchIntegrityTests(unittest.TestCase):
                 self.assertEqual(checker(row, mode), st.LANDED_VERDICT)
 
 
+class StV2PositiveControlTests(unittest.TestCase):
+    """Positive-control evidence: completeness, live re-judgment, tamper detection (Issue #365).
+
+    The v2 fixture holds the 40 measured REAL_CORE_EXECUTION rows (armed 17 + mutation 22 +
+    pos-write 1). The positive control proves the rig can observe a landed allowlisted store:
+    without it, a rig that refuses everything would still pass the armed checks (GREEN without
+    a positive). Every tamper below must fail loudly (RED contract for the positive leg).
+    """
+
+    def setUp(self):
+        record = json.loads((ROOT / "tests" / "fixtures" / "365-st-boundary-v2-evidence.json")
+                            .read_text(encoding="utf-8"))
+        self.record = record
+        self.rows = {case["case"]: case["row"] for case in record["cases"]}
+        self.verdicts = {case["case"]: case["verdict"] for case in record["cases"]}
+
+    def test_fixture_total_is_40(self):
+        # LOW-1: total rows at the list level (dict collapse must not hide a duplicate).
+        self.assertEqual(len(self.record["cases"]), 40)
+
+    def test_fixture_case_names_unique(self):
+        # LOW-1: no duplicated case name in the raw list.
+        names = [case["case"] for case in self.record["cases"]]
+        self.assertEqual(len(names), len(set(names)))
+        self.assertEqual(len(set(names)), 40)
+
+    def test_fixture_covers_expected_set(self):
+        # LOW-1: the recorded set matches the driver's armed/mutation/pos-write contract.
+        expected = (set(st.ARMED_MODES)
+                    | {mutation for mode in st.ARMED_MODES for mutation in st.MUTATIONS[mode]}
+                    | {"pos-write"})
+        self.assertEqual(len(st.ARMED_MODES), 17)
+        self.assertEqual(sum(len(st.MUTATIONS[mode]) for mode in st.ARMED_MODES), 22)
+        names = [case["case"] for case in self.record["cases"]]
+        self.assertEqual(set(names), expected)
+        self.assertEqual(set(self.rows), expected)
+        self.assertEqual(len(self.rows), 40)
+
+    def test_fixture_covers_all_40_measured_cases(self):
+        # Legacy entry point: now asserts all three list-level properties separately so a
+        # dict-collapsed view alone can never hide a duplicate.
+        cases = self.record["cases"]
+        names = [case["case"] for case in cases]
+        expected = (set(st.ARMED_MODES)
+                    | {mutation for mode in st.ARMED_MODES for mutation in st.MUTATIONS[mode]}
+                    | {"pos-write"})
+        self.assertEqual(len(cases), 40)
+        self.assertEqual(len(names), len(set(names)))
+        self.assertEqual(set(names), expected)
+        self.assertEqual(set(self.rows), expected)
+        self.assertEqual(len(self.rows), 40)
+
+    def _validate_cases(self, cases):
+        """List-level fixture validation: total, uniqueness, and expected set."""
+        names = [case["case"] for case in cases]
+        expected = (set(st.ARMED_MODES)
+                    | {mutation for mode in st.ARMED_MODES for mutation in st.MUTATIONS[mode]}
+                    | {"pos-write"})
+        if len(cases) != 40:
+            raise ValueError(f"fixture total {len(cases)} != 40")
+        if len(names) != len(set(names)):
+            raise ValueError("fixture case names are not unique")
+        if set(names) != expected:
+            raise ValueError("fixture case set does not match the expected 40")
+        return True
+
+    def test_fixture_duplicate_extra_rejected(self):
+        # LOW-1 RED: an extra duplicate collapses in the dict view (40 entries, full set)
+        # so the old dict-only check falsely passes; list-level checks must reject it.
+        tampered = copy.deepcopy(self.record["cases"])
+        tampered.append(copy.deepcopy(tampered[-1]))
+        collapsed = {case["case"]: case["row"] for case in tampered}
+        self.assertEqual(len(tampered), 41)
+        self.assertEqual(len(collapsed), 40)
+        expected = (set(st.ARMED_MODES)
+                    | {mutation for mode in st.ARMED_MODES for mutation in st.MUTATIONS[mode]}
+                    | {"pos-write"})
+        self.assertEqual(set(collapsed), expected)
+        with self.assertRaises(ValueError):
+            self._validate_cases(tampered)
+
+    def test_fixture_duplicate_with_missing_rejected(self):
+        # LOW-1: one duplicate plus one omission keeps the list at 40 but breaks
+        # uniqueness and the expected set; both must be reported.
+        tampered = copy.deepcopy(self.record["cases"])
+        tampered[0] = copy.deepcopy(tampered[-1])
+        names = [case["case"] for case in tampered]
+        self.assertEqual(len(tampered), 40)
+        self.assertNotEqual(len(names), len(set(names)))
+        expected = (set(st.ARMED_MODES)
+                    | {mutation for mode in st.ARMED_MODES for mutation in st.MUTATIONS[mode]}
+                    | {"pos-write"})
+        self.assertNotEqual(set(names), expected)
+        with self.assertRaises(ValueError):
+            self._validate_cases(tampered)
+
+    def test_provenance_headers(self):
+        self.assertEqual(self.record["observation_kind"], "REAL_CORE_EXECUTION")
+        self.assertEqual(self.record["core_revision"], st.PINNED_CORE_REVISION)
+        self.assertEqual(self.record["bios"], "SYNTHETIC")
+        self.assertEqual(self.record["issue"], 365)
+
+    def test_positive_control_passes_dedicated_judge(self):
+        row = copy.deepcopy(self.rows["pos-write"])
+        self.assertIsNone(st.check_pos_write(row, st.POS_CONTROL))
+        self.assertEqual(self.verdicts["pos-write"], "allowlisted_ram_write_landed")
+        self.assertEqual(self.rows["pos-write"]["mode"], "pos-write")
+
+    def test_positive_control_passes_live_classifier(self):
+        # Backward-compatible alias: the dedicated judge is the live classifier.
+        row = copy.deepcopy(self.rows["pos-write"])
+        self.assertIsNone(st.check_pos_write(row, st.POS_CONTROL))
+        self.assertEqual(self.verdicts["pos-write"], "allowlisted_ram_write_landed")
+        self.assertEqual(self.rows["pos-write"]["mode"], "pos-write")
+
+    def test_positive_control_has_jsr_observation(self):
+        observation = st.to_jsr_observation(copy.deepcopy(self.rows["pos-write"]))
+        self.assertIsNotNone(observation)
+        self.assertEqual(observation["outcome"]["status"], "ok")
+        self.assertEqual(observation["outcome"]["stop_pc"],
+                         self.rows["pos-write"]["stop_pc"])
+
+    def test_armed_row_cannot_pass_as_positive(self):
+        with self.assertRaises(ValueError):
+            st.check_pos_write(copy.deepcopy(self.rows["st0-entry"]), st.POS_CONTROL)
+
+    def test_positive_control_review_tamper_rejected(self):
+        # MEDIUM-1 RED: the review's exact falsification (emptied diff + missing exit)
+        # falsely passed under the old check_pos; the dedicated judge must reject it.
+        row = copy.deepcopy(self.rows["pos-write"])
+        row["ram_diff"] = []
+        row["ram_diff_count"] = 0
+        row.pop("exit")
+        with self.assertRaises(ValueError):
+            st.check_pos_write(row, st.POS_CONTROL)
+        # The shared generic judge must also reject it (exit + ram_diff hardening).
+        row = copy.deepcopy(self.rows["pos-write"])
+        row["ram_diff"] = []
+        row["ram_diff_count"] = 0
+        row.pop("exit")
+        with self.assertRaises(ValueError):
+            st.check_pos(row, st.POS_CONTROL)
+
+    def test_positive_control_exit_variants_rejected(self):
+        for name, mutate in [
+                ("missing", lambda r: r.pop("exit", None)),
+                ("none", lambda r: r.__setitem__("exit", None)),
+                ("bool_true", lambda r: r.__setitem__("exit", True)),
+                ("bool_false", lambda r: r.__setitem__("exit", False)),
+                ("string", lambda r: r.__setitem__("exit", "0")),
+                ("one", lambda r: r.__setitem__("exit", 1)),
+                ("two", lambda r: r.__setitem__("exit", 2)),
+                ("minus_one", lambda r: r.__setitem__("exit", -1)),
+                ("float", lambda r: r.__setitem__("exit", 0.0)),
+        ]:
+            with self.subTest(exit=name):
+                row = copy.deepcopy(self.rows["pos-write"])
+                mutate(row)
+                with self.assertRaises(ValueError):
+                    st.check_pos_write(row, st.POS_CONTROL)
+
+    def test_positive_control_ram_diff_rejected(self):
+        base = copy.deepcopy(self.rows["pos-write"])
+        good_entry = dict(base["ram_diff"][0])
+        cases = [
+            ("missing", lambda r: r.pop("ram_diff", None)),
+            ("none", lambda r: r.__setitem__("ram_diff", None)),
+            ("string", lambda r: r.__setitem__("ram_diff", "x")),
+            ("empty", lambda r: (r.__setitem__("ram_diff", []),
+                                   r.__setitem__("ram_diff_count", 0))),
+            ("two_entries", lambda r: (r["ram_diff"].append(dict(good_entry)),
+                                         r.__setitem__("ram_diff_count", 2))),
+            ("wrong_address", lambda r: r["ram_diff"][0].__setitem__(
+                "address", st.POS_CONTROL + 1)),
+            ("wrong_before", lambda r: r["ram_diff"][0].__setitem__("before", 0x01)),
+            ("wrong_after", lambda r: r["ram_diff"][0].__setitem__("after", 0x01)),
+            ("no_change", lambda r: r["ram_diff"][0].__setitem__(
+                "before", r["ram_diff"][0]["after"])),
+            ("before_bool", lambda r: r["ram_diff"][0].__setitem__("before", True)),
+            ("after_bool", lambda r: r["ram_diff"][0].__setitem__("after", False)),
+            ("address_string", lambda r: r["ram_diff"][0].__setitem__("address", "3E50")),
+            ("entry_not_dict", lambda r: r.__setitem__("ram_diff", [42])),
+            ("guard_mismatch_before", lambda r: r.__setitem__("guard_before", 0x01)),
+            ("guard_mismatch_after", lambda r: r.__setitem__("guard_after", 0x01)),
+        ]
+        for name, mutate in cases:
+            with self.subTest(ram_diff=name):
+                row = copy.deepcopy(base)
+                mutate(row)
+                with self.assertRaises(ValueError):
+                    st.check_pos_write(row, st.POS_CONTROL)
+
+    def test_positive_control_count_truncation_rejected(self):
+        for name, mutate in [
+                ("count_zero", lambda r: r.__setitem__("ram_diff_count", 0)),
+                ("count_two", lambda r: r.__setitem__("ram_diff_count", 2)),
+                ("count_99", lambda r: r.__setitem__("ram_diff_count", 99)),
+                ("count_missing", lambda r: r.pop("ram_diff_count", None)),
+                ("count_none", lambda r: r.__setitem__("ram_diff_count", None)),
+                ("count_string", lambda r: r.__setitem__("ram_diff_count", "1")),
+                ("truncated_true", lambda r: r.__setitem__("ram_diff_truncated", True)),
+                ("truncated_one", lambda r: r.__setitem__("ram_diff_truncated", 1)),
+                ("truncated_none", lambda r: r.__setitem__("ram_diff_truncated", None)),
+                ("truncated_missing", lambda r: r.pop("ram_diff_truncated", None)),
+        ]:
+            with self.subTest(field=name):
+                row = copy.deepcopy(self.rows["pos-write"])
+                mutate(row)
+                with self.assertRaises(ValueError):
+                    st.check_pos_write(row, st.POS_CONTROL)
+
+    def test_positive_control_before_after_stop_executed_mpr_vdc_rejected(self):
+        base = copy.deepcopy(self.rows["pos-write"])
+        stop = base["stop_pc"]
+        cases = [
+            ("before_pc_plus_one", {"before": {"pc": (base["before"]["pc"] + 1) & 0xFFFF}}),
+            ("after_pc_plus_one", {"after": {"pc": (stop + 1) & 0xFFFF}}),
+            ("stop_pc_plus_one", {"stop_pc": (stop + 1) & 0xFFFF}),
+            ("stop_pc_missing", "stop_pc"),
+            ("executed_plus_one", {"instructions_executed": base["instructions_executed"] + 1}),
+            ("executed_zero", {"instructions_executed": 0}),
+            ("executed_101", {"instructions_executed": 101}),
+            ("mpr0_ff_before", {"before": {"mpr": [0xFF] + base["before"]["mpr"][1:]}}),
+            ("mpr_drift_after", {"after": {"mpr": [0, 0xF8, 0x01, 0, 0, 0, 0, 0]}}),
+            ("sp_before", {"before": {"sp": 0xFE}}),
+            ("sp_after", {"after": {"sp": 0xFC}}),
+            ("vdc_ar_after", {"vdc_ar_after": 0x07}),
+            ("vdc_r_after", {"vdc_r_after": 0x5A}),
+            ("vdc_sr_after", {"vdc_sr_after": 0x3F}),
+            ("read_buffer_after", {"vdc_read_buffer_after": 0x0000}),
+            ("refused_true", {"refused": True}),
+            ("mpr_changed_true", {"mpr_changed": True}),
+            ("armed_false", {"armed": False}),
+            ("boundary_false", {"boundary_check": False}),
+            ("mmio_one", {"mmio_read_attempts": 1}),
+            ("wrong_mode", {"mode": "st0-entry"}),
+            ("wrong_target", {"guard_target": st.POS_CONTROL + 1}),
+        ]
+        for name, overwrite in cases:
+            with self.subTest(field=name):
+                row = copy.deepcopy(base)
+                if isinstance(overwrite, str):
+                    row.pop(overwrite, None)
+                else:
+                    for key, value in overwrite.items():
+                        if key in ("before", "after"):
+                            row[key].update(value)
+                        else:
+                            row[key] = value
+                with self.assertRaises(ValueError):
+                    st.check_pos_write(row, st.POS_CONTROL)
+
+    def test_positive_control_wrong_target_rejected(self):
+        row = copy.deepcopy(self.rows["pos-write"])
+        with self.assertRaises(ValueError):
+            st.check_pos_write(row, st.POS_CONTROL + 1)
+
+    def test_positive_control_tampers_rejected(self):
+        tampers = [
+            ("status", {"status": "refused"}),
+            ("detected", {"detected": True}),
+            ("wrong_target", {"guard_target": st.POS_CONTROL + 1}),
+            ("already_set", {"guard_before": 0x5A}),
+            ("not_landed", {"guard_after": 0x00}),
+            ("wrong_value_landed", {"guard_after": 0x01}),
+            ("too_many_executed", {"instructions_executed": 101}),
+            ("unchanged", {"guard_after": 0x00, "guard_before": 0x00}),
+            ("no_progress", {"instructions_executed": 0}),
+            ("probe_failed", {"exit": 1}),
+        ]
+        for name, overwrite in tampers:
+            with self.subTest(tamper=name):
+                row = copy.deepcopy(self.rows["pos-write"])
+                row.update(overwrite)
+                with self.assertRaises(ValueError):
+                    st.check_pos_write(row, st.POS_CONTROL)
+
+
 if __name__ == "__main__":
     unittest.main()
