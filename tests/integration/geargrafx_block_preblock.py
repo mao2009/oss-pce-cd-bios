@@ -276,7 +276,7 @@ def _require_landed_trace(row, mode):
         raise ValueError(f"{mode}: landed run left no RAM trace")
     if row.get("ram_diff_truncated") is not False:
         raise ValueError(f"{mode}: truncated diff is not a complete trace")
-    if not isinstance(row.get("ram_diff_count"), int):
+    if type(row.get("ram_diff_count")) is not int:
         raise ValueError(f"{mode}: ram_diff_count missing/non-integer")
     if row.get("ram_diff_count") != len(diffs):
         raise ValueError(f"{mode}: ram_diff_count does not match entries")

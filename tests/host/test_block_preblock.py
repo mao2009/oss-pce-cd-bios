@@ -151,6 +151,14 @@ class UnarmedTest(unittest.TestCase):
     def test_unguarded_lands(self):
         self.assertEqual(B.check_unguarded_landed(self._landed(), "tii-entry"), B.LANDED_VERDICT)
 
+    def test_count_bool_rejected(self):
+        # isinstance(True, int) is True: the count gate must use strict typing,
+        # or True == 1 passes for the single-entry tin trace.
+        row = self._landed("tin-unknown-far")
+        row.update({"ram_diff_count": True})
+        with self.assertRaises(ValueError):
+            B.check_unguarded_landed(row, "tin-unknown-far")
+
     def test_wrap_unguarded_vdc_trace(self):
         row = self._landed("tia-wrap-forbidden")
         row.update({"ram_diff": [], "vdc_ar_before": 5, "vdc_ar_after": 0x1B})
