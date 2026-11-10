@@ -60,7 +60,10 @@ class BuilderRomBoundaryTest(unittest.TestCase):
                 self.assertNotIn("ipl_sel_lba_redacted", manifest)
 
     def test_embedding_varies_and_carry_chain_present(self):
-        bank0 = {sel: data[:0x2000] for sel, data in self.roms.items()}
+        # Scan the loader code window only ($F000-$FFF5 -> bank0 offsets
+        # 0x1000-0x1FF5): the preserved API/override area ($E000-$EFFF) may
+        # legitimately contain any byte pattern and must not trip this audit.
+        bank0 = {sel: data[0x1000:0x1FF6] for sel, data in self.roms.items()}
         images = list(bank0.values())
         for i in range(len(images)):
             for j in range(i + 1, len(images)):
