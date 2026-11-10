@@ -762,16 +762,25 @@
       "candidate_name": "EX_BGON",
       "state": "NOT_READY",
       "abi_contract": {
-        "status": "UNKNOWN",
-        "note": "reference System Card contract not verified; DEV-only project spec"
+        "status": "PROJECT_SPEC_ONLY",
+        "note": "reference System Card contract not verified; DEV-only project spec. project-own contract, Issue #56 (VDC CR R05 bit 7 BB set; public HuC6270 manual + pinned Geargrafx notes; no reference code used)"
       },
-      "implementation": null,
-      "host_evidence": [],
-      "real_core_evidence": [],
+      "implementation": {
+        "source": "src/overrides/slot_2E.s",
+        "license": "MIT (repository LICENSE)",
+        "provenance": "project-own contract, Issue #56 (VDC CR R05 bit 7 BB set; public HuC6270 manual + pinned Geargrafx notes; no reference code used)"
+      },
+      "host_evidence": [
+        "tests/host/test_api_cr_dev.py"
+      ],
+      "real_core_evidence": [
+        "tests/integration/geargrafx_dev_bgon.py"
+      ],
       "approval": {
         "approved_by": null,
         "review_ref": null
-      }
+      },
+      "note": "DEV ROM implemented and host-tested; real-core evidence runs on the pinned Geargrafx core via make dev-integration (CI/Linux gate). NOT_READY until owner approval is recorded"
     },
     {
       "id": 47,
