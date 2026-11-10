@@ -729,6 +729,18 @@ def _check_blockpre_cases(cases, probe_ok=False, summary_ok=False):
                 return BLOCKED, [f"MUTATION_STATUS_MISSING:{case}"], {}
             if row["status"] != "ok":
                 return FAIL, [f"MUTATION_STATUS_MISMATCH:{case}"], {}
+            if not isinstance(row.get("reason"), str):
+                return BLOCKED, [f"MUTATION_REASON_MISSING:{case}"], {}
+            if case.endswith("-resume-allowed"):
+                if row["reason"] != "block_opcode_at_instruction_boundary":
+                    return FAIL, [f"MUTATION_REASON_MISMATCH:{case}"], {}
+            elif row["reason"] != "":
+                return FAIL, [f"MUTATION_REASON_MISMATCH:{case}"], {}
+            bad = _blockpre_bad_int(row, "stop_pc", case)
+            if bad is not None:
+                return BLOCKED, [bad], {}
+            if row["stop_pc"] != BLOCKPRE_EXPECTED_PC[base] + 7:
+                return FAIL, [f"MUTATION_STOP_PC_MISMATCH:{case}"], {}
             bad = _blockpre_bad_int(row, "instructions_executed", case)
             if bad is not None:
                 return BLOCKED, [bad], {}
@@ -737,15 +749,14 @@ def _check_blockpre_cases(cases, probe_ok=False, summary_ok=False):
             if case.endswith("-resume-allowed"):
                 # The latch holds at first: initial refusal at the expected PC
                 # with an exact stop at PC+7, then 3 unrefused resume steps
-                # that advance the count by exactly 3.
-                for name in ("refused_pc", "stop_pc"):
+                # that advance the count by exactly 3. (stop_pc itself is
+                # pinned by the common landed gate above.)
+                for name in ("refused_pc",):
                     bad = _blockpre_bad_int(row, name, case)
                     if bad is not None:
                         return BLOCKED, [bad], {}
                 if row["refused_pc"] != BLOCKPRE_EXPECTED_PC[base]:
                     return FAIL, [f"MUTATION_REFUSED_PC_MISMATCH:{case}"], {}
-                if row["stop_pc"] != BLOCKPRE_EXPECTED_PC[base] + 7:
-                    return FAIL, [f"MUTATION_STOP_PC_MISMATCH:{case}"], {}
                 for name in ("resume_refused", "resume_attempts",
                              "executed_at_refusal", "executed_after_resume"):
                     bad = _blockpre_bad_int(row, name, case)

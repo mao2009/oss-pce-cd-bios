@@ -384,7 +384,13 @@ def _blockpre_cases():
             row = _blockpre_row(base_mode, armed=False)
             # Only the pure -unguarded runs execute unmonitored; bypass
             # variants run with the monitor armed (probe: armed = !unguarded).
-            row.update(mode=mut, armed=not mut.endswith("-unguarded"))
+            # Landed runs halt cleanly with an empty reason and stop exactly
+            # 7 past the refused PC (the 7-byte block instruction runs through
+            # and the trailing BRA * halts).
+            row.update(mode=mut, armed=not mut.endswith("-unguarded"),
+                       reason="" if not mut.endswith("-resume-allowed")
+                       else "block_opcode_at_instruction_boundary",
+                       stop_pc=V.BLOCKPRE_EXPECTED_PC[base_mode] + 7)
             if mut.endswith("-resume-allowed"):
                 # The latch holds at first (refused), then 3 unrefused resume
                 # steps advance the count by exactly 3 and land the transfer.
@@ -1109,7 +1115,13 @@ class BlockpreReview743Test(unittest.TestCase):
             (plain, "armed_missing", lambda r, i: r.pop("armed", None), V.BLOCKED),
             (plain, "status_refused", lambda r, i: r.update(status="refused"), V.FAIL),
             (plain, "status_missing", lambda r, i: r.pop("status", None), V.BLOCKED),
+            (plain, "reason_refusal", lambda r, i: r.update(
+                reason="block_opcode_at_instruction_boundary"), V.FAIL),
+            (plain, "reason_missing", lambda r, i: r.pop("reason", None), V.BLOCKED),
+            (plain, "stop_pc_wrong", lambda r, i: r.update(stop_pc=0x3E00), V.FAIL),
+            (plain, "stop_pc_missing", lambda r, i: r.pop("stop_pc", None), V.BLOCKED),
             (resume, "resume_armed_false", lambda r, i: r.update(armed=False), V.FAIL),
+            (resume, "resume_reason_empty", lambda r, i: r.update(reason=""), V.FAIL),
         ]:
             with self.subTest(case=case, field=name):
                 c = _blockpre_cases()

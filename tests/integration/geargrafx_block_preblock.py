@@ -315,12 +315,33 @@ def check_unguarded_landed(row, mode):
     Pure -unguarded runs have armed=false; bypass mutations (-no-entry-check,
     -no-recheck, -wrong-opcode, -knownpc-only, -resume-allowed) run with the
     monitor armed but a check removed. Either way the transfer must land and
-    the run must not be refused: that is the sensitivity proof.
+    the run must halt cleanly: that is the sensitivity proof. A timed-out,
+    refused, or fetch-blocked run is never a landed proof, no matter what the
+    VDC/RAM trace shows.
     """
     _require_ok_exit(row, mode)
-    if row.get("refused") is not False or row.get("status") == "refused":
+    # Common landed-run gates first: only a clean halt counts. In particular
+    # budget_exhausted and fetch_blocked can never pass as landed.
+    if not isinstance(row.get("status"), str):
+        raise ValueError(f"{mode}: status missing/non-string: {row.get('status')!r}")
+    if row.get("status") != "ok":
+        raise ValueError(f"{mode}: landed run did not halt cleanly: {row.get('status')!r}")
+    if row.get("reason") != "":
+        raise ValueError(f"{mode}: unexpected halt reason: {row.get('reason')!r}")
+    if row.get("refused") is not False:
         raise ValueError(f"{mode}: bypassed run was refused: monitor still armed")
-    _int_fields(row, ("instructions_executed",))
+    full = row.get("mode")
+    if not isinstance(full, str) or (full != mode and not full.startswith(mode + "-")):
+        raise ValueError(f"{mode}: measured wrong mode {full!r}")
+    if row.get("armed") is not (not full.endswith("-unguarded")):
+        raise ValueError(f"{mode}: armed flag inconsistent with {full!r}")
+    _int_fields(row, ("instructions_executed", "stop_pc"))
+    if row["instructions_executed"] <= BLOCK_EXECUTED_BEFORE_REFUSAL[mode]:
+        raise ValueError(f"{mode}: landed run stopped at the boundary anyway")
+    # The transfer is one 7-byte block instruction: it runs through and the
+    # trailing BRA * halts exactly 7 past the refused PC.
+    if row["stop_pc"] != BLOCK_EXPECTED_PC[mode] + 7:
+        raise ValueError(f"{mode}: unexpected halt PC ${row['stop_pc']:04X}")
     if mode == "tia-wrap-forbidden":
         # The forbidden-destination wrap lands on the VDC, not RAM. Measured
         # contract (pinned core, preset AR=5/SR=0x3F): the transfer moves AR
@@ -360,8 +381,6 @@ def check_unguarded_landed(row, mode):
         for addr, value in ((0x3E90, 0x60), (0x3E91, 0x61), (0x3E92, 0x60), (0x3E93, 0x61)):
             if (addr, value) not in landed:
                 raise ValueError(f"{mode}: TAI dest ${addr:04X} != {value:#x}: {landed}")
-    if row.get("instructions_executed", 0) <= BLOCK_EXECUTED_BEFORE_REFUSAL[mode]:
-        raise ValueError(f"{mode}: unguarded run stopped at the boundary anyway")
     return LANDED_VERDICT
 
 
@@ -376,6 +395,8 @@ def check_resume_allowed_landed(row, mode):
     if row.get("status") != "ok":
         raise ValueError(f"{mode}: resume-allowed run did not halt cleanly: "
                          f"{row.get('status')!r}")
+    if row.get("reason") != "block_opcode_at_instruction_boundary":
+        raise ValueError(f"{mode}: unexpected resume-allowed reason: {row.get('reason')!r}")
     _int_fields(row, ("refused_pc", "stop_pc", "resume_refused", "resume_attempts",
                       "instructions_executed", "executed_at_refusal",
                       "executed_after_resume"))
