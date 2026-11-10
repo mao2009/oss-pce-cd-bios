@@ -152,6 +152,10 @@ def main():
         try:
             run(probe, bytes(mutant), folder, cue, reset, entry, "mut-rts-to-nop", cases[0][1])
         except ValueError as error:
+            if not any(key in str(error) for key in ("A/P/X/Y observed", "stack not balanced",
+                                                    "RAM sentinel", "did not reach its halt loop",
+                                                    "MPR changed")):
+                raise  # only a contract mismatch counts as a rejection (a crash is not a detection)
             evidence["negative_cases"].append({"case": "rts_to_nop", "rejected_by": str(error)})
         else:
             raise ValueError("mutant rts_to_nop passed all checks (not detected)")
