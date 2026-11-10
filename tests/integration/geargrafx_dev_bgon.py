@@ -93,6 +93,8 @@ def main():
                                             seed_shadow=seeded))
             except ValueError as error:
                 # RED record, not a crash: keep going so mutants are still exercised.
+                # Print the full mismatch: the summary alone cannot diagnose a RED run.
+                print(f"RED-RECORD {name}: {error}", flush=True)
                 failures.append({"case": name, "error": str(error)})
         evidence["positive_failures"] = failures
         code_at = body - 0xE000  # CPU $E000 is file offset 0 of bank 0 (as in the MA_SQRT harness)
@@ -112,6 +114,7 @@ def main():
                                                          "MPR changed", "MPR0 not restored", "CR $",
                                                          "VDC CR", "VDC AR", "shadow ")):
                     raise  # only a contract mismatch counts as a rejection (a crash is not a detection)
+                print(f"MUTANT-REJECTED {name}: {error}", flush=True)
                 evidence["negative_cases"].append({"case": name, "rejected_by": str(error)})
             else:
                 raise ValueError(f"mutant {name} passed all checks (not detected)")
