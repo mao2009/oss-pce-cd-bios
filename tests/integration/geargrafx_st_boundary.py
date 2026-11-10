@@ -1027,7 +1027,24 @@ def main():
                 print(f"MUTATION {mutation}: status={row['status']} stop={row['stop_pc']:#x} "
                       f"executed={row['instructions_executed']} "
                       f"sr={row['vdc_sr_before']:#x}->{row['vdc_sr_after']:#x} -> {verdict}")
-        check_pos(run_mode(probe, bios, cue, "pos-write", POS_CONTROL), POS_CONTROL)
+        # Persist the positive control as first-class REAL_CORE_EXECUTION evidence, not
+        # just a summary PASS line. A host fixture must be captured from this output;
+        # never synthesize or infer a measured row from the deterministic guest code.
+        pos_row = run_mode(probe, bios, cue, "pos-write", POS_CONTROL)
+        check_pos(pos_row, POS_CONTROL)
+        if pos_row.get("mode") != "pos-write":
+            raise ValueError("positive control returned a mismatched mode")
+        print("EVIDENCE " + json.dumps({"case": "pos-write",
+                                        "observation_kind": "REAL_CORE_EXECUTION",
+                                        "core_revision": PINNED_CORE_REVISION, "bios": "SYNTHETIC",
+                                        "execution_mode": "debug-single-step",
+                                        "verdict": "allowlisted_ram_write_landed",
+                                        "measured_stop_pc": pos_row["stop_pc"],
+                                        "row": pos_row}, sort_keys=True))
+        pos_jsr = to_jsr_observation(pos_row)
+        if pos_jsr is None:
+            raise ValueError("positive control JSR view excluded unexpectedly")
+        print("JSR_OBSERVATION " + json.dumps(pos_jsr, sort_keys=True))
         assert hwp_safe_row is not None
         print("PASS issue-365 ST0/ST1/ST2 instruction-boundary monitor (synthetic ROM, pinned core):")
         print(f"  armed: {len(ARMED_MODES)} modes refused/failed-closed before side effect, "
