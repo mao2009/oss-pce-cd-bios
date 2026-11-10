@@ -26,7 +26,7 @@ STORE_CR_HI = STORE + 6
 STORE_MPR0 = STORE + 7    # original MPR0 saved here (8 bytes total, inside the 64-byte window)
 SENTINEL = 0x2300         # 16-byte RAM sentinel, must be untouched
 SENTINEL_LEN = 16
-RUN_STEPS = 4096          # probe maximum (CR setup/readback roughly doubles the guest)
+RUN_STEPS = 1024          # probe cap is 2048; the guest is ~130 instructions
 WRAM_BASE = 0x2000        # full work-RAM dump (Issue #242) index 0 = CPU $2000
 P_MASK = 0xCF             # PHP sets B (bit 4) and bit 5; PLP ignores them
 
