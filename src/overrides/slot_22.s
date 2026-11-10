@@ -18,4 +18,9 @@
 .segment "OVERRIDES"
 .export api_slot_22
 api_slot_22:
+    nop                       ; layout: keeps this override 2 bytes so later overrides
+                              ; keep their link parity (the MA_MUL16S real-core gate
+                              ; requires its trampoline at its PC window; see
+                              ; tests/integration/geargrafx_dev_mul16s.py). NOP
+                              ; touches nothing, so the plain-RTS contract holds.
     rts
