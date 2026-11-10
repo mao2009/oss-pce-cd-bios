@@ -2,14 +2,18 @@
 Not the System Card ABI.
 
 This slot sets the HuC6270 background-blanking bit (VDC CR R05, bit 7),
-preserves every other CR bit and register (A/X/Y/P with C=0), balances the
-stack and touches nothing else. This host test checks a Python model of that
+preserves every other CR bit and register (A/X/Y/P; C=0 on ok, C=1 when the
+shadow is uninitialized), balances the stack and touches nothing else.
+Because the pinned core returns stale data for CR port reads (MAJOR-1), the
+routine owns CR low in the work-RAM shadow at $2502 (magic $A5 at $2503)
+instead of reading the port. This host test checks a Python model of that
 contract and static checks on the assembly source. It does NOT assemble or
 execute src/overrides/slot_2E.s by itself.
 
 The assembled slot_2E.s IS executed by the real-core integration test
 tests/integration/geargrafx_dev_bgon.py (pinned cc65 + Geargrafx), registered in
-the `dev-integration` target. Keep host model checks and real-core checks distinct.
+the `dev-integration` target and judged against the independent vdc_cr probe
+observation. Keep host model checks and real-core checks distinct.
 """
 import json
 import re
@@ -21,26 +25,30 @@ SRC = ROOT / "src" / "overrides" / "slot_2E.s"
 SPEC = ROOT / "spec" / "dev_implementations.json"
 
 
-def cr_model(lo, hi):
-    """Project-own DEV contract: set BB (bit 7), keep every other bit."""
-    return (lo | 0x80, hi)
+def cr_model(shadow_lo, magic):
+    """Project-own DEV contract: initialized shadow -> set BB, C=0 (SETWRT-style
+    result convention); uninitialized shadow -> reject with C=1 and no writes.
+    Returns (new_shadow_lo, new_magic, carry, vdc_written_or_None)."""
+    if magic != 0xA5:
+        return shadow_lo, magic, 1, None
+    return shadow_lo | 0x80, 0xA5, 0, shadow_lo | 0x80
 
 
 class ModelContractTests(unittest.TestCase):
-    def test_bb_is_set_and_nothing_else_changes(self):
-        for lo, hi in ((0x00, 0x00), (0x40, 0xA5), (0x0F, 0x5A), (0xFF, 0xFF)):
-            got_lo, got_hi = cr_model(lo, hi)
-            self.assertEqual(got_lo, lo | 0x80)
-            self.assertEqual(got_hi, hi)
+    def test_bb_is_set_and_nothing_changes(self):
+        for lo in (0x00, 0x40, 0x0F, 0xFF):
+            got_lo, got_magic, carry, written = cr_model(lo, 0xA5)
+            self.assertEqual((got_lo, got_magic, carry, written), (lo | 0x80, 0xA5, 0, lo | 0x80))
             self.assertEqual(got_lo & 0x7F, lo & 0x7F)
 
-    def test_high_byte_is_never_touched(self):
-        for hi in (0x00, 0xA5, 0x5A, 0xFF):
-            self.assertEqual(cr_model(0x55, hi)[1], hi)
+    def test_uninitialized_shadow_is_rejected_without_side_effects(self):
+        for lo, magic in ((0x00, 0x00), (0xFF, 0x00), (0x12, 0x00), (0x00, 0x5A)):
+            got_lo, got_magic, carry, written = cr_model(lo, magic)
+            self.assertEqual((got_lo, got_magic, carry, written), (lo, magic, 1, None))
 
     def test_applying_twice_is_stable(self):
-        lo, hi = cr_model(0x12, 0x34)
-        self.assertEqual(cr_model(lo, hi), (lo, hi))
+        lo, _, _, _ = cr_model(0x12, 0xA5)
+        self.assertEqual(cr_model(lo, 0xA5), (lo, 0xA5, 0, lo))
 
 
 class AssemblyStaticTests(unittest.TestCase):
@@ -59,34 +67,46 @@ class AssemblyStaticTests(unittest.TestCase):
         self.assertIn("sei", code)
         self.assertIn("tam #$01", code)
         self.assertIn("tma #$01", code)
-        # CR select + low access must use absolute (a:) form, never zero page.
+        # CR select + low write must use absolute (a:) form, never zero page.
         self.assertIn("sta a:$0000", code)
         self.assertIn("lda #$05", code)
-        self.assertIn("lda a:$0002", code)
         self.assertIn("sta a:$0002", code)
+        # MEDIUM-1: AR is selected once (R05) and left there; no restore select.
+        self.assertEqual(sum(1 for line in code if "sta a:$0000" in line), 1)
         self.assertFalse(any(re.match(r"(lda|sta|stx|ldx)\s+\$000[023]\b", line) for line in code),
                          "VDC access must use the a: absolute form (zero page would hit $20xx)")
-        # The high byte is never touched: no read or write of $0003 anywhere.
+        # MAJOR-1: the port is never READ (pinned core returns stale data); the
+        # shadow is. No read of $0002/$0003 anywhere; no write of $0003 either.
+        self.assertFalse(any(re.match(r"lda\s+a:\$000[23]\b", line) for line in code))
         self.assertFalse(any("$0003" in line for line in code))
+        # Shadow protocol: magic check, BB set, publish-then-write ordering.
+        self.assertIn("lda $2502", code)
+        self.assertIn("lda $2503", code)
+        self.assertIn("cmp #$A5", code)
+        self.assertIn("sta $2502", code)
         self.assertIn("ora #$80", code)
+        self.assertEqual(code.count("sta a:$0002"), 1)
         self.assertEqual(code[-1], "rts")
         self.assertIn(".export api_slot_2E", SRC.read_text(encoding="utf-8"))
 
-    def test_push_depth_matches_the_sp07_bound(self):
+    def test_push_depth_matches_the_sp05_bound(self):
         code = self._code()
+        # X/Y are never written, so only flags, A and MPR0 are saved: 3 pushes
+        # (+2 JSR bytes = SP >= $05). No phy/phx/ply/plx may appear.
         pushes = [line.split()[0] for line in code if line.split()[0] in ("php", "phy", "phx", "pha")]
-        # flags, Y, X, A, MPR0 = 5 simultaneous pushes (+2 JSR bytes = SP >= $07).
-        self.assertEqual(len(pushes), 5)
+        self.assertEqual(pushes, ["php", "pha", "pha"])
         pulls = [line.split()[0] for line in code if line.split()[0] in ("plp", "ply", "plx", "pla")]
-        self.assertEqual(len(pulls), 5)
+        self.assertEqual(pulls, ["pla", "plp", "pla", "pla", "plp"])
 
     def test_no_zero_page_ram_stack_or_branch_side_effects(self):
         code = "\n".join(self._code()).lower()
         self.assertNotRegex(code, r"\$20[0-9a-f]{2}")
         self.assertNotRegex(code, r"\$21[0-9a-f]{2}")
-        for mnemonic in ("bra", "bne", "beq", "bcc", "bcs", "jmp", "jsr", "rti",
+        for mnemonic in ("bra", "bne", "bcc", "bcs", "jmp", "jsr", "rti",
                          "brk", "inc", "dec", "asl", "lsr", "rol", "ror"):
             self.assertNotIn(mnemonic, code.split())
+        # Exactly one branch: the shadow-validity beq before the MPR0 window.
+        self.assertEqual(sum(1 for tok in code.split() if tok == "beq"), 1)
 
 
 class SpecContractConsistencyTests(unittest.TestCase):
