@@ -326,6 +326,16 @@ def check_hwpage_armed(row, mode):
         raise ValueError(f"{mode}: unexpected fail-closed reason: {row.get('reason')!r}")
     if row.get("fetch_failed") is not True or row.get("fetch_safe") is not False:
         raise ValueError(f"{mode}: fetch failure not observed")
+    # Fail-closed rows never refuse an opcode: no capture, peek path recorded.
+    _int_fields(row, ("refused_opcode",))
+    if row.get("refused_opcode") != 0:
+        raise ValueError(f"{mode}: fail-closed row captured an opcode")
+    if not isinstance(row.get("operand_bytes"), list) or row.get("operand_bytes") != []:
+        raise ValueError(f"{mode}: fail-closed row carries operand bytes")
+    if row.get("operand_complete") is not False:
+        raise ValueError(f"{mode}: fail-closed row claims a complete capture")
+    if row.get("fetch_via") != "peek":
+        raise ValueError(f"{mode}: unexpected fetch path: {row.get('fetch_via')!r}")
     _int_fields(row, ("stop_pc", "instructions_executed",
                       "executed_at_refusal", "executed_after_resume",
                       "resume_attempts", "resume_refused"))
@@ -370,6 +380,26 @@ def mutation_test_armed(refused_row, landed_row, mode, check=check_armed):
         mutations = [
             ("stop-pc", {"stop_pc": 0x4002}, [], "wrong stop accepted"),
             ("executed", {"instructions_executed": 4}, [], "wrong count accepted"),
+            ("executed-after-resume", {"executed_after_resume": 4}, [],
+             "resume advance accepted"),
+            ("ram-across-resume", {"ram_unchanged_during_resume": False}, [],
+             "resume RAM change accepted"),
+            ("mode", {"mode": "tii-entry"}, [], "wrong mode accepted"),
+            ("armed", {"armed": False}, [], "disarmed row accepted as armed"),
+            ("refused", {"refused": True}, [], "opcode refusal accepted as fetch fail-closed"),
+            ("reason", {"reason": "block_opcode_at_instruction_boundary"}, [],
+             "wrong reason accepted"),
+            ("fetch-safe", {"fetch_safe": True}, [], "safe fetch accepted as failed"),
+            ("fetch-blocked", {"fetch_blocked": False}, [], "unblocked fetch accepted"),
+            ("refused-opcode", {"refused_opcode": 0x73}, [],
+             "captured opcode accepted as fail-closed"),
+            ("operand-bytes", {"operand_bytes": [0x73, 0, 0, 0, 0, 0, 0]}, [],
+             "operand capture accepted as fail-closed"),
+            ("operand-complete", {"operand_complete": True}, [],
+             "complete capture accepted as fail-closed"),
+            ("fetch-via", {"fetch_via": "dma"}, [], "wrong fetch path accepted"),
+            ("vdc-r", {"vdc_r_before": 0, "vdc_r_after": 1}, [],
+             "VDC R0 side effect accepted"),
             ("vdc-changed", {"vdc_sr_before": 0x3F, "vdc_sr_after": 0x00}, [],
              "landed: VDC side effect accepted"),
             ("vdc-read-buffer-changed", {"vdc_read_buffer_before": 0xBEEF,
@@ -431,6 +461,16 @@ def check_hwpage_unguarded_still_blocked(row, mode):
         raise ValueError(f"{mode}: unexpected fail-closed reason: {row.get('reason')!r}")
     if row.get("fetch_failed") is not True or row.get("fetch_safe") is not False:
         raise ValueError(f"{mode}: fetch failure not observed")
+    # Fail-closed rows never refuse an opcode: no capture, peek path recorded.
+    _int_fields(row, ("refused_opcode",))
+    if row.get("refused_opcode") != 0:
+        raise ValueError(f"{mode}: fail-closed row captured an opcode")
+    if not isinstance(row.get("operand_bytes"), list) or row.get("operand_bytes") != []:
+        raise ValueError(f"{mode}: fail-closed row carries operand bytes")
+    if row.get("operand_complete") is not False:
+        raise ValueError(f"{mode}: fail-closed row claims a complete capture")
+    if row.get("fetch_via") != "peek":
+        raise ValueError(f"{mode}: unexpected fetch path: {row.get('fetch_via')!r}")
     _int_fields(row, ("stop_pc", "instructions_executed",
                       "executed_at_refusal", "executed_after_resume",
                       "resume_attempts", "resume_refused"))

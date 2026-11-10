@@ -346,7 +346,9 @@ def _blockpre_row(mode, armed=True):
                 irq_accepted=False, observed_vector=0, handler_steps=0)
     if hwpage:
         base.update(status="fetch_blocked", vdc_ar_before=5, vdc_ar_after=5,
-                    refused=False, fetch_blocked=True,
+                    refused=False, refused_opcode=0, operand_bytes=[],
+                    operand_complete=False, fetch_via="peek",
+                    fetch_blocked=True,
                     fetch_unsafe_bank=True, fetch_page=2, fetch_mpr=0xFF,
                     fetch_opcode=0, fetch_safe=False, fetch_failed=True,
                     reason="unsafe_opcode_fetch_fail_closed")
@@ -379,7 +381,9 @@ def _blockpre_cases():
             verdict = "side_effect_landed_monitor_disabled"
             base_mode = V._blockpre_mutation_base(mut)
             row = _blockpre_row(base_mode, armed=False)
-            row.update(mode=mut)
+            # Only the pure -unguarded runs execute unmonitored; bypass
+            # variants run with the monitor armed (probe: armed = !unguarded).
+            row.update(mode=mut, armed=not mut.endswith("-unguarded"))
             if mut.endswith("-resume-allowed"):
                 # The latch holds at first: refused, then the guest steps
                 # through and the transfer lands anyway.
@@ -960,7 +964,25 @@ class BlockpreReview743Test(unittest.TestCase):
         v, reasons, _ = self._check(c)
         self.assertEqual(v, V.FAIL, reasons)
 
-    def test_mutation_raw_row_rejudged(self):
+    def test_hwpage_refused_flag_and_capture_pins(self):
+        for case in ("tii-hwpage-fetch-blocked",
+                     "tii-hwpage-fetch-blocked-unguarded"):
+            for name, fn, expected in [
+                ("refused_true", lambda r, i: r.update(refused=True), V.FAIL),
+                ("refused_missing", lambda r, i: r.pop("refused", None), V.BLOCKED),
+                ("refused_opcode", lambda r, i: r.update(refused_opcode=0x73), V.FAIL),
+                ("operand_bytes", lambda r, i: r.update(
+                    operand_bytes=[0x73, 0, 0, 0, 0, 0, 0]), V.FAIL),
+                ("operand_complete", lambda r, i: r.update(operand_complete=True), V.FAIL),
+                ("fetch_via", lambda r, i: r.update(fetch_via="dma"), V.FAIL),
+            ]:
+                with self.subTest(case=case, field=name):
+                    c = _blockpre_cases()
+                    fn(c[case]["row"], c[case])
+                    v, reasons, _ = self._check(c)
+                    self.assertEqual(v, expected, reasons)
+
+    def test_mutation_armed_status_pins(self):
         plain = sorted(m for m in V.BLOCKPRE_MUTATIONS
                        if m not in V.BLOCKPRE_ALWAYS_BLOCKED
                        and not m.endswith("-resume-allowed")
@@ -982,6 +1004,11 @@ class BlockpreReview743Test(unittest.TestCase):
                 r.update(ram_diff=[], ram_diff_count=0)), V.FAIL),
             (wrap, "wrap_trace_removed", lambda r, i: (
                 r.update(vdc_ar_after=5)), V.FAIL),
+            (plain, "armed_true", lambda r, i: r.update(armed=True), V.FAIL),
+            (plain, "armed_missing", lambda r, i: r.pop("armed", None), V.BLOCKED),
+            (plain, "status_refused", lambda r, i: r.update(status="refused"), V.FAIL),
+            (plain, "status_missing", lambda r, i: r.pop("status", None), V.BLOCKED),
+            (resume, "resume_armed_false", lambda r, i: r.update(armed=False), V.FAIL),
         ]:
             with self.subTest(case=case, field=name):
                 c = _blockpre_cases()

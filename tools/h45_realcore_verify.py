@@ -366,6 +366,31 @@ def _blockpre_check_hwpage_row(row, base, case, expect_armed):
         return "BLOCKED", f"ARMED_HWPAGE_REASON_MISSING:{base}"
     if row["reason"] != BLOCKPRE_HWPAGE_REASON:
         return "FAIL", f"ARMED_HWPAGE_REASON_MISMATCH:{base}"
+    # Fail-closed rows never refuse an opcode: the fetch fails before any
+    # boundary decision, so refused stays False, no opcode is captured, no
+    # operand capture completes, and the peek path is recorded.
+    if not isinstance(row.get("refused"), bool):
+        return "BLOCKED", f"ARMED_HWPAGE_REFUSED_FLAG_MISSING:{base}"
+    if row["refused"] is not False:
+        return "FAIL", f"ARMED_HWPAGE_REFUSED_FLAG_MISMATCH:{base}"
+    bad = _blockpre_bad_int(row, "refused_opcode", base)
+    if bad is not None:
+        return "BLOCKED", bad
+    if row["refused_opcode"] != 0:
+        return "FAIL", f"ARMED_HWPAGE_REFUSED_OPCODE_MISMATCH:{base}"
+    operands = row.get("operand_bytes")
+    if not isinstance(operands, list):
+        return "BLOCKED", f"ARMED_HWPAGE_OPERAND_MISSING:{base}"
+    if operands != []:
+        return "FAIL", f"ARMED_HWPAGE_OPERAND_MISMATCH:{base}"
+    if not isinstance(row.get("operand_complete"), bool):
+        return "BLOCKED", f"ARMED_HWPAGE_OPERAND_COMPLETE_MISSING:{base}"
+    if row["operand_complete"] is not False:
+        return "FAIL", f"ARMED_HWPAGE_OPERAND_COMPLETE_MISMATCH:{base}"
+    if not isinstance(row.get("fetch_via"), str):
+        return "BLOCKED", f"ARMED_HWPAGE_FETCH_VIA_MISSING:{base}"
+    if row["fetch_via"] != "peek":
+        return "FAIL", f"ARMED_HWPAGE_FETCH_VIA_MISMATCH:{base}"
     for name, want in (("fetch_blocked", True), ("fetch_safe", False),
                        ("fetch_failed", True)):
         if not isinstance(row.get(name), bool):
@@ -582,6 +607,19 @@ def _check_blockpre_cases(cases, probe_ok=False, summary_ok=False):
             want_refused = case.endswith("-resume-allowed")
             if row["refused"] is not want_refused:
                 return FAIL, [f"MUTATION_REFUSED_FLAG_MISMATCH:{case}"], {}
+            # Latch state: only the pure -unguarded runs execute unmonitored;
+            # every bypass variant runs with the monitor armed. Landed runs
+            # halt cleanly (the guest ends in a self-loop), never as refused
+            # or fetch-blocked.
+            want_armed = not case.endswith("-unguarded")
+            if not isinstance(row.get("armed"), bool):
+                return BLOCKED, [f"MUTATION_ARMED_FLAG_MISSING:{case}"], {}
+            if row["armed"] is not want_armed:
+                return FAIL, [f"MUTATION_ARMED_FLAG_MISMATCH:{case}"], {}
+            if not isinstance(row.get("status"), str):
+                return BLOCKED, [f"MUTATION_STATUS_MISSING:{case}"], {}
+            if row["status"] != "ok":
+                return FAIL, [f"MUTATION_STATUS_MISMATCH:{case}"], {}
             bad = _blockpre_bad_int(row, "instructions_executed", case)
             if bad is not None:
                 return BLOCKED, [bad], {}
