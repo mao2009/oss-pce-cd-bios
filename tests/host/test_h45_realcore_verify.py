@@ -402,8 +402,13 @@ def _blockpre_cases():
                            ram_diff_truncated=False,
                            ram_unchanged_during_resume=False)
             elif base_mode == "tia-wrap-forbidden":
-                # A forbidden-destination wrap lands on the VDC, not RAM.
-                row.update(vdc_ar_before=0, vdc_ar_after=0x1B)
+                # Measured pinned-core contract (preset AR=5/SR=0x3F): the
+                # 4-byte VDC transfer moves AR 5 -> 2; the only WRAM delta is
+                # the single stack cell 0x21FE 0x00 -> 0xFF.
+                row.update(vdc_ar_before=5, vdc_ar_after=2,
+                           vdc_sr_before=0x3F, vdc_sr_after=0x3F,
+                           ram_diff=[{"address": 0x21FE, "before": 0x00, "after": 0xFF}],
+                           ram_diff_count=1, ram_diff_truncated=False)
             else:
                 trace = [{"address": a, "before": b, "after": v}
                          for a, b, v in V.BLOCKPRE_LANDED_TRACE[base_mode]]
@@ -1029,6 +1034,47 @@ class BlockpreReview743Test(unittest.TestCase):
                     fn(c[case]["row"], c[case])
                     v, reasons, _ = self._check(c)
                     self.assertEqual(v, expected, reasons)
+
+    def test_tia_wrap_evidence_pins(self):
+        # MEDIUM (§2): the tia-wrap transfer is proved by the measured VDC
+        # contract (AR 5 -> 2, SR 0x3F intact) plus the single legitimate
+        # stack-cell delta. Truncation, count games, malformed diffs,
+        # unrelated RAM changes, and AR forgeries never pass.
+        wrap = "tia-wrap-forbidden-unguarded"
+        good_trace = [{"address": 0x21FE, "before": 0x00, "after": 0xFF}]
+        for name, fn, expected in [
+            ("truncated", lambda r: r.update(ram_diff_truncated=True), V.BLOCKED),
+            ("truncated_missing", lambda r: r.pop("ram_diff_truncated", None), V.BLOCKED),
+            ("truncated_none", lambda r: r.update(ram_diff_truncated=None), V.BLOCKED),
+            ("count_missing", lambda r: r.pop("ram_diff_count", None), V.BLOCKED),
+            ("count_true", lambda r: r.update(ram_diff_count=True), V.BLOCKED),
+            ("count_mismatch", lambda r: r.update(ram_diff_count=2), V.FAIL),
+            ("diff_string", lambda r: r.update(ram_diff="0x21FE", ram_diff_count=6), V.BLOCKED),
+            ("diff_dict", lambda r: r.update(ram_diff={"address": 0x21FE},
+                                             ram_diff_count=1), V.BLOCKED),
+            ("bad_address", lambda r: r.update(
+                ram_diff=[{"address": 0x1000, "before": 0x00, "after": 0xFF}]), V.BLOCKED),
+            ("bad_before", lambda r: r.update(
+                ram_diff=[{"address": 0x21FE, "before": 0x01, "after": 0xFF}]), V.FAIL),
+            ("bad_after", lambda r: r.update(
+                ram_diff=[{"address": 0x21FE, "before": 0x00, "after": 0x00}]), V.FAIL),
+            ("extra_ram", lambda r: r.update(
+                ram_diff=good_trace + [{"address": 0x3E90, "before": 0xCC, "after": 0x60}],
+                ram_diff_count=2), V.FAIL),
+            ("no_trace", lambda r: r.update(ram_diff=[], ram_diff_count=0,
+                                            vdc_ar_after=5), V.FAIL),
+            ("ar_unchanged", lambda r: r.update(vdc_ar_after=5), V.FAIL),
+            ("ar_wrong", lambda r: r.update(vdc_ar_after=0x1B), V.FAIL),
+            ("ar_before_wrong", lambda r: r.update(vdc_ar_before=0), V.FAIL),
+            ("ar_type", lambda r: r.update(vdc_ar_after="2"), V.BLOCKED),
+            ("ar_missing", lambda r: r.pop("vdc_ar_after", None), V.BLOCKED),
+            ("sr_wrong", lambda r: r.update(vdc_sr_after=0x00), V.FAIL),
+        ]:
+            with self.subTest(field=name):
+                c = _blockpre_cases()
+                fn(c[wrap]["row"])
+                v, reasons, _ = self._check(c)
+                self.assertEqual(v, expected, reasons)
 
     def test_mutation_armed_status_pins(self):
         plain = sorted(m for m in V.BLOCKPRE_MUTATIONS

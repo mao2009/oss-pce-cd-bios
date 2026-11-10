@@ -266,13 +266,17 @@ def check_armed(row, mode):
     return REFUSED_VERDICT
 
 
-def _require_landed_trace(row, mode):
+def _require_landed_trace(row, mode, expected=None):
     """The landed transfer bytes must be present with exact before/after.
 
     Non-empty is not enough: stack-only diffs, wrong destinations, or
     forged values never count as a landed transfer. IRQ runs may carry the
     three architectural stack pushes in addition to the transfer triples.
+    For tia-wrap the expected trace is the measured single stack-cell delta
+    (the transfer itself lands on the VDC, checked by the caller).
     """
+    if expected is None:
+        expected = BLOCKPRE_LANDED_TRACE[mode]
     diffs = row.get("ram_diff")
     if not isinstance(diffs, list) or not diffs:
         raise ValueError(f"{mode}: landed run left no RAM trace")
@@ -296,7 +300,7 @@ def _require_landed_trace(row, mode):
         if before == after:
             raise ValueError(f"{mode}: ram_diff entry is not a change: {address:#x}")
         seen.add((address, before, after))
-    for triple in BLOCKPRE_LANDED_TRACE[mode]:
+    for triple in expected:
         if triple not in seen:
             raise ValueError(f"{mode}: expected transfer byte missing: "
                              f"${triple[0]:04X} ${triple[1]:02X}->${triple[2]:02X}")
@@ -318,12 +322,27 @@ def check_unguarded_landed(row, mode):
         raise ValueError(f"{mode}: bypassed run was refused: monitor still armed")
     _int_fields(row, ("instructions_executed",))
     if mode == "tia-wrap-forbidden":
-        # A forbidden-destination wrap lands on the VDC instead of RAM.
-        _int_fields(row, ("vdc_ar_before", "vdc_ar_after"))
-        if row.get("vdc_ar_before") == row.get("vdc_ar_after"):
-            raise ValueError(f"{mode}: unguarded wrap left no VDC trace")
-    else:
-        _require_landed_trace(row, mode)
+        # The forbidden-destination wrap lands on the VDC, not RAM. Measured
+        # contract (pinned core, preset AR=5/SR=0x3F): the transfer moves AR
+        # 5 -> 2, SR stays 0x3F, R and the read buffer are unchanged, and the
+        # only WRAM delta is the single stack cell 0x21FE 0x00 -> 0xFF.
+        _int_fields(row, ("vdc_ar_before", "vdc_ar_after",
+                          "vdc_sr_before", "vdc_sr_after",
+                          "vdc_r_before", "vdc_r_after",
+                          "vdc_read_buffer_before", "vdc_read_buffer_after"))
+        if row.get("vdc_ar_before") != 5 or row.get("vdc_ar_after") != 2:
+            raise ValueError(f"{mode}: VDC AR not the measured 5 -> 2 transfer trace")
+        if row.get("vdc_sr_before") != 0x3F or row.get("vdc_sr_after") != 0x3F:
+            raise ValueError(f"{mode}: VDC SR disturbed without a step")
+        if row.get("vdc_r_before") != row.get("vdc_r_after"):
+            raise ValueError(f"{mode}: VDC R0 changed without any step")
+        if row.get("vdc_read_buffer_before") != row.get("vdc_read_buffer_after"):
+            raise ValueError(f"{mode}: VDC READ_BUFFER changed without any step")
+        _require_landed_trace(row, mode, [(0x21FE, 0x00, 0xFF)])
+        if len(row["ram_diff"]) != 1:
+            raise ValueError(f"{mode}: extra RAM change unrelated to the VDC transfer")
+        return LANDED_VERDICT
+    _require_landed_trace(row, mode)
     landed = {(d["address"], d["after"]) for d in row["ram_diff"]
               if isinstance(d, dict) and "address" in d and "after" in d}
     if mode in ("tii-entry", "block-irq-handler"):

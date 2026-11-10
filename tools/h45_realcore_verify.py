@@ -168,6 +168,12 @@ BLOCKPRE_MPR_AFTER = {
 BLOCKPRE_IRQ_VECTOR = 0x3F80
 BLOCKPRE_STACK_CELLS = frozenset({0x21FF, 0x21FE, 0x21FD})
 BLOCKPRE_RESUME_ATTEMPTS = 3
+# Measured tia-wrap-forbidden transfer (pinned core, preset AR=5/SR=0x3F):
+# the 4-byte VDC transfer moves AR 5 -> 2, and the only WRAM delta is the
+# single stack cell 0x21FE 0x00 -> 0xFF. An unrelated RAM change is rejected.
+BLOCKPRE_TIA_WRAP_VDC_AR_BEFORE = 5
+BLOCKPRE_TIA_WRAP_VDC_AR_AFTER = 2
+BLOCKPRE_TIA_WRAP_RAM_TRACE = [(0x21FE, 0x00, 0xFF)]
 # Expected landed transfer trace per base mode: (address, before, after).
 # before comes from the linear fixture (dst $3E90-$3E93 preset to $CC, the
 # rest of $3E40-$3E9F filled with F(addr) = (0x20 + addr - 0x3E40) & 0xFF);
@@ -476,23 +482,20 @@ def _blockpre_check_hwpage_row(row, base, case, expect_armed):
     return None, None
 
 
-def _blockpre_check_landed_trace(row, base, case):
+def _blockpre_check_landed_trace(row, base, case, expected=None):
     """Landed transfer content: every expected triple present, well-formed.
 
     Non-empty is not enough: stack-only diffs, wrong destinations, forged
     values, truncated lists, and count mismatches never count as a landed
-    transfer. The tia-wrap family lands on the VDC instead of RAM.
+    transfer. The tia-wrap family lands on the VDC instead of RAM (expected
+    is then the measured legitimate stack-cell delta, not a transfer triple).
     """
-    if base == "tia-wrap-forbidden":
-        for name in ("vdc_ar_before", "vdc_ar_after"):
-            bad = _blockpre_bad_int(row, name, case)
-            if bad is not None:
-                return "BLOCKED", bad
-        if row["vdc_ar_before"] == row["vdc_ar_after"]:
-            return "FAIL", f"MUTATION_NO_TRACE:{case}"
-        return None, None
+    if expected is None:
+        expected = BLOCKPRE_LANDED_TRACE[base]
     diffs = row.get("ram_diff")
-    if not isinstance(diffs, list) or not diffs:
+    if not isinstance(diffs, list):
+        return "BLOCKED", f"MUTATION_TRACE_MALFORMED:{case}"
+    if not diffs:
         return "FAIL", f"MUTATION_NO_TRACE:{case}"
     truncated = row.get("ram_diff_truncated")
     if type(truncated) is not bool:
@@ -518,9 +521,40 @@ def _blockpre_check_landed_trace(row, base, case):
         if before == after:
             return "FAIL", f"MUTATION_TRACE_NOT_A_CHANGE:{case}:{address:#x}"
         seen.add((address, before, after))
-    for triple in BLOCKPRE_LANDED_TRACE[base]:
+    for triple in expected:
         if triple not in seen:
             return "FAIL", f"MUTATION_TRACE_MISSING:{case}:{triple[0]:#x}"
+    if base == "tia-wrap-forbidden" and len(seen) != len(expected):
+        # The measured tia-wrap transfer leaves exactly the one legitimate
+        # stack-cell delta; any extra RAM change is unrelated to the transfer.
+        return "FAIL", f"MUTATION_TRACE_EXTRA:{case}"
+    return None, None
+
+
+def _blockpre_check_landed_vdc(row, base, case):
+    """TIA VDC evidence: exact measured contract, not mere inequality.
+
+    Measured on the pinned core (the wrap-forbidden family presets AR=5 and
+    SR=0x3F before the run): the 4-byte VDC transfer moves AR 5 -> 2, SR
+    stays 0x3F, R and the read buffer are unchanged. A forged AR value or a
+    missing sentinel fails closed.
+    """
+    for name, want in (("vdc_ar_before", 5), ("vdc_ar_after", 2),
+                       ("vdc_sr_before", 0x3F), ("vdc_sr_after", 0x3F)):
+        bad = _blockpre_bad_int(row, name, case)
+        if bad is not None:
+            return "BLOCKED", bad
+        if row[name] != want:
+            return "FAIL", f"MUTATION_VDC_MISMATCH:{case}:{name}"
+    for name in ("vdc_r_before", "vdc_r_after",
+                 "vdc_read_buffer_before", "vdc_read_buffer_after"):
+        bad = _blockpre_bad_int(row, name, case)
+        if bad is not None:
+            return "BLOCKED", bad
+    if row["vdc_r_before"] != row["vdc_r_after"]:
+        return "FAIL", f"MUTATION_VDC_R_CHANGED:{case}"
+    if row["vdc_read_buffer_before"] != row["vdc_read_buffer_after"]:
+        return "FAIL", f"MUTATION_VDC_READ_BUFFER_CHANGED:{case}"
     return None, None
 
 
@@ -719,7 +753,14 @@ def _check_blockpre_cases(cases, probe_ok=False, summary_ok=False):
                     return FAIL, [f"MUTATION_EXECUTED_AT_REFUSAL_MISMATCH:{case}"], {}
                 if row["executed_after_resume"] != row["instructions_executed"]:
                     return FAIL, [f"MUTATION_EXECUTED_AFTER_RESUME_MISMATCH:{case}"], {}
-            status, reason = _blockpre_check_landed_trace(row, base, case)
+            if base == "tia-wrap-forbidden":
+                status, reason = _blockpre_check_landed_vdc(row, base, case)
+                if status is not None:
+                    return status, [reason], {}
+                status, reason = _blockpre_check_landed_trace(
+                    row, base, case, BLOCKPRE_TIA_WRAP_RAM_TRACE)
+            else:
+                status, reason = _blockpre_check_landed_trace(row, base, case)
             if status is not None:
                 return status, [reason], {}
             mut_ok += 1

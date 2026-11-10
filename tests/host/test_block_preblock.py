@@ -161,15 +161,60 @@ class UnarmedTest(unittest.TestCase):
             B.check_unguarded_landed(row, "tin-unknown-far")
 
     def test_wrap_unguarded_vdc_trace(self):
+        # Measured pinned-core contract (preset AR=5/SR=0x3F): the 4-byte VDC
+        # transfer moves AR 5 -> 2; the only WRAM delta is the stack cell.
         row = self._landed("tia-wrap-forbidden")
-        row.update({"ram_diff": [], "vdc_ar_before": 5, "vdc_ar_after": 0x1B})
+        row.update({"ram_diff": [{"address": 0x21FE, "before": 0x00, "after": 0xFF}],
+                    "ram_diff_count": 1, "ram_diff_truncated": False,
+                    "vdc_ar_before": 5, "vdc_ar_after": 2,
+                    "vdc_sr_before": 0x3F, "vdc_sr_after": 0x3F})
         self.assertEqual(B.check_unguarded_landed(row, "tia-wrap-forbidden"), B.LANDED_VERDICT)
 
     def test_wrap_unguarded_without_trace_blocked(self):
         row = self._landed("tia-wrap-forbidden")
-        row.update({"ram_diff": [], "vdc_ar_before": 5, "vdc_ar_after": 5})
+        row.update({"ram_diff": [], "ram_diff_count": 0, "vdc_ar_before": 5, "vdc_ar_after": 5})
         with self.assertRaises(ValueError):
             B.check_unguarded_landed(row, "tia-wrap-forbidden")
+
+    def test_wrap_forgery_rejected(self):
+        base = self._landed("tia-wrap-forbidden")
+        base.update({"ram_diff": [{"address": 0x21FE, "before": 0x00, "after": 0xFF}],
+                     "ram_diff_count": 1, "ram_diff_truncated": False,
+                     "vdc_ar_before": 5, "vdc_ar_after": 2,
+                     "vdc_sr_before": 0x3F, "vdc_sr_after": 0x3F})
+        for name, change in [
+            ("truncated", {"ram_diff_truncated": True}),
+            ("truncated_missing", {"ram_diff_truncated": None}),
+            ("count_missing", {"ram_diff_count": None}),
+            ("count_true", {"ram_diff_count": True}),
+            ("count_mismatch", {"ram_diff_count": 2}),
+            ("diff_string", {"ram_diff": "0x21FE", "ram_diff_count": 6}),
+            ("diff_dict", {"ram_diff": {"address": 0x21FE}, "ram_diff_count": 1}),
+            ("bad_address", {"ram_diff": [{"address": 0x1000, "before": 0x00, "after": 0xFF}]}),
+            ("bad_before", {"ram_diff": [{"address": 0x21FE, "before": 0x01, "after": 0xFF}]}),
+            ("bad_after", {"ram_diff": [{"address": 0x21FE, "before": 0x00, "after": 0x00}]}),
+            ("extra_ram", {"ram_diff": [{"address": 0x21FE, "before": 0x00, "after": 0xFF},
+                                        {"address": 0x3E90, "before": 0xCC, "after": 0x60}],
+                           "ram_diff_count": 2}),
+            ("ar_unchanged", {"vdc_ar_after": 5}),
+            ("ar_wrong", {"vdc_ar_after": 0x1B}),
+            ("ar_before_wrong", {"vdc_ar_before": 0}),
+            ("ar_type", {"vdc_ar_after": "2"}),
+            ("ar_missing", {"vdc_ar_after": None}),
+            ("sr_wrong", {"vdc_sr_after": 0x00}),
+        ]:
+            with self.subTest(name=name):
+                import copy
+                row = copy.deepcopy(base)
+                row.update(change)
+                if name == "truncated_missing":
+                    del row["ram_diff_truncated"]
+                if name == "count_missing":
+                    del row["ram_diff_count"]
+                if name == "ar_missing":
+                    del row["vdc_ar_after"]
+                with self.assertRaises(ValueError):
+                    B.check_unguarded_landed(row, "tia-wrap-forbidden")
 
     def test_refused_mutant_rejected(self):
         row = self._landed()
