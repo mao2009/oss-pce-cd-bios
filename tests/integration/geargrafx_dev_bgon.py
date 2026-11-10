@@ -107,10 +107,10 @@ def main():
                 run(probe, bytes(mutant), folder, cue, reset, entry, f"mut-{name}",
                     (mlo, mhi), mregs)
             except ValueError as error:
-                if not any(key in str(error) for key in ("A/P/X/Y observed", "stack not balanced",
-                                                         "RAM sentinel", "did not reach its halt loop",
-                                                         "MPR changed", "MPR0 not restored", "CR $",
-                                                         "VDC CR", "VDC AR")):
+                    if not any(key in str(error) for key in ("A/P/X/Y observed", "stack not balanced",
+                                                     "RAM sentinel", "did not reach its halt loop",
+                                                     "MPR changed", "MPR0 not restored", "CR $",
+                                                     "VDC CR", "VDC AR", "shadow ")):
                     raise  # only a contract mismatch counts as a rejection (a crash is not a detection)
                 evidence["negative_cases"].append({"case": name, "rejected_by": str(error)})
             else:
