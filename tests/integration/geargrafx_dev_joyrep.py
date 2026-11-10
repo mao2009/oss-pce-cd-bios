@@ -34,7 +34,9 @@ STORE = 0x2200            # A/P/X/Y/SP-after stored at STORE..STORE+4
 SENTINEL = 0x2300         # 16-byte RAM sentinel, must be untouched
 SENTINEL_LEN = 16
 RUN_STEPS = 2048          # probe maximum
-WRAM_BASE = 0x2000        # work_ram_0200_hex dump index 0 = CPU $2000
+# Full 8 KiB work-RAM dump (Issue #242): index 0 = CPU $2000. The 64-byte
+# work_ram_0200_hex window ($2200..$223F) is too small for STORE + SENTINEL.
+WRAM_BASE = 0x2000
 P_MASK = 0xCF             # PHP sets B (bit 4) and bit 5; PLP ignores them
 
 
@@ -78,7 +80,9 @@ def check(label, rows, halt, a, x, y, p, sp):
         raise ValueError(f"{label}: guest did not reach its halt loop (pc ${cold['pc']:04X}, want ${halt:04X})")
     if cold["mpr"][1] != 0xF8 or cold["mpr"][7] != 0:
         raise ValueError(f"{label}: MPR changed (mpr={cold['mpr']})")
-    wram = bytes.fromhex(cold["work_ram_0200_hex"])
+    wram = bytes.fromhex(cold["work_ram_hex"])
+    if len(wram) < 0x2000:
+        raise ValueError(f"{label}: full work-RAM dump too short ({len(wram)} bytes)")
 
     def at(addr):
         return wram[addr - WRAM_BASE]
