@@ -17,8 +17,27 @@
 ;   shadow: $2502 = CR-low image (this family's single writer for CR low),
 ;           $2503 = $A5 iff initialized, $2504 reserved (CR-high image for the
 ;           future $2F-$33 family, which shares this discipline).
+;           $2503 == $A5 is ONLY an initialization marker: it records that the
+;           shadow was seeded, and does NOT prove the shadow still matches the
+;           real VDC CR. Any direct CR write that bypasses this family (port
+;           ST1/ST2 to R05, or another routine touching CR) silently desyncs the
+;           shadow, and the next call will then rewrite CR from the stale image.
 ;           MPR1 must map work RAM ($F8) when calling (same precondition as
 ;           EX_RND's $2500/$2501 state); the routine does not remap MPR1.
+;   sync responsibility: the CALLER owns synchronization. While using this
+;           family, never write VDC CR directly; if any code path writes CR
+;           outside this family (including the future $2F-$33 siblings, which
+;           share the same shadow), the caller must re-seed $2502/$2503 before
+;           the next call. Out-of-sync state is out of contract: behavior is
+;           defined only as "CR low := stale shadow | mask" (no error is
+;           reported), so a desynced caller gets a wrong-but-deterministic CR.
+;   competing VDC users audited: EX_SETWRT (slot $3A) touches only MAWR (R00,
+;           leaves AR=0) and never CR; no other in-tree routine writes VDC CR.
+;           The only writers of $2502/$2503 are this family and the caller's own
+;           seeding code. Because no mechanism can observe a bypassing CR write,
+;           this API is generally callable ONLY under the no-direct-CR-write
+;           discipline above; without it, correct operation cannot be claimed.
+;           DEV ONLY in any case (release_eligible: false).
 ;   in : nothing read (A/X/Y are not inputs; X/Y are never written either).
 ;   ok (shadow initialized): VDC CR low = shadow | $80; shadow updated; CR high
 ;        untouched; C=0 (same result convention as EX_SETWRT). A, X, Y, MPRs,

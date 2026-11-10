@@ -50,6 +50,13 @@ class ModelContractTests(unittest.TestCase):
         lo, _, _, _ = cr_model(0x12, 0xA5)
         self.assertEqual(cr_model(lo, 0xA5), (lo, 0xA5, 0, lo))
 
+    def test_desync_is_out_of_contract_not_an_error(self):
+        # MEDIUM-2: $A5 marks "seeded", not "matches hardware". A caller that
+        # writes CR directly and re-calls gets the stale shadow applied with
+        # C=0 (no error reported) — hence the re-seed discipline.
+        stale, magic, carry, written = cr_model(0x00, 0xA5)
+        self.assertEqual((carry, written), (0, 0x80))
+
 
 class AssemblyStaticTests(unittest.TestCase):
     def _code(self):
@@ -97,6 +104,16 @@ class AssemblyStaticTests(unittest.TestCase):
         self.assertEqual(pushes, ["php", "pha", "pha"])
         pulls = [line.split()[0] for line in code if line.split()[0] in ("plp", "ply", "plx", "pla")]
         self.assertEqual(pulls, ["pla", "plp", "pla", "pla", "plp"])
+
+    def test_sync_discipline_is_documented(self):
+        src = SRC.read_text(encoding="utf-8")
+        # MEDIUM-2: the marker/match distinction, caller re-seed duty,
+        # out-of-contract desync behavior, competing-VDC-user audit and the
+        # conditional-callability limit must all be stated in the source.
+        for phrase in ("initialization marker", "re-seed $2502/$2503",
+                       "out of contract", "slot $3A",
+                       "generally callable ONLY"):
+            self.assertIn(phrase, src)
 
     def test_no_zero_page_ram_stack_or_branch_side_effects(self):
         code = "\n".join(self._code()).lower()

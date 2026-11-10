@@ -15,11 +15,13 @@ Guest program (reset-replacement code):
      case pattern (low/high), then restore MPR0.
   3. Preset P (PHA/PLP, I=1 in every case), X, Y and A; JSR the slot entry; PHP and
      record A/P/X/Y/SP-after at $2200..$2204. The original MPR0 is kept at $2207
-     for the MPR0-restored check. No guest port readback is performed: on the
-     pinned core a CR data-port read returns the stale m_read_buffer, so the
-     vdc_cr probe observation is the only trustworthy oracle.
+     for the MPR0-restored check.
 The authoritative oracle is the probe's independent vdc_cr observation
-(GetState()->R[5]); the guest port readback is only a secondary signal.
+(GetState()->R[5]); no guest port readback is asserted because the pinned core
+returns stale data for CR data-port reads, which would make such an expectation
+vacuous (MAJOR-1). The pre-call CR/AR state is known by construction (the guest
+programs the case pattern through the window with AR=5 immediately before the
+JSR); the post-call state is the probe's cold vdc_cr/vdc_ar observation.
 Test patterns never set CR interrupt-enable bits (0-3), so no IRQ can fire.
 
 Requires the pinned cc65 and Geargrafx core (TOOLS_DIR). Missing tools exit 3.
@@ -94,9 +96,9 @@ def guest(reset, entry, cr_low, cr_high, a, x, y, p, sp, seed_shadow=True):
                    0xBA,                         # TSX
                    0x8E, (STORE + 4) & 0xFF, (STORE + 4) >> 8])  # STX STORE+4 (SP)
     # NOTE: no guest port readback of CR is asserted. On the pinned core a CR
-    # data-port read returns the stale m_read_buffer ($FFFF at reset), never the
-    # register, so a readback expectation would be vacuous; the vdc_cr oracle in
-    # check() is the authoritative hardware observation. (MAJOR-1/MAJOR-2.)
+    # data-port read returns stale data, never the live register, so a readback
+    # expectation would be vacuous; the vdc_cr oracle in check() is the
+    # authoritative hardware observation. (MAJOR-1/MAJOR-2.)
     halt = reset + len(code)
     code += bytes([0x80, 0xFE])                  # BRA -2
     if reset + len(code) > 0xFFF6:
@@ -139,10 +141,16 @@ def check(label, rows, halt, a, x, y, p, sp, cr_low, cr_high, set_mask, clear_ma
     want_magic = SHADOW_VALID if seed_shadow else 0x00
     # Authoritative oracle FIRST: the VDC's actual CR state from the probe
     # (GetState()->R[5]), independent of any port read (MAJOR-2). No guest
-    # port readback is asserted: on the pinned core CR reads return the stale
-    # m_read_buffer, so such an expectation would be vacuous (MAJOR-1).
+    # port readback is asserted: on the pinned core CR reads return stale
+    # data, so such an expectation would be vacuous (MAJOR-1).
     if "vdc_cr" not in cold or "vdc_ar" not in cold:
         raise ValueError(f"{label}: probe observation lacks vdc_cr/vdc_ar (probe too old?)")
+    # Pre-call state is known by construction: the guest selects AR=5 and
+    # programs the case pattern through the window immediately before the JSR.
+    # Post-call state is the cold observation. On the reject path the two must
+    # match exactly (zero VDC writes); the probe exposes no write-event trace,
+    # so zero-write is inferred from (CR, AR, shadow, RAM) invariance.
+    pre_vdc = ((cr_high & 0x1F) << 8) | cr_low
     if cold["vdc_ar"] != 5:
         raise ValueError(f"{label}: VDC AR ${cold['vdc_ar']:02X}, want $05 (contract: AR left at CR)")
     # CR high bits 13-15 are unwritable (k_register_mask[R05] = 0x1FFF) and read
@@ -151,12 +159,55 @@ def check(label, rows, halt, a, x, y, p, sp, cr_low, cr_high, set_mask, clear_ma
     if cold["vdc_cr"] != want_vdc:
         raise ValueError(f"{label}: VDC CR ${cold['vdc_cr']:04X}, "
                          f"want ${want_vdc:04X} (independent hardware oracle)")
+    if not seed_shadow and cold["vdc_cr"] != pre_vdc:
+        raise ValueError(f"{label}: reject path changed VDC CR ${pre_vdc:04X} -> "
+                         f"${cold['vdc_cr']:04X} (contract: no VDC write on reject)")
     if at(SHADOW_LO) != want_shadow_lo or at(SHADOW_MAGIC) != want_magic:
         raise ValueError(f"{label}: shadow ${at(SHADOW_MAGIC):02X}{at(SHADOW_LO):02X}, "
                          f"want ${want_magic:02X}{want_shadow_lo:02X}")
+    # Reserved CR-high image: this family never writes it; any change is a bug.
+    # (Compared against the loaded pre-guest dump when available; otherwise the
+    # reset fill is expected to be $00 and any nonzero cold value is reported.)
+    loaded_rsvd = None
+    for r in rows:
+        if r["phase"] == "loaded" and "work_ram_hex" in r:
+            _b = bytes.fromhex(r["work_ram_hex"])
+            if len(_b) >= 0x2000:
+                loaded_rsvd = _b[SHADOW_HI_RSVD - WRAM_BASE]
+            break
+    if loaded_rsvd is not None:
+        if at(SHADOW_HI_RSVD) != loaded_rsvd:
+            raise ValueError(f"{label}: reserved shadow ${SHADOW_HI_RSVD:04X} "
+                             f"changed ${loaded_rsvd:02X} -> ${at(SHADOW_HI_RSVD):02X} (must be untouched)")
+    elif at(SHADOW_HI_RSVD) != 0x00:
+        raise ValueError(f"{label}: reserved shadow ${SHADOW_HI_RSVD:04X} "
+                         f"is ${at(SHADOW_HI_RSVD):02X} (must stay $00)")
     sentinel = bytes(wram[SENTINEL - WRAM_BASE:SENTINEL - WRAM_BASE + SENTINEL_LEN])
     want_sentinel = bytes(sentinel_byte(i) for i in range(SENTINEL_LEN))
     if sentinel != want_sentinel:
         raise ValueError(f"{label}: RAM sentinel ${SENTINEL:04X} changed")
+    # Full-RAM invariance outside the owned cells: diff loaded (pre-guest) vs
+    # cold (post-guest). Owned writes are the STORE record, the seeded shadow
+    # bytes, the guest-filled sentinel (verified above) and the stack page
+    # $2100-$21FF (pushes/RTS traffic). Anything
+    # else changing means the API wrote where it must not, including on the
+    # reject path (which must perform zero RAM writes).
+    loaded = next((r for r in rows if r["phase"] == "loaded"), None)
+    if loaded is not None and "work_ram_hex" in loaded:
+        before = bytes.fromhex(loaded["work_ram_hex"])
+        if len(before) >= 0x2000:
+            owned = set(range(STORE - WRAM_BASE, STORE - WRAM_BASE + 8))
+            owned |= {SHADOW_LO - WRAM_BASE, SHADOW_MAGIC - WRAM_BASE}
+            owned |= {SENTINEL - WRAM_BASE + i for i in range(SENTINEL_LEN)}
+            owned |= {0x100 + i for i in range(0x100)}  # stack page $2100-$21FF
+            # STORE_MPR0 ($2207) is inside the STORE window already.
+            bad = [WRAM_BASE + i for i in range(0x2000)
+                   if before[i] != wram[i] and i not in owned]
+            # Sentinel/stack/shadow cells verified separately; report the rest.
+            bad = [a for a in bad if not (SENTINEL <= a < SENTINEL + SENTINEL_LEN)]
+            if bad:
+                shown = " ".join(f"${a:04X}" for a in bad[:8])
+                raise ValueError(f"{label}: out-of-contract RAM write at {shown}"
+                                 f" ({len(bad)} bytes differ outside owned cells)")
     return {"a": a, "x": x, "y": y, "p": f"{p:02X}", "sp": f"{sp:02X}",
             "cr": f"{want_vdc:04X}"}

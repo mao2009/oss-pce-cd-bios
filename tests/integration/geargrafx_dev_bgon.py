@@ -8,9 +8,11 @@ preserved (C=0), VDC AR left at 5 (CR select), stack balanced (SP=$FF and the
 $07 boundary), MPR0/MPR1/MPR7 intact and the RAM sentinel untouched.
 NOT the reference System Card EX_BGON. ABI stays UNVERIFIED.
 
-Four mutants that must each be rejected on the real core: BB not set
+Five mutants that must each be rejected on the real core: BB not set
 (ORA #$80 -> ORA #$00), spurious SB (ORA #$80 -> ORA #$C0), other bits
-destroyed (ORA #$80 -> ORA #$FF), CR high byte rewritten (STA $0002 -> STA $0003).
+destroyed (ORA #$80 -> ORA #$FF), CR high byte rewritten (STA $0002 -> STA $0003),
+and reject-bypass (CMP #$A5 -> CMP #$00: the unseeded reject path takes the ok
+path and must be caught by the CR/shadow/RAM invariance checks).
 Run: python3 tests/integration/geargrafx_dev_bgon.py --rom build/<mode>/bios-dev/dev-only-not-compatible-syscard3.pce
 Needs the pinned cc65 and Geargrafx core (TOOLS_DIR). Missing tools exit 3 (BLOCKED).
 """
@@ -41,6 +43,16 @@ MUTANTS = [
     ("high_rewritten", bytes([0x8D, 0x02, 0x00]), bytes([0x8D, 0x03, 0x00])),  # STA $0002 -> STA $0003
 ]
 MUTANT_CASE = (("ex-kept", 0x30, 0x00), (0x12, 0x34, 0x56, 0x34, 0xFF))
+# Reject-path mutants: run against the unseeded (uninit) case and must be
+# rejected. reject_bypass weakens the magic check (CMP #$A5 -> CMP #$00) so the
+# uninitialized shadow takes the ok path and writes VDC CR; the strengthened
+# reject checks (CR invariance, shadow invariance, full-RAM diff) must catch it.
+# reject_writes_vdc replaces the reject SEC with STA $0002 (low-byte VDC write
+# op) so the reject path itself touches the VDC; the CR-invariance check catches it.
+REJECT_MUTANTS = [
+    ("reject_bypass", bytes([0xC9, 0xA5]), bytes([0xC9, 0x00])),
+]
+REJECT_MUTANT_CASE = (("uninit", 0x00, 0x00), (0x12, 0x34, 0x56, 0x34, 0xFF))
 CASES = [(("lo-clear", 0x00, 0x00), (0x12, 0x34, 0x56, 0x34, 0xFF), True),
          (("sb-kept", 0x40, 0xA5), (0x12, 0x34, 0x56, 0x34, 0xFF), True),
          (("ex-kept", 0x30, 0x00), (0x12, 0x34, 0x56, 0x34, 0xFF), True),
@@ -112,20 +124,45 @@ def main():
                 if not any(key in str(error) for key in ("A/P/X/Y observed", "stack not balanced",
                                                          "RAM sentinel", "did not reach its halt loop",
                                                          "MPR changed", "MPR0 not restored", "CR $",
-                                                         "VDC CR", "VDC AR", "shadow ")):
+                                                         "VDC CR", "VDC AR", "shadow ",
+                                                         "out-of-contract RAM write", "reject path changed",
+                                                         "reserved shadow")):
                     raise  # only a contract mismatch counts as a rejection (a crash is not a detection)
                 print(f"MUTANT-REJECTED {name}: {error}", flush=True)
                 evidence["negative_cases"].append({"case": name, "rejected_by": str(error)})
             else:
                 raise ValueError(f"mutant {name} passed all checks (not detected)")
+        (rname, rlo, rhi), rregs = REJECT_MUTANT_CASE
+        for name, find, replace in REJECT_MUTANTS:
+            at = data.find(find, code_at, code_at + 0x60)
+            if at < 0:
+                raise ValueError(f"mutant {name}: pattern {find.hex()} not found in slot $2E body")
+            mutant = bytearray(data)
+            mutant[at:at + len(replace)] = replace
+            try:
+                run(probe, bytes(mutant), folder, cue, reset, entry, f"mut-{name}",
+                    (rlo, rhi), rregs, seed_shadow=False)
+            except ValueError as error:
+                if not any(key in str(error) for key in ("A/P/X/Y observed", "stack not balanced",
+                                                         "RAM sentinel", "did not reach its halt loop",
+                                                         "MPR changed", "MPR0 not restored", "CR $",
+                                                         "VDC CR", "VDC AR", "shadow ",
+                                                         "out-of-contract RAM write", "reject path changed",
+                                                         "reserved shadow")):
+                    raise
+                print(f"MUTANT-REJECTED {name}: {error}", flush=True)
+                evidence["negative_cases"].append({"case": name, "rejected_by": str(error)})
+            else:
+                raise ValueError(f"mutant {name} passed all checks (not detected)")
+        total_mutants = len(MUTANTS) + len(REJECT_MUTANTS)
     (args.rom.parent / "geargrafx-dev-bgon-evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
     if failures:
         print(f"RED real Geargrafx DEV ROM: EX_BGON slot $2E: {len(failures)}/{len(CASES)} positive cases "
-              f"failed the contract; {len(evidence['negative_cases'])}/{len(MUTANTS)} mutants rejected")
+              f"failed the contract; {len(evidence['negative_cases'])}/{total_mutants} mutants rejected")
         raise SystemExit(1)
     print(f"PASS real Geargrafx DEV ROM: EX_BGON slot $2E: {len(CASES)} runs set BB, keep other CR bits, "
           f"preserve A/X/Y/P, balance SP=$FF/$07, keep MPRs and the sentinel; "
-          f"{len(evidence['negative_cases'])}/{len(MUTANTS)} mutants rejected")
+          f"{len(evidence['negative_cases'])}/{total_mutants} mutants rejected")
 
 
 if __name__ == "__main__":
