@@ -41,23 +41,25 @@ MUTANTS = [
     ("high_rewritten", bytes([0x8D, 0x02, 0x00]), bytes([0x8D, 0x03, 0x00])),  # STA $0002 -> STA $0003
 ]
 MUTANT_CASE = (("ex-kept", 0x30, 0x00), (0x12, 0x34, 0x56, 0x34, 0xFF))
-CASES = [(("lo-clear", 0x00, 0x00), (0x12, 0x34, 0x56, 0x34, 0xFF)),
-         (("sb-kept", 0x40, 0xA5), (0x12, 0x34, 0x56, 0x34, 0xFF)),
-         (("ex-kept", 0x30, 0x00), (0x12, 0x34, 0x56, 0x34, 0xFF)),
-         (("sp07", 0x40, 0xA5), (0xA5, 0x5A, 0x3C, 0xB4, 0x07))]
+CASES = [(("lo-clear", 0x00, 0x00), (0x12, 0x34, 0x56, 0x34, 0xFF), True),
+         (("sb-kept", 0x40, 0xA5), (0x12, 0x34, 0x56, 0x34, 0xFF), True),
+         (("ex-kept", 0x30, 0x00), (0x12, 0x34, 0x56, 0x34, 0xFF), True),
+         (("uninit", 0x00, 0x00), (0x12, 0x34, 0x56, 0x34, 0xFF), False),
+         (("sp07", 0x40, 0xA5), (0xA5, 0x5A, 0x3C, 0xB4, 0x07), True)]
 
 
-def run(probe, rom_bytes, folder, cue, reset, entry, label, pattern, regs):
+def run(probe, rom_bytes, folder, cue, reset, entry, label, pattern, regs, seed_shadow=True):
     """One real-core run for a (CR pattern, register preset) pair."""
     cr_low, cr_high = pattern
     a, x, y, p, sp = regs
-    code, halt = cr.guest(reset, entry, cr_low, cr_high, a, x, y, p, sp)
+    code, halt = cr.guest(reset, entry, cr_low, cr_high, a, x, y, p, sp, seed_shadow=seed_shadow)
     variant = bytearray(rom_bytes)
     variant[reset - 0xE000:reset - 0xE000 + len(code)] = code
     rom = folder / f"{label}.pce"
     rom.write_bytes(variant)
     rows = dev.run_probe(probe, rom.resolve(), cue, count=cr.RUN_STEPS)
-    return cr.check(label, rows, halt, a, x, y, p, sp, cr_low, cr_high, SET_MASK, CLEAR_MASK)
+    return cr.check(label, rows, halt, a, x, y, p, sp, cr_low, cr_high, SET_MASK, CLEAR_MASK,
+                    seed_shadow=seed_shadow)
 
 
 def main():
@@ -84,10 +86,11 @@ def main():
         cue = folder / "original.cue"
         cue.write_text('FILE "original.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n')
         failures = []
-        for (name, cr_low, cr_high), regs in CASES:
+        for (name, cr_low, cr_high), regs, seeded in CASES:
             try:
                 evidence["runs"].append(run(probe, data, folder, cue, reset, entry,
-                                            f"bgon-{name}", (cr_low, cr_high), regs))
+                                            f"bgon-{name}", (cr_low, cr_high), regs,
+                                            seed_shadow=seeded))
             except ValueError as error:
                 # RED record, not a crash: keep going so mutants are still exercised.
                 failures.append({"case": name, "error": str(error)})

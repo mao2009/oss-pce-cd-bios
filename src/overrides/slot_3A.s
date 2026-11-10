@@ -13,7 +13,7 @@
 ; ZERO_PAGE_ADDR = $2000 and STACK_ADDR = $2100, both in MPR1, so zero page and stack are outside the window.
 ; The routine uses NO zero-page addressing: the three VDC accesses are written with a: (absolute) so ca65 does not
 ; choose the zero-page form, which would address $2000-$2003 instead of $0000-$0003. The routine is linked into
-; OVERRIDES (start $E2A0, src/bank0.cfg), in MPR7, so instruction fetch is not affected by MPR0.
+; OVERRIDES (start $E292, src/bank0.cfg), in MPR7, so instruction fetch is not affected by MPR0.
 ; Ceiling: NMI is assumed not to occur (PCE has no NMI source in use). Not observed on a real core.
 ; Stack: max 5 bytes simultaneous below the JMP target (P, Y, X, A, saved MPR0).
 ; JSR return address adds 2 bytes; total max depth below caller SP = 7 bytes.
