@@ -252,8 +252,12 @@ def save_commercial_evidence(dest, text, root=ROOT, private_parent=None):
     return out
 
 
-def classify_apicall(call):
-    """Return JSR/JMP/INTERRUPT/DIRECT/IRQ/OTHER based on SP delta and entry PC."""
+def classify_apicall(call, stub_addr=0xE24F):
+    """Return JSR/JMP/INTERRUPT/DIRECT/IRQ/OTHER based on SP delta and entry PC.
+
+    stub_addr is the loader BIOS api_unimplemented address (synthetic callers
+    pass the label-derived value; the default preserves the commercial path).
+    """
     if call["in_table"]:
         if call["sp_delta"] == 2:
             return "JSR"
@@ -263,7 +267,7 @@ def classify_apicall(call):
             return "INTERRUPT"
         return "OTHER"
     # Non-table BIOS entry: stub direct vs interrupt vector vs other.
-    if call.get("entry_pc") == 0xE24F:
+    if call.get("entry_pc") == stub_addr:
         return "DIRECT"
     if call["sp_delta"] == 3 or call.get("entry_pc", 0) >= 0xFFF0:
         return "IRQ"
@@ -450,6 +454,14 @@ def synthetic_case(tmp: Path, probe, bios, stub, name, defines, expect_slot, exp
                    origin=0x3000, sta=0x3000, entry=None, nsec=1, public=False):
     if entry is None:
         entry = origin
+    stub_addr = stub["api_unimplemented"]
+    if not 0xE000 <= stub_addr <= 0xFFFF:
+        raise ValueError(f"{name}: stub address {stub_addr:#06x} outside BIOS window")
+    defines = list(defines)
+    if "-DDIRECT_STUB" in defines:
+        # The DIRECT payload jumps at the real stub, not a hardcoded address:
+        # the loader layout (hence the stub) moves with DEV changes (#744).
+        defines.append(f"-DSTUB=${stub_addr:04X}")
     code = build_payload(tmp, name, defines, origin=origin)
     if origin == sta:
         body = L.body_for(code, nsec)
@@ -509,7 +521,7 @@ def synthetic_case(tmp: Path, probe, bios, stub, name, defines, expect_slot, exp
                 fails.append(f"{v['cycle']}: expected exactly one APICALL, got {len(calls)}")
                 continue
             call = calls[0]
-            method = classify_apicall(call)
+            method = classify_apicall(call, stub["api_unimplemented"])
             if expect_method == "DIRECT":
                 if call["in_table"]:
                     fails.append(f"{v['cycle']}: direct stub was classified as table entry")
@@ -670,8 +682,9 @@ def main():
     for needed in ("api_unimplemented", "cd_halt_fail", "cd_unexpected_interrupt"):
         if needed not in stub:
             raise SystemExit(f"BLOCKED: label {needed} missing")
-    if stub["api_unimplemented"] != 0xE24F:
-        raise SystemExit(f"FAIL: payload STUB $E24F != BIOS stub {hex(stub['api_unimplemented'])}")
+    # The stub address is layout-derived (it moved $E24F -> $E245 with the #744
+    # loader growth); pinning a constant here is what staled the harness.
+    # synthetic_case re-checks the BIOS-window range per case.
     probe = compile_probe(out, "geargrafx_api_entry_probe.cpp", "geargrafx-api-entry-probe")
     with tempfile.TemporaryDirectory(prefix="pce-api-entry-") as tmp:
         tmp = Path(tmp)

@@ -33,6 +33,14 @@ class ClassifyTests(unittest.TestCase):
     def test_direct_not_table(self):
         self.assertEqual(classify_apicall(call(in_table=False)), "DIRECT")
 
+    def test_direct_uses_label_derived_stub(self):
+        # The stub address moves with the loader layout (#744 moved it off
+        # $E24F); classification must follow the label-derived address.
+        moved = call(in_table=False, entry=0xE245)
+        self.assertEqual(classify_apicall(moved, stub_addr=0xE245), "DIRECT")
+        # ... and must NOT match the stale constant under the default.
+        self.assertEqual(classify_apicall(moved), "OTHER_DIRECT")
+
     def test_irq_vector(self):
         self.assertEqual(classify_apicall(call(in_table=False, delta=3, entry=0xFFF8)), "IRQ")
 

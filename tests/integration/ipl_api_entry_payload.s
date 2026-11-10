@@ -2,7 +2,8 @@
 ; Modes via defines:
 ;   JSR_SLOT  : JSR to the DEV jump-table entry for the given slot
 ;   JMP_SLOT  : JMP to the same entry (no return)
-;   DIRECT_STUB : LDX #$02 then JMP to the common stub $E24F (no table entry)
+;   DIRECT_STUB : LDX #$02 then JMP to the common stub (STUB, default $E24F;
+;                 the harness overrides it with -DSTUB from the loader BIOS labels)
 ;   NOCALL    : no BIOS entry; write marker and halt
 ;   SPIN      : non-halting loop (budget negative; never a halt label)
 ; Registers are preset so the entry observer can prove caller state is seen.
@@ -11,7 +12,9 @@
 
 PRES = $2F80
 MARK = $AB
+.ifndef STUB
 STUB = $E24F
+.endif
 
 .ifdef SPIN
 payload_entry:
