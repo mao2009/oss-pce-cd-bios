@@ -391,6 +391,8 @@ def mutation_test_armed(refused_row, landed_row, mode, check=check_armed):
              "wrong reason accepted"),
             ("fetch-safe", {"fetch_safe": True}, [], "safe fetch accepted as failed"),
             ("fetch-blocked", {"fetch_blocked": False}, [], "unblocked fetch accepted"),
+            ("status-refused", {"status": "refused"}, [], "refused status accepted as fail-closed"),
+            ("status-ok", {"status": "ok"}, [], "ok status accepted as fail-closed"),
             ("refused-opcode", {"refused_opcode": 0x73}, [],
              "captured opcode accepted as fail-closed"),
             ("operand-bytes", {"operand_bytes": [0x73, 0, 0, 0, 0, 0, 0]}, [],
