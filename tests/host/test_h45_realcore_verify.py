@@ -327,8 +327,9 @@ def _blockpre_row(mode, armed=True):
                 vdc_sr_before=0x3F, vdc_sr_after=0x3F, status="refused",
                 mode=mode, armed=True, refused=True,
                 reason="block_opcode_at_instruction_boundary",
-                fetch_blocked=False,
-                refused_pc=pc, refused_opcode=op, fetch_opcode=op,
+                fetch_blocked=False, fetch_unsafe_bank=False,
+                fetch_page=0, fetch_mpr=0xF8, fetch_opcode=op,
+                refused_pc=pc, refused_opcode=op,
                 fetch_safe=True, fetch_failed=False,
                 operand_bytes=[op, 0x80, 0x3E, 0x90, 0x3E, 0x04, 0x00],
                 operand_complete=True,
@@ -346,7 +347,8 @@ def _blockpre_row(mode, armed=True):
     if hwpage:
         base.update(status="fetch_blocked", vdc_ar_before=5, vdc_ar_after=5,
                     refused=False, fetch_blocked=True,
-                    fetch_safe=False, fetch_failed=True,
+                    fetch_unsafe_bank=True, fetch_page=2, fetch_mpr=0xFF,
+                    fetch_opcode=0, fetch_safe=False, fetch_failed=True,
                     reason="unsafe_opcode_fetch_fail_closed")
     if mode == "block-irq-handler":
         base.update(irq_accepted=True, observed_vector=0x3F80, handler_steps=0,
@@ -375,8 +377,22 @@ def _blockpre_cases():
             row.update(mode=mut, armed=False)
         else:
             verdict = "side_effect_landed_monitor_disabled"
-            row = _blockpre_row("tii-entry", armed=False)
+            base_mode = V._blockpre_mutation_base(mut)
+            row = _blockpre_row(base_mode, armed=False)
             row.update(mode=mut)
+            if mut.endswith("-resume-allowed"):
+                # The latch holds at first: refused, then the guest steps
+                # through and the transfer lands anyway.
+                row.update(refused=True, ram_diff=[
+                    {"address": 0x3E90, "before": 0xCC, "after": 0x60}],
+                    ram_diff_count=1)
+            elif base_mode == "tia-wrap-forbidden":
+                # A forbidden-destination wrap lands on the VDC, not RAM.
+                row.update(vdc_ar_before=5, vdc_ar_after=0x1B)
+            else:
+                row.update(ram_diff=[
+                    {"address": 0x3E90, "before": 0xCC, "after": 0x60}],
+                    ram_diff_count=1)
         cases[mut] = _item(mut, verdict, row)
     return cases
 
@@ -870,6 +886,25 @@ class BlockpreReview743Test(unittest.TestCase):
         v, reasons, _ = self._check(c)
         self.assertEqual(v, V.FAIL, reasons)
 
+    def test_hwpage_fetch_target_pins(self):
+        for case in ("tii-hwpage-fetch-blocked",
+                     "tii-hwpage-fetch-blocked-unguarded"):
+            for name, fn, expected in [
+                ("unsafe_bank_false", lambda r, i: r.update(fetch_unsafe_bank=False), V.FAIL),
+                ("unsafe_bank_missing", lambda r, i: r.pop("fetch_unsafe_bank", None), V.BLOCKED),
+                ("opcode_nonzero", lambda r, i: r.update(fetch_opcode=0x73), V.FAIL),
+                ("opcode_missing", lambda r, i: r.pop("fetch_opcode", None), V.BLOCKED),
+                ("page_wrong", lambda r, i: r.update(fetch_page=1), V.FAIL),
+                ("mpr_wrong", lambda r, i: r.update(fetch_mpr=0xF8), V.FAIL),
+                ("vdc_r_changed", lambda r, i: r.update(vdc_r_after=1), V.FAIL),
+                ("vdc_r_missing", lambda r, i: r.pop("vdc_r_after", None), V.BLOCKED),
+            ]:
+                with self.subTest(case=case, field=name):
+                    c = _blockpre_cases()
+                    fn(c[case]["row"], c[case])
+                    v, reasons, _ = self._check(c)
+                    self.assertEqual(v, expected, reasons)
+
     # MAJOR-2: armed verdict rewrite or raw-row tamper never passes.
     def test_armed_verdict_rewrite_never_passes(self):
         mode = "tdd-unknown"
@@ -924,6 +959,35 @@ class BlockpreReview743Test(unittest.TestCase):
         c[mut]["verdict"] = "refused_at_instruction_boundary_before_side_effect"
         v, reasons, _ = self._check(c)
         self.assertEqual(v, V.FAIL, reasons)
+
+    def test_mutation_raw_row_rejudged(self):
+        plain = sorted(m for m in V.BLOCKPRE_MUTATIONS
+                       if m not in V.BLOCKPRE_ALWAYS_BLOCKED
+                       and not m.endswith("-resume-allowed")
+                       and not m.startswith("tia-wrap-forbidden"))[0]
+        resume = sorted(m for m in V.BLOCKPRE_MUTATIONS
+                        if m.endswith("-resume-allowed"))[0]
+        wrap = "tia-wrap-forbidden-unguarded"
+        for case, name, fn, expected in [
+            (plain, "mode_wrong", lambda r, i: r.update(mode="tii-entry"), V.FAIL),
+            (plain, "mode_missing", lambda r, i: r.pop("mode", None), V.BLOCKED),
+            (plain, "refused_true", lambda r, i: r.update(refused=True), V.FAIL),
+            (plain, "refused_missing", lambda r, i: r.pop("refused", None), V.BLOCKED),
+            (plain, "no_progress", lambda r, i: r.update(
+                instructions_executed=V.BLOCKPRE_EXPECTED_EXECUTED["tii-entry"]), V.FAIL),
+            (plain, "trace_removed", lambda r, i: (
+                r.update(ram_diff=[], ram_diff_count=0)), V.FAIL),
+            (resume, "resume_refused_false", lambda r, i: r.update(refused=False), V.FAIL),
+            (resume, "resume_trace_removed", lambda r, i: (
+                r.update(ram_diff=[], ram_diff_count=0)), V.FAIL),
+            (wrap, "wrap_trace_removed", lambda r, i: (
+                r.update(vdc_ar_after=5)), V.FAIL),
+        ]:
+            with self.subTest(case=case, field=name):
+                c = _blockpre_cases()
+                fn(c[case]["row"], c[case])
+                v, reasons, _ = self._check(c)
+                self.assertEqual(v, expected, reasons)
 
 
 if __name__ == "__main__":

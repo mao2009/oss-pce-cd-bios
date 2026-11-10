@@ -176,6 +176,16 @@ BLOCKPRE_ARMED_STATUS = "refused"
 BLOCKPRE_ARMED_REASON = "block_opcode_at_instruction_boundary"
 BLOCKPRE_HWPAGE_STATUS = "fetch_blocked"
 BLOCKPRE_HWPAGE_REASON = "unsafe_opcode_fetch_fail_closed"
+BLOCKPRE_HWPAGE_FETCH_PAGE = 0x4000 >> 13  # unpeekable page at the $4000 entry
+BLOCKPRE_HWPAGE_FETCH_MPR = 0xFF  # guest TAMs MPR2 to $FF before the $4000 fetch
+
+
+def _blockpre_mutation_base(mut):
+    """Map a mutation case id to its armed base (longest-prefix match)."""
+    for base in sorted(BLOCKPRE_ARMED, key=len, reverse=True):
+        if mut.startswith(base + "-"):
+            return base
+    return None
 
 
 def _blockpre_bad_int(row, name, case):
@@ -362,6 +372,33 @@ def _blockpre_check_hwpage_row(row, base, case, expect_armed):
             return "BLOCKED", f"ARMED_FETCH_FLAG_MISSING:{base}:{name}"
         if row[name] is not want:
             return "FAIL", f"ARMED_FETCH_FLAG_MISMATCH:{base}:{name}"
+    # Fail-closed fetch targeting: nothing was peekable at the $4000 entry
+    # (opcode 0, unpeekable $FF bank), so no device byte could have landed.
+    if not isinstance(row.get("fetch_unsafe_bank"), bool):
+        return "BLOCKED", f"ARMED_FETCH_UNSAFE_BANK_MISSING:{base}"
+    if row["fetch_unsafe_bank"] is not True:
+        return "FAIL", f"ARMED_FETCH_UNSAFE_BANK_MISMATCH:{base}"
+    bad = _blockpre_bad_int(row, "fetch_opcode", base)
+    if bad is not None:
+        return "BLOCKED", bad
+    if row["fetch_opcode"] != 0:
+        return "FAIL", f"ARMED_FETCH_OPCODE_MISMATCH:{base}"
+    bad = _blockpre_bad_int(row, "fetch_page", base)
+    if bad is not None:
+        return "BLOCKED", bad
+    if row["fetch_page"] != BLOCKPRE_HWPAGE_FETCH_PAGE:
+        return "FAIL", f"ARMED_FETCH_PAGE_MISMATCH:{base}"
+    bad = _blockpre_bad_int(row, "fetch_mpr", base)
+    if bad is not None:
+        return "BLOCKED", bad
+    if row["fetch_mpr"] != BLOCKPRE_HWPAGE_FETCH_MPR:
+        return "FAIL", f"ARMED_FETCH_MPR_MISMATCH:{base}"
+    for name in ("vdc_r_before", "vdc_r_after"):
+        bad = _blockpre_bad_int(row, name, base)
+        if bad is not None:
+            return "BLOCKED", bad
+    if row["vdc_r_before"] != row["vdc_r_after"]:
+        return "FAIL", f"ARMED_HWPAGE_VDC_CHANGED:{base}:r"
     expected_pc = BLOCKPRE_EXPECTED_PC[base]
     bad = _blockpre_bad_int(row, "stop_pc", base)
     if bad is not None:
@@ -530,6 +567,37 @@ def _check_blockpre_cases(cases, probe_ok=False, summary_ok=False):
             # count as a landed sensitivity proof.
             if verdict != BLOCKPRE_LANDED_VERDICT:
                 return BLOCKED, [f"MUTATION_INCONCLUSIVE:{case}:{verdict}"], {}
+            # Independent re-judgment of the landed raw row (not verdict-only):
+            # the run must identify itself, show a real refusal-latch state,
+            # execute past the armed boundary, and leave an observable trace.
+            base = _blockpre_mutation_base(case)
+            if base is None:
+                return BLOCKED, [f"MUTATION_NO_BASE:{case}"], {}
+            if not isinstance(row.get("mode"), str):
+                return BLOCKED, [f"MUTATION_MODE_MISSING:{case}"], {}
+            if row["mode"] != case:
+                return FAIL, [f"MUTATION_MODE_MISMATCH:{case}"], {}
+            if not isinstance(row.get("refused"), bool):
+                return BLOCKED, [f"MUTATION_REFUSED_FLAG_MISSING:{case}"], {}
+            want_refused = case.endswith("-resume-allowed")
+            if row["refused"] is not want_refused:
+                return FAIL, [f"MUTATION_REFUSED_FLAG_MISMATCH:{case}"], {}
+            bad = _blockpre_bad_int(row, "instructions_executed", case)
+            if bad is not None:
+                return BLOCKED, [bad], {}
+            if row["instructions_executed"] <= BLOCKPRE_EXPECTED_EXECUTED[base]:
+                return FAIL, [f"MUTATION_NO_PROGRESS:{case}"], {}
+            diffs = row.get("ram_diff")
+            traced = isinstance(diffs, list) and len(diffs) > 0
+            if not traced and base == "tia-wrap-forbidden":
+                # A forbidden-destination wrap lands on the VDC, not RAM.
+                for name in ("vdc_ar_before", "vdc_ar_after"):
+                    bad = _blockpre_bad_int(row, name, case)
+                    if bad is not None:
+                        return BLOCKED, [bad], {}
+                traced = row["vdc_ar_before"] != row["vdc_ar_after"]
+            if not traced:
+                return FAIL, [f"MUTATION_NO_TRACE:{case}"], {}
             mut_ok += 1
         else:
             return BLOCKED, [f"UNKNOWN_CASE:{case}"], {}

@@ -74,7 +74,8 @@ class ArmedTest(unittest.TestCase):
                     "fetch_blocked": True,
                     "reason": "unsafe_opcode_fetch_fail_closed",
                     "refused": False, "stop_pc": 0x4000, "instructions_executed": 3,
-                    "executed_at_refusal": 3, "fetch_safe": False, "fetch_failed": True,
+                    "executed_at_refusal": 3, "executed_after_resume": 3,
+                    "fetch_safe": False, "fetch_failed": True,
                     "vdc_ar_before": 5, "vdc_ar_after": 5,
                     "vdc_sr_before": 0x3F, "vdc_sr_after": 0x3F,
                     "vdc_read_buffer_before": 0xBEEF, "vdc_read_buffer_after": 0xBEEF,
@@ -168,9 +169,13 @@ class UnarmedTest(unittest.TestCase):
 
     def test_hwpage_unguarded_stays_blocked(self):
         row = _armed_row("tii-entry")
-        row.update({"mode": "tii-hwpage-fetch-blocked", "status": "fetch_blocked",
-                    "refused": False, "fetch_blocked": True, "stop_pc": 0x4000,
-                    "instructions_executed": 3, "fetch_safe": False, "fetch_failed": True,
+        row.update({"mode": "tii-hwpage-fetch-blocked-unguarded", "status": "fetch_blocked",
+                    "armed": False, "refused": False, "fetch_blocked": True,
+                    "reason": "unsafe_opcode_fetch_fail_closed",
+                    "stop_pc": 0x4000,
+                    "instructions_executed": 3, "executed_at_refusal": 3,
+                    "executed_after_resume": 3,
+                    "fetch_safe": False, "fetch_failed": True,
                     "vdc_ar_before": 5, "vdc_ar_after": 5,
                     "vdc_sr_before": 0x3F, "vdc_sr_after": 0x3F,
                     "vdc_read_buffer_before": 0xBEEF, "vdc_read_buffer_after": 0xBEEF,
@@ -186,11 +191,16 @@ class ExitValidationTest(unittest.TestCase):
         hw = _armed_row("tii-entry")
         hw.update({"mode": "tii-hwpage-fetch-blocked", "status": "fetch_blocked",
                    "fetch_blocked": True, "refused": False, "stop_pc": 0x4000,
+                   "reason": "unsafe_opcode_fetch_fail_closed",
                    "instructions_executed": 3, "executed_at_refusal": 3,
+                   "executed_after_resume": 3,
                    "fetch_safe": False, "fetch_failed": True,
                    "vdc_ar_before": 5, "vdc_ar_after": 5,
                    "vdc_sr_before": 0x3F, "vdc_sr_after": 0x3F,
                    "after": {"mpr": list(B.MPR_AFTER_TIA_WRAP), "sp": 0xFF}})
+        hw_unguarded = copy.deepcopy(hw)
+        hw_unguarded.update({"mode": "tii-hwpage-fetch-blocked-unguarded",
+                             "armed": False})
         landed = _armed_row("tii-entry")
         landed.update({"armed": False, "refused": False, "status": "ok", "reason": "",
                        "stop_pc": B.BLOCK_EXPECTED_PC["tii-entry"] + 7,
@@ -208,7 +218,7 @@ class ExitValidationTest(unittest.TestCase):
             (B.check_unguarded_landed, landed, "tii-entry"),
             (B.check_resume_allowed_landed, resume, "tdd-unknown"),
             (B.check_hwpage_armed, hw, "tii-hwpage-fetch-blocked"),
-            (B.check_hwpage_unguarded_still_blocked, copy.deepcopy(hw),
+            (B.check_hwpage_unguarded_still_blocked, hw_unguarded,
              "tii-hwpage-fetch-blocked"),
         ]
 
@@ -367,9 +377,13 @@ class HwpageUnguardedStrictTest(unittest.TestCase):
 
     def _unguarded_hwpage(self):
         row = _armed_row("tii-entry")
-        row.update({"mode": "tii-hwpage-fetch-blocked", "status": "fetch_blocked",
-                    "refused": False, "fetch_blocked": True, "stop_pc": 0x4000,
-                    "instructions_executed": 3, "fetch_safe": False, "fetch_failed": True,
+        row.update({"mode": "tii-hwpage-fetch-blocked-unguarded", "status": "fetch_blocked",
+                    "armed": False, "refused": False, "fetch_blocked": True,
+                    "reason": "unsafe_opcode_fetch_fail_closed",
+                    "stop_pc": 0x4000,
+                    "instructions_executed": 3, "executed_at_refusal": 3,
+                    "executed_after_resume": 3,
+                    "fetch_safe": False, "fetch_failed": True,
                     "vdc_ar_before": 5, "vdc_ar_after": 5,
                     "vdc_sr_before": 0x3F, "vdc_sr_after": 0x3F,
                     "vdc_read_buffer_before": 0xBEEF, "vdc_read_buffer_after": 0xBEEF,
@@ -423,6 +437,31 @@ class HwpageUnguardedStrictTest(unittest.TestCase):
         row["fetch_safe"] = True
         with self.assertRaises(ValueError):
             B.check_hwpage_unguarded_still_blocked(row, "tii-hwpage-fetch-blocked")
+
+    def test_resume_flatness_rejected(self):
+        for name, change in (
+            ("executed_advanced", {"executed_after_resume": 4}),
+            ("executed_at_refusal_wrong", {"executed_at_refusal": 2}),
+            ("ram_changed_across_resume", {"ram_unchanged_during_resume": False}),
+        ):
+            with self.subTest(name=name):
+                row = self._unguarded_hwpage()
+                row.update(change)
+                with self.assertRaises(ValueError):
+                    B.check_hwpage_unguarded_still_blocked(row, "tii-hwpage-fetch-blocked")
+
+    def test_identity_pins_rejected(self):
+        for name, change in (
+            ("armed_true", {"armed": True}),
+            ("wrong_mode", {"mode": "tii-entry"}),
+            ("wrong_reason", {"reason": "block_opcode_at_instruction_boundary"}),
+            ("refused_true", {"refused": True}),
+        ):
+            with self.subTest(name=name):
+                row = self._unguarded_hwpage()
+                row.update(change)
+                with self.assertRaises(ValueError):
+                    B.check_hwpage_unguarded_still_blocked(row, "tii-hwpage-fetch-blocked")
 
 
 if __name__ == "__main__":

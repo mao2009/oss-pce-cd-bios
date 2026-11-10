@@ -314,10 +314,21 @@ def check_resume_allowed_landed(row, mode):
 def check_hwpage_armed(row, mode):
     """Validate the fail-closed fetch: no step issued at the unpeekable PC."""
     _require_ok_exit(row, mode)
+    if row.get("mode") != mode:
+        raise ValueError(f"{mode}: measured wrong mode {row.get('mode')!r}")
+    if row.get("armed") is not True:
+        raise ValueError(f"{mode}: not an armed run")
+    if row.get("refused") is not False:
+        raise ValueError(f"{mode}: hwpage fetch must fail closed, not refuse an opcode")
     if row.get("status") != "fetch_blocked" or row.get("fetch_blocked") is not True:
         raise ValueError(f"{mode}: fetch was not failed-closed: {row.get('status')}")
+    if row.get("reason") != "unsafe_opcode_fetch_fail_closed":
+        raise ValueError(f"{mode}: unexpected fail-closed reason: {row.get('reason')!r}")
     if row.get("fetch_failed") is not True or row.get("fetch_safe") is not False:
         raise ValueError(f"{mode}: fetch failure not observed")
+    _int_fields(row, ("stop_pc", "instructions_executed",
+                      "executed_at_refusal", "executed_after_resume",
+                      "resume_attempts", "resume_refused"))
     if row.get("stop_pc") != 0x4000:
         raise ValueError(f"{mode}: stop PC ${row.get('stop_pc'):04X}, expected $4000")
     if row.get("instructions_executed") != 3:
@@ -326,7 +337,10 @@ def check_hwpage_armed(row, mode):
         raise ValueError(f"{mode}: VDC AR sentinel disturbed")
     if row.get("vdc_sr_before") != 0x3F or row.get("vdc_sr_after") != 0x3F:
         raise ValueError(f"{mode}: VDC SR changed without any step")
-    _int_fields(row, ("vdc_read_buffer_before", "vdc_read_buffer_after"))
+    _int_fields(row, ("vdc_r_before", "vdc_r_after",
+                      "vdc_read_buffer_before", "vdc_read_buffer_after"))
+    if row.get("vdc_r_before") != row.get("vdc_r_after"):
+        raise ValueError(f"{mode}: VDC R0 changed without any step")
     if row.get("vdc_read_buffer_before") != row.get("vdc_read_buffer_after"):
         raise ValueError(f"{mode}: VDC READ_BUFFER changed without any step")
     if row.get("ram_diff") != []:
@@ -334,6 +348,12 @@ def check_hwpage_armed(row, mode):
     _check_mpr_transition(row, mode, MPR_INITIAL, MPR_AFTER_TIA_WRAP)
     if row.get("resume_attempts") != RESUME_ATTEMPTS or row.get("resume_refused") != RESUME_ATTEMPTS:
         raise ValueError(f"{mode}: resume not refused")
+    if row.get("executed_at_refusal") != BLOCK_EXECUTED_BEFORE_REFUSAL[mode]:
+        raise ValueError(f"{mode}: executed_at_refusal mismatch")
+    if row.get("executed_after_resume") != row.get("executed_at_refusal"):
+        raise ValueError(f"{mode}: execution advanced across resume")
+    if row.get("ram_unchanged_during_resume") is not True:
+        raise ValueError(f"{mode}: RAM changed across resume")
     return HWPAGE_BLOCKED_VERDICT
 
 
@@ -399,20 +419,33 @@ def check_hwpage_unguarded_still_blocked(row, mode):
     """The fail-closed fetch does not depend on the monitor: even unguarded, no
     step is issued at an unpeekable hardware-page PC and no VDC side effect lands."""
     _require_ok_exit(row, mode)
+    if row.get("mode") != mode + "-unguarded":
+        raise ValueError(f"{mode}: measured wrong mode {row.get('mode')!r}")
+    if row.get("armed") is not False:
+        raise ValueError(f"{mode}: not an unguarded run")
+    if row.get("refused") is not False:
+        raise ValueError(f"{mode}: hwpage fetch must fail closed, not refuse an opcode")
     if row.get("status") != "fetch_blocked" or row.get("fetch_blocked") is not True:
         raise ValueError(f"{mode}: hwpage fetch was not failed-closed: {row.get('status')}")
+    if row.get("reason") != "unsafe_opcode_fetch_fail_closed":
+        raise ValueError(f"{mode}: unexpected fail-closed reason: {row.get('reason')!r}")
     if row.get("fetch_failed") is not True or row.get("fetch_safe") is not False:
         raise ValueError(f"{mode}: fetch failure not observed")
-    _int_fields(row, ("stop_pc", "instructions_executed"))
+    _int_fields(row, ("stop_pc", "instructions_executed",
+                      "executed_at_refusal", "executed_after_resume",
+                      "resume_attempts", "resume_refused"))
     if row.get("stop_pc") != 0x4000:
         raise ValueError(f"{mode}: stop PC ${row.get('stop_pc'):04X}, expected $4000")
     if row.get("instructions_executed") != 3:
         raise ValueError(f"{mode}: executed {row.get('instructions_executed')}, expected 3")
-    _int_fields(row, ("vdc_ar_before", "vdc_ar_after", "vdc_sr_before", "vdc_sr_after"))
+    _int_fields(row, ("vdc_ar_before", "vdc_ar_after", "vdc_sr_before", "vdc_sr_after",
+                      "vdc_r_before", "vdc_r_after"))
     if row.get("vdc_ar_before") != row.get("vdc_ar_after"):
         raise ValueError(f"{mode}: VDC AR changed without any step")
     if row.get("vdc_sr_before") != row.get("vdc_sr_after"):
         raise ValueError(f"{mode}: VDC SR changed without any step")
+    if row.get("vdc_r_before") != row.get("vdc_r_after"):
+        raise ValueError(f"{mode}: VDC R0 changed without any step")
     _int_fields(row, ("vdc_read_buffer_before", "vdc_read_buffer_after"))
     if row.get("vdc_read_buffer_before") != row.get("vdc_read_buffer_after"):
         raise ValueError(f"{mode}: VDC READ_BUFFER changed without any step")
@@ -421,6 +454,10 @@ def check_hwpage_unguarded_still_blocked(row, mode):
     _check_mpr_transition(row, mode, MPR_INITIAL, MPR_AFTER_TIA_WRAP)
     if row.get("resume_attempts") != RESUME_ATTEMPTS or row.get("resume_refused") != RESUME_ATTEMPTS:
         raise ValueError(f"{mode}: resume not refused")
+    if row.get("executed_after_resume") != row.get("executed_at_refusal"):
+        raise ValueError(f"{mode}: execution advanced across resume")
+    if row.get("ram_unchanged_during_resume") is not True:
+        raise ValueError(f"{mode}: RAM changed across resume")
     return HWPAGE_BLOCKED_VERDICT
 
 
