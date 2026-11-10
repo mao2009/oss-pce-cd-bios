@@ -53,6 +53,7 @@
       "src/math/ma_mul8s.s",
       "src/math/ma_mul8u.s",
       "src/overrides/slot_1E.s",
+      "src/overrides/slot_22.s",
       "src/overrides/slot_3A.s",
       "src/overrides/slot_3C.s",
       "src/overrides/slot_3D.s",
@@ -239,6 +240,11 @@
       "transfers": []
     },
     "src/overrides/slot_1E.s": {
+      "role": "api",
+      "tam": [],
+      "transfers": []
+    },
+    "src/overrides/slot_22.s": {
       "role": "api",
       "tam": [],
       "transfers": []
