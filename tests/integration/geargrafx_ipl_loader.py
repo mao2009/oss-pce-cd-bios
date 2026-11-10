@@ -128,11 +128,34 @@ def apply_edits(buf: bytearray, edits):
     return buf
 
 
+def require_cold_warm_cycles(records: dict, name: str):
+    """Return the two RUN records after pinning the cold/warm multiset.
+
+    Exactly one "cold" and one "warm" record, in any order: duplicates,
+    unknown, missing, or non-string cycles are rejected (a bare count of 2
+    would accept cold+cold). Shared by judge() and the norange mutant kill.
+    """
+    runs = records.get("RUN") if isinstance(records, dict) else None
+    if not isinstance(runs, list) or len(runs) != 2:
+        count = len(runs) if isinstance(runs, list) else runs
+        raise ValueError(f"{name}: expected exactly 2 run records, got {count!r}")
+    cycles = []
+    for run in runs:
+        if not isinstance(run, dict):
+            raise ValueError(f"{name}: malformed run record: {run!r}")
+        cycle = run.get("cycle")
+        if type(cycle) is not str:
+            raise ValueError(f"{name}: run cycle missing/non-string: {cycle!r}")
+        cycles.append(cycle)
+    if sorted(cycles) != ["cold", "warm"]:
+        raise ValueError(f"{name}: expected one cold and one warm run, got {cycles!r}")
+    return runs
+
+
 def judge(records: dict, case: dict, body: bytes, payload_tag: int):
     """Judge the guest's result block, the visible load area, and the payload results; cold AND warm."""
-    if len(records["RUN"]) != 2:
-        raise ValueError(f"{case['name']}: expected cold and warm runs")
-    for run in records["RUN"]:
+    runs = require_cold_warm_cycles(records, case["name"])
+    for run in runs:
         cycle = run["cycle"]
         buf = bytes.fromhex(run["buffer_hex"])
         if len(buf) != 6144:
@@ -548,10 +571,11 @@ def main():
         # tail gate was the refusing element.
         cue, _ = prepare_case_disc(tail_case, payloads[tail_case["pay"]][0], tmp)
         records = execute(probe, norange, f"card:{cue}", norange_labels_path, BUDGET, None)
-        if len(records["RUN"]) != 2:
-            raise SystemExit("FAIL norange mutant: expected cold and warm runs, "
-                             f"got {len(records['RUN'])}")
-        for run in records["RUN"]:
+        try:
+            runs = require_cold_warm_cycles(records, "norange mutant")
+        except ValueError as error:
+            raise SystemExit(f"FAIL norange mutant: {error}")
+        for run in runs:
             try:
                 obs = observe_run(run)
             except ValueError as error:
