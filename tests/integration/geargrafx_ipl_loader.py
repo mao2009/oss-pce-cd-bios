@@ -11,7 +11,6 @@ the payload halt. Partial copies are reported by the copied-sector count.
 import argparse
 import hashlib
 import json
-import re
 from pathlib import Path
 import subprocess
 import sys
@@ -393,7 +392,13 @@ CASES = [
 ]
 
 
-def run_case(probe, rom, labels_path, case, pay_code, folder: Path, disc_prefix="card:", expect_loader=None):
+def prepare_case_disc(case, pay_code, folder: Path):
+    """Build the body and synthetic disc for one case (shared preamble).
+
+    Used by run_case() and by the norange mutant kill check so both exercise
+    the identical disc image; the verdict logic itself is not shared because
+    the mutant expects a different halt than the case table.
+    """
     body = body_for(pay_code, case["n"])
     body_written = bytearray(body)
     for sector, edits in case.get("body_edits", {}).items():
@@ -418,6 +423,59 @@ def run_case(probe, rom, labels_path, case, pay_code, folder: Path, disc_prefix=
     apply_edits(info, case.get("info_edits", []))
     disc = folder / case["name"]
     cue = make_disc(disc, case_disc(case, body_written, info))
+    return cue, body_written
+
+
+# Tail-gate kill expectation: with the 21-bit end gate disabled, the
+# over-width case (body 0x1FFFFF, nsec 2) reaches the final-sector pre-read at
+# LBA body+nsec-1 = 0x200000. On the 21-bit READ(6) bus that LBA is emitted as
+# [08,00,00,00,01,00] and the read fails on the 300-frame synthetic disc, so
+# the guest halts in stage 4 with code 5, nothing copied, payload never run.
+NORANGE_EXPECTED_CDB = [0x08, 0x00, 0x00, 0x00, 0x01, 0x00]
+
+
+def observe_run(run):
+    """Parse one probe RUN record into a plain observation dict."""
+    buf = bytes.fromhex(run["buffer_hex"])
+    if len(buf) != 6144:
+        raise ValueError(f"dump has {len(buf)} bytes, expected 6144")
+    pay = buf[PRES:PRES + 15]
+    return {"cycle": run["cycle"], "reason": run["reason"],
+            "halt_confirmed": run.get("halt_confirmed"),
+            "code": buf[RB], "stage": buf[RB + 1], "copied": buf[RB + 2],
+            "cdb": list(buf[RB + 16:RB + 22]),
+            "payload_ran": bool(any(pay))}
+
+
+def check_norange_mutant_obs(obs):
+    """Structured kill criterion for the IPL_MUTANT_NORANGE gate kill.
+
+    Only the exact expected halt counts as proof that the 21-bit tail gate
+    was the refusing element: code 5 in stage 4, nothing copied, payload
+    never ran, halt confirmed, and the over-width LBA on the bus. Anything
+    else (another code/stage, a copy, a payload trace, an unconfirmed halt,
+    a CDB mismatch) raises -- never counts as a kill.
+    """
+    for name in ("cycle", "reason", "halt_confirmed", "code", "stage",
+                 "copied", "cdb", "payload_ran"):
+        if name not in obs:
+            raise ValueError(f"norange mutant {obs.get('cycle')}: missing {name}")
+    if obs["reason"] != "cd_halt_fail" or obs["halt_confirmed"] is not True:
+        raise ValueError(f"norange mutant {obs['cycle']}: no confirmed halt "
+                         f"({obs['reason']}, halt_confirmed={obs['halt_confirmed']!r})")
+    if (obs["code"], obs["copied"], obs["stage"]) != (5, 0, 4):
+        raise ValueError(f"norange mutant {obs['cycle']}: code/copied/stage = "
+                         f"{obs['code']}/{obs['copied']}/{obs['stage']}, expected 5/0/4")
+    if obs["payload_ran"] is not False:
+        raise ValueError(f"norange mutant {obs['cycle']}: payload trace present")
+    if list(obs["cdb"]) != NORANGE_EXPECTED_CDB:
+        raise ValueError(f"norange mutant {obs['cycle']}: final-sector CDB "
+                         f"{bytes(obs['cdb']).hex()} != expected {bytes(NORANGE_EXPECTED_CDB).hex()}")
+    return True
+
+
+def run_case(probe, rom, labels_path, case, pay_code, folder: Path, disc_prefix="card:", expect_loader=None):
+    cue, body_written = prepare_case_disc(case, pay_code, folder)
     inject = case.get("inject")
     # "card:" = the pinned probe's paired-control path: the 8 KiB ROM is loaded as a HuCard and the CUE is
     # inserted afterwards with CD hardware enabled. The System Card BIOS path (LoadBiosFromBuffer) rejects
@@ -485,24 +543,24 @@ def main():
             f"cd_halt_fail {norange_labels['cd_halt_fail']:04x}\n"
             f"cd_unexpected_interrupt {norange_labels['cd_unexpected_interrupt']:04x}\n",
             encoding="ascii")
-        try:
-            run_case(probe, norange, norange_labels_path, tail_case,
-                     payloads[tail_case["pay"]][0], tmp)
-        except ValueError as error:
-            # The mutant must reach a confirmed halt with a non-27 code
-            # (the final-sector pre-read fails on the 300-frame disc). A
-            # timeout, an unconfirmed halt, or a lingering code 27 means the
-            # attribution check itself is broken -- never count that as proof.
-            message = str(error)
-            match = re.search(r"code/copied = (\d+)/(\d+)", message)
-            if "halt_confirmed=False" in message or match is None:
-                raise SystemExit(f"FAIL norange mutant: no confirmed halt: {error}")
-            if match.group(1) == "27":
-                raise SystemExit(f"FAIL norange mutant: over-width case still "
-                                 f"refused with code 27: {error}")
-        else:
-            raise SystemExit("FAIL norange mutant: over-width case unexpectedly "
-                             "passed (expected the gate kill to change the outcome)")
+        # Structured kill check on the probe records (no error-string parsing):
+        # the mutant must halt exactly as the analysis predicts, proving the
+        # tail gate was the refusing element.
+        cue, _ = prepare_case_disc(tail_case, payloads[tail_case["pay"]][0], tmp)
+        records = execute(probe, norange, f"card:{cue}", norange_labels_path, BUDGET, None)
+        if len(records["RUN"]) != 2:
+            raise SystemExit("FAIL norange mutant: expected cold and warm runs, "
+                             f"got {len(records['RUN'])}")
+        for run in records["RUN"]:
+            try:
+                obs = observe_run(run)
+            except ValueError as error:
+                raise SystemExit(f"FAIL norange mutant {run.get('cycle')}: "
+                                 f"unparseable probe record: {error}")
+            try:
+                check_norange_mutant_obs(obs)
+            except ValueError as error:
+                raise SystemExit(f"FAIL norange mutant: kill not proven: {error}")
         norange_sha = hashlib.sha256(norange.read_bytes()).hexdigest()
 
         if hashlib.sha256(rom.read_bytes()).hexdigest() != rom_sha:
