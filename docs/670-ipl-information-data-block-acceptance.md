@@ -123,6 +123,11 @@ Issue #744 以前の扱い (履歴):
 - (後続更新) 最終 body セクタの先読み (§3.1) をテスト用ローダーに追加。公開仕様・24bit 対応・他コマンド方式は変更なし。
   #744 で先読み・コピーの両アドレス計算を 24bit 化、READ(6) CDB byte 1 を `(LBA>>16)&$1F` 化。
   `IPL_SEL` 自体は 16bit host-derived INDEX 01 のまま。
+- (Issue #744) ビルダー (`tools/build_dev_ipl_loader_bios.py`) の `IPL_SEL` 受入範囲を
+  16bit 非負整数 `0x0000..0xFFFF` (strict int) に整合。旧上限 `0xFFF0` は 16bit body 計算時代の
+  wraparound 防止用であり、24bit 計算＋code 27 事前拒否となった現在は不要。
+  範囲外の媒体は guest が署名・範囲ゲートで拒否するため、INDEX 01 = 0 の受理は媒体可用性の
+  保証ではない (実コア読込の成否とは区別)。商用由来 SEL の manifest 秘匿は不変。
 - (初回 PR 時点の記述) ローダー本体の動作変更なし (Owner 判断が必要な仕様変更は保留)。`ipl_loader_rom.s` の
   `IPL_MUTANT_HIGHBYTE` ガードは #744 で削除 (検証専用 mutation の役目を終えたため。デフォルトビルドへの影響なし)。
 - `release_eligible=false`, `ABI VERIFIED` 未変更を維持。
