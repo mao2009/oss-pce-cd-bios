@@ -74,6 +74,96 @@ import jsr_observation  # noqa: E402
 PINNED_CORE_REVISION = "b49ae82a012eade566d72e9d61c9d95a5caa4da3"
 ST_OPCODE = {"st0": 0x03, "st1": 0x13, "st2": 0x23}
 POS_CONTROL = 0x3E50
+# Positive-control expectations (deterministic synthetic guest LDA #$5A / STA $3E50 / BRA *
+# at the fixed entry $3E00; BRA loops at $3E05). All values are measured invariants of the
+# pinned-core run, cross-checked against the probe's own emission (never inferred).
+POS_EXPECTED_ENTRY_PC = 0x3E00
+POS_EXPECTED_STOP_PC = 0x3E05
+POS_EXPECTED_EXECUTED = 3
+POS_EXPECTED_MPR = [0x00, 0xF8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+POS_VERDICT = "allowlisted_ram_write_landed"
+
+
+def check_pos_write(row, target):
+    """Positive-control judge for the st-boundary allowlisted store (driver and host share it).
+
+    Wraps the generic allowlist check with the st-probe's full evidence envelope: exact
+    single-entry ram_diff at $3E50 ($00->$5A), count/truncation consistency, and the
+    before/after/stop/executed/MPR/VDC anchors of the deterministic LDA/STA/BRA guest.
+    No constraint beyond the measured guest/probe contract is asserted.
+    """
+    if target != POS_CONTROL:
+        raise ValueError(f"pos-write dedicated judge expects target ${POS_CONTROL:04X}, got {target!r}")
+    if row.get("mode") != "pos-write":
+        raise ValueError(f"pos-write dedicated judge saw mode {row.get('mode')!r}, expected 'pos-write'")
+    # Generic allowlist landing (exit strict, guard bytes, single ram_diff at target).
+    check_pos(row, target)
+    # Full st-probe envelope: count/truncation must be present and exact here
+    # (the reference-JSR probe predates these fields; this judge requires them).
+    if row.get("ram_diff_count") != 1:
+        raise ValueError(f"pos-write ${target:04X} ram_diff_count {row.get('ram_diff_count')!r} != 1")
+    if row.get("ram_diff_truncated") is not False:
+        raise ValueError(f"pos-write ${target:04X} ram_diff_truncated is not False")
+    before = row.get("before")
+    after = row.get("after")
+    if type(before) is not dict or type(after) is not dict:
+        raise ValueError(f"pos-write ${target:04X} before/after must be objects")
+    for side, section in (("before", before), ("after", after)):
+        pc = section.get("pc")
+        if type(pc) is not int or not 0 <= pc <= 0xFFFF:
+            raise ValueError(f"pos-write ${target:04X} {side}.pc malformed: {pc!r}")
+        mpr = section.get("mpr")
+        if type(mpr) is not list or len(mpr) != 8:
+            raise ValueError(f"pos-write ${target:04X} {side}.mpr must be 8 bytes: {mpr!r}")
+        for index, value in enumerate(mpr):
+            if type(value) is not int or not 0 <= value <= 0xFF:
+                raise ValueError(f"pos-write ${target:04X} {side}.mpr[{index}] malformed: {value!r}")
+        sp = section.get("sp")
+        if type(sp) is not int or not 0 <= sp <= 0xFF:
+            raise ValueError(f"pos-write ${target:04X} {side}.sp malformed: {sp!r}")
+    if before["pc"] != POS_EXPECTED_ENTRY_PC:
+        raise ValueError(f"pos-write ${target:04X} before.pc {before['pc']:#x}, expected entry {POS_EXPECTED_ENTRY_PC:#x}")
+    if after["pc"] != POS_EXPECTED_STOP_PC:
+        raise ValueError(f"pos-write ${target:04X} after.pc {after['pc']!r} != expected stop {POS_EXPECTED_STOP_PC:#x}")
+    stop_pc = row.get("stop_pc")
+    if type(stop_pc) is not int or stop_pc != POS_EXPECTED_STOP_PC:
+        raise ValueError(f"pos-write ${target:04X} stop_pc {stop_pc!r}, expected {POS_EXPECTED_STOP_PC:#x}")
+    if after["pc"] != stop_pc:
+        raise ValueError(f"pos-write ${target:04X} stop PC not held (after {after['pc']!r} vs stop {stop_pc!r})")
+    if row.get("instructions_executed") != POS_EXPECTED_EXECUTED:
+        raise ValueError(f"pos-write ${target:04X} executed {row.get('instructions_executed')!r}, expected {POS_EXPECTED_EXECUTED}")
+    if before["mpr"] != POS_EXPECTED_MPR or after["mpr"] != POS_EXPECTED_MPR:
+        raise ValueError(f"pos-write ${target:04X} MPR not the measured stable map {POS_EXPECTED_MPR}: "
+                         f"{before.get('mpr')!r} -> {after.get('mpr')!r}")
+    if before["sp"] != 0xFF or after["sp"] != 0xFF:
+        raise ValueError(f"pos-write ${target:04X} SP changed (no IRQ push expected): "
+                         f"{before.get('sp')!r} -> {after.get('sp')!r}")
+    # LDA/STA/BRA touches no VDC state; the pinned core's reset landmarks must hold.
+    if row.get("vdc_ar_before") != 0 or row.get("vdc_ar_after") != 0:
+        raise ValueError(f"pos-write ${target:04X} VDC AR changed: "
+                         f"{row.get('vdc_ar_before')!r} -> {row.get('vdc_ar_after')!r}")
+    if row.get("vdc_r_before") != 0 or row.get("vdc_r_after") != 0:
+        raise ValueError(f"pos-write ${target:04X} VDC R changed: "
+                         f"{row.get('vdc_r_before')!r} -> {row.get('vdc_r_after')!r}")
+    if row.get("vdc_sr_before") != 0 or row.get("vdc_sr_after") != 0:
+        raise ValueError(f"pos-write ${target:04X} VDC SR changed: "
+                         f"{row.get('vdc_sr_before')!r} -> {row.get('vdc_sr_after')!r}")
+    if row.get("vdc_read_buffer_before") != READ_BUFFER_RESET or \
+            row.get("vdc_read_buffer_after") != READ_BUFFER_RESET:
+        raise ValueError(f"pos-write ${target:04X} VDC read buffer changed: "
+                         f"{row.get('vdc_read_buffer_before')!r} -> {row.get('vdc_read_buffer_after')!r}")
+    # Allowlisted run with the monitor armed: no refusal/block/hazard, no unsafe fetch.
+    for flag in ("refused", "fetch_blocked", "hazard_landed", "fetch_open_stepped",
+                 "mpr_changed"):
+        if row.get(flag) is not False:
+            raise ValueError(f"pos-write ${target:04X} {flag}={row.get(flag)!r}, expected False")
+    if row.get("armed") is not True or row.get("boundary_check") is not True:
+        raise ValueError(f"pos-write ${target:04X} run is not armed")
+    if row.get("mmio_read_attempts") != 0:
+        raise ValueError(f"pos-write ${target:04X} mmio_read_attempts {row.get('mmio_read_attempts')!r}, expected 0")
+    if row.get("detected") is not False:
+        raise ValueError(f"pos-write ${target:04X} detected {row.get('detected')!r}, expected False")
+    return None
 MPR0_NON_FF = 0x00
 RESUME_ATTEMPTS = 3
 REFUSED_VERDICT = "refused_at_instruction_boundary_before_side_effect"
@@ -979,6 +1069,10 @@ def main():
                               target_name="st-boundary-probe")
         verdicts = {}
         hwp_safe_row = None
+        # LOW-2: buffer all evidence until every classifier and JSR-schema check passes.
+        # No EVIDENCE/JSR_OBSERVATION line is emitted before the full validation below
+        # completes, so a mid-run failure can never leave a partial success record.
+        pending_evidence = []
         for mode in ARMED_MODES:
             if mode in HWPAGE_EXPECTED_EXECUTED:
                 refused_row = run_mode(probe, bios, cue, mode, 0)
@@ -1009,16 +1103,10 @@ def main():
                     raise ValueError(f"mutation test FAILED: {mode} {mutation} accepted as refused")
                 mutation_test_armed(refused_row, mutations[0][2], mode)
             for case, verdict, row in [(mode, verdicts[mode], refused_row), *mutations]:
-                print("EVIDENCE " + json.dumps({"case": case, "observation_kind": "REAL_CORE_EXECUTION",
-                                                "core_revision": PINNED_CORE_REVISION, "bios": "SYNTHETIC",
-                                                "execution_mode": "debug-single-step", "verdict": verdict,
-                                                "measured_stop_pc": row["stop_pc"], "row": row}, sort_keys=True))
+                # Validate the JSR view before buffering: a schema failure must abort
+                # before any EVIDENCE for this case is emitted.
                 jsr = to_jsr_observation(row)
-                if jsr is None:
-                    print(f"JSR_OBSERVATION_EXCLUDED {case} hazard rows have no jsr-observation v1 "
-                          f"outcome (EVIDENCE is authoritative)")
-                else:
-                    print("JSR_OBSERVATION " + json.dumps(jsr, sort_keys=True))
+                pending_evidence.append((case, verdict, row, jsr))
             print(f"ARMED {mode}: status={refused_row['status']} stop={refused_row['stop_pc']:#x} "
                   f"executed={refused_row['instructions_executed']} "
                   f"resume_refused={refused_row['resume_refused']}/{refused_row['resume_attempts']} "
@@ -1027,8 +1115,27 @@ def main():
                 print(f"MUTATION {mutation}: status={row['status']} stop={row['stop_pc']:#x} "
                       f"executed={row['instructions_executed']} "
                       f"sr={row['vdc_sr_before']:#x}->{row['vdc_sr_after']:#x} -> {verdict}")
-        check_pos(run_mode(probe, bios, cue, "pos-write", POS_CONTROL), POS_CONTROL)
+        # Persist the positive control as first-class REAL_CORE_EXECUTION evidence, not
+        # just a summary PASS line. A host fixture must be captured from this output;
+        # never synthesize or infer a measured row from the deterministic guest code.
+        pos_row = run_mode(probe, bios, cue, "pos-write", POS_CONTROL)
+        check_pos_write(pos_row, POS_CONTROL)
+        pos_jsr = to_jsr_observation(pos_row)
+        if pos_jsr is None:
+            raise ValueError("positive control JSR view excluded unexpectedly")
+        pending_evidence.append(("pos-write", POS_VERDICT, pos_row, pos_jsr))
         assert hwp_safe_row is not None
+        # All armed/mutation/positive validations and JSR-schema checks passed: emit evidence.
+        for case, verdict, row, jsr in pending_evidence:
+            print("EVIDENCE " + json.dumps({"case": case, "observation_kind": "REAL_CORE_EXECUTION",
+                                            "core_revision": PINNED_CORE_REVISION, "bios": "SYNTHETIC",
+                                            "execution_mode": "debug-single-step", "verdict": verdict,
+                                            "measured_stop_pc": row["stop_pc"], "row": row}, sort_keys=True))
+            if jsr is None:
+                print(f"JSR_OBSERVATION_EXCLUDED {case} hazard rows have no jsr-observation v1 "
+                      f"outcome (EVIDENCE is authoritative)")
+            else:
+                print("JSR_OBSERVATION " + json.dumps(jsr, sort_keys=True))
         print("PASS issue-365 ST0/ST1/ST2 instruction-boundary monitor (synthetic ROM, pinned core):")
         print(f"  armed: {len(ARMED_MODES)} modes refused/failed-closed before side effect, "
               f"resume refused {RESUME_ATTEMPTS}/{RESUME_ATTEMPTS}")
