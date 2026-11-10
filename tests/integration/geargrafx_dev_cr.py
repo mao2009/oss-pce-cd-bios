@@ -13,11 +13,11 @@ Guest program (reset-replacement code):
   2. Seed the shadow ($2502 = pattern low or garbage, $2503 = $A5 or $00) and
      save the original MPR0, open the MPR0=$FF window and program VDC CR to the
      case pattern (low/high), then restore MPR0.
-  3. Preset P (PHA/PLP, I=1 in every case), X, Y and A; JSR the slot entry; PHP
-     and record A/P/X/Y/SP-after at $2200..$2205 (SEI right after PHP keeps the
-     tail deterministic even if a pattern ever enabled a VDC interrupt source).
-  4. Re-open the window, read back CR low/high to $2206/$2207 region and restore
-     MPR0. The original MPR0 is kept at $2208 for the MPR0-restored check.
+  3. Preset P (PHA/PLP, I=1 in every case), X, Y and A; JSR the slot entry; PHP and
+     record A/P/X/Y/SP-after at $2200..$2204. The original MPR0 is kept at $2207
+     for the MPR0-restored check. No guest port readback is performed: on the
+     pinned core a CR data-port read returns the stale m_read_buffer, so the
+     vdc_cr probe observation is the only trustworthy oracle.
 The authoritative oracle is the probe's independent vdc_cr observation
 (GetState()->R[5]); the guest port readback is only a secondary signal.
 Test patterns never set CR interrupt-enable bits (0-3), so no IRQ can fire.
@@ -29,9 +29,7 @@ SHADOW_LO = 0x2502        # CR-low image (this DEV family is its single writer)
 SHADOW_MAGIC = 0x2503     # $A5 iff the shadow is initialized
 SHADOW_HI_RSVD = 0x2504   # reserved: CR-high image for the future $2F-$33 family
 SHADOW_VALID = 0xA5
-STORE = 0x2200            # A/P/X/Y/SP-after at STORE..STORE+4, CR low/high at +5/+6
-STORE_CR_LO = STORE + 5
-STORE_CR_HI = STORE + 6
+STORE = 0x2200            # A/P/X/Y/SP-after at STORE..STORE+4
 STORE_MPR0 = STORE + 7    # original MPR0 saved here (8 bytes total, inside the 64-byte window)
 SENTINEL = 0x2300         # 16-byte RAM sentinel, must be untouched
 SENTINEL_LEN = 16
@@ -87,7 +85,7 @@ def guest(reset, entry, cr_low, cr_high, a, x, y, p, sp, seed_shadow=True):
                    0xA2, x, 0xA0, y,             # LDX #x; LDY #y
                    0xA9, a,                      # LDA #a
                    0x20, entry & 0xFF, entry >> 8,  # JSR entry
-                   0x08, 0x78,                   # PHP; SEI (record flags, then lock)
+                   0x08,                         # PHP (record flags)
                    0x8D, STORE & 0xFF, STORE >> 8,  # STA STORE (A)
                    0x68,                         # PLA
                    0x8D, (STORE + 1) & 0xFF, (STORE + 1) >> 8,  # STA STORE+1 (P)
@@ -95,14 +93,10 @@ def guest(reset, entry, cr_low, cr_high, a, x, y, p, sp, seed_shadow=True):
                    0x8C, (STORE + 3) & 0xFF, (STORE + 3) >> 8,  # STY STORE+3 (Y)
                    0xBA,                         # TSX
                    0x8E, (STORE + 4) & 0xFF, (STORE + 4) >> 8])  # STX STORE+4 (SP)
-    # Read back CR through the window.
-    code += window_open()
-    code += bytes([0xA9, 0x05, 0x8D, 0x00, 0x00,  # LDA #5; STA $0000 (select CR)
-                   0xAD, 0x02, 0x00,             # LDA $0002 (CR low)
-                   0x8D, STORE_CR_LO & 0xFF, STORE_CR_LO >> 8,
-                   0xAD, 0x03, 0x00,             # LDA $0003 (CR high)
-                   0x8D, STORE_CR_HI & 0xFF, STORE_CR_HI >> 8])
-    code += window_close(STORE_MPR0)
+    # NOTE: no guest port readback of CR is asserted. On the pinned core a CR
+    # data-port read returns the stale m_read_buffer ($FFFF at reset), never the
+    # register, so a readback expectation would be vacuous; the vdc_cr oracle in
+    # check() is the authoritative hardware observation. (MAJOR-1/MAJOR-2.)
     halt = reset + len(code)
     code += bytes([0x80, 0xFE])                  # BRA -2
     if reset + len(code) > 0xFFF6:
@@ -143,23 +137,23 @@ def check(label, rows, halt, a, x, y, p, sp, cr_low, cr_high, set_mask, clear_ma
     want_lo = (cr_low & ~clear_mask) | set_mask
     want_shadow_lo = want_lo if seed_shadow else 0xFF
     want_magic = SHADOW_VALID if seed_shadow else 0x00
-    if at(SHADOW_LO) != want_shadow_lo or at(SHADOW_MAGIC) != want_magic:
-        raise ValueError(f"{label}: shadow ${at(SHADOW_MAGIC):02X}{at(SHADOW_LO):02X}, "
-                         f"want ${want_magic:02X}{want_shadow_lo:02X}")
-    # Authoritative oracle: the VDC's actual CR state from the probe (GetState()->R[5]),
-    # independent of the guest's $0002/$0003 port readback (MAJOR-2). The readback is
-    # kept only as a secondary consistency signal: it must agree with the hardware.
+    # Authoritative oracle FIRST: the VDC's actual CR state from the probe
+    # (GetState()->R[5]), independent of any port read (MAJOR-2). No guest
+    # port readback is asserted: on the pinned core CR reads return the stale
+    # m_read_buffer, so such an expectation would be vacuous (MAJOR-1).
     if "vdc_cr" not in cold or "vdc_ar" not in cold:
         raise ValueError(f"{label}: probe observation lacks vdc_cr/vdc_ar (probe too old?)")
     if cold["vdc_ar"] != 5:
         raise ValueError(f"{label}: VDC AR ${cold['vdc_ar']:02X}, want $05 (contract: AR left at CR)")
-    want_vdc = (cr_high << 8) | (want_lo if seed_shadow else cr_low)
+    # CR high bits 13-15 are unwritable (k_register_mask[R05] = 0x1FFF) and read
+    # back as 0; mask the expectation the same way the hardware does.
+    want_vdc = (((cr_high & 0x1F) << 8) | (want_lo if seed_shadow else cr_low))
     if cold["vdc_cr"] != want_vdc:
         raise ValueError(f"{label}: VDC CR ${cold['vdc_cr']:04X}, "
                          f"want ${want_vdc:04X} (independent hardware oracle)")
-    if at(STORE_CR_LO) != (want_lo if seed_shadow else cr_low) or at(STORE_CR_HI) != cr_high:
-        raise ValueError(f"{label}: CR readback ${at(STORE_CR_HI):02X}{at(STORE_CR_LO):02X}, "
-                         f"want ${cr_high:02X}{(want_lo if seed_shadow else cr_low):02X}")
+    if at(SHADOW_LO) != want_shadow_lo or at(SHADOW_MAGIC) != want_magic:
+        raise ValueError(f"{label}: shadow ${at(SHADOW_MAGIC):02X}{at(SHADOW_LO):02X}, "
+                         f"want ${want_magic:02X}{want_shadow_lo:02X}")
     sentinel = bytes(wram[SENTINEL - WRAM_BASE:SENTINEL - WRAM_BASE + SENTINEL_LEN])
     want_sentinel = bytes(sentinel_byte(i) for i in range(SENTINEL_LEN))
     if sentinel != want_sentinel:
