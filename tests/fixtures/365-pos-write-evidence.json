@@ -1,0 +1,130 @@
+{
+  "bios": "SYNTHETIC",
+  "cases": [
+    {
+      "case": "pos-write",
+      "core_revision": "b49ae82a012eade566d72e9d61c9d95a5caa4da3",
+      "observation_kind": "REAL_CORE_EXECUTION",
+      "row": {
+        "after": {
+          "a": 90,
+          "mpr": [
+            0,
+            248,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "p": 4,
+          "pc": 15877,
+          "sp": 255,
+          "x": 0,
+          "y": 0
+        },
+        "armed": true,
+        "base": "pos-write",
+        "before": {
+          "a": 0,
+          "mpr": [
+            0,
+            248,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "p": 4,
+          "pc": 15872,
+          "sp": 255,
+          "x": 0,
+          "y": 0
+        },
+        "boundary_check": true,
+        "budget": 100,
+        "core_irq_stop": false,
+        "detected": false,
+        "detected_pc": 0,
+        "executed_after_resume": 0,
+        "executed_at_refusal": 0,
+        "exit": 0,
+        "expected_st_pc": 0,
+        "family": "pos",
+        "fetch_blocked": false,
+        "fetch_failed": false,
+        "fetch_mpr": 248,
+        "fetch_opcode": 128,
+        "fetch_open_stepped": false,
+        "fetch_page": 1,
+        "fetch_safe": true,
+        "fetch_unsafe_bank": false,
+        "fetch_via": "peek",
+        "guard_after": 90,
+        "guard_before": 0,
+        "guard_target": 15952,
+        "handler_steps": 0,
+        "hazard_landed": false,
+        "idr": 0,
+        "instructions_executed": 3,
+        "irq_accepted": false,
+        "irr": 0,
+        "mmio_read_attempts": 0,
+        "mode": "pos-write",
+        "mpr_changed": false,
+        "observed_vector": 0,
+        "only_stack_net_diffs": false,
+        "ram_diff": [
+          {
+            "address": 15952,
+            "after": 90,
+            "before": 0
+          }
+        ],
+        "ram_diff_count": 1,
+        "ram_diff_truncated": false,
+        "ram_unchanged_during_resume": true,
+        "reason": "",
+        "refused": false,
+        "refused_opcode": 0,
+        "refused_pc": 0,
+        "resume_attempts": 0,
+        "resume_refused": 0,
+        "return_pc": null,
+        "returned": false,
+        "sp_after": 255,
+        "sp_before": 255,
+        "st_mode": "",
+        "stack_cpu": [
+          8703,
+          8702,
+          8701
+        ],
+        "stack_frame_layout": [
+          0,
+          0,
+          0
+        ],
+        "status": "ok",
+        "stop_pc": 15877,
+        "vdc_ar_after": 0,
+        "vdc_ar_before": 0,
+        "vdc_r_after": 0,
+        "vdc_r_before": 0,
+        "vdc_read_buffer_after": 65535,
+        "vdc_read_buffer_before": 65535,
+        "vdc_sr_after": 0,
+        "vdc_sr_before": 0,
+        "vector_read": false
+      },
+      "verdict": "allowlisted_store_landed"
+    }
+  ],
+  "core_revision": "b49ae82a012eade566d72e9d61c9d95a5caa4da3",
+  "issue": 365,
+  "observation_kind": "REAL_CORE_EXECUTION",
+  "source": "run_mode(probe, bios, cue, 'pos-write', 0x3E50) + check_pos via tests/integration/geargrafx_st_boundary.py and geargrafx_reference_guard.py (same path as `make st-boundary`), pinned Geargrafx debugger core, synthetic ROM, linux x86_64"
+}
