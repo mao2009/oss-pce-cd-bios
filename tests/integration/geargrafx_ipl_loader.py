@@ -11,6 +11,7 @@ the payload halt. Partial copies are reported by the copied-sector count.
 import argparse
 import hashlib
 import json
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -487,8 +488,18 @@ def main():
         try:
             run_case(probe, norange, norange_labels_path, tail_case,
                      payloads[tail_case["pay"]][0], tmp)
-        except ValueError:
-            pass  # expected: mutant no longer refuses with code 27
+        except ValueError as error:
+            # The mutant must reach a confirmed halt with a non-27 code
+            # (the final-sector pre-read fails on the 300-frame disc). A
+            # timeout, an unconfirmed halt, or a lingering code 27 means the
+            # attribution check itself is broken -- never count that as proof.
+            message = str(error)
+            match = re.search(r"code/copied = (\d+)/(\d+)", message)
+            if "halt_confirmed=False" in message or match is None:
+                raise SystemExit(f"FAIL norange mutant: no confirmed halt: {error}")
+            if (match.group(1), match.group(2)) == ("27", "0"):
+                raise SystemExit(f"FAIL norange mutant: over-width case still "
+                                 f"refused with code 27: {error}")
         else:
             raise SystemExit("FAIL norange mutant: over-width case still "
                              "refused with code 27")
