@@ -385,18 +385,29 @@ def _blockpre_cases():
             # variants run with the monitor armed (probe: armed = !unguarded).
             row.update(mode=mut, armed=not mut.endswith("-unguarded"))
             if mut.endswith("-resume-allowed"):
-                # The latch holds at first: refused, then the guest steps
-                # through and the transfer lands anyway.
-                row.update(refused=True, ram_diff=[
-                    {"address": 0x3E90, "before": 0xCC, "after": 0x60}],
-                    ram_diff_count=1)
+                # The latch holds at first (refused), then 3 unrefused resume
+                # steps advance the count by exactly 3 and land the transfer.
+                executed = V.BLOCKPRE_EXPECTED_EXECUTED[base_mode] + 10
+                trace = [{"address": a, "before": b, "after": v}
+                         for a, b, v in V.BLOCKPRE_LANDED_TRACE[base_mode]]
+                row.update(refused=True, status="ok",
+                           refused_pc=V.BLOCKPRE_EXPECTED_PC[base_mode],
+                           stop_pc=V.BLOCKPRE_EXPECTED_PC[base_mode] + 7,
+                           instructions_executed=executed,
+                           executed_at_refusal=executed - 3,
+                           executed_after_resume=executed,
+                           resume_attempts=3, resume_refused=0,
+                           ram_diff=trace, ram_diff_count=len(trace),
+                           ram_diff_truncated=False,
+                           ram_unchanged_during_resume=False)
             elif base_mode == "tia-wrap-forbidden":
                 # A forbidden-destination wrap lands on the VDC, not RAM.
-                row.update(vdc_ar_before=5, vdc_ar_after=0x1B)
+                row.update(vdc_ar_before=0, vdc_ar_after=0x1B)
             else:
-                row.update(ram_diff=[
-                    {"address": 0x3E90, "before": 0xCC, "after": 0x60}],
-                    ram_diff_count=1)
+                trace = [{"address": a, "before": b, "after": v}
+                         for a, b, v in V.BLOCKPRE_LANDED_TRACE[base_mode]]
+                row.update(ram_diff=trace, ram_diff_count=len(trace),
+                           ram_diff_truncated=False)
         cases[mut] = _item(mut, verdict, row)
     return cases
 
@@ -990,20 +1001,24 @@ class BlockpreReview743Test(unittest.TestCase):
         resume = sorted(m for m in V.BLOCKPRE_MUTATIONS
                         if m.endswith("-resume-allowed"))[0]
         wrap = "tia-wrap-forbidden-unguarded"
+        base_plain = V._blockpre_mutation_base(plain)
+        base_resume = V._blockpre_mutation_base(resume)
+        exec_plain = V.BLOCKPRE_EXPECTED_EXECUTED[base_plain]
+        exec_resume = V.BLOCKPRE_EXPECTED_EXECUTED[base_resume]
         for case, name, fn, expected in [
             (plain, "mode_wrong", lambda r, i: r.update(mode="tii-entry"), V.FAIL),
             (plain, "mode_missing", lambda r, i: r.pop("mode", None), V.BLOCKED),
             (plain, "refused_true", lambda r, i: r.update(refused=True), V.FAIL),
             (plain, "refused_missing", lambda r, i: r.pop("refused", None), V.BLOCKED),
             (plain, "no_progress", lambda r, i: r.update(
-                instructions_executed=V.BLOCKPRE_EXPECTED_EXECUTED["tii-entry"]), V.FAIL),
+                instructions_executed=exec_plain), V.FAIL),
             (plain, "trace_removed", lambda r, i: (
                 r.update(ram_diff=[], ram_diff_count=0)), V.FAIL),
             (resume, "resume_refused_false", lambda r, i: r.update(refused=False), V.FAIL),
             (resume, "resume_trace_removed", lambda r, i: (
                 r.update(ram_diff=[], ram_diff_count=0)), V.FAIL),
             (wrap, "wrap_trace_removed", lambda r, i: (
-                r.update(vdc_ar_after=5)), V.FAIL),
+                r.update(vdc_ar_after=0)), V.FAIL),
             (plain, "armed_true", lambda r, i: r.update(armed=True), V.FAIL),
             (plain, "armed_missing", lambda r, i: r.pop("armed", None), V.BLOCKED),
             (plain, "status_refused", lambda r, i: r.update(status="refused"), V.FAIL),
@@ -1013,6 +1028,65 @@ class BlockpreReview743Test(unittest.TestCase):
             with self.subTest(case=case, field=name):
                 c = _blockpre_cases()
                 fn(c[case]["row"], c[case])
+                v, reasons, _ = self._check(c)
+                self.assertEqual(v, expected, reasons)
+
+    def test_resume_allowed_evidence_pins(self):
+        # MAJOR (#743): resume-allowed must prove the latch released and the
+        # transfer landed at the right destination -- not merely a non-empty
+        # diff. Every forgery below must fail closed, never PASS.
+        resume = sorted(m for m in V.BLOCKPRE_MUTATIONS
+                        if m.endswith("-resume-allowed"))[0]
+        base = V._blockpre_mutation_base(resume)
+        pc = V.BLOCKPRE_EXPECTED_PC[base]
+        full_trace = [{"address": a, "before": b, "after": v}
+                      for a, b, v in V.BLOCKPRE_LANDED_TRACE[base]]
+
+        def good(c):
+            return c[resume]["row"]
+
+        for name, fn, expected in [
+            ("resume_refused_3", lambda r: r.update(resume_refused=3), V.FAIL),
+            ("resume_refused_1", lambda r: r.update(resume_refused=1), V.FAIL),
+            ("resume_attempts_wrong", lambda r: r.update(resume_attempts=2), V.FAIL),
+            ("refused_pc_wrong", lambda r: r.update(refused_pc=0x1234), V.FAIL),
+            ("refused_pc_missing", lambda r: r.pop("refused_pc", None), V.BLOCKED),
+            ("stop_pc_wrong", lambda r: r.update(stop_pc=pc), V.FAIL),
+            ("stop_pc_missing", lambda r: r.pop("stop_pc", None), V.BLOCKED),
+            ("status_refused", lambda r: r.update(status="refused", refused=False,
+                                                  armed=False), V.FAIL),
+            ("no_progress", lambda r: r.update(
+                instructions_executed=V.BLOCKPRE_EXPECTED_EXECUTED[base],
+                executed_at_refusal=V.BLOCKPRE_EXPECTED_EXECUTED[base] - 3,
+                executed_after_resume=V.BLOCKPRE_EXPECTED_EXECUTED[base]), V.FAIL),
+            ("exec_at_refusal_wrong", lambda r: r.update(executed_at_refusal=0), V.FAIL),
+            ("exec_after_resume_wrong", lambda r: r.update(executed_after_resume=0), V.FAIL),
+            ("off_target_only", lambda r: r.update(
+                ram_diff=[{"address": 0x3000, "before": 0x00, "after": 0x01}],
+                ram_diff_count=1), V.FAIL),
+            ("stack_only", lambda r: r.update(
+                ram_diff=[{"address": 0x21FF, "before": 0x00, "after": 0x3E},
+                          {"address": 0x21FE, "before": 0x00, "after": 0x01}],
+                ram_diff_count=2), V.FAIL),
+            ("wrong_after_value", lambda r: r.update(
+                ram_diff=[dict(e, after=0x00) if e["address"] == full_trace[0]["address"] else e
+                          for e in full_trace]), V.FAIL),
+            ("wrong_before_value", lambda r: r.update(
+                ram_diff=[dict(e, before=0x00) if e["address"] == full_trace[0]["address"] else e
+                          for e in full_trace]), V.FAIL),
+            ("missing_triple", lambda r: r.update(
+                ram_diff=full_trace[1:], ram_diff_count=len(full_trace) - 1), V.FAIL),
+            ("empty_trace", lambda r: r.update(ram_diff=[], ram_diff_count=0), V.FAIL),
+            ("truncated", lambda r: r.update(ram_diff_truncated=True), V.BLOCKED),
+            ("count_mismatch", lambda r: r.update(ram_diff_count=99), V.FAIL),
+            ("count_missing", lambda r: r.pop("ram_diff_count", None), V.BLOCKED),
+            ("malformed_entry", lambda r: r.update(ram_diff=["0x3E90"],
+                                                  ram_diff_count=1), V.BLOCKED),
+            ("bool_as_int", lambda r: r.update(instructions_executed=True), V.BLOCKED),
+        ]:
+            with self.subTest(field=name):
+                c = _blockpre_cases()
+                fn(good(c))
                 v, reasons, _ = self._check(c)
                 self.assertEqual(v, expected, reasons)
 

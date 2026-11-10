@@ -87,6 +87,20 @@ BLOCK_OP = {
     "tii-hwpage-fetch-blocked": 0x73,
     "block-irq-handler": 0x73,
 }
+# Expected landed transfer trace per base mode: (address, before, after).
+# before comes from the linear fixture ($3E40-$3E9F fill, dst $3E90-$3E93
+# preset to $CC); after is the transferred pattern byte. The probe emits a
+# physical-WRAM net diff, so a landed run must contain every triple below
+# (an IRQ run additionally carries the three architectural stack pushes).
+BLOCKPRE_LANDED_TRACE = {
+    "tii-entry": [((0x3E90 + i), 0xCC, value) for i, value in enumerate(PATTERN)],
+    "tdd-unknown": [(0x3E90, 0xCC, 0x60), (0x3E8F, 0x6F, 0x5F),
+                    (0x3E8E, 0x6E, 0x5E), (0x3E8D, 0x6D, 0x5D)],
+    "tin-unknown-far": [(0x3E90, 0xCC, 0x63)],
+    "tai-mpr2-unknown": [(0x3E90, 0xCC, 0x60), (0x3E91, 0xCC, 0x61),
+                         (0x3E92, 0xCC, 0x60), (0x3E93, 0xCC, 0x61)],
+    "block-irq-handler": [((0x3E90 + i), 0xCC, value) for i, value in enumerate(PATTERN)],
+}
 HWPAGE_MODES = ("tii-hwpage-fetch-blocked",)
 ARMED_MODES = tuple(BLOCK_EXPECTED_PC)
 MUTATIONS = {
@@ -250,6 +264,45 @@ def check_armed(row, mode):
     return REFUSED_VERDICT
 
 
+def _require_landed_trace(row, mode):
+    """The landed transfer bytes must be present with exact before/after.
+
+    Non-empty is not enough: stack-only diffs, wrong destinations, or
+    forged values never count as a landed transfer. IRQ runs may carry the
+    three architectural stack pushes in addition to the transfer triples.
+    """
+    diffs = row.get("ram_diff")
+    if not isinstance(diffs, list) or not diffs:
+        raise ValueError(f"{mode}: landed run left no RAM trace")
+    if row.get("ram_diff_truncated") is not False:
+        raise ValueError(f"{mode}: truncated diff is not a complete trace")
+    if not isinstance(row.get("ram_diff_count"), int):
+        raise ValueError(f"{mode}: ram_diff_count missing/non-integer")
+    if row.get("ram_diff_count") != len(diffs):
+        raise ValueError(f"{mode}: ram_diff_count does not match entries")
+    seen = set()
+    for entry in diffs:
+        if not isinstance(entry, dict):
+            raise ValueError(f"{mode}: malformed ram_diff entry: {entry!r}")
+        address, before, after = entry.get("address"), entry.get("before"), entry.get("after")
+        if type(address) is not int or not 0x2000 <= address <= 0x3FFF:
+            raise ValueError(f"{mode}: ram_diff address out of WRAM: {address!r}")
+        if type(before) is not int or not 0 <= before <= 0xFF:
+            raise ValueError(f"{mode}: ram_diff before not a byte: {before!r}")
+        if type(after) is not int or not 0 <= after <= 0xFF:
+            raise ValueError(f"{mode}: ram_diff after not a byte: {after!r}")
+        if before == after:
+            raise ValueError(f"{mode}: ram_diff entry is not a change: {address:#x}")
+        seen.add((address, before, after))
+    for triple in BLOCKPRE_LANDED_TRACE[mode]:
+        if triple not in seen:
+            raise ValueError(f"{mode}: expected transfer byte missing: "
+                             f"${triple[0]:04X} ${triple[1]:02X}->${triple[2]:02X}")
+    # Stack cells alone are never a transfer: the transfer triples above are
+    # mandatory even when an IRQ run also pushes the stack.
+    return seen
+
+
 def check_unguarded_landed(row, mode):
     """Validate the sensitivity control: bypassed/unmonitored, the transfer lands.
 
@@ -262,15 +315,14 @@ def check_unguarded_landed(row, mode):
     if row.get("refused") is not False or row.get("status") == "refused":
         raise ValueError(f"{mode}: bypassed run was refused: monitor still armed")
     _int_fields(row, ("instructions_executed",))
-    diffs = row.get("ram_diff")
-    if not isinstance(diffs, list) or not diffs:
+    if mode == "tia-wrap-forbidden":
         # A forbidden-destination wrap lands on the VDC instead of RAM.
-        if mode == "tia-wrap-forbidden":
-            if row.get("vdc_ar_before") == row.get("vdc_ar_after"):
-                raise ValueError(f"{mode}: unguarded wrap left no VDC trace")
-            return LANDED_VERDICT
-        raise ValueError(f"{mode}: unguarded run left no RAM trace")
-    landed = {(d["address"], d["after"]) for d in diffs
+        _int_fields(row, ("vdc_ar_before", "vdc_ar_after"))
+        if row.get("vdc_ar_before") == row.get("vdc_ar_after"):
+            raise ValueError(f"{mode}: unguarded wrap left no VDC trace")
+    else:
+        _require_landed_trace(row, mode)
+    landed = {(d["address"], d["after"]) for d in row["ram_diff"]
               if isinstance(d, dict) and "address" in d and "after" in d}
     if mode in ("tii-entry", "block-irq-handler"):
         for i, value in enumerate(PATTERN):
@@ -298,16 +350,43 @@ def check_resume_allowed_landed(row, mode):
     _require_ok_exit(row, mode)
     if row.get("refused") is not True:
         raise ValueError(f"{mode}: resume-allowed never refused at first")
-    _int_fields(row, ("refused_pc", "stop_pc", "resume_refused", "instructions_executed"))
+    if row.get("armed") is not True:
+        raise ValueError(f"{mode}: resume-allowed run was not monitored")
+    if row.get("status") != "ok":
+        raise ValueError(f"{mode}: resume-allowed run did not halt cleanly: "
+                         f"{row.get('status')!r}")
+    _int_fields(row, ("refused_pc", "stop_pc", "resume_refused", "resume_attempts",
+                      "instructions_executed", "executed_at_refusal",
+                      "executed_after_resume"))
     if row.get("refused_pc") != BLOCK_EXPECTED_PC[mode]:
         raise ValueError(f"{mode}: refusal PC mismatch")
     if row.get("resume_refused") != 0:
         raise ValueError(f"{mode}: resume unexpectedly refused")
+    if row.get("resume_attempts") != RESUME_ATTEMPTS:
+        raise ValueError(f"{mode}: resume attempts != {RESUME_ATTEMPTS}")
     if row.get("stop_pc") != BLOCK_EXPECTED_PC[mode] + 7:
         raise ValueError(f"{mode}: unexpected halt PC ${row.get('stop_pc'):04X}")
-    diffs = row.get("ram_diff")
-    if not isinstance(diffs, list) or not diffs:
-        raise ValueError(f"{mode}: resumed run left no transfer trace")
+    if row.get("instructions_executed") <= BLOCK_EXECUTED_BEFORE_REFUSAL[mode]:
+        raise ValueError(f"{mode}: resumed run did not execute past the boundary")
+    # The refusal snapshot is taken when the initial run stops (before the 3
+    # resume steps); the final count advances by exactly those 3 steps.
+    if row.get("executed_at_refusal") != row.get("instructions_executed") - RESUME_ATTEMPTS:
+        raise ValueError(f"{mode}: executed_at_refusal mismatch")
+    if row.get("executed_after_resume") != row.get("instructions_executed"):
+        raise ValueError(f"{mode}: executed_after_resume mismatch")
+    _require_landed_trace(row, mode)
+    if mode == "tii-entry":
+        landed = {(d["address"], d["after"]) for d in row["ram_diff"]}
+        for i, value in enumerate(PATTERN):
+            if (0x3E90 + i, value) not in landed:
+                raise ValueError(f"{mode}: resumed dest byte ${0x3E90 + i:04X} != pattern")
+    elif mode == "tdd-unknown":
+        landed = {(d["address"], d["after"]) for d in row["ram_diff"]}
+        for addr, value in ((0x3E90, 0x60), (0x3E8F, 0x5F), (0x3E8E, 0x5E), (0x3E8D, 0x5D)):
+            if (addr, value) not in landed:
+                raise ValueError(f"{mode}: resumed TDD dest ${addr:04X} != {value:#x}")
+    else:
+        raise ValueError(f"{mode}: resume-allowed is only defined for tii/tdd")
     return LANDED_VERDICT
 
 

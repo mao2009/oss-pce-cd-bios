@@ -129,11 +129,23 @@ class ArmedTest(unittest.TestCase):
 class UnarmedTest(unittest.TestCase):
     def _landed(self, mode="tii-entry"):
         row = _armed_row(mode)
+        if mode == "tdd-unknown":
+            trace = [{"address": a, "before": b, "after": v} for a, b, v in
+                     ((0x3E90, 0xCC, 0x60), (0x3E8F, 0x6F, 0x5F),
+                      (0x3E8E, 0x6E, 0x5E), (0x3E8D, 0x6D, 0x5D))]
+        elif mode == "tin-unknown-far":
+            trace = [{"address": 0x3E90, "before": 0xCC, "after": 0x63}]
+        elif mode == "tai-mpr2-unknown":
+            trace = [{"address": a, "before": 0xCC, "after": v} for a, v in
+                     ((0x3E90, 0x60), (0x3E91, 0x61), (0x3E92, 0x60), (0x3E93, 0x61))]
+        else:
+            trace = [{"address": 0x3E90 + i, "before": 0xCC, "after": v}
+                     for i, v in enumerate(B.PATTERN)]
         row.update({"armed": False, "refused": False, "status": "ok",
                     "reason": "", "stop_pc": B.BLOCK_EXPECTED_PC[mode] + 7,
                     "instructions_executed": B.BLOCK_EXECUTED_BEFORE_REFUSAL[mode] + 2,
-                    "ram_diff": [{"address": 0x3E90 + i, "before": 0xCC, "after": v}
-                                 for i, v in enumerate(B.PATTERN)]})
+                    "ram_diff": trace, "ram_diff_count": len(trace),
+                    "ram_diff_truncated": False})
         return row
 
     def test_unguarded_lands(self):
@@ -158,9 +170,52 @@ class UnarmedTest(unittest.TestCase):
 
     def test_resume_allowed_lands(self):
         row = self._landed("tdd-unknown")
-        row.update({"refused": True, "resume_refused": 0, "stop_pc": 0x3E17,
+        executed = B.BLOCK_EXECUTED_BEFORE_REFUSAL["tdd-unknown"] + 10
+        row.update({"armed": True, "refused": True, "resume_refused": 0,
+                    "resume_attempts": 3, "stop_pc": 0x3E17,
+                    "refused_pc": B.BLOCK_EXPECTED_PC["tdd-unknown"],
+                    "instructions_executed": executed,
+                    "executed_at_refusal": executed - 3,
+                    "executed_after_resume": executed,
                     "ram_unchanged_during_resume": False})
         self.assertEqual(B.check_resume_allowed_landed(row, "tdd-unknown"), B.LANDED_VERDICT)
+
+    def test_resume_allowed_held_refusals_rejected(self):
+        for name, change in (
+            ("resume_refused_3", {"resume_refused": 3}),
+            ("resume_refused_1", {"resume_refused": 1}),
+            ("refused_pc_wrong", {"refused_pc": 0x1234}),
+            ("stop_pc_wrong", {"stop_pc": 0x3E10}),
+            ("status_refused", {"status": "refused", "refused": False}),
+            ("disarmed", {"armed": False}),
+            ("no_progress", {"instructions_executed": 1,
+                             "executed_at_refusal": -2,
+                             "executed_after_resume": 1}),
+            ("off_target_ram_only", {"ram_diff": [{"address": 0x3000, "before": 0x00,
+                                                   "after": 0x01}],
+                                     "ram_diff_count": 1}),
+            ("no_trace", {"ram_diff": [], "ram_diff_count": 0}),
+            ("truncated", {"ram_diff_truncated": True}),
+            ("count_mismatch", {"ram_diff_count": 99}),
+            ("malformed_entry", {"ram_diff": ["0x3E90"],
+                                 "ram_diff_count": 1}),
+            ("bool_as_int", {"instructions_executed": True,
+                             "executed_at_refusal": True,
+                             "executed_after_resume": True}),
+        ):
+            with self.subTest(name=name):
+                row = self._landed("tdd-unknown")
+                executed = B.BLOCK_EXECUTED_BEFORE_REFUSAL["tdd-unknown"] + 10
+                row.update({"armed": True, "refused": True, "resume_refused": 0,
+                            "resume_attempts": 3, "stop_pc": 0x3E17,
+                            "refused_pc": B.BLOCK_EXPECTED_PC["tdd-unknown"],
+                            "instructions_executed": executed,
+                            "executed_at_refusal": executed - 3,
+                            "executed_after_resume": executed,
+                            "ram_unchanged_during_resume": False})
+                row.update(change)
+                with self.assertRaises(ValueError):
+                    B.check_resume_allowed_landed(row, "tdd-unknown")
 
     def test_resume_held_is_not_landed(self):
         row = self._landed("tdd-unknown")
@@ -212,12 +267,19 @@ class ExitValidationTest(unittest.TestCase):
                        "stop_pc": B.BLOCK_EXPECTED_PC["tii-entry"] + 7,
                        "instructions_executed": B.BLOCK_EXECUTED_BEFORE_REFUSAL["tii-entry"] + 2,
                        "ram_diff": [{"address": 0x3E90 + i, "before": 0xCC, "after": v}
-                                    for i, v in enumerate(B.PATTERN)]})
+                                    for i, v in enumerate(B.PATTERN)],
+                       "ram_diff_count": 4, "ram_diff_truncated": False})
         resume = _armed_row("tdd-unknown")
-        resume.update({"armed": False, "refused": True, "status": "ok", "reason": "",
+        resume.update({"armed": True, "refused": True, "status": "ok", "reason": "",
                        "stop_pc": 0x3E17, "resume_refused": 0,
-                       "instructions_executed": B.BLOCK_EXECUTED_BEFORE_REFUSAL["tdd-unknown"] + 2,
-                       "ram_diff": [{"address": 0x3E90, "before": 0xCC, "after": 0x60}],
+                       "resume_attempts": 3, "refused_pc": B.BLOCK_EXPECTED_PC["tdd-unknown"],
+                       "instructions_executed": B.BLOCK_EXECUTED_BEFORE_REFUSAL["tdd-unknown"] + 10,
+                       "executed_at_refusal": B.BLOCK_EXECUTED_BEFORE_REFUSAL["tdd-unknown"] + 7,
+                       "executed_after_resume": B.BLOCK_EXECUTED_BEFORE_REFUSAL["tdd-unknown"] + 10,
+                       "ram_diff": [{"address": a, "before": b, "after": v} for a, b, v in
+                                    ((0x3E90, 0xCC, 0x60), (0x3E8F, 0x6F, 0x5F),
+                                     (0x3E8E, 0x6E, 0x5E), (0x3E8D, 0x6D, 0x5D))],
+                       "ram_diff_count": 4, "ram_diff_truncated": False,
                        "ram_unchanged_during_resume": False})
         return [
             (B.check_armed, _armed_row("tii-entry"), "tii-entry"),
@@ -349,10 +411,14 @@ class IntValidationTest(unittest.TestCase):
             for bad in (None, "0", True):
                 with self.subTest(field=name, bad=bad):
                     row = _armed_row("tdd-unknown")
-                    row.update({"armed": False, "refused": True, "status": "ok", "reason": "",
+                    row.update({"armed": True, "refused": True, "status": "ok", "reason": "",
                                 "stop_pc": 0x3E17, "resume_refused": 0,
+                                "resume_attempts": 3,
                                 "instructions_executed": B.BLOCK_EXECUTED_BEFORE_REFUSAL["tdd-unknown"] + 2,
+                                "executed_at_refusal": B.BLOCK_EXECUTED_BEFORE_REFUSAL["tdd-unknown"] - 1,
+                                "executed_after_resume": B.BLOCK_EXECUTED_BEFORE_REFUSAL["tdd-unknown"] + 2,
                                 "ram_diff": [{"address": 0x3E90, "before": 0xCC, "after": 0x60}],
+                                "ram_diff_count": 1, "ram_diff_truncated": False,
                                 "ram_unchanged_during_resume": False})
                     row[name] = bad
                     with self.assertRaises(ValueError):

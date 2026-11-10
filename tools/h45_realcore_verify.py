@@ -168,6 +168,20 @@ BLOCKPRE_MPR_AFTER = {
 BLOCKPRE_IRQ_VECTOR = 0x3F80
 BLOCKPRE_STACK_CELLS = frozenset({0x21FF, 0x21FE, 0x21FD})
 BLOCKPRE_RESUME_ATTEMPTS = 3
+# Expected landed transfer trace per base mode: (address, before, after).
+# before comes from the linear fixture (dst $3E90-$3E93 preset to $CC, the
+# rest of $3E40-$3E9F filled with F(addr) = (0x20 + addr - 0x3E40) & 0xFF);
+# after is the transferred pattern byte. A landed run must contain every
+# triple (an IRQ run may add the three architectural stack pushes).
+BLOCKPRE_LANDED_TRACE = {
+    "tii-entry": [((0x3E90 + i), 0xCC, value) for i, value in enumerate((0x60, 0x61, 0x62, 0x63))],
+    "tdd-unknown": [(0x3E90, 0xCC, 0x60), (0x3E8F, 0x6F, 0x5F),
+                    (0x3E8E, 0x6E, 0x5E), (0x3E8D, 0x6D, 0x5D)],
+    "tin-unknown-far": [(0x3E90, 0xCC, 0x63)],
+    "tai-mpr2-unknown": [(0x3E90, 0xCC, 0x60), (0x3E91, 0xCC, 0x61),
+                         (0x3E92, 0xCC, 0x60), (0x3E93, 0xCC, 0x61)],
+    "block-irq-handler": [((0x3E90 + i), 0xCC, value) for i, value in enumerate((0x60, 0x61, 0x62, 0x63))],
+}
 # Exact probe-emitted verdict/status/reason strings (no substring matching).
 BLOCKPRE_REFUSED_VERDICT = "refused_at_instruction_boundary_before_side_effect"
 BLOCKPRE_HWPAGE_VERDICT = "hardware_page_fetch_failed_closed_before_step"
@@ -455,6 +469,54 @@ def _blockpre_check_hwpage_row(row, base, case, expect_armed):
     return None, None
 
 
+def _blockpre_check_landed_trace(row, base, case):
+    """Landed transfer content: every expected triple present, well-formed.
+
+    Non-empty is not enough: stack-only diffs, wrong destinations, forged
+    values, truncated lists, and count mismatches never count as a landed
+    transfer. The tia-wrap family lands on the VDC instead of RAM.
+    """
+    if base == "tia-wrap-forbidden":
+        for name in ("vdc_ar_before", "vdc_ar_after"):
+            bad = _blockpre_bad_int(row, name, case)
+            if bad is not None:
+                return "BLOCKED", bad
+        if row["vdc_ar_before"] == row["vdc_ar_after"]:
+            return "FAIL", f"MUTATION_NO_TRACE:{case}"
+        return None, None
+    diffs = row.get("ram_diff")
+    if not isinstance(diffs, list) or not diffs:
+        return "FAIL", f"MUTATION_NO_TRACE:{case}"
+    truncated = row.get("ram_diff_truncated")
+    if type(truncated) is not bool:
+        return "BLOCKED", f"MUTATION_TRACE_TRUNCATED_MISSING:{case}"
+    if truncated:
+        return "BLOCKED", f"MUTATION_TRACE_TRUNCATED:{case}"
+    count = row.get("ram_diff_count")
+    if type(count) is not int:
+        return "BLOCKED", f"MUTATION_TRACE_COUNT_MISSING:{case}"
+    if count != len(diffs):
+        return "FAIL", f"MUTATION_TRACE_COUNT_MISMATCH:{case}"
+    seen = set()
+    for entry in diffs:
+        if not isinstance(entry, dict):
+            return "BLOCKED", f"MUTATION_TRACE_MALFORMED:{case}"
+        address, before, after = entry.get("address"), entry.get("before"), entry.get("after")
+        if type(address) is not int or not 0x2000 <= address <= 0x3FFF:
+            return "BLOCKED", f"MUTATION_TRACE_MALFORMED:{case}"
+        if type(before) is not int or not 0 <= before <= 0xFF:
+            return "BLOCKED", f"MUTATION_TRACE_MALFORMED:{case}"
+        if type(after) is not int or not 0 <= after <= 0xFF:
+            return "BLOCKED", f"MUTATION_TRACE_MALFORMED:{case}"
+        if before == after:
+            return "FAIL", f"MUTATION_TRACE_NOT_A_CHANGE:{case}:{address:#x}"
+        seen.add((address, before, after))
+    for triple in BLOCKPRE_LANDED_TRACE[base]:
+        if triple not in seen:
+            return "FAIL", f"MUTATION_TRACE_MISSING:{case}:{triple[0]:#x}"
+    return None, None
+
+
 def _check_blockpre_cases(cases, probe_ok=False, summary_ok=False):
     """Validate pinned #742 blockpre transcript. Returns (verdict, reasons, halt).
 
@@ -625,17 +687,34 @@ def _check_blockpre_cases(cases, probe_ok=False, summary_ok=False):
                 return BLOCKED, [bad], {}
             if row["instructions_executed"] <= BLOCKPRE_EXPECTED_EXECUTED[base]:
                 return FAIL, [f"MUTATION_NO_PROGRESS:{case}"], {}
-            diffs = row.get("ram_diff")
-            traced = isinstance(diffs, list) and len(diffs) > 0
-            if not traced and base == "tia-wrap-forbidden":
-                # A forbidden-destination wrap lands on the VDC, not RAM.
-                for name in ("vdc_ar_before", "vdc_ar_after"):
+            if case.endswith("-resume-allowed"):
+                # The latch holds at first: initial refusal at the expected PC
+                # with an exact stop at PC+7, then 3 unrefused resume steps
+                # that advance the count by exactly 3.
+                for name in ("refused_pc", "stop_pc"):
                     bad = _blockpre_bad_int(row, name, case)
                     if bad is not None:
                         return BLOCKED, [bad], {}
-                traced = row["vdc_ar_before"] != row["vdc_ar_after"]
-            if not traced:
-                return FAIL, [f"MUTATION_NO_TRACE:{case}"], {}
+                if row["refused_pc"] != BLOCKPRE_EXPECTED_PC[base]:
+                    return FAIL, [f"MUTATION_REFUSED_PC_MISMATCH:{case}"], {}
+                if row["stop_pc"] != BLOCKPRE_EXPECTED_PC[base] + 7:
+                    return FAIL, [f"MUTATION_STOP_PC_MISMATCH:{case}"], {}
+                for name in ("resume_refused", "resume_attempts",
+                             "executed_at_refusal", "executed_after_resume"):
+                    bad = _blockpre_bad_int(row, name, case)
+                    if bad is not None:
+                        return BLOCKED, [bad], {}
+                if row["resume_refused"] != 0:
+                    return FAIL, [f"MUTATION_RESUME_HELD:{case}"], {}
+                if row["resume_attempts"] != BLOCKPRE_RESUME_ATTEMPTS:
+                    return FAIL, [f"MUTATION_RESUME_COUNT_MISMATCH:{case}"], {}
+                if row["executed_at_refusal"] != row["instructions_executed"] - BLOCKPRE_RESUME_ATTEMPTS:
+                    return FAIL, [f"MUTATION_EXECUTED_AT_REFUSAL_MISMATCH:{case}"], {}
+                if row["executed_after_resume"] != row["instructions_executed"]:
+                    return FAIL, [f"MUTATION_EXECUTED_AFTER_RESUME_MISMATCH:{case}"], {}
+            status, reason = _blockpre_check_landed_trace(row, base, case)
+            if status is not None:
+                return status, [reason], {}
             mut_ok += 1
         else:
             return BLOCKED, [f"UNKNOWN_CASE:{case}"], {}
