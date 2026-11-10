@@ -1,5 +1,13 @@
 """Issue #745 LOW: 256KiB DEV-BIOS boundary builds (needs cc65 + make dev-rom).
 
+Runs in CI jobs that build the synthetic DEV ROM first (bios-dev-full runs
+this file via its test_api*.py discovery after `make dev-rom`; `make
+dev-test` likewise depends on dev-rom). Elsewhere the class skips with an
+explicit reason instead of failing the suite: a missing toolchain or ROM is
+environmental, never a pass.
+
+For each boundary INDEX 01 (0x0000, 0x0109, 0xFFF0, 0xFFFE, 0xFFFF),
+
 For each boundary INDEX 01 (0x0000, 0x0109, 0xFFF0, 0xFFFE, 0xFFFF),
 tools/build_dev_ipl_loader_bios.build_ipl_loader_bios must assemble and link
 a 262144-byte DEV loader BIOS: manifest carries the exact SEL, the info-LBA
