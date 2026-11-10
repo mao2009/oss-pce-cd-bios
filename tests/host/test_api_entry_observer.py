@@ -525,7 +525,8 @@ class StubAddressHardeningTests(unittest.TestCase):
         from environment import executable
         ca65 = executable("ca65")
         with tempfile.TemporaryDirectory() as tmp:
-            for defines in (["-DNOCALL"], ["-DSPIN"]):
+            for defines in (["-DNOCALL"], ["-DSPIN"],
+                            ["-DJSR_SLOT=$E006"], ["-DJMP_SLOT=$E006"]):
                 obj = str(Path(tmp) / "payload.o")
                 subprocess.run([ca65, str(ROOT / "tests" / "integration" / "ipl_api_entry_payload.s"),
                                 *defines, "-o", obj],
@@ -582,6 +583,22 @@ class StubAddressHardeningTests(unittest.TestCase):
             rom.write_bytes(bytes(data))
             with self.assertRaises(ValueError):
                 verify_stub_bytes(rom, 0xE250)  # label points elsewhere
+
+    def test_stub_bytes_window_and_size_rejected(self):
+        # MAJOR-3: window-outside addresses and non-256KiB ROMs are rejected.
+        import tempfile
+        from geargrafx_api_entry import verify_stub_bytes
+        with tempfile.TemporaryDirectory() as tmp:
+            rom = Path(tmp) / "fake.pce"
+            rom.write_bytes(bytes(256 * 1024))
+            for bad in (0xDFFF, 0x10000, None, "E245", True):
+                with self.subTest(addr=bad):
+                    with self.assertRaises(ValueError):
+                        verify_stub_bytes(rom, bad)
+            short_rom = Path(tmp) / "short.pce"
+            short_rom.write_bytes(bytes(8192))
+            with self.assertRaises(ValueError):
+                verify_stub_bytes(short_rom, 0xE245)
 
 
 if __name__ == "__main__":
