@@ -339,6 +339,8 @@ def check_unguarded_landed(row, mode, expected_case=None):
     if row.get("refused") is not False:
         raise ValueError(f"{mode}: bypassed run was refused: monitor still armed")
     want_case = mode if expected_case is None else expected_case
+    if not isinstance(want_case, str):
+        raise ValueError(f"{mode}: expected case id missing/non-string: {want_case!r}")
     full = row.get("mode")
     if not isinstance(full, str) or full != want_case:
         raise ValueError(f"{mode}: measured wrong case {full!r}, expected {want_case!r}")
@@ -401,9 +403,10 @@ def check_resume_allowed_landed(row, mode):
         raise ValueError(f"{mode}: resume-allowed never refused at first")
     if row.get("armed") is not True:
         raise ValueError(f"{mode}: resume-allowed run was not monitored")
-    if row.get("mode") != mode + "-resume-allowed":
-        raise ValueError(f"{mode}: measured wrong case {row.get('mode')!r}, "
-                         f"expected {mode + '-resume-allowed'!r}")
+    want_case = mode + "-resume-allowed"
+    full = row.get("mode")
+    if not isinstance(full, str) or full != want_case:
+        raise ValueError(f"{mode}: measured wrong case {full!r}, expected {want_case!r}")
     if row.get("status") != "ok":
         raise ValueError(f"{mode}: resume-allowed run did not halt cleanly: "
                          f"{row.get('status')!r}")

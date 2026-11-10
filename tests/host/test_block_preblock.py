@@ -584,8 +584,11 @@ class IntValidationTest(unittest.TestCase):
                             "instructions_executed": bad,
                             "ram_diff": [{"address": 0x3E90 + i, "before": 0xCC, "after": v}
                                          for i, v in enumerate(B.PATTERN)]})
-                with self.assertRaises(ValueError):
-                    B.check_unguarded_landed(row, "tii-entry")
+                with self.assertRaises(ValueError) as ctx:
+                    B.check_unguarded_landed(row, "tii-entry", "tii-entry-unguarded")
+                # Must fail at the strict-int gate, not at an earlier gate:
+                # the row is otherwise a valid unguarded observation.
+                self.assertIn("missing/non-integer", str(ctx.exception))
 
     def test_resume_allowed_int_fields_strict(self):
         for name in ("refused_pc", "stop_pc", "resume_refused"):
