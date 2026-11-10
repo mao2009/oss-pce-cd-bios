@@ -138,12 +138,42 @@ class UnifiedTest(unittest.TestCase):
         self.addCleanup(lambda: [sys.modules.__setitem__(k, v) if v is not None else sys.modules.pop(k, None) for k, v in old.items()])
         return a, b
 
-    def test_premerge_never_pass(self):
+    def test_postmerge_clean_passes_synthetic_with_gates(self):
+        # Post-merge (#738/#739 integrated): a clean synthetic HOST_FIXTURE
+        # case legitimately returns PASS, but execution must stay BLOCKED,
+        # execution_permitted False, jsr_count 0, release_eligible False.
+        # (Replaces pre-merge test_premerge_never_pass, Refs #746.)
+        v, r, rec = U.judge_unified(U.clean_case())
+        self.assertEqual(v, U.PASS, r)
+        self.assertIn("UNIFIED_SYNTHETIC_PASS_EXECUTION_BLOCKED", r)
+        self.assertIn("PREREQ_UNAUTHENTICATED_ASSERTION_NOT_PROOF", r)
+        self.assertEqual(rec["execution"], "BLOCKED")
+        self.assertIs(rec["execution_permitted"], False)
+        self.assertEqual(rec["jsr_count"], 0)
+        self.assertIs(rec["release_eligible"], False)
+        rec2 = U.require_unified(U.clean_case())
+        self.assertEqual(rec2["verdict"], U.PASS)
+        self.assertEqual(rec2["execution"], "BLOCKED")
+        self.assertEqual(rec2["jsr_count"], 0)
+        self.assertIs(rec2["release_eligible"], False)
+
+    def test_unintegrated_modules_blocked(self):
+        # Simulates the pre-merge / unintegrated state (module revisions
+        # not matching PINNED): unified verdict must stay BLOCKED, never PASS.
+        a, b = _stub_a(), _stub_b()
+        a.PINNED_CORE_REVISION = "UNINTEGRATED"
+        b.PINNED_REVISION = "UNINTEGRATED"
+        old = {}
+        for k, v in (("h45_preblock_gate", a), ("block_device_predeny", b),
+                     ("tools.h45_preblock_gate", a), ("tools.block_device_predeny", b)):
+            old[k] = sys.modules.get(k)
+            sys.modules[k] = v
+        self.addCleanup(lambda: [sys.modules.__setitem__(k, v) if v is not None else sys.modules.pop(k, None) for k, v in old.items()])
         v, r, rec = U.judge_unified(U.clean_case())
         self.assertNotEqual(v, U.PASS)
         self.assertEqual(v, U.BLOCKED)
+        self.assertIn("PINNED_MISMATCH", r)
         self.assertEqual(rec["execution"], "BLOCKED")
-        self.assertIs(rec["execution_permitted"], False)
         self.assertEqual(rec["jsr_count"], 0)
         self.assertIs(rec["release_eligible"], False)
         with self.assertRaises(U.GateRefused):
