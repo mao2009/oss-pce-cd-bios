@@ -17,6 +17,19 @@ from tools.build_rom import (ROOT, BANK_BYTES, IMAGE_BYTES, build, load_slots, o
                              verify_dev_rom_layout, verify_dev_rom_structure, verify_image)
 
 
+def _overrides_file_offset():
+    """File offset of the OVERRIDES segment, read from the pinned bank0.cfg.
+
+    Fixture roots copy ROOT's bank0.cfg, so tamper offsets must follow it instead
+    of a hard-coded $E2A0 (moved to $E292 for the VDC CR shadow layout).
+    """
+    text = (ROOT / "src" / "bank0.cfg").read_text(encoding="utf-8")
+    match = re.search(r"OVERRIDES:[^\n]*start\s*=\s*\$(E[0-9A-F]+)", text)
+    if not match:
+        raise ValueError("OVERRIDES start not found in src/bank0.cfg")
+    return int(match.group(1), 16) - 0xE000
+
+
 @requires_cc65
 class ApiBuildTests(unittest.TestCase):
     @classmethod
@@ -198,7 +211,7 @@ class ApiBuildTests(unittest.TestCase):
         data = bytearray(build(self.folder/name, root=root).read_bytes())
         dbg = parse_dbg((self.folder/name/'dev.dbg').read_text())
         verify_image(bytes(data), {3}, dbg)  # untampered baseline must pass
-        data[0x2a0 + offset] = value
+        data[_overrides_file_offset() + offset] = value
         return bytes(data), dbg
 
     def test_opcode_length_mismatch_is_rejected(self):
@@ -226,7 +239,8 @@ class ApiBuildTests(unittest.TestCase):
         root = self.make_root('tamper-root', slot_03=self.GOOD)
         data = bytearray(build(self.folder/'tamper', root=root).read_bytes())
         dbg = parse_dbg((self.folder/'tamper/dev.dbg').read_text())
-        at = 0x2a0 + data[0x2a0:0x2c0].index(0x4C)          # the override's JMP api_slot_00
+        base = _overrides_file_offset()
+        at = base + data[base:base + 0x20].index(0x4C)       # the override's JMP api_slot_00
         data[at+1:at+3] = bytes((0x00, 0xE9))               # ...retargeted into padding
         with self.assertRaisesRegex(ValueError, r'jumps to \$E900'): verify_image(bytes(data), {3}, dbg)
         data = bytearray(build(self.folder/'tamper2', root=root).read_bytes())
