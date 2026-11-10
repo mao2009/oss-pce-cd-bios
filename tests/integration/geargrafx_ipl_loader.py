@@ -497,12 +497,12 @@ def main():
             match = re.search(r"code/copied = (\d+)/(\d+)", message)
             if "halt_confirmed=False" in message or match is None:
                 raise SystemExit(f"FAIL norange mutant: no confirmed halt: {error}")
-            if (match.group(1), match.group(2)) == ("27", "0"):
+            if match.group(1) == "27":
                 raise SystemExit(f"FAIL norange mutant: over-width case still "
                                  f"refused with code 27: {error}")
         else:
-            raise SystemExit("FAIL norange mutant: over-width case still "
-                             "refused with code 27")
+            raise SystemExit("FAIL norange mutant: over-width case unexpectedly "
+                             "passed (expected the gate kill to change the outcome)")
         norange_sha = hashlib.sha256(norange.read_bytes()).hexdigest()
 
         if hashlib.sha256(rom.read_bytes()).hexdigest() != rom_sha:
