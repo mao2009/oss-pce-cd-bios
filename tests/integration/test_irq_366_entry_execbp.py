@@ -4,7 +4,9 @@ Real-core test (pinned Geargrafx debugger build, synthetic media only).
 Runs in the required integration gate via `make integration-test` discovery.
 For each of IRQ2/IRQ1/TIQ: the armed probe stops at the resolved handler with
 zero handler instructions and page-1-only stack writes (judge PASS); every RED
-variant and every classifier/judge falsification is rejected; libretro stays
+variant is positively verified (acceptance at the handler, expected breakpoint
+registration, one executed ST0 with VDC AR $00->$07, substantive armed
+rejection); every classifier/judge falsification is rejected; libretro stays
 BLOCKED. No reference BIOS, no commercial media, no ABI change.
 BLOCKED_ABI stays, release_eligible=false.
 """
@@ -38,13 +40,16 @@ class IrqEntryExecbpAcceptanceTest(unittest.TestCase):
             with self.subTest(vector=irq):
                 driver.check(driver.run(self.probe, self.bios, self.cue, irq + "-armed"), irq)
 
-    def test_red_variants_are_rejected(self):
+    def test_red_variants_show_execution_side_effects(self):
+        # verify_red succeeds ONLY on the measured RED observations (acceptance
+        # at the handler, expected breakpoint registration, one executed ST0
+        # with VDC AR $00->$07 and PC handler->handler+2, substantive armed
+        # rejection). A normally-stopped or evidence-dropped RED FAILs here.
         for irq in driver.VECTORS:
             for red in driver.RED_VARIANTS:
                 with self.subTest(case=f"{irq}-{red}"):
-                    with self.assertRaises(ValueError):
-                        driver.check(driver.run(self.probe, self.bios, self.cue,
-                                                irq + "-" + red), irq)
+                    driver.verify_red(driver.run(self.probe, self.bios, self.cue,
+                                                 irq + "-" + red), irq, red)
 
     def test_mutations_and_libretro_blocked(self):
         for irq in driver.VECTORS:

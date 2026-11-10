@@ -7,7 +7,16 @@
 // raises BreakpointHit() at the end of the BRA step (CheckBreakpoints runs with
 // the PC of the instruction about to run), so the monitor refuses the next step
 // and zero handler instructions execute. RED variants prove the stop judgement:
-// unguarded (no breakpoint), wrong-bp (breakpoint elsewhere), resume-allow.
+// unguarded (no breakpoint), wrong-bp (breakpoint elsewhere), resume-allow
+// (breakpoint raised, yet one step explicitly issued).
+//
+// Measurement honesty: the probe cannot read a retired-instruction counter from
+// the core. "steps_issued" is the count of post-accept steps the monitor issued
+// (0 or 1 by construction); the py driver presents it to the shared judge under
+// the "handler_instructions" label. Execution evidence is the core-observed side
+// effects: VDC AR $00->$07 plus PC handler->handler+2 for one ST0 #$07;
+// non-execution evidence is stop_pc==handler with VDC/marker/WRAM unchanged.
+// The py driver must check the side effects, never the counter alone.
 #include "geargrafx_core.h"
 #include "huc6270.h"
 #include "huc6280.h"
@@ -66,13 +75,18 @@ int main(int argc, char** argv) {
     else if (irq == 1) cpu->AssertIRQ1(true);
     else { cpu->WriteTimerRegister(0x0C00, 0); cpu->WriteTimerRegister(0x0C01, 1); cpu->ClockTimer(100000); }
     // Arm the EXECUTE breakpoint before the guest runs (RED: omit or misplace it).
+    // bp_target records where the breakpoint was armed (0 = none): the py
+    // driver verifies the registration itself, not just its absence of effect.
+    unsigned bp_target = 0;
     if (mutation == "armed" || mutation == "resume-allow") {
         if (!cpu->AddBreakpoint(HuC6280::HuC6280_BREAKPOINT_TYPE_CPU_ADDRESS,
                                 (u32)handler, 0, false, false, false, true)) return 5;
+        bp_target = handler;
     } else if (mutation == "wrong-bp") {
         const u16 other = kHandler + (u16)(((irq + 1) % 3) * 0x20);
         if (!cpu->AddBreakpoint(HuC6280::HuC6280_BREAKPOINT_TYPE_CPU_ADDRESS,
                                 (u32)other, 0, false, false, false, true)) return 5;
+        bp_target = other;
     }
     cpu->ResetDebuggerExecutionState();
     const std::vector<u8> wram_before(wram, wram + 0x2000);
@@ -94,6 +108,9 @@ int main(int argc, char** argv) {
     for (int i = 0; i < 3; ++i)
         if (pc_after == kHandler + (unsigned)(i * 0x20)) observed_vector = kVectors[i];
     HuC6270::HuC6270_State* vdc = core.GetHuC6270_1()->GetState();
+    // AR reset default is 0 on this pinned core (never written by the guest
+    // before the accept); RED requires ar_before==0, so a changed default
+    // fails closed instead of passing silently.
     const unsigned ar_before = (u8)*vdc->AR, r_before = vdc->R[0];
     unsigned handler_steps = 0, resume_attempts = 0, resume_refused = 0;
     const bool refuse = (mutation == "armed") && execbp_hit && pc_after == handler;
@@ -115,6 +132,10 @@ int main(int argc, char** argv) {
                 ++resume_refused;
         }
     }
+    // pc_final is core-observed after the optional single step: handler+2,
+    // combined with the AR transition, proves exactly one 2-byte ST0 #$07
+    // executed; stop_pc==handler with unchanged side effects proves zero did.
+    const unsigned pc_final = s->PC->GetValue();
     const unsigned ar_after = (u8)*vdc->AR, r_after = vdc->R[0];
     const unsigned stack[3] = {memory->Read(0x21FF), memory->Read(0x21FE), memory->Read(0x21FD)};
     bool only_stack_writes = true;
@@ -135,9 +156,9 @@ int main(int argc, char** argv) {
     }
     // NOTE "vector" below is the case label (kVectors[irq]); the empirical
     // resolution proof is observed_vector + vector_lo/hi -> handler.
-    std::fprintf(stderr, "{\"case\":\"%s\",\"vector\":%u,\"vector_lo\":%u,\"vector_hi\":%u,\"observed_vector\":%u,\"execbp_hit\":%s,\"stop_pc\":%u,\"handler_pc\":%u,\"sp_after\":%u,\"handler_instructions\":%u,\"resume_attempts\":%u,\"resume_refused\":%u,\"stack\":[%u,%u,%u],\"only_stack_writes\":%s,\"handler_write_count\":%u,\"wram_diff\":[%s],\"ar_before\":%u,\"ar_after\":%u,\"r_before\":%u,\"r_after\":%u,\"marker\":%u,\"irr\":%u,\"idr\":%u}",
-        source.c_str(), kVectors[irq], vec_lo, vec_hi, observed_vector, execbp_hit ? "true" : "false",
-        pc_after, handler, sp_after, handler_steps, resume_attempts, resume_refused,
+    std::fprintf(stderr, "{\"case\":\"%s\",\"vector\":%u,\"vector_lo\":%u,\"vector_hi\":%u,\"observed_vector\":%u,\"bp_target\":%u,\"execbp_hit\":%s,\"stop_pc\":%u,\"pc_final\":%u,\"handler_pc\":%u,\"sp_after\":%u,\"steps_issued\":%u,\"resume_attempts\":%u,\"resume_refused\":%u,\"stack\":[%u,%u,%u],\"only_stack_writes\":%s,\"handler_write_count\":%u,\"wram_diff\":[%s],\"ar_before\":%u,\"ar_after\":%u,\"r_before\":%u,\"r_after\":%u,\"marker\":%u,\"irr\":%u,\"idr\":%u}",
+        source.c_str(), kVectors[irq], vec_lo, vec_hi, observed_vector, bp_target, execbp_hit ? "true" : "false",
+        pc_after, pc_final, handler, sp_after, handler_steps, resume_attempts, resume_refused,
         stack[0], stack[1], stack[2], only_stack_writes ? "true" : "false", handler_write_count, wram_diff,
         ar_before, ar_after, r_before, r_after, wram[0x1E60], *s->IRR, *s->IDR);
     return 0;
