@@ -55,7 +55,7 @@ def guest(reset, entry, a, x, y, p, sp):
                    0xE8,                         # INX
                    0xE0, SENTINEL_LEN,           # CPX #len
                    0xD0, 0xF5])                  # BNE fill (-11)
-    code += bytes([0xA9, p, 0x28,                # LDA #p; PLP (preset P, I=1/D=0 in every case)
+    code += bytes([0xA9, p, 0x48, 0x28,             # LDA #p; PHA; PLP (preset P, I=1/D=0 in every case)
                    0xA2, x, 0xA0, y,             # LDX #x; LDY #y
                    0xA9, a,                      # LDA #a
                    0x20, entry & 0xFF, entry >> 8,  # JSR entry
