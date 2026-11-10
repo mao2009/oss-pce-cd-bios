@@ -8,8 +8,9 @@ Each run replaces the reset code of the built DEV ROM with a guest program that:
 Expectation: this project's own contract (src/overrides/slot_22.s, a plain RTS),
 NOT the reference System Card EX_JOYREP. ABI stays UNVERIFIED.
 
-Mutant that must be rejected by the same checks: the single RTS ($60) replaced by
-a NOP ($EA), so the call falls through into the next override body.
+Mutant that must be rejected by the same checks: the layout NOP ($EA) replaced by
+a CLI ($58), so P is no longer preserved. (The NOP itself keeps the override
+2 bytes so later overrides keep their link parity for the MA_MUL16S gate.)
 Run: python3 tests/integration/geargrafx_dev_joyrep.py --rom build/<mode>/bios-dev/dev-only-not-compatible-syscard3.pce
 Needs the pinned cc65 and Geargrafx core (TOOLS_DIR). Missing tools exit 3 (BLOCKED).
 """
@@ -145,23 +146,25 @@ def main():
         cue.write_text('FILE "original.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n')
         for name, regs in cases:
             evidence["runs"].append(run(probe, data, folder, cue, reset, entry, f"joyrep-{name}", regs))
-        # Mutant inside the slot body: RTS ($60) -> NOP ($EA) must fail the regs-123456 checks.
+        # Mutant inside the slot body: NOP;RTS ($EA $60) -> CLI;RTS ($58 $60) must fail
+        # the regs-123456 checks (P no longer preserved). The layout NOP keeps the
+        # override 2 bytes so later overrides keep their link parity.
         code_at = body - 0xE000  # CPU $E000 is file offset 0 of bank 0 (as in the MA_SQRT harness)
-        at = data.find(bytes([0x60]), code_at, code_at + 0x10)
+        at = data.find(bytes([0xEA, 0x60]), code_at, code_at + 0x10)
         if at < 0:
-            raise ValueError("mutant rts_to_nop: RTS not found in slot $22 body")
+            raise ValueError("mutant nop_to_cli: NOP;RTS not found in slot $22 body")
         mutant = bytearray(data)
-        mutant[at] = 0xEA
+        mutant[at] = 0x58
         try:
-            run(probe, bytes(mutant), folder, cue, reset, entry, "mut-rts-to-nop", cases[0][1])
+            run(probe, bytes(mutant), folder, cue, reset, entry, "mut-nop-to-cli", cases[0][1])
         except ValueError as error:
             if not any(key in str(error) for key in ("A/P/X/Y observed", "stack not balanced",
                                                     "RAM sentinel", "did not reach its halt loop",
                                                     "MPR changed")):
                 raise  # only a contract mismatch counts as a rejection (a crash is not a detection)
-            evidence["negative_cases"].append({"case": "rts_to_nop", "rejected_by": str(error)})
+            evidence["negative_cases"].append({"case": "nop_to_cli", "rejected_by": str(error)})
         else:
-            raise ValueError("mutant rts_to_nop passed all checks (not detected)")
+            raise ValueError("mutant nop_to_cli passed all checks (not detected)")
     (args.rom.parent / "geargrafx-dev-joyrep-evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
     print(f"PASS real Geargrafx DEV ROM: EX_JOYREP slot $22: {len(cases)} runs preserve A/X/Y/P, "
           f"balance the stack (SP=$FF and $06), keep MPR1/MPR7 and the RAM sentinel; "

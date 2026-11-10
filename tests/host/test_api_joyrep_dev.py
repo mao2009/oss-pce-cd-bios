@@ -56,8 +56,11 @@ class AssemblyStaticTests(unittest.TestCase):
             lines.append(code)
         return lines
 
-    def test_body_is_a_single_rts(self):
-        self.assertEqual(self._code_lines(), ["rts"])
+    def test_body_is_a_layout_nop_then_rts(self):
+        # One leading NOP keeps the override 2 bytes (link parity for the
+        # MA_MUL16S trampoline gate); NOP touches nothing, so the plain-RTS
+        # contract holds.
+        self.assertEqual(self._code_lines(), ["nop", "rts"])
 
     def test_no_memory_operand_or_io_or_stack_mnemonic(self):
         text = "\n".join(self._code_lines()).lower()
