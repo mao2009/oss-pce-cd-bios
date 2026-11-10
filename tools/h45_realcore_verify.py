@@ -333,6 +333,13 @@ def _blockpre_check_irq(row, case):
     if case == "block-irq-handler":
         if accepted is not True:
             return "FAIL", f"ARMED_IRQ_NOT_ACCEPTED:{case}"
+        # The vector bytes must actually have been read (side-effect-free
+        # TryPeek of $FFF6/$FFF7): a claimed vector without a successful read
+        # is not acceptance evidence, even if the value looks right.
+        if not isinstance(row.get("vector_read"), bool):
+            return "BLOCKED", f"ARMED_VECTOR_READ_MISSING:{case}"
+        if row["vector_read"] is not True:
+            return "FAIL", f"ARMED_VECTOR_READ_FAILED:{case}"
         if row.get("observed_vector") != BLOCKPRE_IRQ_VECTOR:
             if type(row.get("observed_vector")) is not int:
                 return "BLOCKED", f"ARMED_IRQ_VECTOR_MISSING:{case}"

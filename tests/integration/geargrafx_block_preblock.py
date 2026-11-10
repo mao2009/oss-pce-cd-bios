@@ -231,6 +231,8 @@ def check_armed(row, mode):
             raise ValueError(f"{mode}: stack-only flag not set")
         if row.get("irq_accepted") is not True or row.get("observed_vector") != 0x3F80:
             raise ValueError(f"{mode}: IRQ acceptance not observed")
+        if row.get("vector_read") is not True:
+            raise ValueError(f"{mode}: IRQ vector claimed but never read")
         if row.get("handler_steps") != 0:
             raise ValueError(f"{mode}: handler stepped despite refusal")
     elif row.get("ram_diff") != []:

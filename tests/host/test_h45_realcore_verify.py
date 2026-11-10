@@ -353,7 +353,8 @@ def _blockpre_row(mode, armed=True):
                     fetch_opcode=0, fetch_safe=False, fetch_failed=True,
                     reason="unsafe_opcode_fetch_fail_closed")
     if mode == "block-irq-handler":
-        base.update(irq_accepted=True, observed_vector=0x3F80, handler_steps=0,
+        base.update(irq_accepted=True, observed_vector=0x3F80, vector_read=True,
+                    handler_steps=0,
                     ram_diff=[{"address": 0x21FF, "before": 0x00, "after": 0x3E},
                               {"address": 0x21FE, "before": 0x00, "after": 0x01}],
                     ram_diff_count=2)
@@ -620,6 +621,9 @@ class BlockpreIndependentJudgmentTest(unittest.TestCase):
         for name, fn, expected in [
             ("refused_irq", lambda r, i: r.update(irq_accepted=False), V.FAIL),
             ("wrong_vector", lambda r, i: r.update(observed_vector=0x1234), V.FAIL),
+            ("vector_not_read", lambda r, i: r.update(vector_read=False), V.FAIL),
+            ("vector_read_missing", lambda r, i: r.pop("vector_read", None), V.BLOCKED),
+            ("handler_stepped", lambda r, i: r.update(handler_steps=5), V.FAIL),
             ("non_stack_diff", lambda r, i: (
                 r.update(ram_diff=[{"address": 0x3E90, "before": 0xCC, "after": 0x60}]),
                 r.update(ram_diff_count=1)), V.FAIL),
@@ -807,6 +811,39 @@ class StStrictFieldTest(unittest.TestCase):
         del c["tdd-unknown"]["row"]["handler_steps"]
         v, _, _ = V._check_blockpre_cases(c, probe_ok=True, summary_ok=True)
         self.assertEqual(v, V.BLOCKED)
+
+
+class BlockpreIrqVectorReadTest(unittest.TestCase):
+    """MEDIUM-1 (#743): the IRQ vector must actually have been read.
+
+    The probe resolves the handler address with side-effect-free peeks of
+    $FFF6/$FFF7 and reports vector_read. A claimed observed_vector without
+    a successful read is not acceptance evidence, even if the value matches.
+    """
+
+    def _check(self, cases):
+        return V._check_blockpre_cases(cases, probe_ok=True, summary_ok=True)
+
+    def test_vector_read_forgeries_rejected(self):
+        for name, fn, expected in [
+            ("read_false", lambda r: r.update(vector_read=False), V.FAIL),
+            ("read_missing", lambda r: r.pop("vector_read", None), V.BLOCKED),
+            ("read_none", lambda r: r.update(vector_read=None), V.BLOCKED),
+            ("read_zero", lambda r: r.update(vector_read=0), V.BLOCKED),
+            ("read_string", lambda r: r.update(vector_read="true"), V.BLOCKED),
+            ("read_true_vector_wrong", lambda r: r.update(observed_vector=0x1234), V.FAIL),
+            ("not_accepted", lambda r: r.update(irq_accepted=False), V.FAIL),
+            ("handler_stepped", lambda r: r.update(handler_steps=1), V.FAIL),
+        ]:
+            with self.subTest(name=name):
+                c = _blockpre_cases()
+                fn(c["block-irq-handler"]["row"])
+                v, reasons, _ = self._check(c)
+                self.assertEqual(v, expected, reasons)
+
+    def test_valid_irq_control_passes(self):
+        v, _, _ = self._check(_blockpre_cases())
+        self.assertEqual(v, V.PASS)
 
 
 class BlockStrictFieldTest(unittest.TestCase):

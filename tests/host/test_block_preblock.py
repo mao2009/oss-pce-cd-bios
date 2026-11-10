@@ -62,6 +62,7 @@ class ArmedTest(unittest.TestCase):
                 row = _armed_row(mode)
                 if mode == "block-irq-handler":
                     row.update({"irq_accepted": True, "observed_vector": 0x3F80,
+                                "vector_read": True,
                                 "ram_diff": [{"address": 0x21FF, "before": 0, "after": 1},
                                              {"address": 0x21FE, "before": 0, "after": 2},
                                              {"address": 0x21FD, "before": 0, "after": 3}]})
@@ -232,6 +233,26 @@ class UnarmedTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             B.check_resume_allowed_landed(row, "tdd-unknown")
 
+    def test_irq_vector_must_be_read(self):
+        for name, change in (
+            ("not_read", {"vector_read": False}),
+            ("missing", None),
+        ):
+            with self.subTest(name=name):
+                row = _armed_row("block-irq-handler")
+                row.update({"irq_accepted": True, "observed_vector": 0x3F80,
+                            "vector_read": True,
+                            "ram_diff": [{"address": 0x21FF, "before": 0, "after": 1},
+                                         {"address": 0x21FE, "before": 0, "after": 2},
+                                         {"address": 0x21FD, "before": 0, "after": 3}]})
+                row["after"]["sp"] = 0xFC
+                if change is None:
+                    del row["vector_read"]
+                else:
+                    row.update(change)
+                with self.assertRaises(ValueError):
+                    B.check_armed(row, "block-irq-handler")
+
     def test_hwpage_unguarded_stays_blocked(self):
         row = _armed_row("tii-entry")
         row.update({"mode": "tii-hwpage-fetch-blocked-unguarded", "status": "fetch_blocked",
@@ -341,6 +362,7 @@ class MprTransitionTest(unittest.TestCase):
                 row = _armed_row(mode)
                 if mode == "block-irq-handler":
                     row.update({"irq_accepted": True, "observed_vector": 0x3F80,
+                                "vector_read": True,
                                 "ram_diff": [{"address": 0x21FF, "before": 0, "after": 1},
                                              {"address": 0x21FE, "before": 0, "after": 2},
                                              {"address": 0x21FD, "before": 0, "after": 3}]})
@@ -380,6 +402,7 @@ class MprTransitionTest(unittest.TestCase):
     def test_irq_mpr_change_rejected(self):
         row = _armed_row("block-irq-handler")
         row.update({"irq_accepted": True, "observed_vector": 0x3F80,
+                    "vector_read": True,
                     "ram_diff": [{"address": 0x21FF, "before": 0, "after": 1}],
                     "after": {"mpr": [0x01, 0xF8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
                               "sp": 0xFC}})
