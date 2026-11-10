@@ -66,8 +66,9 @@ int main(int argc, char** argv) {
                     prefix, phase, cycle, seq++, irq.c_str(), cpu->PC->GetValue(), cpu->A->GetValue(), cpu->X->GetValue(),
                     cpu->Y->GetValue(), cpu->P->GetValue(), cpu->S->GetValue(), *cpu->IRR, *cpu->IDR);
         for (int i=0;i<8;i++) std::printf("%s%u", i ? "," : "", memory->GetMpr(i));
-        std::printf("],\"vdc_ar\":%u,\"vdc_r0\":%u,\"physical_pc\":%u,\"work_ram_0200_hex\":\"",
-                    (unsigned)(u8)*vdc->AR, (unsigned)vdc->R[0], memory->GetPhysicalAddress(cpu->PC->GetValue()));
+        std::printf("],\"vdc_ar\":%u,\"vdc_r0\":%u,\"vdc_cr\":%u,\"physical_pc\":%u,\"work_ram_0200_hex\":\"",
+                    (unsigned)(u8)*vdc->AR, (unsigned)vdc->R[0], (unsigned)vdc->R[5],
+                    memory->GetPhysicalAddress(cpu->PC->GetValue()));
         for (int i=0;i<64;i++) std::printf("%02x", memory->GetWorkingRAM()[0x200+i]);
         std::printf("\",\"stack_01f8_hex\":\"");
         for (int i=0;i<8;i++) std::printf("%02x", memory->GetWorkingRAM()[0x1f8+i]);

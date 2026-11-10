@@ -2,11 +2,15 @@
 
 Each run presets VDC CR to a case pattern, calls the slot once and checks the
 project-own contract (src/overrides/slot_2E.s): CR low gains bit 7 (BB), every
-other CR bit is unchanged, A/X/Y/P preserved (C=0), stack balanced (SP=$FF and
-the $07 boundary), MPR0/MPR1/MPR7 intact and the RAM sentinel untouched.
+other CR bit is unchanged (checked against the probe's independent vdc_cr
+observation of GetState()->R[5], NOT only the guest port readback), A/X/Y/P
+preserved (C=0), VDC AR left at 5 (CR select), stack balanced (SP=$FF and the
+$07 boundary), MPR0/MPR1/MPR7 intact and the RAM sentinel untouched.
 NOT the reference System Card EX_BGON. ABI stays UNVERIFIED.
 
-Mutant that must be rejected: ORA #$80 patched to NOP NOP (CR unchanged).
+Four mutants that must each be rejected on the real core: BB not set
+(ORA #$80 -> ORA #$00), spurious SB (ORA #$80 -> ORA #$C0), other bits
+destroyed (ORA #$80 -> ORA #$FF), CR high byte rewritten (STA $0002 -> STA $0003).
 Run: python3 tests/integration/geargrafx_dev_bgon.py --rom build/<mode>/bios-dev/dev-only-not-compatible-syscard3.pce
 Needs the pinned cc65 and Geargrafx core (TOOLS_DIR). Missing tools exit 3 (BLOCKED).
 """
@@ -30,8 +34,13 @@ BLOCKED_EXIT = 3
 SLOT = 0x2E
 SET_MASK = 0x80
 CLEAR_MASK = 0x00
-MUTANT_FIND = bytes([0x09, 0x80])      # ORA #$80
-MUTANT_REPLACE = bytes([0xEA, 0xEA])      # NOP NOP (CR left unchanged)
+MUTANTS = [
+    ("bb_not_set", bytes([0x09, 0x80]), bytes([0x09, 0x00])),   # ORA #$80 -> ORA #$00
+    ("sb_spurious", bytes([0x09, 0x80]), bytes([0x09, 0xC0])),  # ORA #$80 -> ORA #$C0
+    ("other_bits", bytes([0x09, 0x80]), bytes([0x09, 0xFF])),   # ORA #$80 -> ORA #$FF
+    ("high_rewritten", bytes([0x8D, 0x02, 0x00]), bytes([0x8D, 0x03, 0x00])),  # STA $0002 -> STA $0003
+]
+MUTANT_CASE = (("ex-kept", 0x30, 0x00), (0x12, 0x34, 0x56, 0x34, 0xFF))
 CASES = [(("lo-clear", 0x00, 0x00), (0x12, 0x34, 0x56, 0x34, 0xFF)),
          (("sb-kept", 0x40, 0xA5), (0x12, 0x34, 0x56, 0x34, 0xFF)),
          (("ex-kept", 0x30, 0x00), (0x12, 0x34, 0x56, 0x34, 0xFF)),
@@ -74,30 +83,43 @@ def main():
         (folder / "original.bin").write_bytes(bytes(2352 * 32))
         cue = folder / "original.cue"
         cue.write_text('FILE "original.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n')
+        failures = []
         for (name, cr_low, cr_high), regs in CASES:
-            evidence["runs"].append(run(probe, data, folder, cue, reset, entry,
-                                        f"bgon-{name}", (cr_low, cr_high), regs))
+            try:
+                evidence["runs"].append(run(probe, data, folder, cue, reset, entry,
+                                            f"bgon-{name}", (cr_low, cr_high), regs))
+            except ValueError as error:
+                # RED record, not a crash: keep going so mutants are still exercised.
+                failures.append({"case": name, "error": str(error)})
+        evidence["positive_failures"] = failures
         code_at = body - 0xE000  # CPU $E000 is file offset 0 of bank 0 (as in the MA_SQRT harness)
-        at = data.find(MUTANT_FIND, code_at, code_at + 0x60)
-        if at < 0:
-            raise ValueError("mutant ora80_nopped: ORA #$80 not found in slot $2E body")
-        mutant = bytearray(data)
-        mutant[at:at + len(MUTANT_REPLACE)] = MUTANT_REPLACE
-        try:
-            run(probe, bytes(mutant), folder, cue, reset, entry, "mut-ora80-nopped",
-                (CASES[0][1], CASES[0][2]), CASES[0][3])
-        except ValueError as error:
-            if not any(key in str(error) for key in ("A/P/X/Y observed", "stack not balanced",
-                                                     "RAM sentinel", "did not reach its halt loop",
-                                                     "MPR changed", "MPR0 not restored", "CR $")):
-                raise  # only a contract mismatch counts as a rejection (a crash is not a detection)
-            evidence["negative_cases"].append({"case": "ora80_nopped", "rejected_by": str(error)})
-        else:
-            raise ValueError("mutant ora80_nopped passed all checks (not detected)")
+        (mname, mlo, mhi), mregs = MUTANT_CASE
+        for name, find, replace in MUTANTS:
+            at = data.find(find, code_at, code_at + 0x60)
+            if at < 0:
+                raise ValueError(f"mutant {name}: pattern {find.hex()} not found in slot $2E body")
+            mutant = bytearray(data)
+            mutant[at:at + len(replace)] = replace
+            try:
+                run(probe, bytes(mutant), folder, cue, reset, entry, f"mut-{name}",
+                    (mlo, mhi), mregs)
+            except ValueError as error:
+                if not any(key in str(error) for key in ("A/P/X/Y observed", "stack not balanced",
+                                                         "RAM sentinel", "did not reach its halt loop",
+                                                         "MPR changed", "MPR0 not restored", "CR $",
+                                                         "VDC CR", "VDC AR")):
+                    raise  # only a contract mismatch counts as a rejection (a crash is not a detection)
+                evidence["negative_cases"].append({"case": name, "rejected_by": str(error)})
+            else:
+                raise ValueError(f"mutant {name} passed all checks (not detected)")
     (args.rom.parent / "geargrafx-dev-bgon-evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
+    if failures:
+        print(f"RED real Geargrafx DEV ROM: EX_BGON slot $2E: {len(failures)}/{len(CASES)} positive cases "
+              f"failed the contract; {len(evidence['negative_cases'])}/{len(MUTANTS)} mutants rejected")
+        raise SystemExit(1)
     print(f"PASS real Geargrafx DEV ROM: EX_BGON slot $2E: {len(CASES)} runs set BB, keep other CR bits, "
           f"preserve A/X/Y/P, balance SP=$FF/$07, keep MPRs and the sentinel; "
-          f"{len(evidence['negative_cases'])} mutant rejected")
+          f"{len(evidence['negative_cases'])}/{len(MUTANTS)} mutants rejected")
 
 
 if __name__ == "__main__":

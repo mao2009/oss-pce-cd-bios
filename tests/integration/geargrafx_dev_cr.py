@@ -122,8 +122,18 @@ def check(label, rows, halt, a, x, y, p, sp, cr_low, cr_high, set_mask, clear_ma
         raise ValueError(f"{label}: stack not balanced (SP after ${at(STORE + 4):02X}, halt ${cold['sp']:02X}, "
                          f"want ${sp:02X})")
     want_lo = (cr_low & ~clear_mask) | set_mask
+    # Authoritative oracle: the VDC's actual CR state from the probe (GetState()->R[5]),
+    # independent of the guest's $0002/$0003 port readback (MAJOR-2). The readback is
+    # kept only as a secondary consistency signal: it must agree with the hardware.
+    if "vdc_cr" not in cold or "vdc_ar" not in cold:
+        raise ValueError(f"{label}: probe observation lacks vdc_cr/vdc_ar (probe too old?)")
+    if cold["vdc_ar"] != 5:
+        raise ValueError(f"{label}: VDC AR ${cold['vdc_ar']:02X}, want $05 (contract: AR left at CR)")
+    if cold["vdc_cr"] != (cr_high << 8) | want_lo:
+        raise ValueError(f"{label}: VDC CR ${cold['vdc_cr']:04X}, "
+                         f"want ${cr_high:02X}{want_lo:02X} (independent hardware oracle)")
     if at(STORE_CR_LO) != want_lo or at(STORE_CR_HI) != cr_high:
-        raise ValueError(f"{label}: CR ${at(STORE_CR_HI):02X}{at(STORE_CR_LO):02X}, "
+        raise ValueError(f"{label}: CR readback ${at(STORE_CR_HI):02X}{at(STORE_CR_LO):02X}, "
                          f"want ${cr_high:02X}{want_lo:02X}")
     sentinel = bytes(wram[SENTINEL - WRAM_BASE:SENTINEL - WRAM_BASE + SENTINEL_LEN])
     want_sentinel = bytes(sentinel_byte(i) for i in range(SENTINEL_LEN))
