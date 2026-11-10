@@ -312,13 +312,22 @@ class BlockTest(unittest.TestCase):
 
 
 def _blockpre_row(mode, armed=True):
-    """Realistic armed row: every independently re-judged raw field present."""
+    """Realistic armed row: every independently re-judged raw field present.
+
+    Mirrors the probe emission (geargrafx_block_preblock.cpp): armed runs
+    carry armed=True, refused=True (fetch_blocked=False, safe peek);
+    hwpage fail-closed runs carry fetch_blocked=True, fetch_safe=False,
+    fetch_failed=True, refused=False.
+    """
     hwpage = mode in V.BLOCKPRE_HWPAGE_ARMED
     op = V.BLOCKPRE_EXPECTED_OP[mode]
     pc = V.BLOCKPRE_EXPECTED_PC[mode]
     executed = V.BLOCKPRE_EXPECTED_EXECUTED[mode]
     base = _row(stop_pc=pc, instructions_executed=executed,
                 vdc_sr_before=0x3F, vdc_sr_after=0x3F, status="refused",
+                mode=mode, armed=True, refused=True,
+                reason="block_opcode_at_instruction_boundary",
+                fetch_blocked=False,
                 refused_pc=pc, refused_opcode=op, fetch_opcode=op,
                 fetch_safe=True, fetch_failed=False,
                 operand_bytes=[op, 0x80, 0x3E, 0x90, 0x3E, 0x04, 0x00],
@@ -335,7 +344,10 @@ def _blockpre_row(mode, armed=True):
                 vdc_r_before=0, vdc_r_after=0,
                 irq_accepted=False, observed_vector=0, handler_steps=0)
     if hwpage:
-        base.update(status="fetch_blocked", vdc_ar_before=5, vdc_ar_after=5)
+        base.update(status="fetch_blocked", vdc_ar_before=5, vdc_ar_after=5,
+                    refused=False, fetch_blocked=True,
+                    fetch_safe=False, fetch_failed=True,
+                    reason="unsafe_opcode_fetch_fail_closed")
     if mode == "block-irq-handler":
         base.update(irq_accepted=True, observed_vector=0x3F80, handler_steps=0,
                     ram_diff=[{"address": 0x21FF, "before": 0x00, "after": 0x3E},
@@ -343,7 +355,8 @@ def _blockpre_row(mode, armed=True):
                     ram_diff_count=2)
     if not armed:
         base.update({"instructions_executed": executed + 2,
-                     "vdc_sr_after": 0x00, "status": "landed"})
+                     "vdc_sr_after": 0x00, "status": "ok",
+                     "armed": False, "refused": False})
     return base
 
 
@@ -358,9 +371,12 @@ def _blockpre_cases():
         if mut in V.BLOCKPRE_ALWAYS_BLOCKED:
             verdict = "hardware_page_fetch_failed_closed_before_step"
             row = _blockpre_row("tii-hwpage-fetch-blocked", armed=True)
+            # A real -unguarded probe run emits armed=False and its own mode.
+            row.update(mode=mut, armed=False)
         else:
             verdict = "side_effect_landed_monitor_disabled"
             row = _blockpre_row("tii-entry", armed=False)
+            row.update(mode=mut)
         cases[mut] = _item(mut, verdict, row)
     return cases
 
@@ -663,7 +679,7 @@ class BlockpreAlwaysBlockedTest(unittest.TestCase):
         self.assertEqual(v, V.FAIL)
 
     def test_fetch_flag_missing_blocked(self):
-        for name in ("fetch_safe", "fetch_failed"):
+        for name in ("fetch_safe", "fetch_failed", "fetch_blocked"):
             with self.subTest(name=name):
                 c = self._cases()
                 mut = "tii-hwpage-fetch-blocked-unguarded"
@@ -811,6 +827,103 @@ class BlockStrictFieldTest(unittest.TestCase):
     def test_axy_changed_fails(self):
         v, _, _ = self._check(self._one_armed(a_after=0x00))
         self.assertEqual(v, V.FAIL)
+
+
+class BlockpreReview743Test(unittest.TestCase):
+    """#743 review findings: hwpage fetch evidence, armed raw consistency,
+    exact verdict pins (no substring matching)."""
+
+    def _check(self, cases):
+        return V._check_blockpre_cases(cases, probe_ok=True, summary_ok=True)
+
+    # MAJOR-1: hwpage fetch-failure evidence (armed + unguarded).
+    def test_hwpage_fetch_value_inversions_fail(self):
+        mode = "tii-hwpage-fetch-blocked"
+        for name, fn, expected in [
+            ("safe_true", lambda r, i: r.update(fetch_safe=True), V.FAIL),
+            ("failed_false", lambda r, i: r.update(fetch_failed=False), V.FAIL),
+            ("blocked_false", lambda r, i: r.update(fetch_blocked=False), V.FAIL),
+            ("status_refused", lambda r, i: r.update(status="refused"), V.FAIL),
+            ("reason_block", lambda r, i: r.update(
+                reason="block_opcode_at_instruction_boundary"), V.FAIL),
+            ("armed_false", lambda r, i: r.update(armed=False), V.FAIL),
+            ("mode_wrong", lambda r, i: r.update(mode="tii-entry"), V.FAIL),
+            ("safe_missing", lambda r, i: r.pop("fetch_safe", None), V.BLOCKED),
+            ("failed_missing", lambda r, i: r.pop("fetch_failed", None), V.BLOCKED),
+            ("blocked_missing", lambda r, i: r.pop("fetch_blocked", None), V.BLOCKED),
+            ("status_missing", lambda r, i: r.pop("status", None), V.BLOCKED),
+            ("reason_missing", lambda r, i: r.pop("reason", None), V.BLOCKED),
+            ("armed_missing", lambda r, i: r.pop("armed", None), V.BLOCKED),
+            ("safe_wrong_type", lambda r, i: r.update(fetch_safe=1), V.BLOCKED),
+            ("failed_wrong_type", lambda r, i: r.update(fetch_failed="yes"), V.BLOCKED),
+        ]:
+            with self.subTest(field=name):
+                c = _blockpre_cases()
+                fn(c[mode]["row"], c[mode])
+                v, reasons, _ = self._check(c)
+                self.assertEqual(v, expected, reasons)
+
+    def test_hwpage_unguarded_armed_inversion_fails(self):
+        c = _blockpre_cases()
+        mut = "tii-hwpage-fetch-blocked-unguarded"
+        c[mut]["row"]["armed"] = True
+        v, reasons, _ = self._check(c)
+        self.assertEqual(v, V.FAIL, reasons)
+
+    # MAJOR-2: armed verdict rewrite or raw-row tamper never passes.
+    def test_armed_verdict_rewrite_never_passes(self):
+        mode = "tdd-unknown"
+        for verdict in ("PASS", "side_effect_landed_monitor_disabled",
+                        "not_landed", "refused_spoof",
+                        "refused_at_instruction_boundary_BEFORE_side_effect",
+                        "hardware_page_fetch_failed_closed_before_step", ""):
+            with self.subTest(verdict=verdict):
+                c = _blockpre_cases()
+                c[mode]["verdict"] = verdict
+                v, reasons, _ = self._check(c)
+                self.assertNotEqual(v, V.PASS, reasons)
+                self.assertEqual(v, V.FAIL, reasons)
+
+    def test_armed_raw_tamper_never_passes(self):
+        mode = "tdd-unknown"
+        for name, fn, expected in [
+            ("status_ok", lambda r, i: r.update(status="ok"), V.FAIL),
+            ("status_missing", lambda r, i: r.pop("status", None), V.BLOCKED),
+            ("armed_false", lambda r, i: r.update(armed=False), V.FAIL),
+            ("armed_missing", lambda r, i: r.pop("armed", None), V.BLOCKED),
+            ("refused_false", lambda r, i: r.update(refused=False), V.FAIL),
+            ("refused_missing", lambda r, i: r.pop("refused", None), V.BLOCKED),
+            ("reason_wrong", lambda r, i: r.update(reason="budget_exhausted"), V.FAIL),
+            ("reason_missing", lambda r, i: r.pop("reason", None), V.BLOCKED),
+            ("mode_wrong", lambda r, i: r.update(mode="tin-unknown-far"), V.FAIL),
+            ("fetch_blocked_true", lambda r, i: r.update(fetch_blocked=True), V.FAIL),
+        ]:
+            with self.subTest(field=name):
+                c = _blockpre_cases()
+                fn(c[mode]["row"], c[mode])
+                v, reasons, _ = self._check(c)
+                self.assertEqual(v, expected, reasons)
+
+    # MEDIUM-1: mutation verdicts are exact pins, not substrings.
+    def test_mutation_lookalike_verdict_blocked(self):
+        mut = sorted(m for m in V.BLOCKPRE_MUTATIONS
+                     if m not in V.BLOCKPRE_ALWAYS_BLOCKED)[0]
+        for verdict in ("not_landed", "LANDED", "side_effect_landed",
+                        "side_effect_landed_monitor_disabled_extra", ""):
+            with self.subTest(verdict=verdict):
+                c = _blockpre_cases()
+                c[mut]["verdict"] = verdict
+                v, reasons, _ = self._check(c)
+                self.assertNotEqual(v, V.PASS, reasons)
+                self.assertEqual(v, V.BLOCKED, reasons)
+
+    def test_mutation_refused_verdict_fails(self):
+        mut = sorted(m for m in V.BLOCKPRE_MUTATIONS
+                     if m not in V.BLOCKPRE_ALWAYS_BLOCKED)[0]
+        c = _blockpre_cases()
+        c[mut]["verdict"] = "refused_at_instruction_boundary_before_side_effect"
+        v, reasons, _ = self._check(c)
+        self.assertEqual(v, V.FAIL, reasons)
 
 
 if __name__ == "__main__":

@@ -71,6 +71,19 @@ def _parse_evidence(stdout):
 
 
 def _is_refused_verdict(verdict):
+    # Blockpre exact pins only. Substring matching ("landed" in verdict)
+    # would accept forgeries such as "not_landed" as a landed mutation or
+    # "refused_spoof" as a refusal, so both directions use exact equality
+    # against the probe-emitted strings (geargrafx_block_preblock.py:
+    # REFUSED_VERDICT / HWPAGE_BLOCKED_VERDICT / LANDED_VERDICT).
+    return verdict in (BLOCKPRE_REFUSED_VERDICT, BLOCKPRE_HWPAGE_VERDICT)
+
+
+def _st_is_refused_verdict(verdict):
+    # ST-path legacy classification (unchanged): the ST probe additionally
+    # emits HAZARD_VERDICT ("unsafe_fetch_side_effect_landed_mutation_killed")
+    # for hazard mutations, which the ST contract counts as landed. Kept
+    # separate so the blockpre exact pins above are not weakened.
     if not isinstance(verdict, str):
         return False
     low = verdict.lower()
@@ -82,8 +95,7 @@ def _is_refused_verdict(verdict):
 # Pinned #742 blockpre contract (mirrors
 # tests/integration/geargrafx_block_preblock.py ARMED_MODES + MUTATIONS).
 # Armed 7, mutation 14, positive control via probe exit + summary (not EVIDENCE).
-BLOCKPRE_ARMED = frozenset({
-    "tii-entry", "tdd-unknown", "tin-unknown-far", "tia-wrap-forbidden",
+BLOCKPRE_ARMED = frozenset({    "tii-entry", "tdd-unknown", "tin-unknown-far", "tia-wrap-forbidden",
     "tai-mpr2-unknown", "tii-hwpage-fetch-blocked", "block-irq-handler",
 })
 BLOCKPRE_MUTATIONS = frozenset({
@@ -156,6 +168,14 @@ BLOCKPRE_MPR_AFTER = {
 BLOCKPRE_IRQ_VECTOR = 0x3F80
 BLOCKPRE_STACK_CELLS = frozenset({0x21FF, 0x21FE, 0x21FD})
 BLOCKPRE_RESUME_ATTEMPTS = 3
+# Exact probe-emitted verdict/status/reason strings (no substring matching).
+BLOCKPRE_REFUSED_VERDICT = "refused_at_instruction_boundary_before_side_effect"
+BLOCKPRE_HWPAGE_VERDICT = "hardware_page_fetch_failed_closed_before_step"
+BLOCKPRE_LANDED_VERDICT = "side_effect_landed_monitor_disabled"
+BLOCKPRE_ARMED_STATUS = "refused"
+BLOCKPRE_ARMED_REASON = "block_opcode_at_instruction_boundary"
+BLOCKPRE_HWPAGE_STATUS = "fetch_blocked"
+BLOCKPRE_HWPAGE_REASON = "unsafe_opcode_fetch_fail_closed"
 
 
 def _blockpre_bad_int(row, name, case):
@@ -309,13 +329,39 @@ def _blockpre_check_irq(row, case):
     return None, None
 
 
-def _blockpre_check_hwpage_row(row, base):
+def _blockpre_check_hwpage_row(row, base, case, expect_armed):
     """Fail-closed fetch row re-check (hwpage armed or always-blocked mutation).
 
     Pins come from the base mode (a "-unguarded" mutation id carries no pins
-    of its own); reason labels name the base family. Missing/wrong-type
+    of its own); reason labels name the base family. The case id pins the row
+    mode, and expect_armed pins the row armed flag (True for the armed case,
+    False for the -unguarded mutation). Status/reason/fetch flags are pinned
+    to exact probe values (status "fetch_blocked", fetch_blocked True,
+    fetch_safe False, fetch_failed True). Missing/wrong-type
     evidence -> BLOCKED; observed side effect or inconsistency -> FAIL.
     """
+    if not isinstance(row.get("mode"), str):
+        return "BLOCKED", f"ARMED_MODE_MISSING:{base}"
+    if row["mode"] != case:
+        return "FAIL", f"ARMED_MODE_MISMATCH:{base}"
+    if not isinstance(row.get("armed"), bool):
+        return "BLOCKED", f"ARMED_FLAG_MISSING:{base}"
+    if row["armed"] is not expect_armed:
+        return "FAIL", f"ARMED_FLAG_MISMATCH:{base}"
+    if not isinstance(row.get("status"), str):
+        return "BLOCKED", f"ARMED_HWPAGE_STATUS_MISSING:{base}"
+    if row["status"] != BLOCKPRE_HWPAGE_STATUS:
+        return "FAIL", f"ARMED_HWPAGE_STATUS_MISMATCH:{base}"
+    if not isinstance(row.get("reason"), str):
+        return "BLOCKED", f"ARMED_HWPAGE_REASON_MISSING:{base}"
+    if row["reason"] != BLOCKPRE_HWPAGE_REASON:
+        return "FAIL", f"ARMED_HWPAGE_REASON_MISMATCH:{base}"
+    for name, want in (("fetch_blocked", True), ("fetch_safe", False),
+                       ("fetch_failed", True)):
+        if not isinstance(row.get(name), bool):
+            return "BLOCKED", f"ARMED_FETCH_FLAG_MISSING:{base}:{name}"
+        if row[name] is not want:
+            return "FAIL", f"ARMED_FETCH_FLAG_MISMATCH:{base}:{name}"
     expected_pc = BLOCKPRE_EXPECTED_PC[base]
     bad = _blockpre_bad_int(row, "stop_pc", base)
     if bad is not None:
@@ -339,9 +385,6 @@ def _blockpre_check_hwpage_row(row, base):
         return "BLOCKED", f"ARMED_READ_BUFFER_MISSING:{base}"
     if rb_before != rb_after:
         return "FAIL", f"ARMED_READ_BUFFER_CHANGED:{base}"
-    for name in ("fetch_safe", "fetch_failed"):
-        if type(row.get(name)) is not bool:
-            return "BLOCKED", f"ARMED_FETCH_FLAG_MISSING:{base}:{name}"
     for helper in (_blockpre_check_ram, _blockpre_check_mpr,
                    _blockpre_check_resume, _blockpre_check_irq):
         status, reason = helper(row, base)
@@ -392,29 +435,56 @@ def _check_blockpre_cases(cases, probe_ok=False, summary_ok=False):
             return BLOCKED, [f"ROW_MISSING:{case}"], {}
         verdict = item.get("verdict")
         if case in BLOCKPRE_ALWAYS_BLOCKED:
-            if verdict != "hardware_page_fetch_failed_closed_before_step":
+            if verdict != BLOCKPRE_HWPAGE_VERDICT:
                 return FAIL, [f"HWPAGE_EXPECTED_BLOCKED:{case}:{verdict}"], {}
             status, reason = _blockpre_check_hwpage_row(
-                row, BLOCKPRE_ALWAYS_BLOCKED_BASE[case])
+                row, BLOCKPRE_ALWAYS_BLOCKED_BASE[case], case, False)
             if status is not None:
                 return status, [reason], {}
             mut_ok += 1
         elif case in BLOCKPRE_ARMED:
             if case in BLOCKPRE_HWPAGE_ARMED:
-                if verdict != "hardware_page_fetch_failed_closed_before_step":
+                if verdict != BLOCKPRE_HWPAGE_VERDICT:
                     return FAIL, [f"ARMED_HWPAGE_NOT_BLOCKED:{case}:{verdict}"], {}
-                status, reason = _blockpre_check_hwpage_row(row, case)
+                status, reason = _blockpre_check_hwpage_row(row, case, case, True)
                 if status is not None:
                     return status, [reason], {}
             else:
-                if not _is_refused_verdict(verdict):
-                    if isinstance(verdict, str) and "landed" in verdict.lower():
-                        return FAIL, [f"ARMED_SIDE_EFFECT:{case}"], {}
-                    return BLOCKED, [f"ARMED_VERDICT_UNKNOWN:{case}:{verdict}"], {}
-                # Independent re-judgment of the armed raw row: pin the expected
-                # PC/opcode/instruction count per case ID instead of trusting the
-                # probe's verdict string alone. Missing/wrong-type -> BLOCKED
-                # (cannot verify); observed side effect or inconsistency -> FAIL.
+                # Exact verdict pin: the probe emits exactly one refusal
+                # string for armed runs. A rewritten "success" verdict or a
+                # lookalike ("not_landed", "refused_spoof") never passes.
+                if verdict != BLOCKPRE_REFUSED_VERDICT:
+                    return FAIL, [f"ARMED_VERDICT_MISMATCH:{case}:{verdict}"], {}
+                # Independent re-judgment of the armed raw row: pin the mode,
+                # armed/refused flags, status/reason, and the expected
+                # PC/opcode/instruction count per case ID instead of trusting
+                # the probe's verdict string alone. Missing/wrong-type ->
+                # BLOCKED (cannot verify); observed side effect or
+                # inconsistency -> FAIL.
+                if not isinstance(row.get("mode"), str):
+                    return BLOCKED, [f"ARMED_MODE_MISSING:{case}"], {}
+                if row["mode"] != case:
+                    return FAIL, [f"ARMED_MODE_MISMATCH:{case}"], {}
+                if not isinstance(row.get("armed"), bool):
+                    return BLOCKED, [f"ARMED_FLAG_MISSING:{case}"], {}
+                if row["armed"] is not True:
+                    return FAIL, [f"ARMED_FLAG_MISMATCH:{case}"], {}
+                if not isinstance(row.get("refused"), bool):
+                    return BLOCKED, [f"ARMED_REFUSED_FLAG_MISSING:{case}"], {}
+                if row["refused"] is not True:
+                    return FAIL, [f"ARMED_REFUSED_FLAG_MISMATCH:{case}"], {}
+                if not isinstance(row.get("status"), str):
+                    return BLOCKED, [f"ARMED_STATUS_MISSING:{case}"], {}
+                if row["status"] != BLOCKPRE_ARMED_STATUS:
+                    return FAIL, [f"ARMED_STATUS_MISMATCH:{case}"], {}
+                if not isinstance(row.get("reason"), str):
+                    return BLOCKED, [f"ARMED_REASON_MISSING:{case}"], {}
+                if row["reason"] != BLOCKPRE_ARMED_REASON:
+                    return FAIL, [f"ARMED_REASON_MISMATCH:{case}"], {}
+                if row.get("fetch_blocked") is not False:
+                    if not isinstance(row.get("fetch_blocked"), bool):
+                        return BLOCKED, [f"ARMED_FETCH_FLAG_MISSING:{case}:fetch_blocked"], {}
+                    return FAIL, [f"ARMED_FETCH_FLAG_MISMATCH:{case}:fetch_blocked"], {}
                 expected_pc = BLOCKPRE_EXPECTED_PC[case]
                 for name in ("refused_pc", "stop_pc"):
                     bad = _blockpre_bad_int(row, name, case)
@@ -456,7 +526,9 @@ def _check_blockpre_cases(cases, probe_ok=False, summary_ok=False):
         elif case in BLOCKPRE_MUTATIONS:
             if _is_refused_verdict(verdict):
                 return FAIL, [f"MUTATION_REFUSED:{case}"], {}
-            if not (isinstance(verdict, str) and "landed" in verdict.lower()):
+            # Exact landed pin: "not_landed" and other lookalikes must not
+            # count as a landed sensitivity proof.
+            if verdict != BLOCKPRE_LANDED_VERDICT:
                 return BLOCKED, [f"MUTATION_INCONCLUSIVE:{case}:{verdict}"], {}
             mut_ok += 1
         else:
@@ -581,7 +653,7 @@ def _check_st_cases(cases, probe_ok=False, summary_ok=False):
                 return FAIL, [f"ARMED_VDC_CHANGED:{case}"], {}
             armed_ok += 1
         elif case in ST_ARMED:
-            if not _is_refused_verdict(verdict):
+            if not _st_is_refused_verdict(verdict):
                 if isinstance(verdict, str) and "landed" in verdict.lower():
                     return FAIL, [f"ARMED_SIDE_EFFECT:{case}"], {}
                 return BLOCKED, [f"ARMED_VERDICT_UNKNOWN:{case}:{verdict}"], {}
@@ -593,7 +665,7 @@ def _check_st_cases(cases, probe_ok=False, summary_ok=False):
             armed_ok += 1
         elif case in ST_MUTATIONS:
             # Sensitivity: mutation must make the effect observable (not refused).
-            if _is_refused_verdict(verdict):
+            if _st_is_refused_verdict(verdict):
                 return FAIL, [f"MUTATION_REFUSED:{case}"], {}
             if not (isinstance(verdict, str) and "landed" in verdict.lower()):
                 return BLOCKED, [f"MUTATION_INCONCLUSIVE:{case}:{verdict}"], {}
