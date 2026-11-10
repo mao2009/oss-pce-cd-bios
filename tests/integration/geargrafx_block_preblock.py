@@ -327,11 +327,17 @@ def check_unguarded_landed(row, mode):
     if row.get("status") != "ok":
         raise ValueError(f"{mode}: landed run did not halt cleanly: {row.get('status')!r}")
     if row.get("reason") != "":
+        if not isinstance(row.get("reason"), str):
+            raise ValueError(f"{mode}: halt reason missing/non-string: {row.get('reason')!r}")
         raise ValueError(f"{mode}: unexpected halt reason: {row.get('reason')!r}")
     if row.get("refused") is not False:
         raise ValueError(f"{mode}: bypassed run was refused: monitor still armed")
     full = row.get("mode")
-    if not isinstance(full, str) or (full != mode and not full.startswith(mode + "-")):
+    # Only the probe's own case ids are accepted: the base mode itself (host
+    # fixtures) or base plus one of its declared mutation suffixes. A bare
+    # prefix match would accept forged ids like "tii-entry-evil".
+    allowed = {mode} | {mode + suffix for suffix in MUTATIONS.get(mode, ())}
+    if not isinstance(full, str) or full not in allowed:
         raise ValueError(f"{mode}: measured wrong mode {full!r}")
     if row.get("armed") is not (not full.endswith("-unguarded")):
         raise ValueError(f"{mode}: armed flag inconsistent with {full!r}")

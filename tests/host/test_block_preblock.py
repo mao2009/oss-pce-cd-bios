@@ -250,16 +250,23 @@ class UnarmedTest(unittest.TestCase):
                 ("exec_missing", {"instructions_executed": None}),
                 ("stop_wrong", {"stop_pc": 0x3E00}),
                 ("stop_missing", {"stop_pc": None}),
+                ("mode_evil_suffix", {"mode": "EVIL-SUFFIX"}),
+                ("mode_wrong_base", {"mode": "FOREIGN-BASE"}),
                 ("armed_wrong", {"armed": True}),
                 ("refused_true", {"refused": True}),
             ):
                 with self.subTest(mode=mode, name=name):
                     import copy
                     row = copy.deepcopy(base)
+                    if name == "mode_evil_suffix":
+                        change = {"mode": mode + "-evil"}
+                    elif name == "mode_wrong_base":
+                        other = "tdd-unknown" if mode != "tdd-unknown" else "tii-entry"
+                        change = {"mode": other + "-unguarded"}
                     if name in ("status_missing", "exec_missing", "stop_missing"):
                         del row["status" if name == "status_missing"
-                                    else "instructions_executed" if name == "exec_missing"
-                                    else "stop_pc"]
+                                        else "instructions_executed" if name == "exec_missing"
+                                        else "stop_pc"]
                     else:
                         row.update(change)
                     with self.assertRaises(ValueError):
