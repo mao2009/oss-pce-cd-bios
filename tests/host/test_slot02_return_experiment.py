@@ -682,6 +682,7 @@ class ClassifySimulatedTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 S.check_synthetic_receipt(out, "nope", (0x02,), "debug", 756)
 
+<<<<<<< HEAD
     def test_sp_chain_restored(self):
         # MEDIUM-1 RED set: every adjacent pair must share the SP level.
         def chain(levels):
@@ -700,6 +701,61 @@ class ClassifySimulatedTests(unittest.TestCase):
         # Wraparound levels still compare by exact equality.
         ok, _ = S.sp_chain_restored(chain([0x01, 0x01, 0x01]))
         self.assertTrue(ok)
+
+    def test_expected_halt_budget_table(self):
+        # MEDIUM-1 RED table: only confirmed, untruncated halts pass;
+        # only unconfirmed, untruncated budgets pass.
+        base = dict(_run("cold", reason="api_unimplemented", pc=self.STUB, x=2))
+        ok, _ = S.check_expected_halt(base, reason="api_unimplemented", x=2, pc=self.STUB)
+        self.assertTrue(ok)
+        bad = dict(base, halt_confirmed=False)
+        ok, why = S.check_expected_halt(bad, reason="api_unimplemented", x=2, pc=self.STUB)
+        self.assertFalse(ok, bad)
+        self.assertIn("confirmed", why)
+        bad = dict(base, apicall_truncated=True)
+        ok, why = S.check_expected_halt(bad, reason="api_unimplemented", x=2, pc=self.STUB)
+        self.assertFalse(ok, bad)
+        self.assertIn("truncated", why)
+        for field in ("reason", "pc", "x"):
+            bad = dict(base)
+            del bad[field]
+            ok, _ = S.check_expected_halt(bad, reason="api_unimplemented", x=2, pc=self.STUB)
+            self.assertFalse(ok, field)
+        bad = dict(base, halt_confirmed="true")
+        ok, _ = S.check_expected_halt(bad, reason="api_unimplemented", x=2, pc=self.STUB)
+        self.assertFalse(ok, bad)
+        pos = dict(_run("cold", reason="budget", halted=False))
+        ok, _ = S.check_expected_budget(pos)
+        self.assertTrue(ok)
+        for bad in (dict(_run("cold", reason="budget", halted=True)),
+                    dict(_run("cold", reason="budget", halted=False, trunc=True)),
+                    dict(_run("cold", reason="cd_halt_fail", halted=False))):
+            ok, _ = S.check_expected_budget(bad)
+            self.assertFalse(ok, bad)
+        bad = dict(_run("cold", reason="budget", halted=False))
+        del bad["halt_confirmed"]
+        ok, _ = S.check_expected_budget(bad)
+        self.assertFalse(ok, bad)
+
+    def test_judge_paths_use_halt_budget_checks(self):
+        # The judge branches route through the same helpers with the same
+        # arguments the integration judges pass (control X=2, SEQ X=3,
+        # SPIN2 budget). A helper change that broke a branch would fail here.
+        stub = self.STUB
+        control = _run("cold", reason="api_unimplemented", pc=stub, x=2)
+        ok, _ = S.check_expected_halt(control, reason="api_unimplemented", x=2, pc=stub)
+        self.assertTrue(ok)
+        seq = _run("cold", reason="api_unimplemented", pc=stub, x=3)
+        ok, _ = S.check_expected_halt(seq, reason="api_unimplemented", x=3, pc=stub)
+        self.assertTrue(ok)
+        spin = _run("cold", reason="budget", halted=False)
+        ok, _ = S.check_expected_budget(spin)
+        self.assertTrue(ok)
+        # The old inline conditions would have passed these abnormals.
+        bad_spin = _run("cold", reason="budget", halted=False, trunc=True)
+        self.assertTrue(bad_spin["reason"] == "budget" and not bad_spin["halt_confirmed"])
+        ok, _ = S.check_expected_budget(bad_spin)
+        self.assertFalse(ok)
 
     def test_never_confirms(self):
         calls = [_call("cold"), _call("warm")]

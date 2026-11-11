@@ -119,6 +119,48 @@ def exit_code_for_verdict(verdict) -> int:
     return 0 if verdict in EXIT_OK_VERDICTS else 1
 
 
+def check_expected_halt(run, *, reason: str, x: int, pc: int) -> tuple:
+    """Halt expectation for stub-halt synthetic paths (pure, fail-closed).
+
+    Requires a structurally valid RUN, the expected reason, a CONFIRMED halt
+    (True, not truthy), an UNtruncated trace (False, not falsy), and matching
+    halt X and PC. An unconfirmed halt or a truncated trace is never a PASS.
+    """
+    rok, why = validate_run(run)
+    if not rok:
+        return False, why
+    if run["reason"] != reason:
+        return False, f"halt reason {run['reason']!r} != {reason!r}"
+    if run.get("halt_confirmed") is not True:
+        return False, "halt not confirmed"
+    if run.get("apicall_truncated") is not False:
+        return False, "trace truncated"
+    if run["x"] != x:
+        return False, f"halt x {run['x']!r} != {x!r}"
+    if run.get("pc") != pc:
+        return False, f"halt pc {run.get('pc')!r} != ${pc:04X}"
+    return True, ""
+
+
+def check_expected_budget(run) -> tuple:
+    """Budget expectation for the post-return spin negative (pure, fail-closed).
+
+    Requires reason == "budget", halt_confirmed is False, and
+    apicall_truncated is False. A confirmed halt or a truncated trace is
+    never a budget PASS (budgets must not be mistaken for halts).
+    """
+    rok, why = validate_run(run)
+    if not rok:
+        return False, why
+    if run["reason"] != "budget":
+        return False, f"halt reason {run['reason']!r} != 'budget'"
+    if run.get("halt_confirmed") is not False:
+        return False, "budget run halted (must not halt)"
+    if run.get("apicall_truncated") is not False:
+        return False, "trace truncated"
+    return True, ""
+
+
 # MEDIUM-4: the commercial run requires a matching synthetic PASS receipt
 # (same slots, mode, code content, and repo HEAD). Long synthetic suites are
 # NOT re-run per commercial invocation; the receipt's validity is checked
@@ -573,14 +615,15 @@ def judge_seq(tmp, probe, rom, base_addrs, stub_addr, name, defines, budget, on_
                 continue
             if E.classify_apicall(calls[0], stub_addr) != "JSR" or calls[0]["slot"] != 2:
                 fails.append(f"{cycle}: control call is not slot-2 JSR")
-            if run["reason"] != "api_unimplemented" or run["x"] != 2 or run.get("pc") != stub_addr:
-                fails.append(f"{cycle}: control halt {run['reason']} x={run['x']} "
-                             f"pc={run.get('pc')} (want stub ${stub_addr:04X})")
+            halt_ok, halt_why = check_expected_halt(run, reason="api_unimplemented", x=2, pc=stub_addr)
+            if not halt_ok:
+                fails.append(f"{cycle}: control halt rejected: {halt_why}")
         elif name.startswith("spin2"):
             if len(calls) != 1 or calls[0]["slot"] != 2:
                 fails.append(f"{cycle}: expected single slot-2 call, got {len(calls)}")
-            if run["reason"] != "budget" or run["halt_confirmed"]:
-                fails.append(f"{cycle}: post-return spin must be budget, got {run['reason']}")
+            budget_ok, budget_why = check_expected_budget(run)
+            if not budget_ok:
+                fails.append(f"{cycle}: post-return spin must be budget: {budget_why}")
         else:
             # SEQ: slot 2 returns (experiment), slot 3 is unimplemented so the
             # run must end at the stub halt with X=3. The first return is
@@ -596,9 +639,9 @@ def judge_seq(tmp, probe, rom, base_addrs, stub_addr, name, defines, budget, on_
                 fails.append(f"{cycle}: entry regs clobbered")
             if calls[1]["sp_before"] != calls[0]["sp_before"]:
                 fails.append(f"{cycle}: SP not restored by slot-2 return")
-            if run["reason"] != "api_unimplemented" or run["x"] != 3 or run.get("pc") != stub_addr:
-                fails.append(f"{cycle}: expected stub halt X=3 at stub, "
-                             f"got {run['reason']} x={run['x']} pc={run.get('pc')}")
+            halt_ok, halt_why = check_expected_halt(run, reason="api_unimplemented", x=3, pc=stub_addr)
+            if not halt_ok:
+                fails.append(f"{cycle}: expected stub halt X=3 at stub: {halt_why}")
     if fails:
         raise ValueError(f"{name} failed: {fails}")
     return records
