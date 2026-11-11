@@ -91,8 +91,18 @@ def _judge_runs(runs):
     if any(r.get("reason") == "budget" or r.get("halt_confirmed") is not True
            for r in runs):
         return "BUDGET", "no confirmed halt (budget is not a halt)"
-    if any(r.get("apicall_truncated") is True for r in runs):
-        return "INCOMPLETE", "APICALL trace truncated"
+    for run in runs:
+        truncated = run.get("apicall_truncated")
+        # Each cycle is judged independently: a verified-complete warm
+        # record never masks a truncated/unreadable cold record and
+        # vice versa. Only an explicit False counts as verified
+        # complete; True means the trace was cut short (INCOMPLETE)
+        # and a missing/unreadable field (None, number, string, ...)
+        # is BLOCKED, never PASS.
+        if truncated is True:
+            return "INCOMPLETE", "APICALL trace truncated"
+        if truncated is not False:
+            return "BLOCKED", "APICALL completeness unreadable"
     return "PASS", "cold+warm runs present, halts confirmed, no truncation"
 
 
@@ -269,6 +279,92 @@ class FailClosedTests(unittest.TestCase):
                 {"cycle": "warm", "reason": "api_unimplemented",
                  "halt_confirmed": True, "apicall_truncated": False}]
         self.assertEqual(_judge_runs(runs)[0], "INCOMPLETE")
+
+    def test_truncated_warm_only_is_incomplete_not_pass(self):
+        # Cold/warm are independent: a verified-complete cold record
+        # never masks a truncated warm record.
+        runs = [{"cycle": "cold", "reason": "api_unimplemented",
+                 "halt_confirmed": True, "apicall_truncated": False},
+                {"cycle": "warm", "reason": "api_unimplemented",
+                 "halt_confirmed": True, "apicall_truncated": True}]
+        verdict, _ = _judge_runs(runs)
+        self.assertEqual(verdict, "INCOMPLETE")
+        self.assertNotEqual(verdict, "PASS")
+
+    def test_missing_completeness_field_is_blocked_never_pass(self):
+        # Independence both directions: either cycle missing the field
+        # fails the pair even when the other cycle is verified-complete.
+        good_cold = {"cycle": "cold", "reason": "api_unimplemented",
+                     "halt_confirmed": True, "apicall_truncated": False}
+        good_warm = {"cycle": "warm", "reason": "api_unimplemented",
+                     "halt_confirmed": True, "apicall_truncated": False}
+        bare_cold = {"cycle": "cold", "reason": "api_unimplemented",
+                     "halt_confirmed": True}
+        bare_warm = {"cycle": "warm", "reason": "api_unimplemented",
+                     "halt_confirmed": True}
+        for runs in ((bare_cold, good_warm), (good_cold, bare_warm),
+                     (bare_cold, bare_warm)):
+            with self.subTest(runs=runs):
+                verdict, _ = _judge_runs(list(runs))
+                self.assertEqual(verdict, "BLOCKED")
+                self.assertNotEqual(verdict, "PASS")
+
+    def test_none_completeness_is_blocked_never_pass(self):
+        for bad_cycle in ("cold", "warm"):
+            with self.subTest(bad_cycle=bad_cycle):
+                runs = []
+                for cycle in ("cold", "warm"):
+                    runs.append({"cycle": cycle,
+                                 "reason": "api_unimplemented",
+                                 "halt_confirmed": True,
+                                 "apicall_truncated":
+                                 None if cycle == bad_cycle else False})
+                verdict, _ = _judge_runs(runs)
+                self.assertEqual(verdict, "BLOCKED")
+                self.assertNotEqual(verdict, "PASS")
+
+    def test_numeric_completeness_is_blocked_never_pass(self):
+        # 0/1 are == False/True but are not the verified-complete
+        # boolean; strict identity requires an explicit False.
+        for bad in (0, 1, 2, 0.0, 1.0):
+            with self.subTest(bad=bad):
+                for bad_cycle in ("cold", "warm"):
+                    with self.subTest(bad_cycle=bad_cycle):
+                        runs = []
+                        for cycle in ("cold", "warm"):
+                            runs.append({
+                                "cycle": cycle,
+                                "reason": "api_unimplemented",
+                                "halt_confirmed": True,
+                                "apicall_truncated":
+                                bad if cycle == bad_cycle else False})
+                        verdict, _ = _judge_runs(runs)
+                        self.assertEqual(verdict, "BLOCKED")
+                        self.assertNotEqual(verdict, "PASS")
+
+    def test_string_completeness_is_blocked_never_pass(self):
+        for bad in ("false", "true", "", "no", "0"):
+            with self.subTest(bad=bad):
+                for bad_cycle in ("cold", "warm"):
+                    with self.subTest(bad_cycle=bad_cycle):
+                        runs = []
+                        for cycle in ("cold", "warm"):
+                            runs.append({
+                                "cycle": cycle,
+                                "reason": "api_unimplemented",
+                                "halt_confirmed": True,
+                                "apicall_truncated":
+                                bad if cycle == bad_cycle else False})
+                        verdict, _ = _judge_runs(runs)
+                        self.assertEqual(verdict, "BLOCKED")
+                        self.assertNotEqual(verdict, "PASS")
+
+    def test_only_explicit_false_on_both_runs_is_verified_complete(self):
+        runs = [{"cycle": "cold", "reason": "api_unimplemented",
+                 "halt_confirmed": True, "apicall_truncated": False},
+                {"cycle": "warm", "reason": "api_unimplemented",
+                 "halt_confirmed": True, "apicall_truncated": False}]
+        self.assertEqual(_judge_runs(runs)[0], "PASS")
 
     def test_budget_is_not_a_halt(self):
         runs = [{"cycle": "cold", "reason": "budget",
