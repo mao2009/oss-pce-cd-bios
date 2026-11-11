@@ -244,20 +244,28 @@ class SelfOverwriteTests(unittest.TestCase):
     """Whole-range self-overwrite is refused before the first step."""
 
     def test_forward_self_overwrite_refused(self):
-        backing = matrix.wram_backing(block_cells(0x3E00, 0x73))
+        # Fetched operands must match the judged operands: the backing
+        # stores dst=$3E00 so fetch_t(pc) decodes the same dst the verdict
+        # judges (fetch-operand match, MAJOR-3).
+        backing = matrix.wram_backing(block_cells(0x3E00, 0x73, dst=0x3E00))
         got = matrix.verdict("TII", 0x3E80, 0x3E00, 4,
                              list(matrix.MPR_WRAM), backing, pc=0x3E00)
         self.assertEqual(got["verdict"], "REFUSED")
         self.assertEqual(got["reason"], "self_overwrite")
 
     def test_tdd_backward_self_overwrite_refused(self):
-        backing = matrix.wram_backing(block_cells(0x3E00, 0xC3))
+        # Each pc-given verdict needs its own matching fetch image: the
+        # judged (src, dst, length) must equal fetch_t(pc) exactly.
+        backing_clear = matrix.wram_backing(
+            block_cells(0x3E00, 0xC3, src=0x3E80, dst=0x3E10, length=4))
+        backing_hit = matrix.wram_backing(
+            block_cells(0x3E00, 0xC3, src=0x3E80, dst=0x3E03, length=4))
         # TDD from $3E10 walks $3E10..$3E0D: clear of the $3E00..$3E06
         # instruction, so allowed; from $3E03 it walks into the opcode.
         got = matrix.verdict("TDD", 0x3E80, 0x3E10, 4,
-                             list(matrix.MPR_WRAM), backing, pc=0x3E00)
+                             list(matrix.MPR_WRAM), backing_clear, pc=0x3E00)
         got2 = matrix.verdict("TDD", 0x3E80, 0x3E03, 4,
-                              list(matrix.MPR_WRAM), backing, pc=0x3E00)
+                              list(matrix.MPR_WRAM), backing_hit, pc=0x3E00)
         self.assertEqual(got["verdict"], "WOULD_ALLOW_STATIC")
         self.assertEqual(got2["verdict"], "REFUSED")
         self.assertEqual(got2["reason"], "self_overwrite")
@@ -286,6 +294,72 @@ class SelfOverwriteTests(unittest.TestCase):
                              list(matrix.MPR_WRAM), backing, pc=0x3E00)
         self.assertTrue(got["fetch"]["ok"])
         self.assertEqual(got["verdict"], "WOULD_ALLOW_STATIC")
+
+
+class FetchOperandMatchTests(unittest.TestCase):
+    """pc-given verdicts fully match opcode+src+dst+length (MAJOR-3)."""
+
+    def _backing_tii_3e00(self, op=0x73, src=0x3E80, dst=0x3E90, length=4):
+        return matrix.wram_backing(block_cells(0x3E00, op, src=src,
+                                               dst=dst, length=length))
+
+    def test_opcode_mismatch_fail_closed(self):
+        # Memory holds TII ($73); judging it as TIN must fail closed.
+        backing = self._backing_tii_3e00(op=0x73)
+        got = matrix.verdict("TIN", 0x3E80, 0x3E90, 4,
+                             list(matrix.MPR_WRAM), backing, pc=0x3E00)
+        self.assertEqual(got["verdict"], "FAIL_CLOSED")
+        self.assertEqual(got["reason"], "fetch_opcode_mismatch")
+        self.assertNotEqual(got["verdict"], "WOULD_ALLOW_STATIC")
+
+    def test_src_mismatch_fail_closed(self):
+        backing = self._backing_tii_3e00(src=0x3E80)
+        got = matrix.verdict("TII", 0x3E81, 0x3E90, 4,
+                             list(matrix.MPR_WRAM), backing, pc=0x3E00)
+        self.assertEqual(got["verdict"], "FAIL_CLOSED")
+        self.assertEqual(got["reason"], "fetch_src_mismatch")
+        self.assertNotEqual(got["verdict"], "WOULD_ALLOW_STATIC")
+
+    def test_dst_mismatch_fail_closed(self):
+        backing = self._backing_tii_3e00(dst=0x3E90)
+        got = matrix.verdict("TII", 0x3E80, 0x3E91, 4,
+                             list(matrix.MPR_WRAM), backing, pc=0x3E00)
+        self.assertEqual(got["verdict"], "FAIL_CLOSED")
+        self.assertEqual(got["reason"], "fetch_dst_mismatch")
+        self.assertNotEqual(got["verdict"], "WOULD_ALLOW_STATIC")
+
+    def test_length_mismatch_fail_closed(self):
+        backing = self._backing_tii_3e00(length=4)
+        got = matrix.verdict("TII", 0x3E80, 0x3E90, 8,
+                             list(matrix.MPR_WRAM), backing, pc=0x3E00)
+        self.assertEqual(got["verdict"], "FAIL_CLOSED")
+        self.assertEqual(got["reason"], "fetch_length_mismatch")
+        self.assertNotEqual(got["verdict"], "WOULD_ALLOW_STATIC")
+
+    def test_matching_operands_stay_allowed(self):
+        backing = self._backing_tii_3e00()
+        got = matrix.verdict("TII", 0x3E80, 0x3E90, 4,
+                             list(matrix.MPR_WRAM), backing, pc=0x3E00)
+        self.assertTrue(got["fetch"]["ok"])
+        self.assertEqual((got["fetch"]["src"], got["fetch"]["dst"],
+                          got["fetch"]["length"]), (0x3E80, 0x3E90, 4))
+        self.assertEqual(got["verdict"], "WOULD_ALLOW_STATIC")
+
+    def test_mismatch_never_allow_static(self):
+        # Every mismatch flavour is FAIL_CLOSED, never WOULD_ALLOW_STATIC.
+        backing = self._backing_tii_3e00()
+        cases = [("TIN", 0x3E80, 0x3E90, 4),
+                 ("TII", 0x3E81, 0x3E90, 4),
+                 ("TII", 0x3E80, 0x3E91, 4),
+                 ("TII", 0x3E80, 0x3E90, 8)]
+        for op, src, dst, length in cases:
+            with self.subTest(op=op, src=hex(src), dst=hex(dst),
+                               length=length):
+                got = matrix.verdict(op, src, dst, length,
+                                     list(matrix.MPR_WRAM), backing,
+                                     pc=0x3E00)
+                self.assertEqual(got["verdict"], "FAIL_CLOSED")
+                self.assertEqual(got["gate"], "BLOCKED")
 
 
 class UnknownLedgerTests(unittest.TestCase):

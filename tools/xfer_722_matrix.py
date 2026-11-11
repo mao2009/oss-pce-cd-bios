@@ -13,9 +13,11 @@ regression question: which verdict does the pre-start check reach?
 * ``REFUSED`` with ``reason == "len0_never_executed"`` for ``length == 0``
   (65536 bytes, computed exactly by ``peek.transfer_sequences`` but never
   executed on-core).
-* ``FAIL_CLOSED`` when the 7-byte fetch is unpeekable, when any transfer
-  source byte is unpeekable (unpredictable), or when any transfer byte
-  resolves to an unmapped bank.
+* ``FAIL_CLOSED`` when the 7-byte fetch is unpeekable, when the fetched
+  opcode/src/dst/length does not exactly match the judged operands
+  (``fetch_<field>_mismatch``), when any transfer source byte is
+  unpeekable (unpredictable), or when any transfer byte resolves to an
+  unmapped bank.
 * ``REFUSED`` when a destination byte lands on the hardware page (``$FF``)
   or overwrites the 7-byte instruction itself (each byte step re-runs the
   opcode, so self-overwrite must be refused before the first step).
@@ -40,6 +42,10 @@ except ImportError:  # run as ``python3 tools/xfer_722_matrix.py``
 
 OPS = ("TII", "TIN", "TDD", "TIA", "TAI")
 OP_INDEX = {"TII": 0, "TIN": 1, "TIA": 2, "TDD": 3, "TAI": 4}
+# Expected opcode byte per op name, inverted from the #717 fetch contract
+# (``peek.BLOCK_OPCODES``); used only to match the fetched opcode, never
+# to re-derive peek behaviour.
+OPCODE_OF = {name: opcode for opcode, name in peek.BLOCK_OPCODES.items()}
 LENGTHS = (1, 2, 3, 4, 8)
 LENGTH0 = 0
 GATE = "BLOCKED"
@@ -86,8 +92,13 @@ def verdict(op, src, dst, length, mpr, backing, pc=None):
     """Pre-start verdict for one transfer instruction (host model).
 
     ``pc`` is the instruction address: when given, the 7-byte fetch must
-    succeed and no destination byte may overwrite ``pc .. pc+6``.  When
-    ``None``, only the transfer ranges are judged (fetch NOT_RUN).
+    succeed *and* its decoded opcode/src/dst/length must exactly match the
+    judged ``(op, src, dst, length)`` operands, otherwise ``FAIL_CLOSED``
+    (``fetch_<field>_mismatch``); no mismatched row may reach
+    ``WOULD_ALLOW_STATIC``.  No destination byte may overwrite
+    ``pc .. pc+6``.  When ``None``, only the transfer ranges are judged
+    (host-model ranges-only path; ``fetch`` is recorded as ``None`` to mark
+    fetch NOT_RUN explicitly).
     ``length == 0`` is refused without expanding the 65536-byte walk here;
     callers use ``peek.transfer_sequences`` directly for the exact walk.
     """
@@ -99,7 +110,22 @@ def verdict(op, src, dst, length, mpr, backing, pc=None):
         if not fetched["ok"]:
             return {"op": op, "length": length, "count": count,
                     "verdict": "FAIL_CLOSED", "reason": "fetch_unpeekable",
-                    "gate": GATE, "unknown": None}
+                    "gate": GATE, "unknown": None, "fetch": fetched}
+        mismatch = None
+        if fetched["opcode"] != OPCODE_OF[op] or fetched["name"] != op:
+            mismatch = "opcode"
+        elif fetched["src"] != (src & 0xFFFF):
+            mismatch = "src"
+        elif fetched["dst"] != (dst & 0xFFFF):
+            mismatch = "dst"
+        elif fetched["length"] != (length & 0xFFFF):
+            mismatch = "length"
+        if mismatch is not None:
+            return {"op": op, "length": length, "count": count,
+                    "verdict": "FAIL_CLOSED",
+                    "reason": f"fetch_{mismatch}_mismatch",
+                    "field": mismatch, "gate": GATE, "unknown": None,
+                    "fetch": fetched}
     else:
         fetched = None
     if length == 0:

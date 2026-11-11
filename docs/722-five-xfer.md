@@ -118,7 +118,12 @@ independently, per byte, through the MPR-resolved bank:
 
 1. Any of the 7 fetch bytes unpeekable -> the whole fetch fails
    (`fetch_unpeekable`); the 6 readable bytes never count as evidence
-   (mutation `test_mut_partial_capture_never_passes`).
+   (mutation `test_mut_partial_capture_never_passes`). When `pc` is
+   given, the decoded opcode/src/dst/length must also exactly match the
+   judged operands, otherwise `FAIL_CLOSED` (`fetch_opcode_mismatch` /
+   `fetch_src_mismatch` / `fetch_dst_mismatch` / `fetch_length_mismatch`);
+   a mismatched row never reaches `WOULD_ALLOW_STATIC` (MAJOR-3,
+   `FetchOperandMatchTests`).
 2. Any transfer source byte unpeekable -> `FAIL_CLOSED src_unpeekable`
    with the byte index; the destination walk is not consulted.
 3. Any destination byte on the hardware page -> `REFUSED`; on an
