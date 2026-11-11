@@ -100,10 +100,33 @@ class TransferEndOrderTests(unittest.TestCase):
                   "reset-then-access", "INACCURATE", "MATCHES"):
             self.assertIn(s, text)
 
-    def test_design_doc_contradiction_is_cited_not_silently_fixed(self):
+    def test_701_doc_fix_is_tracked_as_separate_dependency(self):
+        """Regression: stays GREEN whether or not the #701 doc misprint is fixed.
+
+        The #701 section-2 sentence (pop-then-reset) is INACCURATE against the
+        pinned source (reset at line 687 BEFORE the pops at lines 688-690);
+        correcting that doc sentence is a separate #701 doc-fix dependency, not
+        a condition for this contract. This test therefore pins only the
+        Geargrafx-confirmed order (via the driver table, see the two tests
+        above) and the ledger's out-of-scope note, without pinning the old
+        doc wording, so it passes both before and after that fix.
+        """
+        ledger = DOC.read_text(encoding="utf-8")
+        self.assertIn("#701", ledger)
+        self.assertIn("edited here (out of scope)", ledger)
+        # The design doc still discusses TransferEnd either way; require only
+        # the symbol, never the old (inaccurate) sentence order wording.
         design = DESIGN_DOC.read_text(encoding="utf-8")
-        self.assertIn("then applies PC +6 and resets state", design)  # the inaccurate sentence stands
-        self.assertIn("edited here (out of scope)", DOC.read_text(encoding="utf-8"))
+        self.assertIn("OPCodes_TransferEnd", design)
+        # Never promote unmeasured items to PASS via this doc reference.
+        self.assertNotIn("release_eligible=true", design + ledger)
+
+    def test_pop_then_reset_prediction_is_rejected(self):
+        """Negative: a pop-then-reset core would present refusal state 1; rejected."""
+        row = _armed_row("tend")
+        row["refusal"] = dict(row["refusal"], transfer_state=1)
+        with self.assertRaisesRegex(ValueError, "transfer state"):
+            G.check_armed(row, "tend-armed")
 
 
 class RetentionAxisTests(unittest.TestCase):
