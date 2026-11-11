@@ -170,7 +170,9 @@ def judge_seq(tmp, probe, rom, base_addrs, stub_addr, name, defines, budget, on_
     """Strict synthetic judge for one SEQ/SPIN2 case (raises on mismatch)."""
     code = build_seq_payload(tmp, name, defines)
     body = L.body_for(code, 1)
-    info = L.info_sector(2, 1, 0x3000, 0x3000, L.MPRS_STD, 0, sum(body) & 0xFFFF)
+    # PUBLIC-format loaders take 0..7 MPR indices (mapped to $80+index in
+    # guest); raw $80..$87 bank values are the DEV format and are refused.
+    info = L.info_sector(2, 1, 0x3000, 0x3000, [0, 1, 2, 3, 4], 0, sum(body) & 0xFFFF)
     cue = L.make_disc(tmp / name, L.case_disc({"n": 1, "iplblk": 2}, body, info))
     E.verify_stub_bytes(rom, stub_addr)
     labels = run_labels(tmp, name, payload_halt_of(tmp, name), base_addrs)
