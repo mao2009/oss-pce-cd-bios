@@ -49,7 +49,9 @@ image: `A2 02/33 4C 45 E2` -> `60 EA EA EA EA`, same `api_unimplemented`
 - unpatched base: stops at the FIRST API (stub X=2, 1 APICALL);
 - slot-02-only patch: stops at the SECOND API (stub X=51, 2 APICALLs);
 - both patched: both return, THIRD call observed (stub X=3, 3 APICALLs),
-  resumption markers AA/CC/DD, full SP restoration.
+  resumption markers AA/CC/DD, full SP restoration (every adjacent call
+  pair shares the same restored SP level; first/last-only matching is
+  refused).
 
 Each step of the differential is explained by the allowed patches only.
 

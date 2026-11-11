@@ -366,6 +366,29 @@ def calls_match(a_calls, b_calls):
     return True, ""
 
 
+def sp_chain_restored(calls) -> tuple:
+    """True when every call resumes with its predecessor's SP level (pure).
+
+    A JSR pushes 2 bytes; the callee's RTS restores the pre-call SP, so the
+    next call must observe the same sp_before as the previous one. The probe
+    records sp_before at the caller (pre-push) and sp_after at the entry
+    (post-push), hence resumption is an exact level equality -- which is
+    inherently 8-bit-wraparound-safe (no arithmetic involved; e.g. a chain
+    restored through $00 still compares equal). ALL adjacent pairs are
+    checked: [0x80, 0x7E, 0x80] and [0x80, 0x80, 0x7E] are rejected while
+    [0x80, 0x80, 0x80] passes. Empty chains are invalid. Missing fields
+    never match.
+    """
+    if not calls:
+        return False, "no calls"
+    for i in range(len(calls) - 1):
+        before, prev = calls[i + 1].get("sp_before"), calls[i].get("sp_before")
+        if before != prev:
+            return False, (f"call {i + 1} sp_before {before!r} != "
+                           f"call {i} sp_before {prev!r}")
+    return True, ""
+
+
 def halts_match(cold_run, warm_run):
     """True when two cycles' halt states agree (pure).
 
@@ -406,21 +429,6 @@ def call_sequence(calls: list, stub_addr):
             return None
         seq.append((call["slot"], method))
     return seq
-
-
-def halts_match(cold_run, warm_run):
-    """True when two cycles' halt states agree (pure).
-
-    Compared: halt reason, halt PC, and halt X. halt_confirmed=True on both
-    sides is established upstream (a budget or unconfirmed halt never reaches
-    here); APICALL truncation is refused upstream as well. Step counts may
-    legitimately differ and are NEVER compared. Any mismatch means DIVERGENT,
-    never a success -- not even for the non-stub RETURN_THEN_HALT path.
-    """
-    for field in ("reason", "pc", "x"):
-        if cold_run.get(field) != warm_run.get(field):
-            return False, f"halt {field} differs: {cold_run.get(field)!r} vs {warm_run.get(field)!r}"
-    return True, ""
 
 
 def classify_simulated(records, stub_addr, expect_prefix=((2, "JSR"),)):
@@ -620,6 +628,13 @@ def judge_seq23(tmp, probe, rom, base_addrs, stub_addr, name, defines, budget,
         if len(runs) != 1:
             raise ValueError(f"{name} {cycle}: RUN count")
         run = runs[0]
+        rok, rwhy = validate_run(run)
+        if not rok:
+            fails.append(f"{cycle}: malformed RUN record: {rwhy}")
+            continue
+        if any(not validate_table_call(c)[0] for c in calls):
+            fails.append(f"{cycle}: malformed APICALL record(s)")
+            continue
         seq = call_sequence(calls, stub_addr)
         if seq != expect_seq:
             fails.append(f"{cycle}: sequence {seq} != {expect_seq}")
@@ -629,8 +644,9 @@ def judge_seq23(tmp, probe, rom, base_addrs, stub_addr, name, defines, budget,
             fails.append(f"{cycle}: resumption markers {markers} != {expect_markers}")
         if any(c["caller_x"] != 0x11 or c["caller_y"] != 0x22 for c in calls):
             fails.append(f"{cycle}: entry regs clobbered")
-        if len(calls) > 1 and calls[-1]["sp_before"] != calls[0]["sp_before"]:
-            fails.append(f"{cycle}: SP not restored by the assumed returns")
+        chain_ok, chain_why = sp_chain_restored(calls)
+        if not chain_ok:
+            fails.append(f"{cycle}: SP not restored by the assumed returns: {chain_why}")
         if run["reason"] != "api_unimplemented" or run["x"] != expect_x \
                 or run.get("pc") != stub_addr:
             fails.append(f"{cycle}: expected stub halt X={expect_x} at stub, "

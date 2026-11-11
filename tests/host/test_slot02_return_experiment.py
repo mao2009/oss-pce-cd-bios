@@ -682,6 +682,25 @@ class ClassifySimulatedTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 S.check_synthetic_receipt(out, "nope", (0x02,), "debug", 756)
 
+    def test_sp_chain_restored(self):
+        # MEDIUM-1 RED set: every adjacent pair must share the SP level.
+        def chain(levels):
+            return [dict(_call("cold"), sp_before=v, sp_after=(v - 2) & 0xFF,
+                          sp_delta=2) for v in levels]
+        ok, _ = S.sp_chain_restored(chain([0x80, 0x80, 0x80]))
+        self.assertTrue(ok)
+        ok, _ = S.sp_chain_restored(chain([0x80]))
+        self.assertTrue(ok)  # single call is vacuously consistent
+        for bad in ([0x80, 0x7E, 0x80], [0x80, 0x80, 0x7E], [0x01, 0x00, 0x01]):
+            ok, why = S.sp_chain_restored(chain(bad))
+            self.assertFalse(ok, bad)
+            self.assertIn("sp_before", why)
+        ok, why = S.sp_chain_restored([])
+        self.assertFalse(ok)
+        # Wraparound levels still compare by exact equality.
+        ok, _ = S.sp_chain_restored(chain([0x01, 0x01, 0x01]))
+        self.assertTrue(ok)
+
     def test_never_confirms(self):
         calls = [_call("cold"), _call("warm")]
         runs = [_run("cold"), _run("warm")]
