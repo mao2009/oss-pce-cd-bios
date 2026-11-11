@@ -10,8 +10,10 @@ compatibility. NOT G5 success. Verdicts carry the SIMULATED_ prefix and can
 never be API_ENTRY_CONFIRMED.
 
 Synthetic (default): proves the instrument itself on PUBLIC-format loaders.
-  SEQ on experiment ROM  -> 2 ordered APICALLs (slot2 JSR then slot3 JSR),
-                             resumption marker, SP balance, payload halt.
+  SEQ on experiment ROM  -> 2 ordered APICALLs (slot2 JSR returns, then
+                             slot3 JSR), resumption marker, SP restored by
+                             the first return, stub halt X=3 (slot 3 stays
+                             unimplemented by design).
   SEQ on base ROM (control) -> 1 APICALL (slot2), stub halt X=2.
   SPIN2 on experiment ROM -> 1 APICALL, budget (no invented halt).
 Commercial (--commercial, opt-in only): same read-only/sanitized discipline
@@ -198,6 +200,10 @@ def judge_seq(tmp, probe, rom, base_addrs, stub_addr, name, defines, budget, on_
             if run["reason"] != "budget" or run["halt_confirmed"]:
                 fails.append(f"{cycle}: post-return spin must be budget, got {run['reason']}")
         else:
+            # SEQ: slot 2 returns (experiment), slot 3 is unimplemented so the
+            # run must end at the stub halt with X=3. The first return is
+            # proven by resumption (A marker) and by SP restoration:
+            # the second call starts with the same SP as the first.
             seq = call_sequence(calls, stub_addr)
             if seq != [(2, "JSR"), (3, "JSR")]:
                 fails.append(f"{cycle}: sequence {seq} != [(2, JSR), (3, JSR)]")
@@ -206,10 +212,10 @@ def judge_seq(tmp, probe, rom, base_addrs, stub_addr, name, defines, budget, on_
                 fails.append(f"{cycle}: resumption marker missing {calls[0].get('caller_a')}/{calls[1].get('caller_a')}")
             if calls[0]["caller_x"] != 0x11 or calls[1]["caller_x"] != 0x11:
                 fails.append(f"{cycle}: entry regs clobbered")
-            if not sp_balanced(calls):
-                fails.append(f"{cycle}: SP imbalance after return")
-            if run["reason"] != "cd_halt_ok" or not run["halt_confirmed"]:
-                fails.append(f"{cycle}: expected payload halt, got {run['reason']}")
+            if calls[1]["sp_before"] != calls[0]["sp_before"]:
+                fails.append(f"{cycle}: SP not restored by slot-2 return")
+            if run["reason"] != "api_unimplemented" or run["x"] != 3:
+                fails.append(f"{cycle}: expected stub halt X=3, got {run['reason']} x={run['x']}")
     if fails:
         raise ValueError(f"{name} failed: {fails}")
     return records
@@ -365,7 +371,7 @@ def main():
         slot2, slot3 = entry_of(0x02), entry_of(0x03)
         judge_seq(tmp, probe, exp_rom, full, stub_addr, "seq_return",
                   [f"-DSEQ", f"-DSEQ2=${slot2:04X}", f"-DSEQ3=${slot3:04X}"], 20_000_000, False)
-        print("PASS seq_return cold/warm: slot2 JSR returned, slot3 JSR observed in order, SP balanced")
+        print("PASS seq_return cold/warm: slot2 JSR returned, slot3 JSR observed in order, SP restored, stub halt X=3")
         judge_seq(tmp, probe, base_rom, full, stub_addr, "seq_control",
                   [f"-DSEQ", f"-DSEQ2=${slot2:04X}", f"-DSEQ3=${slot3:04X}"], 20_000_000, True)
         print("PASS seq_control cold/warm: same payload on base ROM halts at stub X=2 with 1 APICALL")
