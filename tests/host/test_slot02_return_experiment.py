@@ -6,8 +6,10 @@ everything else is pure logic (patch accounting, manifest flags, SIMULATED
 classification, production-wiring guards).
 """
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT / "tools"), str(ROOT / "tests" / "integration")]
@@ -44,6 +46,10 @@ class ProductionWiringGuardTests(unittest.TestCase):
         self.assertNotIn(0x02, overrides())
         self.assertFalse((ROOT / "src" / "overrides" / "slot_02.s").exists())
 
+    def test_no_slot_33_override_on_disk(self):
+        self.assertNotIn(0x33, overrides())
+        self.assertFalse((ROOT / "src" / "overrides" / "slot_33.s").exists())
+
     def test_experiment_stub_lives_outside_overrides(self):
         stub = ROOT / "tests" / "integration" / "slot02_return_stub.s"
         self.assertTrue(stub.is_file())
@@ -56,7 +62,7 @@ class PatchAccountingTests(unittest.TestCase):
     def test_patch_preview_exact_five_bytes(self):
         base = bytearray(0x2000)
         base[0x10A:0x10F] = bytes((0xA2, 0x02, 0x4C, 0x45, 0xE2))
-        off, before, after = patch_preview(bytes(base), 0xE10A, 0xE245, self.STUB)
+        off, before, after = patch_preview(bytes(base), 0x02, 0xE10A, 0xE245, self.STUB)
         self.assertEqual((off, before, after),
                          (0x10A, bytes((0xA2, 0x02, 0x4C, 0x45, 0xE2)),
                           bytes((0x60, 0xEA, 0xEA, 0xEA, 0xEA))))
@@ -65,17 +71,17 @@ class PatchAccountingTests(unittest.TestCase):
     def test_patch_rejected_when_before_bytes_differ(self):
         base = bytes(0x2000)
         with self.assertRaises(ValueError):
-            patch_preview(base, 0xE10A, 0xE245, self.STUB)
+            patch_preview(base, 0x02, 0xE10A, 0xE245, self.STUB)
 
     def test_patch_rejected_outside_bios_window(self):
         base = bytes(0x2000)
         with self.assertRaises(ValueError):
-            patch_preview(base, 0x7FFF, 0xE245, self.STUB)
+            patch_preview(base, 0x02, 0x7FFF, 0xE245, self.STUB)
 
     def test_apply_patch_containment(self):
         base = bytearray(0x2000)
         base[0x10A:0x10F] = bytes((0xA2, 0x02, 0x4C, 0x45, 0xE2))
-        off, before, after = patch_preview(bytes(base), 0xE10A, 0xE245, self.STUB)
+        off, before, after = patch_preview(bytes(base), 0x02, 0xE10A, 0xE245, self.STUB)
         patched = apply_patch(bytes(base), off, before, after)
         self.assertEqual(patched[off:off + 5], after)
         self.assertEqual(len(patched), len(base))
@@ -88,7 +94,7 @@ class PatchAccountingTests(unittest.TestCase):
         # before-bytes and must refuse.
         base = bytearray(0x2000)
         base[0x10A:0x10F] = bytes((0xA2, 0x02, 0x4C, 0x45, 0xE2))
-        off, before, after = patch_preview(bytes(base), 0xE10A, 0xE245, self.STUB)
+        off, before, after = patch_preview(bytes(base), 0x02, 0xE10A, 0xE245, self.STUB)
         tampered = bytearray(base)
         tampered[0x10B] = 0x03  # corrupt the slot byte inside the window
         with self.assertRaises(ValueError):
@@ -98,9 +104,9 @@ class PatchAccountingTests(unittest.TestCase):
         base = bytearray(0x2000)
         base[0x10A:0x10F] = bytes((0xA2, 0x02, 0x4C, 0x45, 0xE2))
         with self.assertRaises(ValueError):
-            patch_preview(bytes(base), 0xE10A, 0xE245, bytes((0x8D, 0x00, 0x20)))
+            patch_preview(bytes(base), 0x02, 0xE10A, 0xE245, bytes((0x8D, 0x00, 0x20)))
         with self.assertRaises(ValueError):
-            patch_preview(bytes(base), 0xE10A, 0xE245, bytes((RTS, 0xEA, 0xEA, 0xEA, 0xEA, 0xEA)))
+            patch_preview(bytes(base), 0x02, 0xE10A, 0xE245, bytes((RTS, 0xEA, 0xEA, 0xEA, 0xEA, 0xEA)))
 
 
 class VariantCleanupTests(unittest.TestCase):
@@ -124,6 +130,67 @@ class VariantCleanupTests(unittest.TestCase):
                 self.assertTrue((out / name).is_file(), name)
 
 
+class MultiSlotPatchTests(unittest.TestCase):
+    STUB = bytes((RTS,))
+
+    def _base_with(self, slots_addrs, unimpl):
+        base = bytearray(0x3000)
+        for slot, addr in slots_addrs:
+            off = addr - 0xE000
+            base[off:off + 5] = bytes((0xA2, slot, 0x4C, unimpl & 0xFF, (unimpl >> 8) & 0xFF))
+        return bytes(base)
+
+    def test_two_slot_windows(self):
+        from build_slot02_return_loader import apply_patches, patch_preview
+        base = self._base_with([(0x02, 0xE10A), (0x33, 0xE1A0)], 0xE245)
+        patches = [patch_preview(base, s, a, 0xE245, self.STUB)
+                   for s, a in ((0x02, 0xE10A), (0x33, 0xE1A0))]
+        patched = apply_patches(base, patches)
+        self.assertEqual(patched[0x10A:0x10F], bytes((0x60, 0xEA, 0xEA, 0xEA, 0xEA)))
+        self.assertEqual(patched[0x1A0:0x1A5], bytes((0x60, 0xEA, 0xEA, 0xEA, 0xEA)))
+        diffs = [i for i, (a, b) in enumerate(zip(base, patched)) if a != b]
+        self.assertEqual(diffs, list(range(0x10A, 0x10F)) + list(range(0x1A0, 0x1A5)))
+
+    def test_second_slot_wrong_slot_byte_rejected(self):
+        from build_slot02_return_loader import patch_preview
+        base = self._base_with([(0x33, 0xE1A0)], 0xE245)
+        tampered = bytearray(base)
+        tampered[0x1A1] = 0x34  # slot byte no longer $33
+        with self.assertRaises(ValueError):
+            patch_preview(bytes(tampered), 0x33, 0xE1A0, 0xE245, self.STUB)
+
+    def test_empty_slots_rejected(self):
+        from build_slot02_return_loader import build_slot02_return_bios
+        with self.assertRaises(ValueError):
+            build_slot02_return_bios(Path("/nonexistent"), Path("/tmp/nonexistent-out-756"),
+                                     0x109, slots=())
+
+    def test_manifest_lists_both_slots(self):
+        m = experiment_manifest("base.pce", "exp.pce", b"\x00" * 256 * 1024,
+                                {"api_unimplemented": 0xE245}, "redacted", "debug",
+                                "slot02-33ret", ["-D", "IPL_PUBLIC"], (0x02, 0x33),
+                                issue=758)
+        self.assertEqual(m["slots"], ["$02", "$33"])
+        self.assertEqual(m["patch"]["targets"], ["api_slot_02", "api_slot_33"])
+        self.assertFalse(m["release_eligible"])
+        self.assertEqual(m["issue"], 758)
+        self.assertIn("NOT genuine System Card behavior", m["assumption"])
+
+    def test_allowlist_rejects_nonlisted_combinations(self):
+        from build_slot02_return_loader import ALLOWED_EXPERIMENTS, build_slot02_return_bios
+        self.assertEqual(ALLOWED_EXPERIMENTS, {(0x02,): 756, (0x02, 0x33): 758})
+        bad = [((0x02, 0x02), 756),  # duplicate
+               ((0x33,), 758),  # unlisted set
+               ((0x33, 0x02), 758),  # unlisted order
+               ((0x02, 0x33), 756),  # issue mismatch
+               ((0x02,), 999),  # unknown issue
+               ((), 756)]  # empty
+        for slots, issue in bad:
+            with self.assertRaises(ValueError, msg=f"{slots}/{issue}"):
+                build_slot02_return_bios(Path("/nonexistent"), Path("/tmp/nonexistent-out-allow"),
+                                         0x109, slots=slots, issue=issue)
+
+
 class ManifestFlagTests(unittest.TestCase):
     def test_experiment_manifest_is_simulated_only(self):
         m = experiment_manifest("base.pce", "exp.pce", b"\x00" * 256 * 1024,
@@ -134,7 +201,7 @@ class ManifestFlagTests(unittest.TestCase):
         self.assertEqual(m["system_card_abi"], "NO_CLAIM")
         self.assertIn("SIMULATED", m["status"])
         self.assertIn("SIMULATED_", m["verdict_prefix"])
-        self.assertIn("NOT genuine CD_BASE", m["assumption"])
+        self.assertIn("NOT genuine System Card behavior", m["assumption"])
         self.assertEqual(m["issue"], 756)
 
 
@@ -244,6 +311,46 @@ class ClassifySimulatedTests(unittest.TestCase):
         verdict, _ = S.classify_simulated(_records([], [_run("cold")]), self.STUB)
         self.assertEqual(verdict, "FAIL")
 
+    def test_two_slot_prefix_next_api(self):
+        prefix = ((2, "JSR"), (51, "JSR"))
+        calls = [_call("cold", a=0xAA), _call("cold", entry=0xE099, slot=51, a=0xCC),
+                 _call("cold", entry=0xE009, slot=3, a=0xDD),
+                 _call("warm", a=0xAA), _call("warm", entry=0xE099, slot=51, a=0xCC),
+                 _call("warm", entry=0xE009, slot=3, a=0xDD)]
+        runs = [_run("cold", reason="api_unimplemented", pc=self.STUB, x=3),
+                _run("warm", reason="api_unimplemented", pc=self.STUB, x=3)]
+        verdict, detail = S.classify_simulated(_records(calls, runs), self.STUB, prefix)
+        self.assertEqual(verdict, "SIMULATED_NEXT_API")
+        self.assertIn("non-returning", detail)
+
+    def test_two_slot_prefix_short_sequence_unexpected(self):
+        # Only the first assumed call recorded, then a stub halt: the trace
+        # cannot explain the halt.
+        prefix = ((2, "JSR"), (51, "JSR"))
+        calls = [_call("cold"), _call("warm")]
+        runs = [_run("cold", reason="api_unimplemented", pc=self.STUB, x=2),
+                _run("warm", reason="api_unimplemented", pc=self.STUB, x=2)]
+        verdict, _ = S.classify_simulated(_records(calls, runs), self.STUB, prefix)
+        self.assertEqual(verdict, "SIMULATED_UNEXPECTED_FIRST")
+
+    def test_two_slot_prefix_second_call_mismatch(self):
+        prefix = ((2, "JSR"), (51, "JSR"))
+        calls = [_call("cold"), _call("cold", entry=0xE009, slot=3),
+                 _call("warm"), _call("warm", entry=0xE009, slot=3)]
+        runs = [_run("cold", reason="api_unimplemented", pc=self.STUB, x=3),
+                _run("warm", reason="api_unimplemented", pc=self.STUB, x=3)]
+        verdict, _ = S.classify_simulated(_records(calls, runs), self.STUB, prefix)
+        self.assertEqual(verdict, "SIMULATED_UNEXPECTED_FIRST")
+
+    def test_two_slot_prefix_clean_return_then_halt(self):
+        prefix = ((2, "JSR"), (51, "JSR"))
+        calls = [_call("cold"), _call("cold", entry=0xE099, slot=51),
+                 _call("warm"), _call("warm", entry=0xE099, slot=51)]
+        runs = [_run("cold", reason="cd_halt_fail", pc=0xF100),
+                _run("warm", reason="cd_halt_fail", pc=0xF100)]
+        verdict, _ = S.classify_simulated(_records(calls, runs), self.STUB, prefix)
+        self.assertEqual(verdict, "SIMULATED_RETURN_THEN_HALT")
+
     def test_caller_pc_mismatch_diverges(self):
         a = _call("cold")
         b = dict(_call("warm"))
@@ -328,6 +435,12 @@ class ClassifySimulatedTests(unittest.TestCase):
         verdict, _ = S.classify_simulated(_records(calls, runs), self.STUB)
         self.assertEqual(verdict, "SIMULATED_NEXT_API")
 
+    def test_halts_match_pure(self):
+        ok, _ = S.halts_match(_run("cold"), _run("warm"))
+        self.assertTrue(ok)
+        ok2, why = S.halts_match(_run("cold", pc=0xF100), _run("warm", pc=0xF101))
+        self.assertFalse(ok2)
+        self.assertIn("halt pc", why)
     def test_halt_state_mismatch_diverges(self):
         # MEDIUM-1 RED set: halt reason/PC/X must agree on the
         # PRE_HALT and RETURN_THEN_HALT paths.
@@ -571,6 +684,25 @@ class ClassifySimulatedTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 S.check_synthetic_receipt(out, "nope", (0x02,), "debug", 756)
 
+    def test_sp_chain_restored(self):
+        # MEDIUM-1 RED set: every adjacent pair must share the SP level.
+        def chain(levels):
+            return [dict(_call("cold"), sp_before=v, sp_after=(v - 2) & 0xFF,
+                          sp_delta=2) for v in levels]
+        ok, _ = S.sp_chain_restored(chain([0x80, 0x80, 0x80]))
+        self.assertTrue(ok)
+        ok, _ = S.sp_chain_restored(chain([0x80]))
+        self.assertTrue(ok)  # single call is vacuously consistent
+        for bad in ([0x80, 0x7E, 0x80], [0x80, 0x80, 0x7E], [0x01, 0x00, 0x01]):
+            ok, why = S.sp_chain_restored(chain(bad))
+            self.assertFalse(ok, bad)
+            self.assertIn("sp_before", why)
+        ok, why = S.sp_chain_restored([])
+        self.assertFalse(ok)
+        # Wraparound levels still compare by exact equality.
+        ok, _ = S.sp_chain_restored(chain([0x01, 0x01, 0x01]))
+        self.assertTrue(ok)
+
     def test_expected_halt_budget_table(self):
         # MEDIUM-1 RED table: only confirmed, untruncated halts pass;
         # only unconfirmed, untruncated budgets pass.
@@ -668,6 +800,140 @@ class ClassifySimulatedTests(unittest.TestCase):
                            ("bogus", True)):
             valid, _ = S.validate_table_call(_call(check=check, ret=ret))
             self.assertFalse(valid, (check, ret))
+
+
+class JudgeSeq23HaltTests(unittest.TestCase):
+    """Judge-path fail-closed halt gate for judge_seq23 (Issue #758 MEDIUM-1).
+
+    check_expected_halt() unit tests alone cannot prove the judge uses it:
+    these tests execute judge_seq23() itself with E.run_probe() mocked to
+    swap in crafted RUN/APICALL records (synthetic fixture shape, pinned
+    C++ probe is never claimed to have produced the abnormals). Only a
+    confirmed, untruncated stub halt with the expected reason/X/PC passes;
+    every abnormal -- including one-sided (cold-only or warm-only) -- fails.
+    """
+    STUB = 0xE245
+    EXPECT_SEQ = [(2, "JSR"), (51, "JSR"), (3, "JSR")]
+    EXPECT_MARKERS = [0xAA, 0xCC, 0xDD]
+    EXPECT_X = 3
+
+    def _seq23_call(self, cycle, slot, entry, marker):
+        before = 0x80
+        return {"cycle": cycle, "caller_pc": 0x3014, "entry_pc": entry,
+                "in_table": True, "slot": slot, "sp_before": before,
+                "sp_after": (before - 2) & 0xFF, "sp_delta": 2,
+                "caller_a": marker, "caller_x": 0x11, "caller_y": 0x22,
+                "caller_p": 5, "stack_check": "MATCH",
+                "return_matches_caller": True,
+                "mpr": [255, 248, 128, 129, 130, 131, 132, 0]}
+
+    def _seq23_calls(self, cycle):
+        return [self._seq23_call(cycle, 2, 0xE006, 0xAA),
+                self._seq23_call(cycle, 51, 0xE099, 0xCC),
+                self._seq23_call(cycle, 3, 0xE009, 0xDD)]
+
+    def _seq23_run(self, cycle, confirmed=True, trunc=False,
+                   reason="api_unimplemented", pc=None, x=None):
+        return {"cycle": cycle,
+                "reason": reason,
+                "pc": self.STUB if pc is None else pc,
+                "x": self.EXPECT_X if x is None else x,
+                "halt_confirmed": confirmed, "step": 100,
+                "apicall_truncated": trunc}
+
+    def _seq23_records(self, cold_kw=None, warm_kw=None):
+        cold_kw = cold_kw or {}
+        warm_kw = warm_kw or {}
+        calls = self._seq23_calls("cold") + self._seq23_calls("warm")
+        runs = [self._seq23_run("cold", **cold_kw),
+                self._seq23_run("warm", **warm_kw)]
+        return {"CAP": [], "HIT": [], "PHASE": [], "RUN": runs, "APICALL": calls}
+
+    def _judge(self, records):
+        """Run judge_seq23 with I/O mocked; returns True on PASS, False on FAIL."""
+        with tempfile.TemporaryDirectory(prefix="pce-seq23-judge-") as tmp:
+            tmp = Path(tmp)
+            with mock.patch.object(S, "build_seq_payload", return_value=b"\x00"), \
+                 mock.patch.object(S, "payload_halt_of", return_value=0x3000), \
+                 mock.patch.object(S, "run_labels",
+                                   return_value=tmp / "x.labels"), \
+                 mock.patch.object(S.E, "verify_stub_bytes", return_value=True), \
+                 mock.patch.object(S.E, "run_probe", return_value=records), \
+                 mock.patch.object(S.L, "body_for", return_value=b"\x00"), \
+                 mock.patch.object(S.L, "info_sector", return_value=b"\x00"), \
+                 mock.patch.object(S.L, "make_disc",
+                                   return_value=tmp / "x.cue"):
+                try:
+                    S.judge_seq23(
+                        tmp, Path("probe"), Path("rom"),
+                        {"cd_halt_fail": 1, "cd_unexpected_interrupt": 2,
+                         "api_unimplemented": self.STUB},
+                        self.STUB, "seq23_both", [], 20_000_000,
+                        self.EXPECT_SEQ, self.EXPECT_MARKERS, self.EXPECT_X)
+                except ValueError:
+                    return False
+                return True
+
+    def test_valid_passes(self):
+        self.assertTrue(self._judge(self._seq23_records()))
+
+    def test_unconfirmed_rejected_both(self):
+        self.assertFalse(self._judge(self._seq23_records(
+            {"confirmed": False}, {"confirmed": False})))
+
+    def test_truncated_rejected_both(self):
+        self.assertFalse(self._judge(self._seq23_records(
+            {"trunc": True}, {"trunc": True})))
+
+    def test_unconfirmed_and_truncated_rejected_both(self):
+        self.assertFalse(self._judge(self._seq23_records(
+            {"confirmed": False, "trunc": True},
+            {"confirmed": False, "trunc": True})))
+
+    def test_one_sided_unconfirmed_rejected(self):
+        self.assertFalse(self._judge(self._seq23_records({"confirmed": False}, {})))
+        self.assertFalse(self._judge(self._seq23_records({}, {"confirmed": False})))
+
+    def test_one_sided_truncated_rejected(self):
+        self.assertFalse(self._judge(self._seq23_records({"trunc": True}, {})))
+        self.assertFalse(self._judge(self._seq23_records({}, {"trunc": True})))
+
+    def test_reason_mismatch_rejected(self):
+        self.assertFalse(self._judge(self._seq23_records(
+            {"reason": "cd_halt_fail", "pc": 0xF100},
+            {"reason": "cd_halt_fail", "pc": 0xF100})))
+        # One-sided reason mismatch is equally a failure.
+        self.assertFalse(self._judge(self._seq23_records(
+            {"reason": "cd_halt_fail", "pc": 0xF100}, {})))
+
+    def test_pc_mismatch_rejected(self):
+        self.assertFalse(self._judge(self._seq23_records(
+            {"pc": 0xF000}, {"pc": 0xF000})))
+        self.assertFalse(self._judge(self._seq23_records({"pc": 0xF000}, {})))
+
+    def test_x_mismatch_rejected(self):
+        self.assertFalse(self._judge(self._seq23_records({"x": 2}, {"x": 2})))
+        self.assertFalse(self._judge(self._seq23_records({"x": 2}, {})))
+
+    def test_structure_checks_kept(self):
+        # API order, resumption markers, SP chain, and reg guards still fail.
+        good = self._seq23_records()
+        swapped = {"CAP": [], "HIT": [], "PHASE": [],
+                   "RUN": good["RUN"],
+                   "APICALL": [c for c in good["APICALL"] if c["cycle"] == "warm"]
+                   + [c for c in good["APICALL"] if c["cycle"] == "cold"]}
+        # Order swap across cycles is invisible (per-cycle filter); instead
+        # corrupt one cycle's marker and SP chain directly.
+        bad_marker = self._seq23_records()
+        bad_marker["APICALL"][1] = dict(bad_marker["APICALL"][1], caller_a=0x00)
+        self.assertFalse(self._judge(bad_marker))
+        bad_sp = self._seq23_records()
+        bad_sp["APICALL"][1] = dict(bad_sp["APICALL"][1], sp_before=0x70)
+        self.assertFalse(self._judge(bad_sp))
+        bad_regs = self._seq23_records()
+        bad_regs["APICALL"][0] = dict(bad_regs["APICALL"][0], caller_x=0x00)
+        self.assertFalse(self._judge(bad_regs))
+        _ = swapped  # per-cycle filtering makes cross-cycle order a no-op
 
 
 class StubAssemblyTests(unittest.TestCase):
