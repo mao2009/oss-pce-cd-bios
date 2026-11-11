@@ -19,6 +19,16 @@ label-derived `$E10A` and `$E1F0`, verified byte-for-byte against the base
 image: `A2 02/33 4C 45 E2` -> `60 EA EA EA EA`, same `api_unimplemented`
 `$E245` for both). Hardcoded patch offsets are forbidden.
 
+## Comparator discipline (Cycle 3 Phase B)
+
+- Cold/warm call fields must match exactly: table membership, slot,
+  caller/entry PCs, SP before/after + delta, entry A/X/Y/P, MPR, and the
+  internal return flags. Step counts are never compared. Any mismatch is
+  `SIMULATED_DIVERGENT`, never a success.
+- Only two (slots, issue) combinations exist: `(0x02,)`/#756 and
+  `(0x02, 0x33)`/#758. Anything else (other slots, order, duplicates,
+  mismatched issue) is refused fail-closed: no generic any-slot patcher.
+
 ## Return-evidence discipline (from #756 Phase A)
 
 - `stack_check == MATCH` is internal stack consistency only, never proof of a

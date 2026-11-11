@@ -37,8 +37,16 @@ else:
     from environment import DEPENDENCIES, executable
 
 STUB_SOURCE = ROOT / "tests" / "integration" / "slot02_return_stub.s"
-PATCH_LEN = 5  # `ldx #$02` (2) + `jmp api_unimplemented` (3)
+PATCH_LEN = 5  # `ldx #slot` (2) + `jmp api_unimplemented` (3)
 RTS, NOP = 0x60, 0xEA
+
+# B-2 allowlist: the ONLY permitted (slots, issue) combinations. This is
+# deliberately not a generic any-slot patcher: any other slot set, order,
+# duplicate, or issue pairing is refused fail-closed.
+ALLOWED_EXPERIMENTS = {
+    (0x02,): 756,
+    (0x02, 0x33): 758,
+}
 
 def assumption_text(slots: tuple) -> str:
     names = ", ".join(f"${s:02X}" for s in slots)
@@ -198,12 +206,10 @@ def build_slot02_return_bios(original_path: Path, output: Path, sel: int, mode: 
     """
     if mode not in ("debug", "release"):
         raise ValueError("MODE must be debug or release")
-    if not slots or any(type(s) is not int or not 0 <= s <= 0x50 for s in slots):
-        raise ValueError("slots must be a non-empty tuple of table slots")
-    if len(set(slots)) != len(slots):
-        raise ValueError("slots must not contain duplicates")
-    if type(issue) is not int or issue not in (756, 758):
-        raise ValueError("issue must be a known experiment tracker (756 or 758)")
+    if ALLOWED_EXPERIMENTS.get(tuple(slots)) != issue:
+        raise ValueError(
+            f"slots {tuple(slots)!r} with issue {issue!r} is not an allowlisted experiment "
+            f"{sorted(ALLOWED_EXPERIMENTS.items())}")
     defines = list(defines) or ["-D", "IPL_PUBLIC"]
     output.mkdir(parents=True, exist_ok=True)
     _clean_variant_files(output, variant)
