@@ -593,15 +593,15 @@ class ClassifySimulatedTests(unittest.TestCase):
         bad = dict(base, halt_confirmed="true")
         ok, _ = S.check_expected_halt(bad, reason="api_unimplemented", x=2, pc=self.STUB)
         self.assertFalse(ok, bad)
-        pos = dict(_run("cold", reason="budget", halt_confirmed=False))
+        pos = dict(_run("cold", reason="budget", halted=False))
         ok, _ = S.check_expected_budget(pos)
         self.assertTrue(ok)
-        for bad in (dict(_run("cold", reason="budget", halt_confirmed=True)),
-                    dict(_run("cold", reason="budget", halt_confirmed=False, trunc=True)),
-                    dict(_run("cold", reason="cd_halt_fail", halt_confirmed=False))):
+        for bad in (dict(_run("cold", reason="budget", halted=True)),
+                    dict(_run("cold", reason="budget", halted=False, trunc=True)),
+                    dict(_run("cold", reason="cd_halt_fail", halted=False))):
             ok, _ = S.check_expected_budget(bad)
             self.assertFalse(ok, bad)
-        bad = dict(_run("cold", reason="budget", halt_confirmed=False))
+        bad = dict(_run("cold", reason="budget", halted=False))
         del bad["halt_confirmed"]
         ok, _ = S.check_expected_budget(bad)
         self.assertFalse(ok, bad)
@@ -617,11 +617,11 @@ class ClassifySimulatedTests(unittest.TestCase):
         seq = _run("cold", reason="api_unimplemented", pc=stub, x=3)
         ok, _ = S.check_expected_halt(seq, reason="api_unimplemented", x=3, pc=stub)
         self.assertTrue(ok)
-        spin = _run("cold", reason="budget", halt_confirmed=False)
+        spin = _run("cold", reason="budget", halted=False)
         ok, _ = S.check_expected_budget(spin)
         self.assertTrue(ok)
         # The old inline conditions would have passed these abnormals.
-        bad_spin = _run("cold", reason="budget", halt_confirmed=False, trunc=True)
+        bad_spin = _run("cold", reason="budget", halted=False, trunc=True)
         self.assertTrue(bad_spin["reason"] == "budget" and not bad_spin["halt_confirmed"])
         ok, _ = S.check_expected_budget(bad_spin)
         self.assertFalse(ok)
