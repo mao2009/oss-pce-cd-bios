@@ -690,10 +690,17 @@ def judge_seq23(tmp, probe, rom, base_addrs, stub_addr, name, defines, budget,
         chain_ok, chain_why = sp_chain_restored(calls)
         if not chain_ok:
             fails.append(f"{cycle}: SP not restored by the assumed returns: {chain_why}")
-        if run["reason"] != "api_unimplemented" or run["x"] != expect_x \
-                or run.get("pc") != stub_addr:
-            fails.append(f"{cycle}: expected stub halt X={expect_x} at stub, "
-                         f"got {run['reason']} x={run['x']} pc={run.get('pc')}")
+        halt_ok, halt_why = check_expected_halt(
+            run,
+            reason="api_unimplemented",
+            x=expect_x,
+            pc=stub_addr,
+        )
+        if not halt_ok:
+            fails.append(
+                f"{cycle}: expected stub halt X={expect_x} "
+                f"at stub: {halt_why}"
+            )
     if fails:
         raise ValueError(f"{name} failed: {fails}")
     return records

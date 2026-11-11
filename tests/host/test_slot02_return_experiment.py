@@ -6,8 +6,10 @@ everything else is pure logic (patch accounting, manifest flags, SIMULATED
 classification, production-wiring guards).
 """
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT / "tools"), str(ROOT / "tests" / "integration")]
@@ -798,6 +800,140 @@ class ClassifySimulatedTests(unittest.TestCase):
                            ("bogus", True)):
             valid, _ = S.validate_table_call(_call(check=check, ret=ret))
             self.assertFalse(valid, (check, ret))
+
+
+class JudgeSeq23HaltTests(unittest.TestCase):
+    """Judge-path fail-closed halt gate for judge_seq23 (Issue #758 MEDIUM-1).
+
+    check_expected_halt() unit tests alone cannot prove the judge uses it:
+    these tests execute judge_seq23() itself with E.run_probe() mocked to
+    swap in crafted RUN/APICALL records (synthetic fixture shape, pinned
+    C++ probe is never claimed to have produced the abnormals). Only a
+    confirmed, untruncated stub halt with the expected reason/X/PC passes;
+    every abnormal -- including one-sided (cold-only or warm-only) -- fails.
+    """
+    STUB = 0xE245
+    EXPECT_SEQ = [(2, "JSR"), (51, "JSR"), (3, "JSR")]
+    EXPECT_MARKERS = [0xAA, 0xCC, 0xDD]
+    EXPECT_X = 3
+
+    def _seq23_call(self, cycle, slot, entry, marker):
+        before = 0x80
+        return {"cycle": cycle, "caller_pc": 0x3014, "entry_pc": entry,
+                "in_table": True, "slot": slot, "sp_before": before,
+                "sp_after": (before - 2) & 0xFF, "sp_delta": 2,
+                "caller_a": marker, "caller_x": 0x11, "caller_y": 0x22,
+                "caller_p": 5, "stack_check": "MATCH",
+                "return_matches_caller": True,
+                "mpr": [255, 248, 128, 129, 130, 131, 132, 0]}
+
+    def _seq23_calls(self, cycle):
+        return [self._seq23_call(cycle, 2, 0xE006, 0xAA),
+                self._seq23_call(cycle, 51, 0xE099, 0xCC),
+                self._seq23_call(cycle, 3, 0xE009, 0xDD)]
+
+    def _seq23_run(self, cycle, confirmed=True, trunc=False,
+                   reason="api_unimplemented", pc=None, x=None):
+        return {"cycle": cycle,
+                "reason": reason,
+                "pc": self.STUB if pc is None else pc,
+                "x": self.EXPECT_X if x is None else x,
+                "halt_confirmed": confirmed, "step": 100,
+                "apicall_truncated": trunc}
+
+    def _seq23_records(self, cold_kw=None, warm_kw=None):
+        cold_kw = cold_kw or {}
+        warm_kw = warm_kw or {}
+        calls = self._seq23_calls("cold") + self._seq23_calls("warm")
+        runs = [self._seq23_run("cold", **cold_kw),
+                self._seq23_run("warm", **warm_kw)]
+        return {"CAP": [], "HIT": [], "PHASE": [], "RUN": runs, "APICALL": calls}
+
+    def _judge(self, records):
+        """Run judge_seq23 with I/O mocked; returns True on PASS, False on FAIL."""
+        with tempfile.TemporaryDirectory(prefix="pce-seq23-judge-") as tmp:
+            tmp = Path(tmp)
+            with mock.patch.object(S, "build_seq_payload", return_value=b"\x00"), \
+                 mock.patch.object(S, "payload_halt_of", return_value=0x3000), \
+                 mock.patch.object(S, "run_labels",
+                                   return_value=tmp / "x.labels"), \
+                 mock.patch.object(S.E, "verify_stub_bytes", return_value=True), \
+                 mock.patch.object(S.E, "run_probe", return_value=records), \
+                 mock.patch.object(S.L, "body_for", return_value=b"\x00"), \
+                 mock.patch.object(S.L, "info_sector", return_value=b"\x00"), \
+                 mock.patch.object(S.L, "make_disc",
+                                   return_value=tmp / "x.cue"):
+                try:
+                    S.judge_seq23(
+                        tmp, Path("probe"), Path("rom"),
+                        {"cd_halt_fail": 1, "cd_unexpected_interrupt": 2,
+                         "api_unimplemented": self.STUB},
+                        self.STUB, "seq23_both", [], 20_000_000,
+                        self.EXPECT_SEQ, self.EXPECT_MARKERS, self.EXPECT_X)
+                except ValueError:
+                    return False
+                return True
+
+    def test_valid_passes(self):
+        self.assertTrue(self._judge(self._seq23_records()))
+
+    def test_unconfirmed_rejected_both(self):
+        self.assertFalse(self._judge(self._seq23_records(
+            {"confirmed": False}, {"confirmed": False})))
+
+    def test_truncated_rejected_both(self):
+        self.assertFalse(self._judge(self._seq23_records(
+            {"trunc": True}, {"trunc": True})))
+
+    def test_unconfirmed_and_truncated_rejected_both(self):
+        self.assertFalse(self._judge(self._seq23_records(
+            {"confirmed": False, "trunc": True},
+            {"confirmed": False, "trunc": True})))
+
+    def test_one_sided_unconfirmed_rejected(self):
+        self.assertFalse(self._judge(self._seq23_records({"confirmed": False}, {})))
+        self.assertFalse(self._judge(self._seq23_records({}, {"confirmed": False})))
+
+    def test_one_sided_truncated_rejected(self):
+        self.assertFalse(self._judge(self._seq23_records({"trunc": True}, {})))
+        self.assertFalse(self._judge(self._seq23_records({}, {"trunc": True})))
+
+    def test_reason_mismatch_rejected(self):
+        self.assertFalse(self._judge(self._seq23_records(
+            {"reason": "cd_halt_fail", "pc": 0xF100},
+            {"reason": "cd_halt_fail", "pc": 0xF100})))
+        # One-sided reason mismatch is equally a failure.
+        self.assertFalse(self._judge(self._seq23_records(
+            {"reason": "cd_halt_fail", "pc": 0xF100}, {})))
+
+    def test_pc_mismatch_rejected(self):
+        self.assertFalse(self._judge(self._seq23_records(
+            {"pc": 0xF000}, {"pc": 0xF000})))
+        self.assertFalse(self._judge(self._seq23_records({"pc": 0xF000}, {})))
+
+    def test_x_mismatch_rejected(self):
+        self.assertFalse(self._judge(self._seq23_records({"x": 2}, {"x": 2})))
+        self.assertFalse(self._judge(self._seq23_records({"x": 2}, {})))
+
+    def test_structure_checks_kept(self):
+        # API order, resumption markers, SP chain, and reg guards still fail.
+        good = self._seq23_records()
+        swapped = {"CAP": [], "HIT": [], "PHASE": [],
+                   "RUN": good["RUN"],
+                   "APICALL": [c for c in good["APICALL"] if c["cycle"] == "warm"]
+                   + [c for c in good["APICALL"] if c["cycle"] == "cold"]}
+        # Order swap across cycles is invisible (per-cycle filter); instead
+        # corrupt one cycle's marker and SP chain directly.
+        bad_marker = self._seq23_records()
+        bad_marker["APICALL"][1] = dict(bad_marker["APICALL"][1], caller_a=0x00)
+        self.assertFalse(self._judge(bad_marker))
+        bad_sp = self._seq23_records()
+        bad_sp["APICALL"][1] = dict(bad_sp["APICALL"][1], sp_before=0x70)
+        self.assertFalse(self._judge(bad_sp))
+        bad_regs = self._seq23_records()
+        bad_regs["APICALL"][0] = dict(bad_regs["APICALL"][0], caller_x=0x00)
+        self.assertFalse(self._judge(bad_regs))
+        _ = swapped  # per-cycle filtering makes cross-cycle order a no-op
 
 
 class StubAssemblyTests(unittest.TestCase):
