@@ -39,6 +39,19 @@ else:
 STUB_SOURCE = ROOT / "tests" / "integration" / "slot02_return_stub.s"
 PATCH_LEN = 5  # `ldx #$02` (2) + `jmp api_unimplemented` (3)
 RTS, NOP = 0x60, 0xEA
+PUBLIC_DEFINES = ["-D", "IPL_PUBLIC"]
+
+
+def resolve_defines(defines) -> list:
+    """Map the caller's loader-format choice to ca65 defines (pure).
+
+    None (omitted) means the PUBLIC default; an explicit empty list means DEV
+    (no IPL_PUBLIC); a non-empty list is used as-is. The old ``or`` coercion
+    silently turned an explicit DEV request ([]) into PUBLIC -- refused now.
+    """
+    if defines is None:
+        return list(PUBLIC_DEFINES)
+    return list(defines)
 
 ASSUMPTION_TEXT = (
     "SIMULATED return: slot $02 returns immediately (RTS) preserving all "
@@ -164,12 +177,15 @@ def _clean_variant_files(output: Path, variant: str) -> None:
 
 
 def build_slot02_return_bios(original_path: Path, output: Path, sel: int, mode: str = "debug",
-                             variant: str = "slot02ret", defines=(),
+                             variant: str = "slot02ret", defines=None,
                              private_input: bool = False):
-    """Build (base_rom, exp_rom, symbols). `defines` selects PUBLIC (default) or DEV loader."""
+    """Build (base_rom, exp_rom, symbols). `defines` selects the loader format.
+
+    None (default) means PUBLIC; pass [] explicitly for the DEV loader.
+    """
     if mode not in ("debug", "release"):
         raise ValueError("MODE must be debug or release")
-    defines = list(defines) or ["-D", "IPL_PUBLIC"]
+    defines = resolve_defines(defines)
     output.mkdir(parents=True, exist_ok=True)
     _clean_variant_files(output, variant)
     base_variant = f"{variant}-base"

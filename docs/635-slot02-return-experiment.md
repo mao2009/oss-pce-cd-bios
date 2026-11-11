@@ -25,6 +25,31 @@ result is reported as `SIMULATED_*` / CONDITIONAL.
   flags, MPRs and RAM preserved; no side effects. Post-return behavior is
   CONDITIONAL on this assumption.
 
+## Exit codes and the synthetic gate (Cycle 5)
+
+| Verdict | Exit | Meaning |
+|---|---|---|
+| `SIMULATED_NEXT_API` | 0 | completed conditional observation |
+| `SIMULATED_RETURN_THEN_HALT` | 0 | returned, clean stop explained |
+| `SIMULATED_PRE_HALT` | 1 | observation complete, goal unmet |
+| `SIMULATED_BUDGET` / `SIMULATED_INCOMPLETE` / `SIMULATED_DIVERGENT` / `SIMULATED_UNEXPECTED_FIRST` / `FAIL` | 1 | abnormal/undecidable |
+
+Only the two completed outcomes exit 0. Abnormal results still save the
+sanitized evidence JSON when the output path is writable.
+
+The commercial path requires a matching synthetic PASS receipt
+(`build/<mode>/slot02-return/synthetic-receipt-<slots>-<mode>.json`): same
+slots, mode, owning issue, repo HEAD, and SHA-256 of every experiment source
+file. A missing or stale receipt BLOCKs the commercial run instead of
+reusing an unrelated pass; the commercial ROM bytes themselves are validated
+separately by the whole-image diff assertion at build time.
+
+Call records are structurally validated before any classification: required
+fields must exist with the right types and ranges, `entry_pc` must equal
+`0xE000 + slot*3`, MPR must be 8 bytes, and SP/return evidence must be
+well-formed. Missing or malformed fields can never match, and corrupt records
+can never form a call sequence.
+
 ## What counts as return evidence (A-2)
 
 - `stack_check == MATCH` / `jsr_confirmed` prove only INTERNAL stack
