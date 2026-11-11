@@ -396,34 +396,46 @@ class ClassifySimulatedTests(unittest.TestCase):
         verdict, _ = S.classify_simulated(_records(calls, runs), self.STUB)
         self.assertEqual(verdict, "SIMULATED_NEXT_API")
 
-    def test_halt_pc_mismatch_diverges(self):
-        calls = [_call("cold"), _call("warm")]
-        runs = [_run("cold", reason="cd_halt_fail", pc=0xF100),
-                _run("warm", reason="cd_halt_fail", pc=0xF101)]
-        verdict, detail = S.classify_simulated(_records(calls, runs), self.STUB)
-        self.assertEqual(verdict, "SIMULATED_DIVERGENT")
-        self.assertIn("halt pc", detail)
-
-    def test_halt_x_mismatch_diverges(self):
-        calls = [_call("cold"), _call("warm")]
-        runs = [_run("cold", reason="cd_halt_fail", pc=0xF100, x=0),
-                _run("warm", reason="cd_halt_fail", pc=0xF100, x=1)]
-        verdict, detail = S.classify_simulated(_records(calls, runs), self.STUB)
-        self.assertEqual(verdict, "SIMULATED_DIVERGENT")
-        self.assertIn("halt x", detail)
-
-    def test_pre_halt_reasons_differ_diverges(self):
-        runs = [_run("cold", reason="cd_halt_fail", pc=0xF100),
-                _run("warm", reason="cd_halt_ok", pc=0x3000)]
-        verdict, _ = S.classify_simulated(_records([], runs), self.STUB)
-        self.assertEqual(verdict, "SIMULATED_DIVERGENT")
-
     def test_halts_match_pure(self):
         ok, _ = S.halts_match(_run("cold"), _run("warm"))
         self.assertTrue(ok)
         ok2, why = S.halts_match(_run("cold", pc=0xF100), _run("warm", pc=0xF101))
         self.assertFalse(ok2)
         self.assertIn("halt pc", why)
+    def test_halt_state_mismatch_diverges(self):
+        # MEDIUM-1 RED set: halt reason/PC/X must agree on the
+        # PRE_HALT and RETURN_THEN_HALT paths.
+        base_calls = lambda: [_call("cold"), _call("warm")]
+        pre_runs = lambda rc, pc, x: [_run("cold", reason=rc, pc=pc, x=x),
+                                      _run("warm", reason=rc, pc=pc, x=x)]
+        # PRE_HALT mismatches.
+        for runs in ([_run("cold", reason="cd_halt_fail", pc=0xF100),
+                       _run("warm", reason="cd_halt_ok", pc=0x3000)],
+                      [_run("cold", reason="cd_halt_fail", pc=0xF100),
+                       _run("warm", reason="cd_halt_fail", pc=0xF200)],
+                      [_run("cold", reason="cd_halt_fail", pc=0xF100, x=0),
+                       _run("warm", reason="cd_halt_fail", pc=0xF100, x=1)]):
+            verdict, detail = S.classify_simulated(_records([], runs), self.STUB)
+            self.assertEqual(verdict, "SIMULATED_DIVERGENT", runs)
+            self.assertIn("halt", detail)
+        # Matched PRE_HALT still classifies.
+        verdict, _ = S.classify_simulated(
+            _records([], pre_runs("cd_halt_fail", 0xF100, 0)), self.STUB)
+        self.assertEqual(verdict, "SIMULATED_PRE_HALT")
+        # RETURN_THEN_HALT mismatches.
+        for runs in ([_run("cold", reason="cd_halt_fail", pc=0xF100),
+                       _run("warm", reason="cd_unexpected_interrupt", pc=0xF100)],
+                      [_run("cold", reason="cd_halt_fail", pc=0xF100),
+                       _run("warm", reason="cd_halt_fail", pc=0xF101)],
+                      [_run("cold", reason="cd_halt_fail", pc=0xF100, x=0),
+                       _run("warm", reason="cd_halt_fail", pc=0xF100, x=2)]):
+            verdict, detail = S.classify_simulated(_records(base_calls(), runs), self.STUB)
+            self.assertEqual(verdict, "SIMULATED_DIVERGENT", runs)
+            self.assertIn("halt", detail)
+        # Matched RETURN_THEN_HALT still classifies.
+        verdict, _ = S.classify_simulated(
+            _records(base_calls(), pre_runs("cd_halt_fail", 0xF100, 0)), self.STUB)
+        self.assertEqual(verdict, "SIMULATED_RETURN_THEN_HALT")
 
     def test_calls_match_pure(self):
         ok, _ = S.calls_match([_call("cold")], [_call("warm")])
@@ -503,37 +515,135 @@ class ClassifySimulatedTests(unittest.TestCase):
         self.assertEqual(resolve_defines([]), [])
         self.assertEqual(resolve_defines(["-D", "X"]), ["-D", "X"])
 
-    def test_receipt_round_trip_and_tamper(self):
+    def _receipt_env(self, tmp, variant="slot02ret", slots=(0x02,), issue=756):
+        import hashlib
         import json
+        out = Path(tmp)
+        rom_name = f"dev-ipl-loader-bios-not-compatible-{variant}.pce"
+        rom_bytes = b"\x00" * 256 * 1024
+        (out / rom_name).write_bytes(rom_bytes)
+        exp_sha = hashlib.sha256(rom_bytes).hexdigest()
+        payload = S.synthetic_receipt_payload(variant, slots, "debug", rom_name, exp_sha,
+                                              S.collect_code_hashes(), S._git_head(), issue)
+        (out / S.receipt_path(out, slots, "debug").name).write_text(
+            json.dumps(payload), encoding="utf-8")
+        return out, payload
+
+    def test_receipt_round_trip_and_tamper(self):
         import tempfile
-        code_hashes = S.collect_code_hashes()
-        head = S._git_head()
-        payload = S.synthetic_receipt_payload("slot02ret", (0x02,), "debug",
-                                              "1" * 64, code_hashes, head, 756)
-        self.assertEqual(payload["result"], "PASS")
-        self.assertEqual(payload["slots"], ["$02"])
         with tempfile.TemporaryDirectory(prefix="pce-receipt-") as tmp:
-            out = Path(tmp)
-            (out / "synthetic-receipt-02-debug.json").write_text(
-                json.dumps(payload), encoding="utf-8")
-            S.check_synthetic_receipt(out, (0x02,), "debug", 756)  # must not raise
+            out, _payload = self._receipt_env(tmp)
+            S.check_synthetic_receipt(out, "slot02ret", (0x02,), "debug", 756)  # must not raise
             # Missing receipt BLOCKs.
             (out / "synthetic-receipt-02-debug.json").unlink()
             with self.assertRaises(ValueError):
-                S.check_synthetic_receipt(out, (0x02,), "debug", 756)
-            # Tampered code hashes BLOCK even with everything else equal.
-            wrong = dict(payload, code_sha256={f: "1" * 64 for f in S.RECEIPT_FILES})
+                S.check_synthetic_receipt(out, "slot02ret", (0x02,), "debug", 756)
+
+    def test_receipt_variant_mismatch(self):
+        import json
+        import tempfile
+        with tempfile.TemporaryDirectory(prefix="pce-receipt-") as tmp:
+            out, payload = self._receipt_env(tmp)
+            wrong = dict(payload, variant="ATTACKER")
             (out / "synthetic-receipt-02-debug.json").write_text(
                 json.dumps(wrong), encoding="utf-8")
             with self.assertRaises(ValueError):
-                S.check_synthetic_receipt(out, (0x02,), "debug", 756)
-            # Wrong slots/mode/issue BLOCK.
+                S.check_synthetic_receipt(out, "slot02ret", (0x02,), "debug", 756)
+
+    def test_receipt_rom_hash_mismatch(self):
+        import json
+        import tempfile
+        with tempfile.TemporaryDirectory(prefix="pce-receipt-") as tmp:
+            out, payload = self._receipt_env(tmp)
+            wrong = dict(payload, exp_rom_sha256="2" * 64)
             (out / "synthetic-receipt-02-debug.json").write_text(
-                json.dumps(payload), encoding="utf-8")
+                json.dumps(wrong), encoding="utf-8")
             with self.assertRaises(ValueError):
-                S.check_synthetic_receipt(out, (0x02, 0x33), "debug", 756)
+                S.check_synthetic_receipt(out, "slot02ret", (0x02,), "debug", 756)
+
+    def test_receipt_rom_missing(self):
+        import json
+        import tempfile
+        with tempfile.TemporaryDirectory(prefix="pce-receipt-") as tmp:
+            out, payload = self._receipt_env(tmp)
+            (out / payload["exp_rom_name"]).unlink()
             with self.assertRaises(ValueError):
-                S.check_synthetic_receipt(out, (0x02,), "debug", 758)
+                S.check_synthetic_receipt(out, "slot02ret", (0x02,), "debug", 756)
+
+    def test_receipt_rom_tampered(self):
+        import tempfile
+        with tempfile.TemporaryDirectory(prefix="pce-receipt-") as tmp:
+            out, payload = self._receipt_env(tmp)
+            with open(out / payload["exp_rom_name"], "r+b") as f:
+                f.seek(0x10A)
+                f.write(b"\x60")
+            with self.assertRaises(ValueError):
+                S.check_synthetic_receipt(out, "slot02ret", (0x02,), "debug", 756)
+
+    def test_receipt_bad_sha_format(self):
+        import json
+        import tempfile
+        with tempfile.TemporaryDirectory(prefix="pce-receipt-") as tmp:
+            out, payload = self._receipt_env(tmp)
+            for bad in ("xyz", "1" * 63, "1" * 65, "G" * 64, 12345):
+                wrong = dict(payload, exp_rom_sha256=bad)
+                (out / "synthetic-receipt-02-debug.json").write_text(
+                    json.dumps(wrong), encoding="utf-8")
+                with self.assertRaises(ValueError, msg=repr(bad)):
+                    S.check_synthetic_receipt(out, "slot02ret", (0x02,), "debug", 756)
+
+    def test_receipt_probe_code_change_blocks(self):
+        # Uncommitted or swapped probe/dependency source changes the content
+        # hash; the stored receipt must then refuse to unlock anything.
+        import json
+        import tempfile
+        with tempfile.TemporaryDirectory(prefix="pce-receipt-") as tmp:
+            out, payload = self._receipt_env(tmp)
+            code = dict(payload["code_sha256"])
+            code["tests/integration/geargrafx_api_entry_probe.cpp"] = "3" * 64
+            wrong = dict(payload, code_sha256=code)
+            (out / "synthetic-receipt-02-debug.json").write_text(
+                json.dumps(wrong), encoding="utf-8")
+            with self.assertRaises(ValueError):
+                S.check_synthetic_receipt(out, "slot02ret", (0x02,), "debug", 756)
+
+    def test_receipt_hash_set_must_match(self):
+        import json
+        import tempfile
+        with tempfile.TemporaryDirectory(prefix="pce-receipt-") as tmp:
+            out, payload = self._receipt_env(tmp)
+            code = dict(payload["code_sha256"])
+            del code["tools/build_rom.py"]  # dropping a file must BLOCK
+            wrong = dict(payload, code_sha256=code)
+            (out / "synthetic-receipt-02-debug.json").write_text(
+                json.dumps(wrong), encoding="utf-8")
+            with self.assertRaises(ValueError):
+                S.check_synthetic_receipt(out, "slot02ret", (0x02,), "debug", 756)
+
+    def test_receipt_head_mismatch(self):
+        import json
+        import tempfile
+        with tempfile.TemporaryDirectory(prefix="pce-receipt-") as tmp:
+            out, payload = self._receipt_env(tmp)
+            wrong = dict(payload, git_head="0" * 40)
+            (out / "synthetic-receipt-02-debug.json").write_text(
+                json.dumps(wrong), encoding="utf-8")
+            with self.assertRaises(ValueError):
+                S.check_synthetic_receipt(out, "slot02ret", (0x02,), "debug", 756)
+
+    def test_receipt_wrong_combo(self):
+        import json
+        import tempfile
+        with tempfile.TemporaryDirectory(prefix="pce-receipt-") as tmp:
+            out, _payload = self._receipt_env(tmp)
+            with self.assertRaises(ValueError):
+                S.check_synthetic_receipt(out, "slot02ret", (0x02, 0x33), "debug", 756)
+            with self.assertRaises(ValueError):
+                S.check_synthetic_receipt(out, "slot02ret", (0x02,), "debug", 758)
+            with self.assertRaises(ValueError):
+                S.check_synthetic_receipt(out, "slot02ret", (0x02,), "release", 756)
+            with self.assertRaises(ValueError):
+                S.check_synthetic_receipt(out, "nope", (0x02,), "debug", 756)
 
     def test_never_confirms(self):
         calls = [_call("cold"), _call("warm")]

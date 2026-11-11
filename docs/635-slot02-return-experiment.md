@@ -38,11 +38,17 @@ Only the two completed outcomes exit 0. Abnormal results still save the
 sanitized evidence JSON when the output path is writable.
 
 The commercial path requires a matching synthetic PASS receipt
-(`build/<mode>/slot02-return/synthetic-receipt-<slots>-<mode>.json`): same
-slots, mode, owning issue, repo HEAD, and SHA-256 of every experiment source
-file. A missing or stale receipt BLOCKs the commercial run instead of
-reusing an unrelated pass; the commercial ROM bytes themselves are validated
-separately by the whole-image diff assertion at build time.
+(`build/<mode>/slot02-return/synthetic-receipt-<slots>-<mode>.json`): the
+(variant, slots, issue) triple must be allowlisted
+(`slot02ret`/(0x02,)/756 or `slot02-33ret`/(0x02,0x33)/758), plus matching
+mode, repo HEAD, the exact SHA-256-validated set of 9 result-determining
+source files (runner, builder, payload, stub, C++ probe, loader builder,
+table builder, probe runner, disc builder), and the synthetic experiment ROM
+file present beside the receipt with a matching name and hash. A missing,
+stale, malformed, or tampered receipt BLOCKs the commercial run instead of
+reusing an unrelated pass. The commercial ROM is a different artifact and is
+never hash-compared here; its bytes are validated separately by the
+whole-image diff assertion at build time.
 
 Call records are structurally validated before any classification: required
 fields must exist with the right types and ranges, `entry_pc` must equal

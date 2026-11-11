@@ -135,12 +135,39 @@ def exit_code_for_verdict(verdict) -> int:
 # mechanically instead. The commercial ROM bytes themselves are validated
 # separately by the whole-image diff assertion at build time.
 RECEIPT_FILES = (
+    # Files whose bytes determine the observation result (minimal set): the
+    # runner (judges, classifier, gate), the builder (patch bytes, ROM
+    # layout), the synthetic payload and the experiment stub, the C++ probe
+    # (APICALL/halt records), the loader builder + table builder (ROM bytes),
+    # and the disc builder (synthetic media layout).
     "tests/integration/geargrafx_slot02_return.py",
     "tools/build_slot02_return_loader.py",
     "tests/integration/ipl_slot02_return_payload.s",
     "tests/integration/slot02_return_stub.s",
+    "tests/integration/geargrafx_api_entry_probe.cpp",
+    "tools/build_dev_ipl_loader_bios.py",
+    "tools/build_rom.py",
+    "tests/integration/geargrafx_api_entry.py",
+    "tests/integration/geargrafx_ipl_loader.py",
 )
-RECEIPT_SCHEMA = "slot02-return-synthetic-receipt/v1"
+RECEIPT_SCHEMA = "slot02-return-synthetic-receipt/v2"
+# MEDIUM-2: the only allowed (receipt variant, slots, issue) triples.
+# The synthetic ROM and the commercial ROM are different artifacts and their
+# hashes are never compared with each other; the receipt binds the SYNTHETIC
+# ROM file present at check time to the recorded hash instead.
+RECEIPT_VARIANTS = {
+    ("slot02ret", (0x02,), 756),
+    ("slot02-33ret", (0x02, 0x33), 758),
+}
+_SHA256_RE = None  # compiled lazily to keep imports light
+
+
+def _sha256_ok(value) -> bool:
+    global _SHA256_RE
+    if _SHA256_RE is None:
+        import re
+        _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+    return type(value) is str and _SHA256_RE.match(value) is not None
 
 
 def _git_head(root=ROOT) -> str:
@@ -167,11 +194,13 @@ def collect_code_hashes(root=ROOT) -> dict:
     return hashes
 
 
-def synthetic_receipt_payload(variant, slots, mode, exp_sha, code_hashes, head, issue) -> dict:
+def synthetic_receipt_payload(variant, slots, mode, exp_rom_name, exp_sha,
+                              code_hashes, head, issue) -> dict:
     """Receipt content for a synthetic PASS (pure; host-testable)."""
     return {"schema": RECEIPT_SCHEMA, "issue": issue, "variant": variant,
             "slots": [f"${s:02X}" for s in slots], "mode": mode,
-            "exp_rom_sha256": exp_sha, "code_sha256": dict(code_hashes),
+            "exp_rom_name": exp_rom_name, "exp_rom_sha256": exp_sha,
+            "code_sha256": dict(code_hashes),
             "git_head": head, "result": "PASS"}
 
 
@@ -183,21 +212,32 @@ def receipt_path(out: Path, slots, mode: str) -> Path:
 def write_synthetic_receipt(out: Path, variant, slots, mode: str, exp_rom: Path, issue: int) -> Path:
     """Write the PASS receipt after a green synthetic run (overwrites stale)."""
     import hashlib
-    exp_sha = hashlib.sha256(Path(exp_rom).read_bytes()).hexdigest()
-    payload = synthetic_receipt_payload(variant, tuple(slots), mode, exp_sha,
+    exp_rom = Path(exp_rom)
+    try:
+        exp_sha = hashlib.sha256(exp_rom.read_bytes()).hexdigest()
+    except OSError as error:
+        raise ValueError(f"cannot hash synthetic experiment ROM {exp_rom.name}") from error
+    payload = synthetic_receipt_payload(variant, tuple(slots), mode, exp_rom.name, exp_sha,
                                         collect_code_hashes(), _git_head(), issue)
     path = receipt_path(out, tuple(slots), mode)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return path
 
 
-def check_synthetic_receipt(out: Path, slots, mode: str, issue: int) -> None:
+def check_synthetic_receipt(out: Path, variant: str, slots, mode: str, issue: int) -> None:
     """Require a matching synthetic PASS receipt (fail-closed BLOCKED).
 
-    Matches slots, mode, owning issue, repo HEAD, and every experiment code
-    hash. A stale pass from unrelated code, another HEAD, or another config
-    can never unlock a commercial run.
+    Matches the allowlisted (variant, slots, issue) triple, mode, repo HEAD,
+    every experiment code hash (exact file set, valid SHA-256), and the
+    synthetic experiment ROM file present beside the receipt (name and hash).
+    A stale pass from unrelated code, another HEAD, another config, a
+    swapped ROM file, or a malformed hash can never unlock a commercial run.
+    The commercial ROM is a different artifact and is never hash-compared
+    here (it is validated by the whole-image diff at build time).
     """
+    if (variant, tuple(slots), issue) not in RECEIPT_VARIANTS:
+        raise ValueError(f"BLOCKED: ({variant}, {tuple(slots)!r}, {issue}) is not an "
+                         f"allowlisted experiment {sorted(RECEIPT_VARIANTS)}")
     path = receipt_path(out, tuple(slots), mode)
     try:
         receipt = json.loads(path.read_text(encoding="utf-8"))
@@ -210,14 +250,33 @@ def check_synthetic_receipt(out: Path, slots, mode: str, issue: int) -> None:
         problems.append("result")
     if receipt.get("issue") != issue:
         problems.append("issue")
+    if receipt.get("variant") != variant:
+        problems.append("variant")
     if receipt.get("slots") != [f"${s:02X}" for s in slots]:
         problems.append("slots")
     if receipt.get("mode") != mode:
         problems.append("mode")
     if receipt.get("git_head") != _git_head():
         problems.append("git_head")
-    if receipt.get("code_sha256") != collect_code_hashes():
+    code = receipt.get("code_sha256")
+    if (type(code) is not dict or set(code) != set(RECEIPT_FILES)
+            or any(not _sha256_ok(v) for v in code.values())):
         problems.append("code_sha256")
+    elif code != collect_code_hashes():
+        problems.append("code_sha256")
+    exp_name = receipt.get("exp_rom_name")
+    exp_sha = receipt.get("exp_rom_sha256")
+    want_name = f"dev-ipl-loader-bios-not-compatible-{variant}.pce"
+    if exp_name != want_name or not _sha256_ok(exp_sha):
+        problems.append("exp_rom")
+    else:
+        import hashlib
+        try:
+            actual = hashlib.sha256((out / exp_name).read_bytes()).hexdigest()
+        except OSError:
+            actual = None
+        if actual != exp_sha:
+            problems.append("exp_rom")
     if problems:
         raise ValueError(f"BLOCKED: stale synthetic receipt ({', '.join(problems)}); "
                          f"re-run the synthetic suite")
@@ -282,6 +341,21 @@ def calls_match(a_calls, b_calls):
                 return False, f"call {i} field {field} missing"
             if a.get(field) != b.get(field):
                 return False, f"call {i} field {field} differs: {a.get(field)!r} vs {b.get(field)!r}"
+    return True, ""
+
+
+def halts_match(cold_run, warm_run):
+    """True when two cycles' halt states agree (pure).
+
+    Compared: halt reason, halt PC, and halt X. halt_confirmed=True on both
+    sides is established upstream (a budget or unconfirmed halt never reaches
+    here); APICALL truncation is refused upstream as well. Step counts may
+    legitimately differ and are NEVER compared. Any mismatch means DIVERGENT,
+    never a success -- not even for the non-stub RETURN_THEN_HALT path.
+    """
+    for field in ("reason", "pc", "x"):
+        if cold_run.get(field) != warm_run.get(field):
+            return False, f"halt {field} differs: {cold_run.get(field)!r} vs {warm_run.get(field)!r}"
     return True, ""
 
 
@@ -350,7 +424,9 @@ def classify_simulated(records, stub_addr, expect_prefix=((2, "JSR"),)):
     SIMULATED_BUDGET, or FAIL.
 
     Cold/warm call fields (caller/entry PCs, entry regs, MPR, SP, internal
-    return flags) must match exactly; step counts are never compared.
+    return flags) must match exactly, and so must the halt states
+    (reason/PC/X) on the PRE_HALT and RETURN_THEN_HALT paths; step counts
+    are never compared.
     """
     runs = records.get("RUN", [])
     apis = records.get("APICALL", [])
@@ -606,7 +682,7 @@ def main():
         # code/HEAD) is required; stale or missing receipts BLOCK the
         # commercial run instead of reusing an unrelated pass.
         try:
-            check_synthetic_receipt(out, slots, args.mode, 758)
+            check_synthetic_receipt(out, "slot02-33ret", slots, args.mode, 758)
         except ValueError as error:
             raise SystemExit(str(error))
         from build_dev_ipl_loader_bios import parse_labels as _parse
