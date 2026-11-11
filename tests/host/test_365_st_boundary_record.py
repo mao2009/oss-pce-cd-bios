@@ -1707,5 +1707,147 @@ class StV2PositiveControlTests(unittest.TestCase):
                     st.check_pos_write(row, st.POS_CONTROL)
 
 
+class StModeRemainderTests(unittest.TestCase):
+    """Mode-suffix remainder: the base family after one suffix split (Issue #365).
+
+    The probe comment states the remainder after splitting one mutation suffix is the
+    base family. The monitor never receives the plan table: every boundary decision
+    derives the ST kind and the expected PC from that remainder. Host-only string
+    contract over the driver's own tables; no core, no BIOS, no reference JSR.
+    """
+
+    def test_every_mutation_remainder_is_its_base(self):
+        for base, modes in st.MUTATIONS.items():
+            for mode in modes:
+                with self.subTest(mode=mode):
+                    self.assertEqual(st._base_of(mode), base)
+                    self.assertIn(base, st.ARMED_MODES)
+
+    def test_armed_modes_are_their_own_remainder(self):
+        for mode in st.ARMED_MODES:
+            with self.subTest(mode=mode):
+                self.assertEqual(st._base_of(mode), mode)
+
+    def test_expected_kind_comes_from_remainder_never_row_data(self):
+        cases = {
+            "st0-entry": "st0",
+            "st1-entry": "st1",
+            "st2-entry": "st2",
+            "st1-unknown": "st1",
+            "st2-unknown": "st2",
+            "st2-mpr2-unknown": "st2",
+            "st2-mpr2-unknown-no-recheck": "st2",
+            "st2-mpr2-unknown-wrong-opcode": "st2",
+            "st1-unused-bank-knownpc-only": "st1",
+            "st0-bbr3-hwpage-skip-knownpc-only": "st0",
+            "irq2-handler-st0-survey": "st0",
+            "irq2-handler-st0-survey-knownpc-only": "st0",
+            "irq2-core-stop-survey": "st0",
+            "st0-hwpage-fetch-blocked-unsafe-read": "st0",
+            "st0-bbr3-hwpage-taken-peek-fail-step": "st0",
+        }
+        for mode, kind in cases.items():
+            with self.subTest(mode=mode):
+                self.assertEqual(st._expected_kind(mode), kind)
+
+    def test_unknown_remainder_is_rejected_fail_closed(self):
+        record = json.loads((ROOT / "tests" / "fixtures" / "365-st-boundary-v2-evidence.json")
+                            .read_text(encoding="utf-8"))
+        rows = {case["case"]: case["row"] for case in record["cases"]}
+        template = copy.deepcopy(rows["st1-unknown"])
+        for bad in ("st9-entry", "st1-unknown-extra", "", "st1", None, 42, True):
+            with self.subTest(mode=repr(bad)):
+                with self.assertRaises(ValueError):
+                    st.check_refused(copy.deepcopy(template), bad)
+
+    def test_double_suffix_remainder_does_not_alias_armed(self):
+        # Only one suffix is split; a stacked remainder never aliases an armed base.
+        self.assertEqual(st._base_of("st1-unknown-unguarded-knownpc-only"),
+                         "st1-unknown-unguarded")
+        self.assertNotIn(st._base_of("st1-unknown-unguarded-knownpc-only"), st.ARMED_MODES)
+        record = json.loads((ROOT / "tests" / "fixtures" / "365-st-boundary-v2-evidence.json")
+                            .read_text(encoding="utf-8"))
+        rows = {case["case"]: case["row"] for case in record["cases"]}
+        template = copy.deepcopy(rows["st1-unknown"])
+        with self.assertRaises(ValueError):
+            st.check_bypassed_mutation(copy.deepcopy(template),
+                                        "st1-unknown-unguarded-knownpc-only")
+
+
+class StBlockRemainderArbitraryPcTests(unittest.TestCase):
+    """Hardware-page block remainder at arbitrary PC (Issue #365).
+
+    The fail-closed classifier requires page membership plus MPR consistency and
+    records the exact stop PC as measured evidence, never as a fixed expectation.
+    These host-only sweeps prove the remainder of the $4000-$5FFF block (any offset,
+    both entry shapes) is covered without pinning $4000/$4002. No core is started;
+    templates are the recorded pinned-core rows from the v2 fixture.
+    """
+
+    INSIDE = (0x4000, 0x4001, 0x4100, 0x4321, 0x5FFE, 0x5FFF)
+    OUTSIDE = (0x3FFF, 0x6000)
+
+    def _rows(self):
+        record = json.loads((ROOT / "tests" / "fixtures" / "365-st-boundary-v2-evidence.json")
+                            .read_text(encoding="utf-8"))
+        self.assertEqual(record["observation_kind"], "REAL_CORE_EXECUTION")
+        self.assertEqual(record["core_revision"], st.PINNED_CORE_REVISION)
+        self.assertEqual(record["bios"], "SYNTHETIC")
+        return {case["case"]: case["row"] for case in record["cases"]}
+
+    def _moved(self, row, pc):
+        row = copy.deepcopy(row)
+        row["stop_pc"] = pc
+        row["after"]["pc"] = pc
+        row["detected_pc"] = pc
+        return row
+
+    def test_arbitrary_remainder_offsets_pass_both_shapes(self):
+        rows = self._rows()
+        for mode in (st.HWPAGE_MODE, st.BBR3_TAKEN_MODE):
+            for pc in self.INSIDE:
+                with self.subTest(mode=mode, pc=f"{pc:#x}"):
+                    row = self._moved(rows[mode], pc)
+                    self.assertEqual(st.check_hardware_page_blocked(row, mode),
+                                     st.HWPAGE_BLOCKED_VERDICT)
+
+    def test_outside_block_rejected_both_shapes(self):
+        rows = self._rows()
+        for mode in (st.HWPAGE_MODE, st.BBR3_TAKEN_MODE):
+            for pc in self.OUTSIDE:
+                with self.subTest(mode=mode, pc=f"{pc:#x}"):
+                    with self.assertRaisesRegex(ValueError, "outside the hardware page"):
+                        st.check_hardware_page_blocked(self._moved(rows[mode], pc), mode)
+
+    def test_cross_shape_reuse_rejected(self):
+        # A taken-shape row judged as the fixed-JMP family (and vice versa) must not pass:
+        # executed budget and SR signature differ by shape.
+        rows = self._rows()
+        with self.assertRaises(ValueError):
+            st.check_hardware_page_blocked(copy.deepcopy(rows[st.BBR3_TAKEN_MODE]),
+                                           st.HWPAGE_MODE)
+        with self.assertRaises(ValueError):
+            st.check_hardware_page_blocked(copy.deepcopy(rows[st.HWPAGE_MODE]),
+                                           st.BBR3_TAKEN_MODE)
+
+    def test_remainder_tampers_rejected(self):
+        rows = self._rows()
+        base = rows[st.HWPAGE_MODE]
+        # fetch page/bank must still describe the hardware-page block.
+        row = self._moved(base, 0x4321)
+        row["fetch_page"] = 1
+        with self.assertRaisesRegex(ValueError, "fetch page/bank"):
+            st.check_hardware_page_blocked(row, st.HWPAGE_MODE)
+        row = self._moved(base, 0x4321)
+        row["fetch_mpr"] = 0xF8
+        with self.assertRaisesRegex(ValueError, "fetch page/bank"):
+            st.check_hardware_page_blocked(row, st.HWPAGE_MODE)
+        # A step issued at the unsafe PC is FAIL even inside the block.
+        row = self._moved(base, 0x4321)
+        row["instructions_executed"] = st.HWPAGE_EXPECTED_EXECUTED[st.HWPAGE_MODE] + 1
+        with self.assertRaises(ValueError):
+            st.check_hardware_page_blocked(row, st.HWPAGE_MODE)
+
+
 if __name__ == "__main__":
     unittest.main()

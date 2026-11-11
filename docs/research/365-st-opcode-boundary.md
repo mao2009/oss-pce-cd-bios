@@ -176,3 +176,25 @@ debug single-step 実行のみ実測。release ビルドの挙動と free-run（
 IRQ handler entry（#366）、block transfer / device-originated write（#367）、任意の reference
 BIOS JSR は対象外。`tools/reference_jsr_gate.py` と `BLOCKED_ABI` / `release_eligible=false` は
 変更していない。#186/#187 の純正観測、#473/#727 の本番安全機構は未承認のままである。
+
+### block remainder at arbitrary PC（host-only 補完、gate 変更なし）
+
+本節は実コアの再実行なし（host-only）の契約補完である。実測証拠は v2 fixture
+（`tests/fixtures/365-st-boundary-v2-evidence.json`、40 行、pinned core
+`b49ae82a012eade566d72e9d61c9d95a5caa4da3`、SYNTHETIC BIOS）の再利用のみで、
+reference JSR・純正 BIOS・`rom/` 私的入力は使わない。`BLOCKED_ABI` と
+`release_eligible=false` を維持し、#366/#367 の別経路は混ぜない。
+
+- suffix remainder: 変異名から suffix を1つ剥がした remainder が base family に
+  一致すること（全 22 変異）、armed 17 は自身が remainder であること、ST kind
+  は remainder（mode）由来で row 由来でないことを host で検証する。未知 remainder
+ （`st9-entry`、二重 suffix 等）は fail-closed で拒否される。
+- block remainder: hardware-page block（`$4000`–`$5FFF`）の remainder offset
+  を固定値にしない。両 shape（fixed-JMP / BBR3-taken）の記録行を雛形に
+  `$4000/$4001/$4100/$4321/$5FFE/$5FFF` での fail-closed PASS と、
+  `$3FFF/$6000` の外側拒否、shape 混用・fetch page/bank・step 混入の拒否を
+  host で検証する。測定停止 PC は証拠であり期待値でない、の原則は変えない。
+
+検証: `python3 -m unittest tests.host.test_365_st_boundary_record`（141 tests OK）。
+新規 9 tests（`StModeRemainderTests` 5 + `StBlockRemainderArbitraryPcTests` 4）は
+pos/neg/mutation を含み、実コア・BIOS を起動しない。
