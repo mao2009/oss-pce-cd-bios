@@ -362,3 +362,9 @@ api-entry-integration: dev-rom
 .PHONY: slot02-return-integration
 slot02-return-integration: dev-rom
 	$(PYTHON) tests/integration/geargrafx_slot02_return.py --mode "$(MODE)"
+# Issue #762 (Wave1-B, child of #635): PUBLIC/DEV loader-validation gap differential. Synthetic only.
+# Same synthetic cue on both DEV and PUBLIC loader ROMs (HuCard path, no commercial media, no reference BIOS).
+# NOT in CI: workflow run steps are pinned by the trusted guard allowlist (needs a main-only change).
+.PHONY: public-dev-gap-integration
+public-dev-gap-integration:
+	$(PYTHON) tests/integration/geargrafx_public_dev_gap.py --mode "$(MODE)"
