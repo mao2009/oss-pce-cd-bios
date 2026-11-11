@@ -148,6 +148,14 @@ check:
 	$(PYTHON) tools/contracts.py
 	$(PYTHON) tools/check.py
 	$(PYTHON) tools/c3_static_check.py
+	$(PYTHON) tools/verify_build_diff.py
+
+# Issue #724: debug/release diff audit and verification-only/GPL non-contamination gate (static only).
+# Runs inside `make check`; unmeasured free-run/libretro/release equivalence stays UNKNOWN.
+.PHONY: verify-build-diff
+verify-build-diff:
+	$(PYTHON) tools/verify_build_diff.py
+	$(PYTHON) tools/verify_build_diff.py --report
 
 # Issue #335: same-input rebuild must be byte-identical and its manifest must describe the ROM (fail-closed).
 rom-provenance:
