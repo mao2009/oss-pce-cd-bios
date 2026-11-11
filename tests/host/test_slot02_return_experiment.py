@@ -377,6 +377,16 @@ class ClassifySimulatedTests(unittest.TestCase):
         verdict, _ = S.classify_simulated(_records([a, b], runs), self.STUB)
         self.assertEqual(verdict, "SIMULATED_DIVERGENT")
 
+    def test_sp_mismatch_diverges(self):
+        a = _call("cold")
+        b = dict(_call("warm"))
+        b["sp_before"] = 0x7F
+        runs = [_run("cold", reason="api_unimplemented", pc=self.STUB, x=2),
+                _run("warm", reason="api_unimplemented", pc=self.STUB, x=2)]
+        verdict, detail = S.classify_simulated(_records([a, b], runs), self.STUB)
+        self.assertEqual(verdict, "SIMULATED_DIVERGENT")
+        self.assertIn("sp_before", detail)
+
     def test_steps_may_differ(self):
         # Step counts legitimately differ cold/warm; they must not force DIVERGENT.
         calls = [_call("cold", a=0xAA), _call("cold", entry=0xE009, slot=3, a=0xCC),
