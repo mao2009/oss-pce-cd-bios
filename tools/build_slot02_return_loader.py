@@ -48,6 +48,7 @@ ALLOWED_EXPERIMENTS = {
     (0x02, 0x33): 758,
 }
 
+
 def assumption_text(slots: tuple) -> str:
     names = ", ".join(f"${s:02X}" for s in slots)
     return (
