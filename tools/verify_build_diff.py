@@ -53,10 +53,22 @@ FORBIDDEN_MARKERS = (
 )
 
 # Files whose bytes (or assembling logic) can reach a release ROM.
+#
+# The DEV ROM builder (tools/build_rom.py build()) assembles src/boot.s plus every
+# src/overrides/slot_*.s and links with src/bank0.cfg, while ca65 follows
+# `.include`/`.incbin` directives inside those sources. Bytes pulled in that
+# way ship in ROM bytes exactly like the including file, so the two include
+# targets known today (src/ex_bcdbin.s via slot_3D.s, src/ex_binbcd.s via
+# slot_3C.s) are listed explicitly AND re-resolved dynamically by
+# _include_closure() below, so any future .include/.incbin target is covered
+# too. A marker in an unscanned include would otherwise sail through this
+# gate while shipping in ROM bytes.
 RELEASE_INPUT_GLOBS = (
     "src/boot.s",
     "src/bank0.cfg",
     "src/overrides/*.s",
+    "src/ex_bcdbin.s",
+    "src/ex_binbcd.s",
     "tests/fixtures/smoke.s",
     "tests/fixtures/smoke.cfg",
     "tools/build.py",
@@ -64,6 +76,14 @@ RELEASE_INPUT_GLOBS = (
     "tools/environment.py",
     "tools/rom.py",
     "spec/api_slots.json",
+)
+
+# ca65 source-inclusion directives. Quoted form is what ca65 accepts for
+# .include/.incbin paths; both quote styles are recognised here so the
+# closure cannot be dodged by quoting choice.
+_INCLUDE_RE = re.compile(
+    r"^\s*\.(?:include|incbin)\s+[\"']([^\"']+)[\"']",
+    re.IGNORECASE | re.MULTILINE,
 )
 
 # Build-logic modules that must never import the verification-only probes.
@@ -114,10 +134,94 @@ def _release_input_files(root: Path = ROOT) -> list[Path]:
     return [p for p in files if p.is_file()]
 
 
+def _assembly_roots(root: Path = ROOT) -> list[Path]:
+    """Assembly sources the ROM builders feed to ca65 (include-scan seeds)."""
+    seeds = [root / "src/boot.s", root / "tests/fixtures/smoke.s"]
+    seeds.extend(sorted((root / "src" / "overrides").glob("slot_*.s")))
+    return [p for p in seeds if p.is_file()]
+
+
+def _include_closure(root: Path = ROOT) -> tuple[list[Path], list[str]]:
+    """Recursively resolve ca65 .include/.incbin targets under `root`.
+
+    Returns (resolved_files, problems). Any unresolvable directive (missing
+    file, unreadable includer, target escaping the repository) is a
+    fail-closed problem: an unaudited byte source must refuse, never pass
+    silently.
+    """
+    problems: list[str] = []
+    found: list[Path] = []
+    seen: set[Path] = set()
+    try:
+        anchor = root.resolve()
+    except OSError as error:
+        return [], [f"{root}: cannot resolve release root ({error})"]
+    stack = _assembly_roots(root)
+    visited: set[Path] = set()
+    while stack:
+        current = stack.pop()
+        try:
+            key = current.resolve()
+        except OSError as error:
+            problems.append(f"{current}: unresolvable release input ({error})")
+            continue
+        if key in visited:
+            continue
+        visited.add(key)
+        try:
+            text = current.read_bytes().decode("utf-8", errors="strict")
+        except (OSError, UnicodeDecodeError) as error:
+            problems.append(f"{_rel(root, current)}: unreadable release input ({error})")
+            continue
+        for match in _INCLUDE_RE.finditer(text):
+            raw = match.group(1).strip()
+            if not raw:
+                problems.append(f"{_rel(root, current)}: empty .include/.incbin directive")
+                continue
+            candidate = (current.parent / raw).resolve() if not Path(raw).is_absolute() else Path(raw)
+            try:
+                inside = candidate.is_relative_to(anchor)
+            except (OSError, ValueError):
+                inside = False
+            if not inside:
+                problems.append(
+                    f"{_rel(root, current)}: include {raw!r} escapes the repository (fail-closed)")
+                continue
+            if not candidate.is_file():
+                problems.append(
+                    f"{_rel(root, current)}: unresolvable include {raw!r} "
+                    "(missing file; unaudited byte source refused)")
+                continue
+            if candidate not in seen:
+                seen.add(candidate)
+                found.append(candidate)
+            stack.append(candidate)
+    return sorted(found), problems
+
+
+def _rel(root: Path, path: Path) -> str:
+    try:
+        return str(path.relative_to(root))
+    except ValueError:
+        return str(path)
+
+
 def scan_release_inputs(root: Path = ROOT) -> list[str]:
     """Fail-closed content scan of release inputs for hooks/GPL text."""
     problems: list[str] = []
-    for path in _release_input_files(root):
+    include_files, dep_problems = _include_closure(root)
+    problems.extend(dep_problems)
+    scanned = _release_input_files(root)
+    known = {p.resolve() for p in scanned}
+    for extra in include_files:
+        try:
+            key = extra.resolve()
+        except OSError:
+            continue
+        if key not in known:
+            known.add(key)
+            scanned.append(extra)
+    for path in scanned:
         try:
             text = path.read_bytes().decode("utf-8", errors="strict")
         except (OSError, UnicodeDecodeError) as error:

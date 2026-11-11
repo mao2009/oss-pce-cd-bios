@@ -28,6 +28,8 @@ def _copy_into(tmp: Path, rel: str) -> None:
 
 def _minimal_scan_root(tmp: Path) -> Path:
     for rel in ("src/boot.s", "src/bank0.cfg",
+                "src/overrides/slot_3C.s", "src/overrides/slot_3D.s",
+                "src/ex_bcdbin.s", "src/ex_binbcd.s",
                 "tests/fixtures/smoke.s", "tests/fixtures/smoke.cfg",
                 "tools/build.py", "tools/build_rom.py",
                 "tools/environment.py", "tools/rom.py",
@@ -89,6 +91,47 @@ class BuildDiffAuditGate(unittest.TestCase):
             problems = VBD.check_mode_branches(tmp)
             self.assertTrue(any("build.py" in p and "mode" in p for p in problems),
                             f"new mode branch not detected: {problems}")
+
+    def test_mutation_unaudited_include_target_fails_closed(self):
+        # MAJOR-1: src/ex_bcdbin.s reaches ROM bytes via slot_3D.s `.include`.
+        # A hook/GPL marker there must RED even though the file is not named
+        # directly by the builder command line (include-closure coverage).
+        with tempfile.TemporaryDirectory() as directory:
+            tmp = _minimal_scan_root(Path(directory))
+            target = tmp / "src/ex_bcdbin.s"
+            target.write_text(target.read_text(encoding="utf-8") + "\n; gg_verify hook must not ship\n",
+                              encoding="utf-8")
+            problems = VBD.scan_release_inputs(tmp)
+            self.assertTrue(any("ex_bcdbin.s" in p and "gg_verify" in p for p in problems),
+                            f"marker in .include target not detected: {problems}")
+
+    def test_mutation_new_include_file_fails_closed(self):
+        # A newly added .include pointing at a fresh file must be pulled into
+        # the scan: a marker in the new file REDs, so coverage cannot be
+        # dodged by adding includes the gate never read.
+        with tempfile.TemporaryDirectory() as directory:
+            tmp = _minimal_scan_root(Path(directory))
+            evil = tmp / "src/ex_evil.s"
+            evil.write_text("; unaudited include body\n; gg_verify hook must not ship\n",
+                            encoding="utf-8")
+            host = tmp / "src/overrides/slot_3D.s"
+            host.write_text(host.read_text(encoding="utf-8") + '\n.include "../ex_evil.s"\n',
+                            encoding="utf-8")
+            problems = VBD.scan_release_inputs(tmp)
+            self.assertTrue(any("ex_evil.s" in p and "gg_verify" in p for p in problems),
+                            f"new include target not scanned: {problems}")
+
+    def test_mutation_unresolvable_include_fails_closed(self):
+        # An .include whose target cannot be resolved (missing file) is an
+        # unaudited byte source and must refuse fail-closed, never pass.
+        with tempfile.TemporaryDirectory() as directory:
+            tmp = _minimal_scan_root(Path(directory))
+            host = tmp / "src/overrides/slot_3D.s"
+            host.write_text(host.read_text(encoding="utf-8") + '\n.include "../does_not_exist.s"\n',
+                            encoding="utf-8")
+            problems = VBD.scan_release_inputs(tmp)
+            self.assertTrue(any("does_not_exist.s" in p for p in problems),
+                            f"unresolvable include not refused: {problems}")
 
     def test_mutation_probe_import_fails_closed(self):
         with tempfile.TemporaryDirectory() as directory:
