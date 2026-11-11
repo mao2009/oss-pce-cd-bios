@@ -166,11 +166,22 @@ class MultiSlotPatchTests(unittest.TestCase):
     def test_manifest_lists_both_slots(self):
         m = experiment_manifest("base.pce", "exp.pce", b"\x00" * 256 * 1024,
                                 {"api_unimplemented": 0xE245}, "redacted", "debug",
-                                "slot02-33ret", ["-D", "IPL_PUBLIC"], (0x02, 0x33))
+                                "slot02-33ret", ["-D", "IPL_PUBLIC"], (0x02, 0x33),
+                                issue=758)
         self.assertEqual(m["slots"], ["$02", "$33"])
         self.assertEqual(m["patch"]["targets"], ["api_slot_02", "api_slot_33"])
         self.assertFalse(m["release_eligible"])
-        self.assertIn("NOT genuine CD_BASE", m["assumption"])
+        self.assertEqual(m["issue"], 758)
+        self.assertIn("NOT genuine System Card behavior", m["assumption"])
+
+    def test_duplicate_slots_and_unknown_issue_rejected(self):
+        from build_slot02_return_loader import build_slot02_return_bios
+        with self.assertRaises(ValueError):
+            build_slot02_return_bios(Path("/nonexistent"), Path("/tmp/nonexistent-out-758a"),
+                                     0x109, slots=(0x02, 0x02))
+        with self.assertRaises(ValueError):
+            build_slot02_return_bios(Path("/nonexistent"), Path("/tmp/nonexistent-out-758b"),
+                                     0x109, slots=(0x02,), issue=999)
 
 
 class ManifestFlagTests(unittest.TestCase):
@@ -183,7 +194,7 @@ class ManifestFlagTests(unittest.TestCase):
         self.assertEqual(m["system_card_abi"], "NO_CLAIM")
         self.assertIn("SIMULATED", m["status"])
         self.assertIn("SIMULATED_", m["verdict_prefix"])
-        self.assertIn("NOT genuine CD_BASE", m["assumption"])
+        self.assertIn("NOT genuine System Card behavior", m["assumption"])
         self.assertEqual(m["issue"], 756)
 
 

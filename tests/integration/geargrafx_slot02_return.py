@@ -375,7 +375,7 @@ def main():
         try:
             base_rom, exp_rom, _addrs = build_slot02_return_bios(
                 original, out, sel, args.mode, "slot02-33ret-comm",
-                defines, private_input=True, slots=slots)
+                defines, private_input=True, slots=slots, issue=758)
         except Exception as error:
             raise SystemExit(f"FAIL commercial experiment loader build: {error}")
         try:
@@ -455,7 +455,7 @@ def main():
             original, out, L.SEL, args.mode, "slot02ret", defines)
         _base23, exp23, _addrs23 = build_slot02_return_bios(
             original, out, L.SEL, args.mode, "slot02-33ret", defines,
-            slots=(0x02, 0x33))
+            slots=(0x02, 0x33), issue=758)
         from build_dev_ipl_loader_bios import parse_labels as _parse
         full = _parse(out / "ipl-loader-bios-slot02ret-base.lbl",
                       ("cd_halt_fail", "cd_unexpected_interrupt", "api_unimplemented"))

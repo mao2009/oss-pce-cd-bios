@@ -355,7 +355,8 @@ api-unimplemented-integration: dev-rom
 .PHONY: api-entry-integration
 api-entry-integration: dev-rom
 	$(PYTHON) tests/integration/geargrafx_api_entry.py --mode "$(MODE)"
-# Issue #756: DEV slot-$02 RETURNING experiment (SIMULATED conditional observation). Synthetic only.
+# Issues #756/#758: DEV slot RETURNING experiments (SIMULATED conditional observation). Synthetic only.
+# Single-slot (02) and two-slot (02+33) variants with three-way synthetic differential.
 # Commercial runs are opt-in via --commercial in the same script (./rom/ auto-detection) and are NOT in this target.
 # NOT in CI: workflow run steps are pinned by the trusted guard allowlist (needs a main-only change).
 .PHONY: slot02-return-integration

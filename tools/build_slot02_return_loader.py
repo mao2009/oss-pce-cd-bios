@@ -135,17 +135,18 @@ def apply_patch(base: bytes, off: int, before: bytes, after: bytes) -> bytes:
 
 
 def experiment_manifest(base_name: str, exp_name: str, data: bytes, symbols: dict, sel_note: str,
-                        mode: str, variant: str, defines: list, slots: tuple = (0x02,)) -> dict:
+                        mode: str, variant: str, defines: list, slots: tuple = (0x02,),
+                       issue: int = 756) -> dict:
     """Manifest for the experiment image (pure; host-testable)."""
     return {
         "status": "DEV-ONLY-SLOT02-RETURN-EXPERIMENT-not-compatible-not-a-bios-abi-SIMULATED",
-        "issue": 756,
+        "issue": issue,
         "parent_tracker": 635,
         "mode": mode, "variant": variant, "rom_name": exp_name,
         "rom_sha256": hashlib.sha256(data).hexdigest(), "rom_bytes": IMAGE_BYTES,
         "base_rom_name": base_name,
         "method": (f"normal loader pipeline (tests/integration/ipl_loader_rom.s + pinned cc65 "
-                   f"{DEPENDENCIES['cc65']['revision']}) plus a 5-byte patch of the api_slot_02 "
+                   f"{DEPENDENCIES['cc65']['revision']}) plus a 5-byte patch of each listed slot "
                    f"fallback to the assembled tests/integration/slot02_return_stub.s (RTS+NOP)"),
         "slots": [f"${s:02X}" for s in slots],
         "patch": {"targets": [f"api_slot_{s:02X}" for s in slots],
@@ -187,7 +188,8 @@ def _clean_variant_files(output: Path, variant: str) -> None:
 
 def build_slot02_return_bios(original_path: Path, output: Path, sel: int, mode: str = "debug",
                              variant: str = "slot02ret", defines=(),
-                             private_input: bool = False, slots: tuple = (0x02,)):
+                             private_input: bool = False, slots: tuple = (0x02,),
+                             issue: int = 756):
     """Build (base_rom, exp_rom, symbols). `defines` selects PUBLIC (default) or DEV loader.
 
     `slots` lists the fallback slots patched to the RTS experiment stub
@@ -198,6 +200,10 @@ def build_slot02_return_bios(original_path: Path, output: Path, sel: int, mode: 
         raise ValueError("MODE must be debug or release")
     if not slots or any(type(s) is not int or not 0 <= s <= 0x50 for s in slots):
         raise ValueError("slots must be a non-empty tuple of table slots")
+    if len(set(slots)) != len(slots):
+        raise ValueError("slots must not contain duplicates")
+    if type(issue) is not int or issue not in (756, 758):
+        raise ValueError("issue must be a known experiment tracker (756 or 758)")
     defines = list(defines) or ["-D", "IPL_PUBLIC"]
     output.mkdir(parents=True, exist_ok=True)
     _clean_variant_files(output, variant)
@@ -233,7 +239,7 @@ def build_slot02_return_bios(original_path: Path, output: Path, sel: int, mode: 
         raise ValueError("experiment patch moved the vectors (refusing)")
     sel_note = "redacted (private media)" if private_input else f"${sel:04X} (synthetic)"
     manifest = experiment_manifest(base_rom.name, exp_name, data, addrs, sel_note, mode, variant,
-                                   defines, tuple(slots))
+                                   defines, tuple(slots), issue)
     (output / f"manifest-{variant}-experiment.json").write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     # NOTE: no probe labels are written here. Patching moved nothing, so the
