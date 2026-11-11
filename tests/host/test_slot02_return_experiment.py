@@ -600,7 +600,7 @@ class ClassifySimulatedTests(unittest.TestCase):
         for bad in bads:
             valid, why = S.validate_table_call(bad)
             self.assertFalse(valid, bad)
-            self.assertIn("sp", why)}
+            self.assertIn("sp", why)
 
     def test_stack_return_flag_pairing(self):
         # Probe contract pairings: only (MATCH,True), (MISMATCH,False),
