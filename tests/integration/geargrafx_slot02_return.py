@@ -93,6 +93,32 @@ def sp_balanced(calls: list) -> bool:
         return False
 
 
+CALL_COMPARE_FIELDS = ("in_table", "slot", "caller_pc", "entry_pc", "sp_before", "sp_after",
+                         "sp_delta", "caller_a", "caller_x", "caller_y", "caller_p", "mpr",
+                         "stack_check", "return_matches_caller")
+
+
+def calls_match(a_calls, b_calls):
+    """True when two cycles' call lists agree field-by-field (pure).
+
+    Compared: order, table membership, slot, caller/entry PCs, SP before/after
+    and delta, entry A/X/Y/P, MPR, and the internal return consistency flags.
+    Step counts and other probe metadata may legitimately differ between cold
+    and warm runs and are NEVER compared. Any mismatch means DIVERGENT, never
+    a success.
+
+    Shared contract with the two-slot experiment (#758): same fields, same
+    fail-closed meaning. #757's classifier uses the single-slot prefix.
+    """
+    if len(a_calls) != len(b_calls):
+        return False, f"call counts differ: {len(a_calls)} vs {len(b_calls)}"
+    for i, (a, b) in enumerate(zip(a_calls, b_calls)):
+        for field in CALL_COMPARE_FIELDS:
+            if a.get(field) != b.get(field):
+                return False, f"call {i} field {field} differs: {a.get(field)!r} vs {b.get(field)!r}"
+    return True, ""
+
+
 def call_sequence(calls: list, stub_addr):
     """Ordered [(slot, method)] for table JSR/JMP calls, or None if unclassifiable.
 
@@ -134,8 +160,12 @@ def classify_simulated(records, stub_addr):
     further API), SIMULATED_PRE_HALT (halted before any API; the experiment
     changed nothing on that path), SIMULATED_UNEXPECTED_FIRST (the first call
     is not the assumed slot-2 JSR, or the halt is inconsistent with the
-    recorded sequence), SIMULATED_DIVERGENT (cold/warm disagree, in calls or
-    in halt outcome), SIMULATED_INCOMPLETE, SIMULATED_BUDGET, or FAIL.
+    recorded sequence), SIMULATED_DIVERGENT (cold/warm disagree, in calls,
+    in per-call fields, or in halt outcome), SIMULATED_INCOMPLETE,
+    SIMULATED_BUDGET, or FAIL.
+
+    Cold/warm call fields (caller/entry PCs, entry regs, MPR, SP, internal
+    return flags) must match exactly; step counts are never compared.
     """
     runs = records.get("RUN", [])
     apis = records.get("APICALL", [])
@@ -166,6 +196,9 @@ def classify_simulated(records, stub_addr):
         return "SIMULATED_UNEXPECTED_FIRST", f"first call is not slot-2 JSR: {cold_seq[0]} / {warm_seq[0]}"
     if cold_seq != warm_seq:
         return "SIMULATED_DIVERGENT", f"cold/warm sequences differ: {cold_seq} vs {warm_seq}"
+    fields_ok, fields_why = calls_match(cold_calls, warm_calls)
+    if not fields_ok:
+        return "SIMULATED_DIVERGENT", f"cold/warm call fields differ: {fields_why}"
     stub_halts = [r.get("reason") == "api_unimplemented" for r in (cold_run, warm_run)]
     if len(cold_seq) == 1:
         if any(stub_halts):

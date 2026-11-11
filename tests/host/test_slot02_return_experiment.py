@@ -244,6 +244,60 @@ class ClassifySimulatedTests(unittest.TestCase):
         verdict, _ = S.classify_simulated(_records([], [_run("cold")]), self.STUB)
         self.assertEqual(verdict, "FAIL")
 
+    def test_caller_pc_mismatch_diverges(self):
+        a = _call("cold")
+        b = dict(_call("warm"))
+        b["caller_pc"] = 0x3015
+        runs = [_run("cold", reason="api_unimplemented", pc=self.STUB, x=2),
+                _run("warm", reason="api_unimplemented", pc=self.STUB, x=2)]
+        verdict, detail = S.classify_simulated(_records([a, b], runs), self.STUB)
+        self.assertEqual(verdict, "SIMULATED_DIVERGENT")
+        self.assertIn("caller_pc", detail)
+
+    def test_entry_regs_mismatch_diverges(self):
+        a = _call("cold")
+        b = dict(_call("warm"))
+        b["caller_a"] = 0x03
+        runs = [_run("cold", reason="api_unimplemented", pc=self.STUB, x=2),
+                _run("warm", reason="api_unimplemented", pc=self.STUB, x=2)]
+        verdict, _ = S.classify_simulated(_records([a, b], runs), self.STUB)
+        self.assertEqual(verdict, "SIMULATED_DIVERGENT")
+
+    def test_mpr_mismatch_diverges(self):
+        a = _call("cold")
+        b = dict(_call("warm"))
+        b["mpr"] = [255, 248, 128, 129, 130, 131, 132, 1]
+        runs = [_run("cold", reason="api_unimplemented", pc=self.STUB, x=2),
+                _run("warm", reason="api_unimplemented", pc=self.STUB, x=2)]
+        verdict, _ = S.classify_simulated(_records([a, b], runs), self.STUB)
+        self.assertEqual(verdict, "SIMULATED_DIVERGENT")
+
+    def test_sp_mismatch_diverges(self):
+        a = _call("cold")
+        b = dict(_call("warm"))
+        b["sp_before"] = 0x7F
+        runs = [_run("cold", reason="api_unimplemented", pc=self.STUB, x=2),
+                _run("warm", reason="api_unimplemented", pc=self.STUB, x=2)]
+        verdict, detail = S.classify_simulated(_records([a, b], runs), self.STUB)
+        self.assertEqual(verdict, "SIMULATED_DIVERGENT")
+        self.assertIn("sp_before", detail)
+
+    def test_steps_may_differ(self):
+        # Step counts legitimately differ cold/warm; they must not force DIVERGENT.
+        calls = [_call("cold", a=0xAA), _call("cold", entry=0xE009, slot=3, a=0xCC),
+                 _call("warm", a=0xAA), _call("warm", entry=0xE009, slot=3, a=0xCC)]
+        runs = [_run("cold", reason="api_unimplemented", pc=self.STUB, x=3, step=100),
+                _run("warm", reason="api_unimplemented", pc=self.STUB, x=3, step=200)]
+        verdict, _ = S.classify_simulated(_records(calls, runs), self.STUB)
+        self.assertEqual(verdict, "SIMULATED_NEXT_API")
+
+    def test_calls_match_pure(self):
+        ok, _ = S.calls_match([_call("cold")], [_call("warm")])
+        self.assertTrue(ok)
+        ok2, why = S.calls_match([_call("cold")], [])
+        self.assertFalse(ok2)
+        self.assertIn("counts", why)
+
     def test_never_confirms(self):
         calls = [_call("cold"), _call("warm")]
         runs = [_run("cold"), _run("warm")]
