@@ -45,8 +45,8 @@ def assumption_text(slots: tuple) -> str:
     return (
         f"SIMULATED return: slots {names} return immediately (RTS) preserving "
         "all registers, flags, MPRs and RAM. Post-return behavior is "
-        "CONDITIONAL on this fabrication; it is NOT genuine CD_BASE behavior, "
-        "NOT an ABI claim, and NOT compatibility evidence."
+        "CONDITIONAL on this fabrication; it is NOT genuine System Card "
+        "behavior, NOT an ABI claim, and NOT compatibility evidence."
     )
 
 
