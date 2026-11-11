@@ -1,0 +1,114 @@
+# Issue #756: slot-$02 RETURNING experiment (SIMULATED, DEV-only)
+
+**NOT System Card CD_BASE. NOT a BIOS ABI. NOT game compatibility. NOT G5 success.**
+
+## Question
+
+After the #635 finding (commercial IPL's first call is a JSR to slot `$02`,
+entry `$E006`, cold/warm identical, halted at the non-returning stub), what
+does the IPL do if slot `$02` *returns*? The genuine callee is UNKNOWN/BLOCKED
+(#186, #735 NOT_READY, #173 gate), so the return is FABRICATED and every
+result is reported as `SIMULATED_*` / CONDITIONAL.
+
+## Method (containment)
+
+- A distinctly named loader variant (`dev-ipl-loader-bios-not-compatible-slot02ret.pce`)
+  is built through the NORMAL pipeline, then EXACTLY 5 bytes — the
+  `api_slot_02` fallback (`ldx #$02; jmp api_unimplemented`) — are replaced
+  with the assembled `tests/integration/slot02_return_stub.s` (immediate RTS +
+  NOP pad). Whole-image diff is asserted to be exactly those 5 bytes; all
+  labels, vectors, loader code, and other slots are untouched.
+- The stub source lives OUTSIDE `src/overrides/` (never linked into the normal
+  DEV ROM or normal loaders). No `src/overrides/slot_02.s` exists; the normal
+  images are byte-identical (guarded by host tests + the base-image control).
+- Fabrication assumption (explicit): slot `$02` returns with all registers,
+  flags, MPRs and RAM preserved; no side effects. Post-return behavior is
+  CONDITIONAL on this assumption.
+
+## Exit codes and the synthetic gate (Cycle 5)
+
+| Verdict | Exit | Meaning |
+|---|---|---|
+| `SIMULATED_NEXT_API` | 0 | completed conditional observation |
+| `SIMULATED_RETURN_THEN_HALT` | 0 | returned, clean stop explained |
+| `SIMULATED_PRE_HALT` | 1 | observation complete, goal unmet |
+| `SIMULATED_BUDGET` / `SIMULATED_INCOMPLETE` / `SIMULATED_DIVERGENT` / `SIMULATED_UNEXPECTED_FIRST` / `FAIL` | 1 | abnormal/undecidable |
+
+Only the two completed outcomes exit 0. Abnormal results still save the
+sanitized evidence JSON when the output path is writable.
+
+Synthetic halt expectations (Cycle 8): stub-halt paths require
+`halt_confirmed is True`, `apicall_truncated is False`, and matching
+reason/X/PC; unconfirmed halts and truncated traces never PASS. The budget
+path requires `reason == "budget"`, `halt_confirmed is False`, and
+`apicall_truncated is False`; a halted or truncated budget run is never a
+budget PASS.
+
+The commercial path requires a matching synthetic PASS receipt
+(`build/<mode>/slot02-return/synthetic-receipt-<slots>-<mode>.json`): the
+(variant, slots, issue) triple must be allowlisted
+(`slot02ret`/(0x02,)/756 or `slot02-33ret`/(0x02,0x33)/758), plus matching
+mode, repo HEAD, the exact SHA-256-validated set of 9 result-determining
+source files (runner, builder, payload, stub, C++ probe, loader builder,
+table builder, probe runner, disc builder), and the synthetic experiment ROM
+file present beside the receipt with a matching name and hash. A missing,
+stale, malformed, or tampered receipt BLOCKs the commercial run instead of
+reusing an unrelated pass. The commercial ROM is a different artifact and is
+never hash-compared here; its bytes are validated separately by the
+whole-image diff assertion at build time.
+
+Call records are structurally validated before any classification: required
+fields must exist with the right types and ranges, `entry_pc` must equal
+`0xE000 + slot*3`, MPR must be 8 bytes, and SP/return evidence must be
+well-formed. SP must satisfy `(sp_before - sp_after) & 0xFF == sp_delta`
+(8-bit wraparound applied), and `stack_check`/`return_matches_caller` must
+form a genuine probe pairing (`MATCH`/`True`, `MISMATCH`/`False`,
+`UNKNOWN`/`None`). RUN records are validated too (non-empty reason string,
+16-bit PC, 8-bit X, strict-bool `halt_confirmed` and `apicall_truncated`).
+Missing or malformed fields can never match, and corrupt records can never
+form a call sequence.
+
+## What counts as return evidence (A-2)
+
+- `stack_check == MATCH` / `jsr_confirmed` prove only INTERNAL stack
+  consistency: a JSR pushed `caller+2` while MPR1 selected the WRAM bank.
+  They never prove a callee executed a genuine return (on the base ROM the
+  same MATCH is observed while the stub never returns).
+- An actual control return is proven only by POST-RETURN execution: the
+  resumption marker (`A=$CC`), SP restoration, and the next observed call.
+- The LAST call of a stub-halted sequence is NON-RETURNING by construction;
+  `SIMULATED_NEXT_API` claims only the slot-$02 return (via resumption),
+  never the return of the final call.
+- `SIMULATED_NEXT_API` additionally requires the halt PC to equal the
+  verified stub address and the halt X to equal the last call slot, in BOTH
+  cycles. A stub halt after a single recorded slot-2 call, or mixed
+  stub/non-stub halt outcomes, is classified as unexpected/divergent, never
+  as a clean return.
+
+## Synthetic proof (instrument check)
+
+`make slot02-return-integration` (PUBLIC loader, cold+warm):
+
+- `seq_return`: JSR `$E006` returns, resumption marker observed, JSR `$E009`
+  follows in order, SP balanced, payload halt reached.
+- `seq_control`: the SAME payload on the unpatched base image halts at
+  `api_unimplemented` X=2 with exactly 1 APICALL (the difference comes from
+  the 5-byte patch, nothing else).
+- `spin2_budget`: post-return spin is a budget, never a halt.
+
+## Conditional commercial run (opt-in, local-only)
+
+`geargrafx_slot02_return.py --commercial --commercial-auto-loader
+--commercial-loader-format public --commercial-output <private-parent>/<new-file>`
+with the same read-only/sanitized discipline as #635. Verdicts:
+
+- `SIMULATED_NEXT_API`: ordered post-return call sequence ending at a stub halt
+- `SIMULATED_RETURN_THEN_HALT`: returned, then a non-stub halt, no further API
+- `SIMULATED_PRE_HALT`: halted before any API (experiment changed nothing)
+- `SIMULATED_UNEXPECTED_FIRST` / `SIMULATED_DIVERGENT` / `SIMULATED_BUDGET` /
+  `SIMULATED_INCOMPLETE` / `FAIL`: assumption violated or no usable result
+
+Evidence JSON carries the fabrication assumption and the `SIMULATED_` prefix;
+media bytes/paths/hashes/titles and raw logs are never recorded. Reference
+BIOS is never mounted (JSR count 0). `release_eligible=false` and
+`BLOCKED_ABI` are unchanged.
