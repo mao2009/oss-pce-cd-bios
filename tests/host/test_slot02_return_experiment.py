@@ -149,6 +149,61 @@ class ClassifySimulatedTests(unittest.TestCase):
         verdict, detail = S.classify_simulated(_records(calls, runs), self.STUB)
         self.assertEqual(verdict, "SIMULATED_NEXT_API")
         self.assertIn("(2, 'JSR')", detail)
+        self.assertIn("non-returning", detail)
+
+    def test_next_api_rejects_x_mismatch(self):
+        # Halt X names slot 2 while the last recorded call is slot 3: the
+        # halt cannot be explained by the trace, never a success.
+        calls = [_call("cold", a=0xAA), _call("cold", entry=0xE009, slot=3, a=0xCC),
+                 _call("warm", a=0xAA), _call("warm", entry=0xE009, slot=3, a=0xCC)]
+        runs = [_run("cold", reason="api_unimplemented", pc=self.STUB, x=2),
+                _run("warm", reason="api_unimplemented", pc=self.STUB, x=2)]
+        verdict, _ = S.classify_simulated(_records(calls, runs), self.STUB)
+        self.assertEqual(verdict, "SIMULATED_UNEXPECTED_FIRST")
+
+    def test_next_api_rejects_pc_mismatch(self):
+        # Right reason, wrong halt PC: reason-only matching is refused.
+        calls = [_call("cold", a=0xAA), _call("cold", entry=0xE009, slot=3, a=0xCC),
+                 _call("warm", a=0xAA), _call("warm", entry=0xE009, slot=3, a=0xCC)]
+        runs = [_run("cold", reason="api_unimplemented", pc=0xF000, x=3),
+                _run("warm", reason="api_unimplemented", pc=0xF000, x=3)]
+        verdict, _ = S.classify_simulated(_records(calls, runs), self.STUB)
+        self.assertEqual(verdict, "SIMULATED_UNEXPECTED_FIRST")
+
+    def test_next_api_requires_verified_stub(self):
+        calls = [_call("cold", a=0xAA), _call("cold", entry=0xE009, slot=3, a=0xCC),
+                 _call("warm", a=0xAA), _call("warm", entry=0xE009, slot=3, a=0xCC)]
+        runs = [_run("cold", reason="api_unimplemented", pc=self.STUB, x=3),
+                _run("warm", reason="api_unimplemented", pc=self.STUB, x=3)]
+        verdict, _ = S.classify_simulated(_records(calls, runs), None)
+        self.assertEqual(verdict, "SIMULATED_UNEXPECTED_FIRST")
+
+    def test_single_call_stub_halt_is_unexpected(self):
+        # One recorded slot-2 call cannot reach the stub on the experiment
+        # ROM: an unrecorded entry must exist. Never a clean return.
+        calls = [_call("cold"), _call("warm")]
+        runs = [_run("cold", reason="api_unimplemented", pc=self.STUB, x=2),
+                _run("warm", reason="api_unimplemented", pc=self.STUB, x=2)]
+        verdict, _ = S.classify_simulated(_records(calls, runs), self.STUB)
+        self.assertEqual(verdict, "SIMULATED_UNEXPECTED_FIRST")
+
+    def test_mixed_halt_outcomes_diverge(self):
+        calls = [_call("cold", a=0xAA), _call("cold", entry=0xE009, slot=3, a=0xCC),
+                 _call("warm", a=0xAA), _call("warm", entry=0xE009, slot=3, a=0xCC)]
+        runs = [_run("cold", reason="api_unimplemented", pc=self.STUB, x=3),
+                _run("warm", reason="cd_halt_fail", pc=0xF100)]
+        verdict, _ = S.classify_simulated(_records(calls, runs), self.STUB)
+        self.assertEqual(verdict, "SIMULATED_DIVERGENT")
+
+    def test_first_call_unconfirmed_is_unexpected(self):
+        # stack_check MISMATCH (or non-WRAM MPR1): JSR evidence missing.
+        bad = _call("cold", check="MISMATCH", ret=False)
+        calls = [bad, _call("cold", entry=0xE009, slot=3),
+                 _call("warm"), _call("warm", entry=0xE009, slot=3)]
+        runs = [_run("cold", reason="api_unimplemented", pc=self.STUB, x=3),
+                _run("warm", reason="api_unimplemented", pc=self.STUB, x=3)]
+        verdict, _ = S.classify_simulated(_records(calls, runs), self.STUB)
+        self.assertEqual(verdict, "SIMULATED_UNEXPECTED_FIRST")
 
     def test_return_then_halt_single_call(self):
         calls = [_call("cold"), _call("warm")]

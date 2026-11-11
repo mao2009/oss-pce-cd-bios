@@ -120,13 +120,22 @@ def call_sequence(calls: list, stub_addr):
 def classify_simulated(records, stub_addr):
     """SIMULATED verdict for an experiment-ROM run (pure; never CONFIRMED).
 
+    Return-evidence discipline (A-2): ``stack_check == MATCH`` / ``jsr_confirmed``
+    prove only INTERNAL stack consistency (a JSR pushed caller+2 while MPR1 is
+    the WRAM bank) -- never that a callee executed a real return. An actual
+    control return is proven only by post-return execution: resumption markers
+    and the next observed call. The LAST call of a stub-halted sequence is
+    NON-RETURNING by construction; no verdict may claim it returned.
+
     Returns (verdict, detail); verdicts: SIMULATED_NEXT_API (a post-return
-    call sequence ending at the stub halt), SIMULATED_RETURN_THEN_HALT
-    (returned, then a non-stub halt with no further API), SIMULATED_PRE_HALT
-    (halted before any API; the experiment changed nothing on that path),
-    SIMULATED_UNEXPECTED_FIRST (first call is not the assumed slot-2 JSR),
-    SIMULATED_DIVERGENT (cold/warm disagree), SIMULATED_INCOMPLETE,
-    SIMULATED_BUDGET, or FAIL.
+    call sequence ending at the VERIFIED stub halt, with halt PC and halt X
+    matching the stub address and the last call slot in BOTH cycles),
+    SIMULATED_RETURN_THEN_HALT (returned, then a non-stub halt with no
+    further API), SIMULATED_PRE_HALT (halted before any API; the experiment
+    changed nothing on that path), SIMULATED_UNEXPECTED_FIRST (the first call
+    is not the assumed slot-2 JSR, or the halt is inconsistent with the
+    recorded sequence), SIMULATED_DIVERGENT (cold/warm disagree, in calls or
+    in halt outcome), SIMULATED_INCOMPLETE, SIMULATED_BUDGET, or FAIL.
     """
     runs = records.get("RUN", [])
     apis = records.get("APICALL", [])
@@ -157,12 +166,36 @@ def classify_simulated(records, stub_addr):
         return "SIMULATED_UNEXPECTED_FIRST", f"first call is not slot-2 JSR: {cold_seq[0]} / {warm_seq[0]}"
     if cold_seq != warm_seq:
         return "SIMULATED_DIVERGENT", f"cold/warm sequences differ: {cold_seq} vs {warm_seq}"
+    stub_halts = [r.get("reason") == "api_unimplemented" for r in (cold_run, warm_run)]
     if len(cold_seq) == 1:
+        if any(stub_halts):
+            # On the experiment ROM slot 2 returns, so a stub halt after a
+            # single recorded slot-2 call implies an UNRECORDED table entry
+            # (out-of-window caller or hidden jump): the trace cannot explain
+            # the halt, so this is never reported as a clean return.
+            return ("SIMULATED_UNEXPECTED_FIRST",
+                    "single recorded slot-2 call cannot reach the stub halt; "
+                    f"possible unobserved entry (halts {[cold_run.get('reason'), warm_run.get('reason')]})")
         return ("SIMULATED_RETURN_THEN_HALT",
                 f"slot-2 returned, no further API; halts {[cold_run['reason'], warm_run['reason']]}")
-    if cold_run["reason"] == "api_unimplemented" and warm_run["reason"] == "api_unimplemented":
+    if all(stub_halts):
+        if stub_addr is None:
+            return ("SIMULATED_UNEXPECTED_FIRST",
+                    "stub address unverified; halt consistency unprovable")
+        last_slot = cold_seq[-1][0]
+        pcs_ok = cold_run.get("pc") == stub_addr and warm_run.get("pc") == stub_addr
+        xs_ok = cold_run.get("x") == last_slot and warm_run.get("x") == last_slot
+        if not pcs_ok or not xs_ok:
+            return ("SIMULATED_UNEXPECTED_FIRST",
+                    f"stub halt inconsistent with last call slot {last_slot}: "
+                    f"pcs {[cold_run.get('pc'), warm_run.get('pc')]} "
+                    f"xs {[cold_run.get('x'), warm_run.get('x')]}")
         return ("SIMULATED_NEXT_API",
-                f"post-return sequence {list(cold_seq)} in both cycles, stub halt on last call")
+                f"post-return sequence {list(cold_seq)} in both cycles, stub halt on last call "
+                f"(last call is non-returning; only the slot-2 return is proven by resumption)")
+    if any(stub_halts):
+        return ("SIMULATED_DIVERGENT",
+                f"halt outcomes differ: {[cold_run['reason'], warm_run['reason']]}")
     return ("SIMULATED_RETURN_THEN_HALT",
             f"post-return sequence {list(cold_seq)} in both cycles, "
             f"halts {[cold_run['reason'], warm_run['reason']]}")
@@ -214,8 +247,9 @@ def judge_seq(tmp, probe, rom, base_addrs, stub_addr, name, defines, budget, on_
                 fails.append(f"{cycle}: entry regs clobbered")
             if calls[1]["sp_before"] != calls[0]["sp_before"]:
                 fails.append(f"{cycle}: SP not restored by slot-2 return")
-            if run["reason"] != "api_unimplemented" or run["x"] != 3:
-                fails.append(f"{cycle}: expected stub halt X=3, got {run['reason']} x={run['x']}")
+            if run["reason"] != "api_unimplemented" or run["x"] != 3 or run.get("pc") != stub_addr:
+                fails.append(f"{cycle}: expected stub halt X=3 at stub, "
+                             f"got {run['reason']} x={run['x']} pc={run.get('pc')}")
     if fails:
         raise ValueError(f"{name} failed: {fails}")
     return records

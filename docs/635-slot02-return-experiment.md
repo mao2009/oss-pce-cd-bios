@@ -25,6 +25,23 @@ result is reported as `SIMULATED_*` / CONDITIONAL.
   flags, MPRs and RAM preserved; no side effects. Post-return behavior is
   CONDITIONAL on this assumption.
 
+## What counts as return evidence (A-2)
+
+- `stack_check == MATCH` / `jsr_confirmed` prove only INTERNAL stack
+  consistency: a JSR pushed `caller+2` while MPR1 selected the WRAM bank.
+  They never prove a callee executed a genuine return (on the base ROM the
+  same MATCH is observed while the stub never returns).
+- An actual control return is proven only by POST-RETURN execution: the
+  resumption marker (`A=$CC`), SP restoration, and the next observed call.
+- The LAST call of a stub-halted sequence is NON-RETURNING by construction;
+  `SIMULATED_NEXT_API` claims only the slot-$02 return (via resumption),
+  never the return of the final call.
+- `SIMULATED_NEXT_API` additionally requires the halt PC to equal the
+  verified stub address and the halt X to equal the last call slot, in BOTH
+  cycles. A stub halt after a single recorded slot-2 call, or mixed
+  stub/non-stub halt outcomes, is classified as unexpected/divergent, never
+  as a clean return.
+
 ## Synthetic proof (instrument check)
 
 `make slot02-return-integration` (PUBLIC loader, cold+warm):
