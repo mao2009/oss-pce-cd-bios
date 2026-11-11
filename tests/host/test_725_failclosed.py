@@ -30,6 +30,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 
 import failclosed_gate as gate  # noqa: E402
+from release_makefile_guard import check_release_makefile  # noqa: E402
 
 DOC = ROOT / "docs" / "725-failclosed-invariants.md"
 
@@ -137,6 +138,80 @@ class FutureUnlockDocumented(unittest.TestCase):
                          "BLOCKED", "fail-closed", "725"):
             self.assertIn(required, text)
         self.assertNotIn("release_eligible=true", text)
+
+
+class MakefileEvaluationTimeSideEffects(unittest.TestCase):
+    """Parse/evaluation-time command execution must fail closed (#769 MAJOR).
+
+    Static only: mutant Makefiles live in temp dirs and are never executed.
+    Each mutant appends evaluation-time shell/file/call/eval payloads to the
+    real Makefile text; the shared guard must refuse all of them while the
+    real tree stays GREEN.
+    """
+    ATTACKS = {
+        "immediate-shell":
+            "SIDE_EFFECT := $(shell printf SYNTHETIC_PRE_RELEASE)\n",
+        "shell-assign-op":
+            "SIDE_EFFECT != printf SYNTHETIC_PRE_RELEASE\n",
+        "file-write":
+            "SIDE_EFFECT := $(file >synthetic.txt,hello)\n",
+        "call-indirect":
+            "SIDE_EFFECT := $(call do_thing,arg)\n",
+        "hidden-via-var":
+            "HIDDEN := $(shell printf X)\nOTHER := prefix$(HIDDEN)\n",
+        "prereq-position":
+            "preflight: $(shell printf X)\n\t@printf ok\n",
+        "deferred-shell":
+            "LAZY = $(shell printf X)\n",
+        "brace-form":
+            "SIDE_EFFECT := ${shell printf X}\n",
+        "second-expansion":
+            ".SECONDEXPANSION:\n",
+        "backtick-outside-recipe":
+            "SIDE_EFFECT := `printf X`\n",
+        "export-immediate":
+            "export SIDE_EFFECT := $(shell printf X)\n",
+        "override-deferred-call":
+            "override SIDE_EFFECT = $(call f)\n",
+        "append-immediate":
+            "SIDE_EFFECT += $(shell printf X)\n",
+        "cond-assign":
+            "SIDE_EFFECT ?= $(shell printf X)\n",
+        "eval-split-continuation":
+            "X := $(ev\\\nal X)\n",
+        "tab-continued-value":
+            "X := foo \\\n\t$(shell printf X)\n",
+        "call-in-prereq":
+            "other: $(call get_deps)\n\t@true\n",
+    }
+    LEGIT = {
+        "escaped-dollar": "MSG = price is $$5\n",
+        "plain-refs": "CMD = $(PYTHON) $(MAKE) $(MODE)\n",
+        "pure-funcs": ("BASE := $(strip $(VAR))\n"
+                         "FILES = $(wildcard src/*.s)\n"),
+        "info-output": "$(info build starting)\n",
+    }
+
+    def _check_on_mutant(self, addition):
+        import tempfile
+        base = (ROOT / "Makefile").read_text(encoding="utf-8")
+        with tempfile.TemporaryDirectory() as directory:
+            tmp = Path(directory)
+            (tmp / "Makefile").write_text(base + addition,
+                                            encoding="utf-8")
+            return check_release_makefile(tmp)
+
+    def test_evaluation_time_attacks_fail_closed(self):
+        for name, addition in self.ATTACKS.items():
+            with self.subTest(mutant=name):
+                self.assertTrue(self._check_on_mutant(addition),
+                                f"evaluation-time mutant passed: {name}")
+
+    def test_legit_non_recipe_content_stays_green(self):
+        for name, addition in self.LEGIT.items():
+            with self.subTest(mutant=name):
+                self.assertEqual(self._check_on_mutant(addition), [],
+                                 f"legit content refused: {name}")
 
 
 class WholeGate(unittest.TestCase):

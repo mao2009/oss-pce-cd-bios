@@ -20,6 +20,23 @@ never a pass.
 Allowed dev-target expansions (``$(PYTHON)``/``$(MAKE)``/``$(MODE)`` and
 friends) outside the ``release`` rule are *not* refused here; only inputs
 that can alter the ``release`` deps or recipe are refused.
+
+Evaluation-time side effects (parse-time ``:=``/``::=``/``?=``/``+=``/``!=``
+assignments, rule prerequisites, directive arguments) are refused when they
+can run commands or change state before the ``release`` stub is reached:
+``$(shell ...)``, ``$(file ...)`` (may write files), ``$(eval ...)`` (rewrites
+the rule graph), ``$(call ...)`` (indirect: the callee may expand to any of
+the above, including via computed names), backticks, and the ``!=`` shell
+assignment operator. Immediate and deferred (``=``) flavors are
+distinguished in the diagnostics, but deferred definitions with
+side-effecting expansions are refused as well: proving that no parse-time
+position (another immediate assignment, a prerequisite list, a directive
+argument) ever references the variable is undecidable once ``$(call)`` or
+computed ``$($(NAME))`` references exist. ``$(info)``/``$(warning)`` output
+is allowed (console text only, no execution or state change) while
+``$(error)`` aborts the build (fail-closed outcome); both are still scanned
+for nested refused tokens. ``$$`` (escaped dollar) is collapsed before
+scanning so it cannot hide — or falsely trigger — a token match.
 """
 from __future__ import annotations
 
@@ -97,6 +114,172 @@ def _check_global_inputs(all_lines: list[str]) -> list[str]:
             problems.append(
                 f"Makefile line {lineno}: 'define/endef' block refused "
                 "(dynamic make content; undecidable without execution; "
+                "fail-closed)"
+            )
+    return problems
+
+
+# Function calls with parse/evaluation-time side effects. $(shell) runs
+# external commands, $(file) can write files, $(eval) rewrites the rule
+# graph, and $(call) invokes a user-defined function that may expand to any
+# of those (possibly via computed names, so indirection cannot be resolved
+# statically). $(info)/$(warning) only print console text (no execution or
+# state change) and $(error) aborts the build (fail-closed outcome), so bare
+# uses are tolerated -- but any nested refused token inside their arguments
+# is still caught by the same scan.
+_EVAL_SIDE_EFFECT_FUNCS = ("shell", "file", "call", "eval")
+
+# Immediate flavors evaluate their right-hand side at parse time. '+=' is
+# immediate when the variable is already simply expanded and deferred
+# otherwise -- statically undecidable, so it is treated as immediate
+# (fail-closed). Plain '=' defers expansion to the reference site, but
+# references from parse-time positions cannot be ruled out once $(call)
+# or computed names exist, so deferred definitions with side-effecting
+# expansions are refused as well (with the flavor named in the reason).
+_IMMEDIATE_OPS = (":=", "::=", "?=", "+=")
+
+
+def _collapse_escaped_dollars(text: str) -> str:
+    """Collapse '$$' (literal dollar) so it can neither hide nor fake a token."""
+    return text.replace("$$", "")
+
+
+def _find_side_effect_calls(text: str) -> list[str]:
+    """Names of side-effecting $(func)/${func} calls in collapsed text."""
+    found: list[str] = []
+    for match in re.finditer(r"\$[\(\{]\s*([A-Za-z][A-Za-z0-9_-]*)", text):
+        name = match.group(1)
+        if name in _EVAL_SIDE_EFFECT_FUNCS and name not in found:
+            found.append(name)
+    return found
+
+
+def _logical_lines(
+    all_lines: list[str],
+) -> list[tuple[str, int]]:
+    """Join backslash continuations: [(logical text, start lineno)].
+
+    Classification uses the first physical line (a TAB there means a
+    recipe), so a variable value continued on a TAB-prefixed line is still
+    scanned, while a recipe continued over several lines stays a recipe.
+    """
+    logical: list[tuple[str, int]] = []
+    index = 0
+    total = len(all_lines)
+    while index < total:
+        start = index
+        parts = [all_lines[index]]
+        while parts[-1].endswith("\\") and index + 1 < total:
+            index += 1
+            parts.append(all_lines[index])
+        # A backslash-newline is removed by make (both characters gone);
+        # model exactly that so a token split across the break still
+        # matches (e.g. '$(ev\<newline>al ...)').
+        text = "".join(
+            part[:-1] if part.endswith("\\") else part for part in parts
+        )
+        logical.append((text, start + 1))
+        index += 1
+    return logical
+
+
+def _definition_flavor_and_value(
+    line: str,
+) -> tuple[str, str] | None:
+    """Parse '[export/override/private ...] NAME op value' (op winds shown).
+
+    Returns (flavor, value) with flavor in {'immediate', 'deferred',
+    'shell'} or None when the line is not a variable definition.
+    """
+    match = re.match(
+        r"^[ ]*(?:(?:export|override|private)[ ]+)*"
+        r"([^:=\s#][^:=\s#]*)\s*(::=|:=|\+=|\?=|!=|=)(.*)$",
+        line,
+    )
+    if match is None:
+        return None
+    _name, op, value = match.group(1), match.group(2), match.group(3)
+    if op == "!=":
+        return ("shell", value)
+    if op in _IMMEDIATE_OPS:
+        return ("immediate", value)
+    return ("deferred", value)
+
+
+def _check_evaluation_time_side_effects(
+    all_lines: list[str],
+) -> list[str]:
+    """Refuse parse/evaluation-time command execution outside recipes.
+
+    Recipe lines (TAB-prefixed logical lines) run only when their target
+    builds, so plain $(shell)/$(file) there cannot fire before the release
+    refusal -- except $(eval), which make expands at parse time even inside
+    recipes and is scanned on joined logical text (closing the
+    backslash-split evasion). Everywhere else (assignments, prerequisites,
+    directives, export values) expansions fire at parse time, so any
+    side-effecting call, backtick, or '!=' operator is refused.
+    """
+    problems: list[str] = []
+    for text, lineno in _logical_lines(all_lines):
+        if text.strip() == "" or text.lstrip().startswith("#"):
+            continue
+        collapsed = _collapse_escaped_dollars(text)
+        is_recipe = text.startswith("\t")
+        if is_recipe:
+            # Only $(eval) matters at parse time inside recipes; it is
+            # refused here on joined text (the physical-line scan could
+            # miss a backslash-split '$(eval ...)').
+            for func in _find_side_effect_calls(collapsed):
+                if func == "eval":
+                    problems.append(
+                        f"Makefile line {lineno}: '$(eval ...)' dynamic "
+                        "rule refused (rule-graph rewrite; fail-closed)"
+                    )
+                    break
+            continue
+        # Shell-assignment operator executes at parse time, always.
+        flavored = _definition_flavor_and_value(collapsed)
+        if flavored is not None and flavored[0] == "shell":
+            problems.append(
+                f"Makefile line {lineno}: '!=' shell assignment executes "
+                "at parse time (refused; fail-closed)"
+            )
+            continue
+        for func in _find_side_effect_calls(collapsed):
+            if flavored is not None:
+                flavor, _value = flavored
+                timing = (
+                    "parse-time"
+                    if flavor != "deferred"
+                    else "reference scope undecidable under "
+                    "$(call)/computed names"
+                )
+                problems.append(
+                    f"Makefile line {lineno}: '$({func} ...)' in a "
+                    f"{flavor} variable definition evaluates before the "
+                    f"release refusal ({timing}; fail-closed)"
+                )
+            else:
+                problems.append(
+                    f"Makefile line {lineno}: '$({func} ...)' outside any "
+                    "recipe evaluates at parse time (prerequisite, "
+                    "directive, or export context; fail-closed)"
+                )
+        if "`" in collapsed:
+            problems.append(
+                f"Makefile line {lineno}: backtick command substitution "
+                "outside any recipe refused (fail-closed)"
+            )
+    # .SECONDEXPANSION changes the evaluation-timing model the static
+    # reasoning assumes (prerequisites expanded a second time when the
+    # target is considered); refuse it as undecidable.
+    for lineno, line in enumerate(all_lines, start=1):
+        if _is_comment_or_blank(line) or line.startswith("\t"):
+            continue
+        if re.match(r"^[ ]*\.SECONDEXPANSION\s*:", line) is not None:
+            problems.append(
+                f"Makefile line {lineno}: '.SECONDEXPANSION' changes the "
+                "prerequisite evaluation-timing model (undecidable; "
                 "fail-closed)"
             )
     return problems
@@ -203,6 +386,9 @@ def check_release_makefile(root: Path) -> list[str]:
     # 1. Rule-graph-changing inputs outside the release stanza.
     problems.extend(_check_global_inputs(all_lines))
     problems.extend(_check_included_files(Path(root), all_lines))
+    # 1b. Parse/evaluation-time side effects (immediate assignments,
+    # prerequisites, directive arguments) that fire before the stub.
+    problems.extend(_check_evaluation_time_side_effects(all_lines))
 
     # 2. Release target shape (main Makefile only; includes already refused).
     # Recipe lines start with TAB and can never define a target, so they are
