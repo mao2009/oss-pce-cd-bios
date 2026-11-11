@@ -32,6 +32,17 @@ sys.path.insert(0, str(ROOT / "tools"))
 import failclosed_gate as gate  # noqa: E402
 from release_makefile_guard import check_release_makefile  # noqa: E402
 
+BASE_MAKEFILE = (ROOT / "Makefile").read_text(encoding="utf-8")
+
+
+def _guard_on_mutant(addition):
+    import tempfile
+    with tempfile.TemporaryDirectory() as directory:
+        tmp = Path(directory)
+        (tmp / "Makefile").write_text(BASE_MAKEFILE + addition,
+                                        encoding="utf-8")
+        return check_release_makefile(tmp)
+
 DOC = ROOT / "docs" / "725-failclosed-invariants.md"
 
 
@@ -211,6 +222,47 @@ class MakefileEvaluationTimeSideEffects(unittest.TestCase):
         for name, addition in self.LEGIT.items():
             with self.subTest(mutant=name):
                 self.assertEqual(self._check_on_mutant(addition), [],
+                                 f"legit content refused: {name}")
+
+
+class MakefileExtraPrereqsRefused(unittest.TestCase):
+    """GNU Make .EXTRA_PREREQS indirect prerequisite injection (#769 MAJOR).
+
+    Static only: mutants live in temp dirs and are never executed. Any
+    value assigned to .EXTRA_PREREQS is appended to every target's
+    prerequisites, so the injected prerequisite would run before the
+    BLOCKED stub fails.
+    """
+    ATTACKS = {
+        "immediate":
+            ".EXTRA_PREREQS := preflight\n"
+            ".PHONY: release preflight\n"
+            "preflight:\n\t@printf 'SYNTHETIC_PREFLIGHT\\n'\n",
+        "deferred": ".EXTRA_PREREQS = preflight\n",
+        "append": ".EXTRA_PREREQS += preflight\n",
+        "cond": ".EXTRA_PREREQS ?= preflight\n",
+        "override": "override .EXTRA_PREREQS := preflight\n",
+        "export": "export .EXTRA_PREREQS := preflight\n",
+        "continuation": ".EXTRA_PREREQS := pre\\\nflight\n",
+        "spacing": "  .EXTRA_PREREQS   :=   preflight\n",
+        "reference": "X := $(.EXTRA_PREREQS)\n",
+    }
+    LEGIT = {
+        "comment": "# .EXTRA_PREREQS is refused if defined\n",
+        "recipe-literal": "dev:\n\t@echo .EXTRA_PREREQS\n",
+        "longer-name": ".EXTRA_PREREQS_FOO := 1\n",
+    }
+
+    def test_extra_prereqs_attacks_fail_closed(self):
+        for name, addition in self.ATTACKS.items():
+            with self.subTest(mutant=name):
+                self.assertTrue(_guard_on_mutant(addition),
+                                f".EXTRA_PREREQS mutant passed: {name}")
+
+    def test_extra_prereqs_legit_stays_green(self):
+        for name, addition in self.LEGIT.items():
+            with self.subTest(mutant=name):
+                self.assertEqual(_guard_on_mutant(addition), [],
                                  f"legit content refused: {name}")
 
 
