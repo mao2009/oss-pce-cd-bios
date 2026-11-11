@@ -237,8 +237,9 @@ def judge_seq(tmp, probe, rom, base_addrs, stub_addr, name, defines, budget, on_
                 continue
             if E.classify_apicall(calls[0], stub_addr) != "JSR" or calls[0]["slot"] != 2:
                 fails.append(f"{cycle}: control call is not slot-2 JSR")
-            if run["reason"] != "api_unimplemented" or run["x"] != 2:
-                fails.append(f"{cycle}: control halt {run['reason']} x={run['x']}")
+            if run["reason"] != "api_unimplemented" or run["x"] != 2 or run.get("pc") != stub_addr:
+                fails.append(f"{cycle}: control halt {run['reason']} x={run['x']} "
+                             f"pc={run.get('pc')} (want stub ${stub_addr:04X})")
         elif name.startswith("spin2"):
             if len(calls) != 1 or calls[0]["slot"] != 2:
                 fails.append(f"{cycle}: expected single slot-2 call, got {len(calls)}")
