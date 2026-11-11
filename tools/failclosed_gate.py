@@ -66,21 +66,104 @@ def _fail(message: str) -> str:
 
 
 def check_makefile_release() -> list[str]:
-    """Static contract of the ``release:`` target (never executed here)."""
+    """Static contract of the ``release:`` target (never executed here).
+
+    Whitelist: the only safe shape is exactly the two-line BLOCKED stub::
+
+        release:
+        \t@echo 'BLOCKED: ...' >&2
+        \t@exit 1
+
+    Any other shape fails closed, including the known bypass classes:
+
+    * ``-@exit 1`` / ``-`` prefix (make ignore-error neutralises ``exit 1``);
+    * conditional/chained success (``|| true``, ``&&``, ``; exit 0``,
+      ``; true``, trailing ``exit 0``);
+    * preceding build commands or extra recipe lines (only 2 lines allowed);
+    * extra dangerous statements (build/release promotion, shell
+      substitution, redirection beyond ``>&2``).
+    """
     problems: list[str] = []
     text = (ROOT / "Makefile").read_text(encoding="utf-8")
     match = re.search(r"^release:\n((?:\t.*\n?)+)", text, re.M)
     if match is None:
         return ["Makefile has no 'release:' target"]
     recipe = match.group(1)
+    lines = recipe.splitlines()
+    # Whitelist: exactly the echo-BLOCKED + exit-1 stub, nothing more.
+    if len(lines) != 2:
+        problems.append(
+            "Makefile release recipe must be exactly 2 lines "
+            f"(@echo BLOCKED-stub + @exit 1), found {len(lines)}"
+        )
+    for index, line in enumerate(lines, start=1):
+        if not line.startswith("\t"):
+            problems.append(f"Makefile release line {index}: must start with TAB")
+            continue
+        body = line[1:]
+        if body.startswith("-"):
+            problems.append(
+                f"Makefile release line {index}: '-' (ignore-error) prefix forbidden "
+                "(would neutralise 'exit 1'; '-@exit 1' refused)"
+            )
+        if not body.startswith("@"):
+            problems.append(
+                f"Makefile release line {index}: must use '@' prefix "
+                f"(got {body[:12]!r}; conditional/silent bypass refused)"
+            )
+    if lines:
+        body1 = lines[0][1:] if lines[0].startswith("\t") else lines[0]
+        if not re.fullmatch(r"@echo\s+'BLOCKED:.*'\s+>&2\s*", body1):
+            problems.append(
+                "Makefile release line 1 must be \"@echo 'BLOCKED: ...' >&2\" "
+                f"(got {body1!r}; preceding build commands refused)"
+            )
+    if len(lines) >= 2:
+        body2 = lines[1][1:] if lines[1].startswith("\t") else lines[1]
+        if body2.strip() != "@exit 1":
+            if "exit 1" not in body2:
+                problems.append("Makefile release recipe must end with '@exit 1'")
+            else:
+                problems.append(
+                    f"Makefile release line 2 must be exactly '@exit 1' "
+                    f"(got {body2!r}; conditional/chained success refused)"
+                )
+        if ";" in body2 or "||" in body2 or "&&" in body2 or "|" in body2:
+            problems.append(
+                "Makefile release line 2: shell chaining "
+                f"(';'/||/&&/|) forbidden (got {body2!r})"
+            )
     if "BLOCKED" not in recipe:
         problems.append("Makefile release recipe lacks BLOCKED")
-    if not re.search(r"exit\s+1\b", recipe):
-        problems.append("Makefile release recipe must end with 'exit 1'")
+    # Unconditional success anywhere is a promotion bypass.
+    if re.search(r"exit\s+0\b", recipe):
+        problems.append("Makefile release recipe must not contain 'exit 0' "
+                        "(conditional success refused)")
+    # Shell metacharacters outside the quoted BLOCKED message, excluding the
+    # one allowed '>&2' redirection. The ';' inside the quoted message is
+    # stripped with the quotes, so this does not false-positive on legit.
+    code_outside_quotes = re.sub(r"'[^']*'", "''", recipe)
+    code_no_redir = code_outside_quotes.replace(">&2", "")
+    for token in (";", "||", "&&", "|", "`", "$(", "${", ">", "<", "#"):
+        if token in code_no_redir:
+            problems.append(
+                f"Makefile release recipe: {token!r} outside quoted message forbidden "
+                "(chaining/substitution/redirection refused)"
+            )
+            break
+    if re.search(r"\btrue\b", code_no_redir) or re.search(r"\bfalse\b", code_no_redir):
+        problems.append(
+            "Makefile release recipe must not contain 'true'/'false' "
+            "(success-masking refused)"
+        )
     for forbidden in ("build_rom.py", "--mode release", "release_eligible=true",
-                      "ALLOWED", "release_eligible = True"):
+                      "ALLOWED", "release_eligible = True", "build_rom",
+                      "$(PYTHON)", "${", "rm ", "rm\t", "cp ", "mv ",
+                      "chmod", "chown", "curl", "wget", "python"):
         if forbidden in recipe:
-            problems.append(f"Makefile release recipe must not contain {forbidden!r}")
+            problems.append(f"Makefile release recipe must not contain {forbidden!r} "
+                            "(preceding build / dangerous statement refused)")
+            break
     return problems
 
 
