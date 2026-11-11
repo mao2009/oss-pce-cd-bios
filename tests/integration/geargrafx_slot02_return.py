@@ -284,16 +284,16 @@ def main():
         defines = ["-D", "IPL_PUBLIC"] if args.commercial_loader_format == "public" else []
         try:
             base_rom, exp_rom, addrs = build_slot02_return_bios(
-                original, out, sel, args.mode, "slot02ret",
+                original, out, sel, args.mode, "slot02ret-comm",
                 defines, private_input=True)
-        except Exception:
-            raise SystemExit("FAIL commercial experiment loader build")
+        except Exception as error:
+            raise SystemExit(f"FAIL commercial experiment loader build: {error}")
         try:
             E.verify_media_unchanged(snap)
         except ValueError as error:
             raise SystemExit(str(error))
         from build_dev_ipl_loader_bios import parse_labels as _parse
-        base_labels = out / "ipl-loader-bios-slot02ret-base.lbl"
+        base_labels = out / "ipl-loader-bios-slot02ret-comm-base.lbl"
         try:
             full = _parse(base_labels, ("cd_halt_fail", "cd_unexpected_interrupt", "api_unimplemented",
                                          "reset"))
@@ -311,7 +311,7 @@ def main():
             if full["reset"] in (full["cd_halt_fail"], full["cd_unexpected_interrupt"],
                                    full["api_unimplemented"]):
                 raise SystemExit("FAIL commercial labels collision for dummy halt")
-            labels_path = out / "commercial-labels-slot02ret.labels"
+            labels_path = out / "commercial-labels-slot02ret-comm.labels"
             labels_path.write_text(
                 f"cd_halt_ok {full['reset']:04x}\n"
                 f"cd_halt_fail {full['cd_halt_fail']:04x}\n"
