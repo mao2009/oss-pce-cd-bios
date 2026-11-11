@@ -68,7 +68,8 @@ def _fail(message: str) -> str:
 def check_makefile_release() -> list[str]:
     """Static contract of the ``release:`` target (never executed here).
 
-    Whitelist: the only safe shape is exactly the two-line BLOCKED stub::
+    Strict allowlist: the only safe shape is exactly the two-line BLOCKED
+    stub::
 
         release:
         \t@echo 'BLOCKED: ...' >&2
@@ -81,16 +82,84 @@ def check_makefile_release() -> list[str]:
       ``; true``, trailing ``exit 0``);
     * preceding build commands or extra recipe lines (only 2 lines allowed);
     * extra dangerous statements (build/release promotion, shell
-      substitution, redirection beyond ``>&2``).
+      substitution, redirection beyond ``>&2``);
+    * GNU Make variable/function/command expansion (``$(...)``,
+      ``${...}``, ``$X``) *even inside single quotes*: make expands ``$``
+      before the shell ever runs, so shell quoting protects nothing. The
+      BLOCKED message text is therefore restricted to a ``$``-free,
+      backtick-free punctuation set, and any ``$``/backtick/backslash/double-
+      quote anywhere in the recipe is refused;
+    * unexpected target prerequisites (``release:`` must carry no deps) and
+      inline ``;`` recipes;
+    * duplicate or alternate release rules (a second ``release:`` stanza or
+      a ``release::`` double-colon rule would override or join the pinned
+      recipe, so exactly one single-colon definition is required);
+    * recipe-append bypass (an extra TAB-prefixed line hidden after a blank
+      or ``#``-comment separator still belongs to this recipe, so the first
+      significant line after the stub must not start with TAB).
     """
     problems: list[str] = []
     text = (ROOT / "Makefile").read_text(encoding="utf-8")
-    match = re.search(r"^release:\n((?:\t.*\n?)+)", text, re.M)
-    if match is None:
+    all_lines = text.splitlines()
+    # Exactly one single-colon `release:` definition. Recipe lines start
+    # with TAB and can never define a target, so they are skipped here.
+    definitions: list[tuple[int, str, str, str]] = []
+    for lineno, line in enumerate(all_lines, start=1):
+        if line.startswith("\t"):
+            continue
+        match = re.match(r"^[ ]*release\s*(::|:)(.*)$", line)
+        if match is not None:
+            definitions.append((lineno, line, match.group(1), match.group(2)))
+    if not definitions:
         return ["Makefile has no 'release:' target"]
-    recipe = match.group(1)
-    lines = recipe.splitlines()
-    # Whitelist: exactly the echo-BLOCKED + exit-1 stub, nothing more.
+    if len(definitions) != 1:
+        problems.append(
+            "Makefile release target must be defined exactly once "
+            f"(found {len(definitions)} definitions at lines "
+            + ", ".join(str(n) for n, _, _, _ in definitions)
+            + "; duplicate/alternate release rules refused)"
+        )
+    lineno, target_line, colon, rest = definitions[0]
+    if colon == "::":
+        problems.append(
+            f"Makefile release line {lineno} must use a single ':' "
+            "(double-colon 'release::' rules run alongside the pinned "
+            "recipe; refused)"
+        )
+    if rest.strip() != "":
+        problems.append(
+            f"Makefile release line {lineno} must be exactly 'release:' "
+            f"with no prerequisites or inline recipe (got {target_line.strip()!r}; "
+            "target deps refused)"
+        )
+    elif target_line != "release:":
+        problems.append(
+            f"Makefile release line {lineno} must be exactly 'release:' "
+            f"(got {target_line!r})"
+        )
+    # Recipe: the contiguous TAB-prefixed block after the target. Blank and
+    # `#`-comment lines do not terminate a make recipe scan, so the first
+    # significant line after the stub must not be TAB-prefixed either.
+    target_index = definitions[0][0] - 1
+    recipe_rows: list[tuple[int, str]] = []
+    cursor = target_index + 1
+    while cursor < len(all_lines) and all_lines[cursor].startswith("\t"):
+        recipe_rows.append((cursor + 1, all_lines[cursor]))
+        cursor += 1
+    probe = cursor
+    while probe < len(all_lines) and (
+        all_lines[probe].strip() == "" or all_lines[probe].lstrip().startswith("#")
+    ):
+        probe += 1
+    if probe < len(all_lines) and all_lines[probe].startswith("\t"):
+        problems.append(
+            "Makefile release recipe must be exactly 2 lines "
+            f"(@echo BLOCKED-stub + @exit 1; extra recipe line at line {probe + 1} "
+            "refused: recipe-append bypass)"
+        )
+    lines = [line for _, line in recipe_rows]
+    recipe = "".join(line + "\n" for line in lines)
+    # Strict allowlist: exactly the echo-BLOCKED + exit-1 stub, nothing more.
     if len(lines) != 2:
         problems.append(
             "Makefile release recipe must be exactly 2 lines "
@@ -113,10 +182,17 @@ def check_makefile_release() -> list[str]:
             )
     if lines:
         body1 = lines[0][1:] if lines[0].startswith("\t") else lines[0]
-        if not re.fullmatch(r"@echo\s+'BLOCKED:.*'\s+>&2\s*", body1):
+        # The message charset is deliberately narrow: no '$' (GNU Make
+        # expands $(...)/${...}/$X even inside single quotes), no backtick,
+        # backslash, double-quote, or shell/make metacharacter. ';' inside
+        # the quotes is permitted: it is safe for both make (no '$') and the
+        # shell (single-quoted). Rewording the message needs a gate update.
+        if not re.fullmatch(r"@echo 'BLOCKED: [A-Za-z0-9 .,;:\-_/]+' >&2", body1):
             problems.append(
                 "Makefile release line 1 must be \"@echo 'BLOCKED: ...' >&2\" "
-                f"(got {body1!r}; preceding build commands refused)"
+                "with a make-expansion-free message "
+                f"(got {body1!r}; preceding build commands and '$(...)'/"
+                "backtick expansion refused, even inside quotes)"
             )
     if len(lines) >= 2:
         body2 = lines[1][1:] if lines[1].startswith("\t") else lines[1]
@@ -139,12 +215,26 @@ def check_makefile_release() -> list[str]:
     if re.search(r"exit\s+0\b", recipe):
         problems.append("Makefile release recipe must not contain 'exit 0' "
                         "(conditional success refused)")
+    # GNU Make expansion and command substitution are refused *everywhere*,
+    # including inside the single-quoted message: make expands '$' before
+    # the shell runs, so quotes protect nothing against $(shell ...).
+    # Backslash (line continuation/escape) and double-quotes (which would
+    # change the shell quoting contract) are refused as well.
+    for token, reason in (("$", "make variable/function/command expansion"),
+                           ("`", "command substitution"),
+                           ("\\", "line continuation/escape"),
+                           ('"', "double-quote (quoting-contract change)")):
+        if token in recipe:
+            problems.append(
+                f"Makefile release recipe must not contain {token!r} "
+                f"({reason} refused, even inside quotes)"
+            )
     # Shell metacharacters outside the quoted BLOCKED message, excluding the
     # one allowed '>&2' redirection. The ';' inside the quoted message is
     # stripped with the quotes, so this does not false-positive on legit.
     code_outside_quotes = re.sub(r"'[^']*'", "''", recipe)
     code_no_redir = code_outside_quotes.replace(">&2", "")
-    for token in (";", "||", "&&", "|", "`", "$(", "${", ">", "<", "#"):
+    for token in (";", "||", "&&", "|", ">", "<", "#"):
         if token in code_no_redir:
             problems.append(
                 f"Makefile release recipe: {token!r} outside quoted message forbidden "
