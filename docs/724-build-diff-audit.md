@@ -35,8 +35,14 @@ New gate: `tools/verify_build_diff.py` (runs in `make check`, hence in CI `make 
 1. **Release-input scan** — every file whose bytes or assembling logic can reach a release ROM
    (`src/boot.s`, `src/bank0.cfg`, `src/overrides/*.s`, `tests/fixtures/smoke.s/.cfg`,
    `tools/build.py`, `tools/build_rom.py`, `tools/environment.py`, `tools/rom.py`,
-   `spec/api_slots.json`) must not contain `gg_verify*`/`GG_Verify*` hook symbols, pinned-patch
+   `spec/api_slots.json`, plus `src/ex_bcdbin.s` / `src/ex_binbcd.s` pulled in via
+   `src/overrides/slot_3D.s` / `slot_3C.s` `.include` directives) must not contain
+   `gg_verify*`/`GG_Verify*` hook symbols, pinned-patch
    filenames, upstream-copyright strings, or GPL license text. Any hit FAILs closed.
+   The gate additionally follows every ca65 `.include`/`.incbin` reachable from the
+   assembled sources (`src/boot.s`, `src/overrides/slot_*.s`, `tests/fixtures/smoke.s`)
+   and scans each resolved target; an unresolvable or repository-escaping include
+   refuses fail-closed, so a newly added unaudited include cannot slip through.
 2. **Build-logic import check** — `tools/build*.py`, `tools/environment.py`, `tools/rom.py` must not
    import probe modules (`compile_probe`, `reference_jsr_gate`, `geargrafx_api`, guard drivers) and
    must not reference `tests/integration/patches/`.
@@ -57,7 +63,7 @@ New gate: `tools/verify_build_diff.py` (runs in `make check`, hence in CI `make 
    markers stay with `tools/provenance_guard.py`; reproducibility stays with
    `tools/rom_provenance.py`. This gate adds the hook/GPL-text and mode-fork tripwires those do not state.
 
-Regression test: `tests/host/test_724_build_diff_audit.py` (10 tests, static only). Positive: HEAD scans
+Regression test: `tests/host/test_724_build_diff_audit.py` (13 tests, static only). Positive: HEAD scans
 clean, gates intact, report verdict PASS with UNKNOWNs preserved. Negative (mutation): injected
 `gg_verify` marker, injected GPL text, new `mode=="release"` behavior branch, and a probe import each
 FAIL closed. `release_gate` refusal is exercised for `set()` and `set(range(81))`.
@@ -86,7 +92,7 @@ Host-model, static only. No emulator run, no real-core diagnostic, no commercial
   + this change; `--report` emits `verdict=PASS`, `release_artifact_scan=CHECKED` (authoring-checkout
   `build/debug` vs `build/release` smoke ROMs byte-identical, sha256
   `8d659d6f…fa25` both), `unmeasured_UNKNOWN` as above.
-- `python3 -m unittest discover -s tests/host -p 'test_724*' -v` → 10 tests OK.
+- `python3 -m unittest discover -s tests/host -p 'test_724*' -v` → 13 tests OK.
 - `make check` (adds the new gate) and full `make test` / CI: to be recorded by review/CI, not claimed here.
 - Real-core diagnostics: NOT_RUN in this change. Prior verification-only measurements (#498/#499/#645
   series, #653/#654) are referenced, not re-executed or re-adjudicated.
