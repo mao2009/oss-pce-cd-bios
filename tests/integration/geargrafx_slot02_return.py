@@ -148,6 +148,21 @@ def call_sequence(calls: list, stub_addr):
     return seq
 
 
+def halts_match(cold_run, warm_run):
+    """True when two cycles' halt states agree (pure).
+
+    Compared: halt reason, halt PC, and halt X. halt_confirmed=True on both
+    sides is established upstream (a budget or unconfirmed halt never reaches
+    here); APICALL truncation is refused upstream as well. Step counts may
+    legitimately differ and are NEVER compared. Any mismatch means DIVERGENT,
+    never a success -- not even for the non-stub RETURN_THEN_HALT path.
+    """
+    for field in ("reason", "pc", "x"):
+        if cold_run.get(field) != warm_run.get(field):
+            return False, f"halt {field} differs: {cold_run.get(field)!r} vs {warm_run.get(field)!r}"
+    return True, ""
+
+
 def classify_simulated(records, stub_addr, expect_prefix=((2, "JSR"),)):
     """SIMULATED verdict for an experiment-ROM run (pure; never CONFIRMED).
 
@@ -162,8 +177,9 @@ def classify_simulated(records, stub_addr, expect_prefix=((2, "JSR"),)):
     call sequence ending at the VERIFIED stub halt, with halt PC and halt X
     matching the stub address and the last call slot in BOTH cycles),
     SIMULATED_RETURN_THEN_HALT (returned, then a non-stub halt with no
-    further API), SIMULATED_PRE_HALT (halted before any API; the experiment
-    changed nothing on that path), SIMULATED_UNEXPECTED_FIRST (the first call
+    further API, with cold/warm halt reason/PC/X identical),
+    SIMULATED_PRE_HALT (halted before any API with identical halt state;
+    the experiment changed nothing on that path), SIMULATED_UNEXPECTED_FIRST (the first call
     is not the assumed slot-2 JSR, or the halt is inconsistent with the
     recorded sequence), SIMULATED_DIVERGENT (cold/warm disagree, in calls,
     in per-call fields, or in halt outcome), SIMULATED_INCOMPLETE,
@@ -190,6 +206,9 @@ def classify_simulated(records, stub_addr, expect_prefix=((2, "JSR"),)):
     cold_calls, cold_run = by_cycle["cold"]
     warm_calls, warm_run = by_cycle["warm"]
     if not cold_calls and not warm_calls:
+        halt_ok, halt_why = halts_match(cold_run, warm_run)
+        if not halt_ok:
+            return "SIMULATED_DIVERGENT", f"cold/warm halt states differ: {halt_why}"
         return ("SIMULATED_PRE_HALT",
                 f"no API entry; halts {[cold_run['reason'], warm_run['reason']]} in both cycles")
     cold_seq = call_sequence(cold_calls, stub_addr)
@@ -218,6 +237,9 @@ def classify_simulated(records, stub_addr, expect_prefix=((2, "JSR"),)):
             return ("SIMULATED_UNEXPECTED_FIRST",
                     "recorded calls cannot reach the stub halt; "
                     f"possible unobserved entry (halts {[cold_run.get('reason'), warm_run.get('reason')]})")
+        halt_ok, halt_why = halts_match(cold_run, warm_run)
+        if not halt_ok:
+            return "SIMULATED_DIVERGENT", f"cold/warm halt states differ: {halt_why}"
         return ("SIMULATED_RETURN_THEN_HALT",
                 f"experiment slots returned, no further API; halts {[cold_run['reason'], warm_run['reason']]}")
     if all(stub_halts):
@@ -238,6 +260,9 @@ def classify_simulated(records, stub_addr, expect_prefix=((2, "JSR"),)):
     if any(stub_halts):
         return ("SIMULATED_DIVERGENT",
                 f"halt outcomes differ: {[cold_run['reason'], warm_run['reason']]}")
+    halt_ok, halt_why = halts_match(cold_run, warm_run)
+    if not halt_ok:
+        return "SIMULATED_DIVERGENT", f"cold/warm halt states differ: {halt_why}"
     return ("SIMULATED_RETURN_THEN_HALT",
             f"post-return sequence {list(cold_seq)} in both cycles, "
             f"halts {[cold_run['reason'], warm_run['reason']]}")

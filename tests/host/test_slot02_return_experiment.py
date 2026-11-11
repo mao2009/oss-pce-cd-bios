@@ -396,6 +396,35 @@ class ClassifySimulatedTests(unittest.TestCase):
         verdict, _ = S.classify_simulated(_records(calls, runs), self.STUB)
         self.assertEqual(verdict, "SIMULATED_NEXT_API")
 
+    def test_halt_pc_mismatch_diverges(self):
+        calls = [_call("cold"), _call("warm")]
+        runs = [_run("cold", reason="cd_halt_fail", pc=0xF100),
+                _run("warm", reason="cd_halt_fail", pc=0xF101)]
+        verdict, detail = S.classify_simulated(_records(calls, runs), self.STUB)
+        self.assertEqual(verdict, "SIMULATED_DIVERGENT")
+        self.assertIn("halt pc", detail)
+
+    def test_halt_x_mismatch_diverges(self):
+        calls = [_call("cold"), _call("warm")]
+        runs = [_run("cold", reason="cd_halt_fail", pc=0xF100, x=0),
+                _run("warm", reason="cd_halt_fail", pc=0xF100, x=1)]
+        verdict, detail = S.classify_simulated(_records(calls, runs), self.STUB)
+        self.assertEqual(verdict, "SIMULATED_DIVERGENT")
+        self.assertIn("halt x", detail)
+
+    def test_pre_halt_reasons_differ_diverges(self):
+        runs = [_run("cold", reason="cd_halt_fail", pc=0xF100),
+                _run("warm", reason="cd_halt_ok", pc=0x3000)]
+        verdict, _ = S.classify_simulated(_records([], runs), self.STUB)
+        self.assertEqual(verdict, "SIMULATED_DIVERGENT")
+
+    def test_halts_match_pure(self):
+        ok, _ = S.halts_match(_run("cold"), _run("warm"))
+        self.assertTrue(ok)
+        ok2, why = S.halts_match(_run("cold", pc=0xF100), _run("warm", pc=0xF101))
+        self.assertFalse(ok2)
+        self.assertIn("halt pc", why)
+
     def test_calls_match_pure(self):
         ok, _ = S.calls_match([_call("cold")], [_call("warm")])
         self.assertTrue(ok)
