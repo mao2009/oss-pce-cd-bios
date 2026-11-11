@@ -40,10 +40,14 @@ New gate: `tools/verify_build_diff.py` (runs in `make check`, hence in CI `make 
 2. **Build-logic import check** — `tools/build*.py`, `tools/environment.py`, `tools/rom.py` must not
    import probe modules (`compile_probe`, `reference_jsr_gate`, `geargrafx_api`, guard drivers) and
    must not reference `tests/integration/patches/`.
-3. **Mode-branch check (AST)** — every use of the `mode` name in `tools/build.py`/`tools/build_rom.py`
-   must match the debug-info-only allowlist (`-g`/`-l` selection, `MODE` plumbing, manifest echo).
-   A new `mode`-dependent source/link/padding branch FAILs closed, so a future functional fork
-   cannot silently split debug and release behavior.
+3. **Mode-branch check (AST body check)** — every `if`/`while` test and every ternary in
+   `tools/build.py`/`tools/build_rom.py` that mentions `mode`, `args.mode`, or a `MODE`-environ
+   lookup (directly or through an alias assigned from a mode test, e.g. `debug = mode == 'debug' ...`)
+   has its whole body validated: only debug-info/output/manifest ops (`-g`/`-l` command flags with
+   output paths, validation `raise`, logging, the manifest `"mode"` echo) may vary by mode. Any
+   mode-dependent ROM-input/link/byte change, import, file/subprocess effect, return payload, or
+   mode-defined function FAILs closed, so a future functional fork cannot silently split debug and
+   release behavior (a line-regex allowlist missed `args.mode`/`environ`/alias/ternary forks).
 4. **Release-gate check** — `Makefile: release` still refuses with `BLOCKED`/exit 1;
    `dev-release-gate` still routes to `tools/build_rom.py --release-gate`; `release_gate()` still
    raises `ReleaseBlocked` for both the empty and the fully-overridden slot set; spec ledgers keep
@@ -51,16 +55,23 @@ New gate: `tools/verify_build_diff.py` (runs in `make check`, hence in CI `make 
 5. **Patch-isolation check** — `tests/integration/patches/` exists with its GPL `LICENSE` and
    `README.md` isolation note; no workflow upload `path:` stages it, the core `.so`, or `TOOLS_DIR`
    objects; `tools/environment.py` keeps the `TOOLS_DIR`-outside-repo refusal.
-6. **Release-artifact scan (when outputs exist)** — if `build/debug` and `build/release` smoke ROMs
-   are present they must be byte-identical and marker-free; when absent the disposition is
-   `NOT_RUN`, never PASS-by-absence. Content signatures stay with `tools/artifact_guard.py`; license
+6. **Release-artifact scan (byte-compare when buildable)** — existing `build/debug` + `build/release`
+   smoke ROMs are byte-compared when present; otherwise both modes are rebuilt from source with the
+   pinned cc65 and compared. When neither is possible the disposition is `SKIPPED` with the reason,
+   never PASS-by-absence; the report's `byte_identity.verdict` is `PASS` only when bytes were actually
+   compared equal (`FAIL` on mismatch, `SKIPPED` otherwise). Compared ROMs must also be marker-free.
+   Content signatures stay with `tools/artifact_guard.py`; license
    markers stay with `tools/provenance_guard.py`; reproducibility stays with
    `tools/rom_provenance.py`. This gate adds the hook/GPL-text and mode-fork tripwires those do not state.
 
-Regression test: `tests/host/test_724_build_diff_audit.py` (10 tests, static only). Positive: HEAD scans
-clean, gates intact, report verdict PASS with UNKNOWNs preserved. Negative (mutation): injected
-`gg_verify` marker, injected GPL text, new `mode=="release"` behavior branch, and a probe import each
-FAIL closed. `release_gate` refusal is exercised for `set()` and `set(range(81))`.
+Regression test: `tests/host/test_724_build_diff_audit.py` (22 tests, static only + opportunistic
+rebuild-compare). Positive: HEAD scans clean, gates intact, report verdict PASS with UNKNOWNs preserved,
+byte-identity `PASS` via rebuilt compare when the pinned cc65 is usable. Negative (mutation): injected
+`gg_verify` marker, injected GPL text, new `mode=="release"` behavior branch, a probe import, plus
+MAJOR-2 bypass classes (`args.mode` source swap, `debug`-alias link fork, `MODE`-environ config fork,
+mode ternary source fork, mode-gated import/subprocess/`-D` flag/`append`/manifest-write/return) each
+FAIL closed; differing debug/release ROMs FAIL; a skipped comparison yields `byte_identity` `SKIPPED`,
+never `PASS`. `release_gate` refusal is exercised for `set()` and `set(range(81))`.
 
 ## 3. What stays UNKNOWN (explicitly not PASS)
 
@@ -83,10 +94,10 @@ Host-model, static only. No emulator run, no real-core diagnostic, no commercial
 `./rom/` input. Geargrafx observations cited from prior docs are not proof of hardware behavior.
 
 - `python3 tools/verify_build_diff.py` → `PASS 724 build-diff audit` (exit 0) on HEAD `864d979c`
-  + this change; `--report` emits `verdict=PASS`, `release_artifact_scan=CHECKED` (authoring-checkout
-  `build/debug` vs `build/release` smoke ROMs byte-identical, sha256
-  `8d659d6f…fa25` both), `unmeasured_UNKNOWN` as above.
-- `python3 -m unittest discover -s tests/host -p 'test_724*' -v` → 10 tests OK.
+  + this change; `--report` emits `verdict=PASS`, `release_artifact_scan=CHECKED (byte-identical,
+  rebuilt from source with pinned cc65)` and `byte_identity.verdict=PASS` (both modes sha256
+  `8d659d6f…fa25`), `unmeasured_UNKNOWN` as above.
+- `python3 -m unittest discover -s tests/host -p 'test_724*' -v` → 22 tests OK.
 - `make check` (adds the new gate) and full `make test` / CI: to be recorded by review/CI, not claimed here.
 - Real-core diagnostics: NOT_RUN in this change. Prior verification-only measurements (#498/#499/#645
   series, #653/#654) are referenced, not re-executed or re-adjudicated.
@@ -99,5 +110,6 @@ Host-model, static only. No emulator run, no real-core diagnostic, no commercial
   publication routes outside the artifact guard (same limit as `tools/artifact_guard.py`).
 - GPL-license suitability of the local probe link itself stays unconfirmed per
   `docs/173-safety-monitor-limits.md`; this gate only proves the hooks do not ship in release inputs.
-- `build/` outputs are untracked and were present in the authoring checkout; the CHECKED scan there is
-  checkout-local, not a CI attestation.
+- `build/` outputs are untracked and were absent in the authoring checkout, so the CHECKED scan there
+  is a same-checkout rebuild-compare with the pinned cc65 (checkout-local, not a CI attestation); where
+  the toolchain is unusable the verdict is SKIPPED, never PASS.
