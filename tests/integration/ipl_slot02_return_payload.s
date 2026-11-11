@@ -47,6 +47,8 @@ payload_entry:
     ldx #$11
     ldy #$22
     jsr SEQ2
+spin:
+    bra spin
 payload_halt:
     bra payload_halt
 .else
