@@ -682,7 +682,6 @@ class ClassifySimulatedTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 S.check_synthetic_receipt(out, "nope", (0x02,), "debug", 756)
 
-<<<<<<< HEAD
     def test_sp_chain_restored(self):
         # MEDIUM-1 RED set: every adjacent pair must share the SP level.
         def chain(levels):
