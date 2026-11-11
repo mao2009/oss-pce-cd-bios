@@ -94,16 +94,6 @@ def run_labels(tmp: Path, name: str, halt: int, base_addrs: dict) -> Path:
     return labels
 
 
-def sp_balanced(calls: list) -> bool:
-    """First sp_before equals last sp_after (JSR/RTS pairs nest cleanly)."""
-    if not calls:
-        return False
-    try:
-        return calls[0]["sp_before"] == calls[-1]["sp_after"]
-    except KeyError:
-        return False
-
-
 CALL_COMPARE_FIELDS = ("in_table", "slot", "caller_pc", "entry_pc", "sp_before", "sp_after",
                          "sp_delta", "caller_a", "caller_x", "caller_y", "caller_p", "mpr",
                          "stack_check", "return_matches_caller")
@@ -309,10 +299,42 @@ def validate_table_call(call) -> tuple:
     if (type(mpr) is not list or len(mpr) != 8
             or any(type(b) is not int or not 0 <= b <= 0xFF for b in mpr)):
         return False, f"mpr must be 8 bytes: {mpr!r}"
-    if call.get("stack_check") not in ("MATCH", "MISMATCH", "UNKNOWN"):
-        return False, f"bad stack_check: {call.get('stack_check')!r}"
-    if call.get("return_matches_caller") not in (True, False, None):
-        return False, f"bad return flag: {call.get('return_matches_caller')!r}"
+    before, after, delta = call.get("sp_before"), call.get("sp_after"), call.get("sp_delta")
+    if ((before - after) & 0xFF) != delta:
+        return False, (f"sp inconsistent: before ${before:02X} after ${after:02X} "
+                       f"delta {delta} (8-bit wraparound applied)")
+    check = call.get("stack_check")
+    ret = call.get("return_matches_caller")
+    if check not in ("MATCH", "MISMATCH", "UNKNOWN"):
+        return False, f"bad stack_check: {check!r}"
+    if (check, ret) not in (("MATCH", True), ("MISMATCH", False), ("UNKNOWN", None)):
+        return False, f"stack_check/return flag inconsistent: {check!r}/{ret!r}"
+    return True, ""
+
+
+def validate_run(run) -> tuple:
+    """Strict structural validation of one RUN record (pure).
+
+    Requires reason (non-empty string), pc (16-bit), x (8-bit), strict-bool
+    halt_confirmed, and strict-bool apicall_truncated. Step counts are not
+    validated (they legitimately differ cold/warm). Anything malformed is
+    FAIL, never a success classification.
+    """
+    if not isinstance(run, dict):
+        return False, "run is not an object"
+    reason = run.get("reason")
+    if type(reason) is not str or not reason:
+        return False, f"bad halt reason: {reason!r}"
+    pc = run.get("pc")
+    if type(pc) is not int or not 0 <= pc <= 0xFFFF:
+        return False, f"halt pc out of range: {pc!r}"
+    x = run.get("x")
+    if type(x) is not int or not 0 <= x <= 0xFF:
+        return False, f"halt x out of range: {x!r}"
+    if type(run.get("halt_confirmed")) is not bool:
+        return False, f"bad halt_confirmed: {run.get('halt_confirmed')!r}"
+    if type(run.get("apicall_truncated")) is not bool:
+        return False, f"bad apicall_truncated: {run.get('apicall_truncated')!r}"
     return True, ""
 
 
@@ -411,6 +433,10 @@ def classify_simulated(records, stub_addr):
     apis = records.get("APICALL", [])
     if len(runs) != 2:
         return "FAIL", "missing cold/warm runs"
+    for r in runs:
+        rok, rwhy = validate_run(r)
+        if not rok:
+            return "FAIL", f"malformed RUN record: {rwhy}"
     if any(r.get("reason") == "budget" or r.get("halt_confirmed") is not True for r in runs):
         return "SIMULATED_BUDGET", "no confirmed halt (budget is not a halt)"
     if any(r.get("apicall_truncated") is True for r in runs):
@@ -501,6 +527,13 @@ def judge_seq(tmp, probe, rom, base_addrs, stub_addr, name, defines, budget, on_
         if len(runs) != 1:
             raise ValueError(f"{name} {cycle}: RUN count")
         run = runs[0]
+        rok, rwhy = validate_run(run)
+        if not rok:
+            fails.append(f"{cycle}: malformed RUN record: {rwhy}")
+            continue
+        if any(not validate_table_call(c)[0] for c in calls):
+            fails.append(f"{cycle}: malformed APICALL record(s)")
+            continue
         if on_base:
             if len(calls) != 1:
                 fails.append(f"{cycle}: control expects 1 APICALL, got {len(calls)}")

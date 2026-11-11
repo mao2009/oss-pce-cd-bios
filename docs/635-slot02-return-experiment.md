@@ -53,8 +53,13 @@ whole-image diff assertion at build time.
 Call records are structurally validated before any classification: required
 fields must exist with the right types and ranges, `entry_pc` must equal
 `0xE000 + slot*3`, MPR must be 8 bytes, and SP/return evidence must be
-well-formed. Missing or malformed fields can never match, and corrupt records
-can never form a call sequence.
+well-formed. SP must satisfy `(sp_before - sp_after) & 0xFF == sp_delta`
+(8-bit wraparound applied), and `stack_check`/`return_matches_caller` must
+form a genuine probe pairing (`MATCH`/`True`, `MISMATCH`/`False`,
+`UNKNOWN`/`None`). RUN records are validated too (non-empty reason string,
+16-bit PC, 8-bit X, strict-bool `halt_confirmed` and `apicall_truncated`).
+Missing or malformed fields can never match, and corrupt records can never
+form a call sequence.
 
 ## What counts as return evidence (A-2)
 

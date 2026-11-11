@@ -22,7 +22,7 @@ import geargrafx_slot02_return as S  # noqa: E402
 
 
 def _call(cycle="cold", caller=0x3014, entry=0xE006, table=True, slot=2,
-          sdelta=2, before=0x80, after=0x80, a=0xAA, check="MATCH", ret=True):
+          sdelta=2, before=0x80, after=0x7E, a=0xAA, check="MATCH", ret=True):
     return {"cycle": cycle, "caller_pc": caller, "entry_pc": entry, "in_table": table,
             "slot": slot, "sp_before": before, "sp_after": after, "sp_delta": sdelta,
             "caller_a": a, "caller_x": 0x11, "caller_y": 0x22, "caller_p": 5,
@@ -276,11 +276,48 @@ class ClassifySimulatedTests(unittest.TestCase):
         a = _call("cold")
         b = dict(_call("warm"))
         b["sp_before"] = 0x7F
+        b["sp_after"] = 0x7D  # consistent JSR shape, different SP level
         runs = [_run("cold", reason="api_unimplemented", pc=self.STUB, x=2),
                 _run("warm", reason="api_unimplemented", pc=self.STUB, x=2)]
         verdict, detail = S.classify_simulated(_records([a, b], runs), self.STUB)
         self.assertEqual(verdict, "SIMULATED_DIVERGENT")
         self.assertIn("sp_before", detail)
+
+    def test_run_record_negatives(self):
+        # MEDIUM-3 RED set: malformed RUN records are FAIL, never success.
+        base = _run("cold")
+        bads = []
+        no_reason = dict(base); del no_reason["reason"]
+        bads.append(no_reason)
+        no_pc = dict(base); del no_pc["pc"]
+        bads.append(no_pc)
+        no_x = dict(base); del no_x["x"]
+        bads.append(no_x)
+        oob_pc = dict(base); oob_pc["pc"] = 0x10000
+        bads.append(oob_pc)
+        oob_x = dict(base); oob_x["x"] = 256
+        bads.append(oob_x)
+        str_conf = dict(base); str_conf["halt_confirmed"] = "true"
+        bads.append(str_conf)
+        str_trunc = dict(base); str_trunc["apicall_truncated"] = "0"
+        bads.append(str_trunc)
+        self.assertEqual(len(bads), 7)
+        for bad in bads:
+            valid, _ = S.validate_run(bad)
+            self.assertFalse(valid, bad)
+        # One-sided omission is equally malformed.
+        one = dict(_run("warm")); del one["pc"]
+        valid, _ = S.validate_run(one)
+        self.assertFalse(valid)
+        # Malformed RUNs never classify: FAIL even with a clean call.
+        bad_warm = dict(_run("warm"))
+        del bad_warm["pc"]
+        verdict, _ = S.classify_simulated(
+            _records([_call("cold")], [_run("cold"), bad_warm]), self.STUB)
+        self.assertEqual(verdict, "FAIL")
+        # A valid RUN still classifies normally.
+        valid, _ = S.validate_run(_run("cold"))
+        self.assertTrue(valid)
 
     def test_steps_may_differ(self):
         # Step counts legitimately differ cold/warm; they must not force DIVERGENT.
@@ -541,10 +578,41 @@ class ClassifySimulatedTests(unittest.TestCase):
         self.assertTrue(verdict.startswith("SIMULATED_"))
         self.assertNotIn("CONFIRMED", verdict)
 
-    def test_sp_balance(self):
-        self.assertTrue(S.sp_balanced([_call(before=0x80, after=0x7E), _call(before=0x7E, after=0x80)]))
-        self.assertFalse(S.sp_balanced([_call(before=0x80, after=0x7E), _call(before=0x7E, after=0x7D)]))
-        self.assertFalse(S.sp_balanced([]))
+    def test_sp_consistency_positives(self):
+        # Genuine JSR evidence shape: delta == (before - after) mod 256.
+        ok, _ = S.validate_table_call(_call())  # 0x80/0x7E/2
+        self.assertTrue(ok)
+        wrap = _call(before=0x01, after=0xFF)  # (0x01 - 0xFF) & 0xFF == 2
+        ok, _ = S.validate_table_call(wrap)
+        self.assertTrue(ok)
+        jmp = _call(sdelta=0, after=0x80)  # JMP pushes nothing
+        ok, _ = S.validate_table_call(jmp)
+        self.assertTrue(ok)
+
+    def test_sp_consistency_negatives(self):
+        # MEDIUM-2 RED set: inconsistent SP evidence must never classify.
+        bads = [
+            _call(after=0x80),                      # 0x80/0x80/2: delta wrong
+            _call(after=0x7E, sdelta=1),            # 0x80/0x7E/1: delta wrong
+            _call(before=0x01, after=0x00),         # wraparound mismatch
+            _call(sdelta=256),                      # out of byte range
+        ]
+        for bad in bads:
+            valid, why = S.validate_table_call(bad)
+            self.assertFalse(valid, bad)
+            self.assertIn("sp", why)}
+
+    def test_stack_return_flag_pairing(self):
+        # Probe contract pairings: only (MATCH,True), (MISMATCH,False),
+        # (UNKNOWN,None) are genuine; anything else is inconsistent.
+        for check, ret in (("MATCH", True), ("MISMATCH", False), ("UNKNOWN", None)):
+            valid, _ = S.validate_table_call(_call(check=check, ret=ret))
+            self.assertTrue(valid, (check, ret))
+        for check, ret in (("MATCH", False), ("MATCH", None), ("MISMATCH", True),
+                           ("MISMATCH", None), ("UNKNOWN", True), ("UNKNOWN", False),
+                           ("bogus", True)):
+            valid, _ = S.validate_table_call(_call(check=check, ret=ret))
+            self.assertFalse(valid, (check, ret))
 
 
 class StubAssemblyTests(unittest.TestCase):
