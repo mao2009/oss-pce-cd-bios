@@ -129,6 +129,17 @@ def _check_global_inputs(all_lines: list[str]) -> list[str]:
 # is still caught by the same scan.
 _EVAL_SIDE_EFFECT_FUNCS = ("shell", "file", "call", "eval")
 
+# Reference to the special prerequisite-injecting variable, either
+# reference syntax. Checked before anything else: no legitimate use exists
+# in this repository.
+_EXTRA_PREREQS_REF = re.compile(r"\$[\(\{]\s*\.EXTRA_PREREQS\b")
+
+# Bare mention of the exact special variable name (definition in any
+# flavor/prefix/spacing, or a target line reusing the name). A longer name
+# such as `.EXTRA_PREREQS_FOO` is a distinct ordinary variable with no
+# special meaning and must not trip the check.
+_EXTRA_PREREQS_MENTION = re.compile(r"\.EXTRA_PREREQS(?![A-Za-z0-9_.-])")
+
 # Immediate flavors evaluate their right-hand side at parse time. '+=' is
 # immediate when the variable is already simply expanded and deferred
 # otherwise -- statically undecidable, so it is treated as immediate
@@ -218,6 +229,14 @@ def _check_evaluation_time_side_effects(
     backslash-split evasion). Everywhere else (assignments, prerequisites,
     directives, export values) expansions fire at parse time, so any
     side-effecting call, backtick, or '!=' operator is refused.
+
+    GNU Make also honors the special variable .EXTRA_PREREQS: any value
+    assigned to it is appended to the prerequisites of every target,
+    including `release:`. A stub recipe with no direct prerequisites would
+    then run the injected prerequisite first, so any mention of
+    .EXTRA_PREREQS outside comments -- in any assignment flavor,
+    override/export form, continuation, or spacing -- is refused, as is
+    any $(.EXTRA_PREREQS)/${.EXTRA_PREREQS} reference anywhere.
     """
     problems: list[str] = []
     for text, lineno in _logical_lines(all_lines):
@@ -225,6 +244,20 @@ def _check_evaluation_time_side_effects(
             continue
         collapsed = _collapse_escaped_dollars(text)
         is_recipe = text.startswith("\t")
+        if _EXTRA_PREREQS_REF.search(collapsed) is not None:
+            problems.append(
+                f"Makefile line {lineno}: '$(.EXTRA_PREREQS)' reference "
+                "refused (indirect prerequisite injection vector; "
+                "fail-closed)"
+            )
+            continue
+        if not is_recipe and _EXTRA_PREREQS_MENTION.search(collapsed) is not None:
+            problems.append(
+                f"Makefile line {lineno}: '.EXTRA_PREREQS' definition or "
+                "mention outside any recipe refused (appends prerequisites "
+                "to every target including 'release'; fail-closed)"
+            )
+            continue
         if is_recipe:
             # Only $(eval) matters at parse time inside recipes; it is
             # refused here on joined text (the physical-line scan could
