@@ -387,6 +387,72 @@ class BuildDiffAuditGate(unittest.TestCase):
             self.assertTrue(any("release" in p for p in problems),
                             f"decoy BLOCKED/exit-1 outside release target not refused: {problems}")
 
+    def _gate_tmp_root(self, directory: str, makefile_text: str | None = None) -> Path:
+        # Temp root for check_release_gates delegation tests: HEAD Makefile
+        # (or the given text) plus the tools the gate loads (shared guard +
+        # build_rom). Static only, nothing executed.
+        from release_makefile_guard import check_release_makefile as _shared  # noqa: E402,F401
+        tmp = Path(directory)
+        (tmp / "tools").mkdir(parents=True)
+        shutil.copyfile(ROOT / "tools/build_rom.py", tmp / "tools/build_rom.py")
+        shutil.copyfile(ROOT / "tools/release_makefile_guard.py",
+                        tmp / "tools/release_makefile_guard.py")
+        if makefile_text is None:
+            makefile_text = (ROOT / "Makefile").read_text(encoding="utf-8")
+        (tmp / "Makefile").write_text(makefile_text, encoding="utf-8")
+        return tmp
+
+    def test_release_gate_delegates_to_shared_guard(self):
+        # MAJOR-3: both gates share one contract. Legit tree => both empty;
+        # every #769-class mutant => both non-empty (no判定差).
+        from release_makefile_guard import check_release_makefile as shared
+        self.assertEqual(VBD.check_release_gates(ROOT), [])
+        self.assertEqual(shared(ROOT), [])
+        mutants = [
+            "include extras.mk\n",
+            "-include extras.mk\n",
+            "sinclude extras.mk\n",
+            "$(eval release: preflight)\n",
+            "release: preflight\n",
+            "release::\n\t@exit 1\n",
+            ".RECIPEPREFIX = >\n",
+            "release:\n\t@echo 'BLOCKED: $(shell printf MAKE_EXPANDED)' >&2\n\t@exit 1\n",
+        ]
+        base = (ROOT / "Makefile").read_text(encoding="utf-8")
+        for mutant in mutants:
+            with tempfile.TemporaryDirectory() as directory:
+                tmp = self._gate_tmp_root(directory, base + mutant)
+                gate_problems = VBD.check_release_gates(tmp)
+                shared_problems = shared(tmp)
+                self.assertTrue(gate_problems,
+                                f"shared-guard mutant not refused by gate: {mutant!r}")
+                self.assertTrue(shared_problems,
+                                f"shared guard missed its own mutant: {mutant!r}")
+
+    def test_release_gate_external_include_prereq_add_fails_closed(self):
+        # MAJOR-3 headline: release stub intact but an included file adds a
+        # `release: preflight` prerequisite, so `preflight` would run before
+        # the refusal. Nonzero exit alone proves nothing => RED.
+        base = (ROOT / "Makefile").read_text(encoding="utf-8")
+        with tempfile.TemporaryDirectory() as directory:
+            tmp = self._gate_tmp_root(directory, base + "include extras.mk\n")
+            (tmp / "extras.mk").write_text(
+                "release: preflight\n\npreflight:\n\t@printf 'SYNTHETIC_PREFLIGHT\\n'\n",
+                encoding="utf-8")
+            problems = VBD.check_release_gates(tmp)
+            self.assertTrue(any("include" in p.lower() or "release" in p.lower()
+                                for p in problems),
+                            f"external-include prereq add not refused: {problems}")
+
+    def test_release_gate_eval_redefinition_fails_closed(self):
+        base = (ROOT / "Makefile").read_text(encoding="utf-8")
+        with tempfile.TemporaryDirectory() as directory:
+            tmp = self._gate_tmp_root(directory, base + "$(eval release: preflight)\n")
+            problems = VBD.check_release_gates(tmp)
+            self.assertTrue(any("eval" in p.lower() or "release" in p.lower()
+                                for p in problems),
+                            f"$(eval) redefinition not refused: {problems}")
+
     def test_artifact_identical_outputs_checked(self):
         # Byte evidence comes from a fresh rebuild, never from stale build/
         # files: identical rebuilt bytes CHECK with matching sha256.

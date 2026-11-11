@@ -684,87 +684,26 @@ def check_mode_branches(root: Path = ROOT) -> list[str]:
 def check_release_gates(root: Path = ROOT) -> list[str]:
     """The existing BLOCKED release gates must still refuse."""
     problems: list[str] = []
-    # 1. Makefile `release` target stays exactly the 2-line BLOCKED stub
-    # (static recipe check, consistent with PR #769
-    # tools/failclosed_gate.py::check_makefile_release; no cross-branch
-    # import -- this gate duplicates the whitelist so the two stay
-    # consistent via review/serial merge, not via shared code). A blacklist
-    # over BLOCKED/exit-1 substrings anywhere in the file would accept a
-    # gutted `release:` recipe so long as those strings appeared under some
-    # other target, so only the exact `release:` recipe is examined here.
-    makefile = root / "Makefile"
+    # 1. Makefile `release` target: delegate to the shared guard from PR #769
+    # (tools/release_makefile_guard.py::check_release_makefile), merged here
+    # via normal merge so both gates share one contract. The old duplicated
+    # whitelist is removed to avoid divergence.
+    sys.path.insert(0, str(root / "tools"))
     try:
-        text = makefile.read_text(encoding="utf-8")
+        from release_makefile_guard import check_release_makefile as _check_rm  # noqa: E402
+    except Exception as error:  # noqa: BLE001
+        return [f"release_makefile_guard: cannot load shared guard ({error}; fail-closed)"]
+    try:
+        problems.extend(_check_rm(root))
+    finally:
+        try:
+            sys.path.remove(str(root / "tools"))
+        except ValueError:
+            pass
+    try:
+        text = (root / "Makefile").read_text(encoding="utf-8")
     except OSError as error:
-        return [f"Makefile: unreadable ({error})"]
-    match = re.search(r"^release:\n((?:\t.*\n?)+)", text, re.M)
-    if match is None:
-        problems.append("Makefile: missing `release:` target with a TAB-indented recipe")
-    else:
-        recipe = match.group(1)
-        lines = recipe.splitlines()
-        if len(lines) != 2:
-            problems.append(
-                "Makefile: `release` recipe must be exactly 2 lines"
-                f" (@echo BLOCKED-stub + @exit 1), found {len(lines)}")
-        for index, line in enumerate(lines, start=1):
-            if not line.startswith("\t"):
-                problems.append(f"Makefile: `release` line {index}: must start with TAB")
-                continue
-            body = line[1:]
-            if body.startswith("-"):
-                problems.append(
-                    f"Makefile: `release` line {index}: '-' (ignore-error) prefix forbidden"
-                    " (would neutralise 'exit 1')")
-            if not body.startswith("@"):
-                problems.append(
-                    f"Makefile: `release` line {index}: must use '@' prefix"
-                    f" (got {body[:12]!r}; conditional/silent bypass refused)")
-        if lines:
-            body1 = lines[0][1:] if lines[0].startswith("\t") else lines[0]
-            if not re.fullmatch(r"@echo\s+'BLOCKED:.*'\s+>&2\s*", body1):
-                problems.append(
-                    "Makefile: `release` line 1 must be \"@echo 'BLOCKED: ...' >&2\""
-                    f" (got {body1!r}; preceding build commands refused)")
-        if len(lines) >= 2:
-            body2 = lines[1][1:] if lines[1].startswith("\t") else lines[1]
-            if body2.strip() != "@exit 1":
-                if "exit 1" not in body2:
-                    problems.append("Makefile: `release` recipe must end with '@exit 1'")
-                else:
-                    problems.append(
-                        f"Makefile: `release` line 2 must be exactly '@exit 1'"
-                        f" (got {body2!r}; conditional/chained success refused)")
-            if ";" in body2 or "||" in body2 or "&&" in body2 or "|" in body2:
-                problems.append(
-                    "Makefile: `release` line 2: shell chaining"
-                    f" (';'/||/&&/|) forbidden (got {body2!r})")
-        if "BLOCKED" not in recipe:
-            problems.append("Makefile: `release` recipe lacks BLOCKED")
-        if re.search(r"exit\s+0\b", recipe):
-            problems.append("Makefile: `release` recipe must not contain 'exit 0'"
-                            " (conditional success refused)")
-        code_outside_quotes = re.sub(r"'[^']*'", "''", recipe)
-        code_no_redir = code_outside_quotes.replace(">&2", "")
-        for token in (";", "||", "&&", "|", "`", "$(", "${", ">", "<", "#"):
-            if token in code_no_redir:
-                problems.append(
-                    f"Makefile: `release` recipe: {token!r} outside quoted message forbidden"
-                    " (chaining/substitution/redirection refused)")
-                break
-        if re.search(r"\btrue\b", code_no_redir) or re.search(r"\bfalse\b", code_no_redir):
-            problems.append(
-                "Makefile: `release` recipe must not contain 'true'/'false'"
-                " (success-masking refused)")
-        for forbidden in ("build_rom.py", "--mode release", "release_eligible=true",
-                          "ALLOWED", "release_eligible = True", "build_rom",
-                          "$(PYTHON)", "${", "rm ", "rm\t", "cp ", "mv ",
-                          "chmod", "chown", "curl", "wget", "python"):
-            if forbidden in recipe:
-                problems.append(
-                    f"Makefile: `release` recipe must not contain {forbidden!r}"
-                    " (preceding build / dangerous statement refused)")
-                break
+        return problems + [f"Makefile: unreadable ({error})"]
     if "tools/build_rom.py --release-gate" not in text:
         problems.append("Makefile: dev-release-gate no longer routes to tools/build_rom.py --release-gate")
     # 2. build_rom.release_gate must refuse even a fully overridden slot set.
