@@ -76,11 +76,26 @@ def _int(value, name):
     return value
 
 
+MAX_LBA = 0xFFFFFF  # disc LBA / block numbers live in the 24-bit space (tools/cd_base_model.py)
+
+
+def _check_lba(value, name):
+    """Type-check then range-check a disc LBA / block number. Never wraps; rejects out of range."""
+    _int(value, name)
+    if not 0 <= value <= MAX_LBA:
+        raise ValueError(f"{name} out of 24-bit range: {value}")
+    return value
+
+
 def _issued(rows):
-    """Rows where a READ was actually issued (read_lba not null); block/read_lba type-checked."""
+    """Rows where a READ was actually issued (read_lba not null).
+
+    block is type- and range-checked (caller input, 24-bit); read_lba is the
+    harness-reported SCSI value and is type-checked only, reported verbatim.
+    """
     out = []
     for row in rows:
-        _int(row["block"], "block")
+        _check_lba(row["block"], "block")
         if row.get("read_lba") is not None:
             _int(row["read_lba"], "read_lba")
             out.append(row)
@@ -120,7 +135,7 @@ def judge(record) -> dict:
     if not record or record.get("callee") != "returned":
         reason = (record or {}).get("callee_reason", "no executable CD_BASE callee")
         return {q: {"status": "BLOCKED", "reason": reason} for q in QUESTIONS}
-    index01 = _int(record.get("fixture_index01_lba"), "fixture_index01_lba")
+    index01 = _check_lba(record.get("fixture_index01_lba"), "fixture_index01_lba")
     plain_offset, reason = _constant_offset(record.get("plain_reads", []))
     if plain_offset is None:
         out["(2)"] = {"status": "UNKNOWN", "reason": reason}
