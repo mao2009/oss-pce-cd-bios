@@ -37,6 +37,13 @@ result is reported as `SIMULATED_*` / CONDITIONAL.
 Only the two completed outcomes exit 0. Abnormal results still save the
 sanitized evidence JSON when the output path is writable.
 
+Synthetic halt expectations (Cycle 8): stub-halt paths require
+`halt_confirmed is True`, `apicall_truncated is False`, and matching
+reason/X/PC; unconfirmed halts and truncated traces never PASS. The budget
+path requires `reason == "budget"`, `halt_confirmed is False`, and
+`apicall_truncated is False`; a halted or truncated budget run is never a
+budget PASS.
+
 The commercial path requires a matching synthetic PASS receipt
 (`build/<mode>/slot02-return/synthetic-receipt-<slots>-<mode>.json`): the
 (variant, slots, issue) triple must be allowlisted
