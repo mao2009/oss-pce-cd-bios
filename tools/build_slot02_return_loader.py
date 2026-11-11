@@ -141,6 +141,28 @@ def experiment_manifest(base_name: str, exp_name: str, data: bytes, symbols: dic
     }
 
 
+def _clean_variant_files(output: Path, variant: str) -> None:
+    """Remove this variant's regenerable build artifacts (gitignored out dir only).
+
+    The normal pipeline overwrites freely; the experiment keeps a no-overwrite
+    guard as a concurrent-run backstop, so stale files from a previous local
+    run of the SAME variant are removed up front. Only exact variant filenames
+    are touched; anything else (including other variants) is left alone.
+    """
+    base_variant = f"{variant}-base"
+    exp_name = f"dev-ipl-loader-bios-not-compatible-{variant}.pce"
+    for name in (f"dev-ipl-loader-bios-not-compatible-{base_variant}.pce",
+                 f"ipl-loader-bios-{base_variant}.lbl", f"ipl-loader-bios-{base_variant}.map",
+                 f"ipl_loader_{base_variant}.o", f"manifest-{base_variant}.json",
+                 exp_name, f"manifest-{variant}-experiment.json"):
+        try:
+            (output / name).unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as error:
+            raise ValueError(f"cannot clean stale {name}: {error}") from None
+
+
 def build_slot02_return_bios(original_path: Path, output: Path, sel: int, mode: str = "debug",
                              variant: str = "slot02ret", defines=(),
                              private_input: bool = False):
@@ -149,6 +171,7 @@ def build_slot02_return_bios(original_path: Path, output: Path, sel: int, mode: 
         raise ValueError("MODE must be debug or release")
     defines = list(defines) or ["-D", "IPL_PUBLIC"]
     output.mkdir(parents=True, exist_ok=True)
+    _clean_variant_files(output, variant)
     base_variant = f"{variant}-base"
     base_rom, _ = build_ipl_loader_bios(original_path, output, sel, mode, base_variant, defines,
                                         private_input=private_input)

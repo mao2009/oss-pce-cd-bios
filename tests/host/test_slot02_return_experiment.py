@@ -14,7 +14,8 @@ sys.path[:0] = [str(ROOT / "tools"), str(ROOT / "tests" / "integration")]
 
 from build_rom import overrides  # noqa: E402
 from build_slot02_return_loader import (  # noqa: E402
-    PATCH_LEN, RTS, apply_patch, experiment_manifest, patch_preview,
+    PATCH_LEN, RTS, _clean_variant_files, apply_patch, experiment_manifest,
+    patch_preview,
 )
 from environment import requires_cc65  # noqa: E402
 import geargrafx_slot02_return as S  # noqa: E402
@@ -100,6 +101,27 @@ class PatchAccountingTests(unittest.TestCase):
             patch_preview(bytes(base), 0xE10A, 0xE245, bytes((0x8D, 0x00, 0x20)))
         with self.assertRaises(ValueError):
             patch_preview(bytes(base), 0xE10A, 0xE245, bytes((RTS, 0xEA, 0xEA, 0xEA, 0xEA, 0xEA)))
+
+
+class VariantCleanupTests(unittest.TestCase):
+    def test_clean_removes_only_this_variant(self):
+        import tempfile
+        with tempfile.TemporaryDirectory(prefix="pce-clean-") as tmp:
+            out = Path(tmp)
+            keep = ["dev-ipl-loader-bios-not-compatible-OTHER.pce",
+                    "manifest-OTHER-experiment.json", "unrelated.txt"]
+            drop = ["dev-ipl-loader-bios-not-compatible-v-base.pce",
+                    "ipl-loader-bios-v-base.lbl", "ipl-loader-bios-v-base.map",
+                    "ipl_loader_v-base.o", "manifest-v-base.json",
+                    "dev-ipl-loader-bios-not-compatible-v.pce",
+                    "manifest-v-experiment.json"]
+            for name in keep + drop:
+                (out / name).write_text("x", encoding="ascii")
+            _clean_variant_files(out, "v")
+            for name in drop:
+                self.assertFalse((out / name).exists(), name)
+            for name in keep:
+                self.assertTrue((out / name).is_file(), name)
 
 
 class ManifestFlagTests(unittest.TestCase):

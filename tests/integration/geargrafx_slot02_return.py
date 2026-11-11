@@ -249,8 +249,6 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
 
     if args.commercial:
-        if args.commercial_auto_loader and args.commercial_labels is not None:
-            pass  # explicit labels override the auto-derived experiment labels
         if args.commercial_labels is not None and not args.commercial_auto_loader:
             raise SystemExit("FAIL: experiment commercial runs require --commercial-auto-loader")
         if not args.commercial_output or not args.commercial_auto_loader:
@@ -266,7 +264,7 @@ def main():
         except ValueError as error:
             raise SystemExit(str(error))
         try:
-            dest = E.validate_commercial_output(args.commercial_output)
+            E.validate_commercial_output(args.commercial_output)
         except ValueError as error:
             raise SystemExit(f"FAIL commercial output rejected: {error}")
         try:
@@ -283,7 +281,7 @@ def main():
             raise SystemExit(str(error))
         defines = ["-D", "IPL_PUBLIC"] if args.commercial_loader_format == "public" else []
         try:
-            base_rom, exp_rom, addrs = build_slot02_return_bios(
+            base_rom, exp_rom, _addrs = build_slot02_return_bios(
                 original, out, sel, args.mode, "slot02ret-comm",
                 defines, private_input=True)
         except Exception as error:
@@ -360,7 +358,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="pce-slot02ret-") as tmp:
         tmp = Path(tmp)
         defines = ["-D", "IPL_PUBLIC"]
-        base_rom, exp_rom, addrs = build_slot02_return_bios(
+        base_rom, exp_rom, _addrs = build_slot02_return_bios(
             original, out, L.SEL, args.mode, "slot02ret", defines)
         from build_dev_ipl_loader_bios import parse_labels as _parse
         full = _parse(out / "ipl-loader-bios-slot02ret-base.lbl",
