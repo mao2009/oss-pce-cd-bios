@@ -37,6 +37,33 @@ is allowed (console text only, no execution or state change) while
 ``$(error)`` aborts the build (fail-closed outcome); both are still scanned
 for nested refused tokens. ``$$`` (escaped dollar) is collapsed before
 scanning so it cannot hide — or falsely trigger — a token match.
+
+Computed rule targets and computed variable names (``TARGET := release`` +
+``$(TARGET): preflight``, ``$(NAME) := ...`` with ``NAME`` expanding to
+``.EXTRA_PREREQS``) defeat string matching for ``release:`` /
+``.EXTRA_PREREQS``, so any ``$``/backtick in a rule-header target part or
+in a variable NAME is refused as undecidable (fail-closed), including
+nested ``$($(A))``, backslash continuations, and static-pattern first
+fields.
+
+Static classification used by this module (all static-only, never
+executed):
+
+* static-safe variable definitions: literal NAME (no ``$``/backtick) whose
+  value is scanned separately for evaluation-time side effects;
+* static-safe targets: literal target list (no ``$``/backtick); plain
+  ``$(...)`` references in *prerequisites* (``dev: $(OBJS)``) stay GREEN;
+* legit recipes: TAB-prefixed lines; only ``$(eval)`` is refused there
+  (make expands it at parse time even inside recipes);
+* dynamic reject: any ``$``/backtick in a rule-target part or variable
+  NAME (computed targets/names, nested ``$($(A))``, continuations,
+  static-pattern first fields);
+* undecidable (fail-closed, outside what text can prove): ``MAKEFILES``
+  environment includes, command-line ``VAR=value``/``-e`` overrides, and
+generated-file includes (the bare include refusal already fails closed).
+The static contract assumes the fixed CI invocation (no ``MAKEFILES``,
+no ``-e``, no command-line overrides); anything else is out of scope and
+must be refused by process, not by text scanning.
 """
 from __future__ import annotations
 
@@ -194,13 +221,17 @@ def _logical_lines(
     return logical
 
 
-def _definition_flavor_and_value(
+def _parse_definition(
     line: str,
-) -> tuple[str, str] | None:
-    """Parse '[export/override/private ...] NAME op value' (op winds shown).
+) -> tuple[str, str, str] | None:
+    """Parse '[export/override/private ...] NAME op value' (single parser).
 
-    Returns (flavor, value) with flavor in {'immediate', 'deferred',
-    'shell'} or None when the line is not a variable definition.
+    Returns (NAME, flavor, value) with flavor in {'immediate',
+    'deferred', 'shell'} or None when the line is not a variable
+    definition. This is the one definition parser shared by the
+    side-effect scan and the dynamic-name guard so the two cannot
+disagree; the NAME group is checked explicitly by the dynamic-name
+guard (computed ``$(NAME)``/``${NAME}`` names are undecidable).
     """
     match = re.match(
         r"^[ ]*(?:(?:export|override|private)[ ]+)*"
@@ -209,12 +240,111 @@ def _definition_flavor_and_value(
     )
     if match is None:
         return None
-    _name, op, value = match.group(1), match.group(2), match.group(3)
+    name, op, value = match.group(1), match.group(2), match.group(3)
     if op == "!=":
-        return ("shell", value)
+        return (name, "shell", value)
     if op in _IMMEDIATE_OPS:
-        return ("immediate", value)
-    return ("deferred", value)
+        return (name, "immediate", value)
+    return (name, "deferred", value)
+
+
+def _definition_flavor_and_value(
+    line: str,
+) -> tuple[str, str] | None:
+    """Parse '[export/override/private ...] NAME op value' (op winds shown).
+
+    Returns (flavor, value) with flavor in {'immediate', 'deferred',
+    'shell'} or None when the line is not a variable definition.
+    Delegates to :func:`_parse_definition` (NAME discarded here).
+    """
+    parsed = _parse_definition(line)
+    if parsed is None:
+        return None
+    _name, flavor, value = parsed
+    return (flavor, value)
+
+
+def _rule_target_part(text: str) -> str | None:
+    """Target part of a rule header, or None when there is no rule colon.
+
+    Finds the first ``:`` at expansion-nesting depth 0, so a ``:`` inside
+    ``$(...)``/``${...}`` (e.g. ``$(info a:b)``, a bare expansion line
+    rather than a rule) is not mistaken for the rule colon. The returned
+    part is everything before that first depth-0 colon, which is also the
+    static-pattern first field of a ``targets: target-pattern: prereqs``
+    rule (checked as undecidable when computed). ``::`` double-colon and
+    any second colon are left to the existing release-shape checks.
+    """
+    depth = 0
+    index = 0
+    total = len(text)
+    while index < total:
+        char = text[index]
+        if char == "$" and index + 1 < total and text[index + 1] in "({":
+            depth += 1
+            index += 2
+            continue
+        if char in ")}" and depth > 0:
+            depth -= 1
+            index += 1
+            continue
+        if char == ":" and depth == 0:
+            return text[:index]
+        index += 1
+    return None
+
+
+def _check_dynamic_target_and_var_names(
+    all_lines: list[str],
+) -> list[str]:
+    """Refuse computed rule targets and computed variable names.
+
+    GNU Make expands ``$(...)``/``${...}`` in rule-target position and in
+    the variable-name position of an assignment (computed names, including
+    nested ``$($(A))``; a backslash-newline is removed before parsing, so
+    continuations are joined by :func:`_logical_lines` first). String
+    matching for ``release:`` or ``.EXTRA_PREREQS`` therefore cannot see
+    through ``TARGET := release`` + ``$(TARGET): preflight`` or an
+    indirectly-spelled ``$(E)_PREREQS`` (``E := .EXTRA``) definition. Any
+    such name is statically undecidable (it may expand to ``release`` or
+    ``.EXTRA_PREREQS``), so any ``$`` or backtick in a rule-header target
+    part (static-pattern first fields included) or in a definition NAME
+    (``export``/``override``/``private`` forms included, via the NAME
+    group of the shared definition parser) is refused fail-closed.
+    Literal targets, literal NAMEs, plain ``$(...)`` references in
+    *prerequisites* (``dev: $(OBJS)``), and TAB-prefixed recipes stay
+    GREEN. ``$$`` is collapsed first so a literal dollar cannot falsely
+    trigger the check.
+    """
+    problems: list[str] = []
+    for text, lineno in _logical_lines(all_lines):
+        if text.strip() == "" or text.lstrip().startswith("#"):
+            continue
+        if text.startswith("\t"):
+            continue
+        collapsed = _collapse_escaped_dollars(text)
+        parsed = _parse_definition(collapsed)
+        if parsed is not None:
+            name, _flavor, _value = parsed
+            if "$" in name or "`" in name:
+                problems.append(
+                    f"Makefile line {lineno}: computed variable name "
+                    f"{name!r} refused (dynamic NAME expands at parse "
+                    "time; defined-variable identity undecidable without "
+                    "execution, possibly '.EXTRA_PREREQS'; fail-closed)"
+                )
+            continue
+        target = _rule_target_part(collapsed)
+        if target is None:
+            continue
+        if "$" in target or "`" in target:
+            problems.append(
+                f"Makefile line {lineno}: computed rule target "
+                f"{target.strip()!r} refused (dynamic target expands to "
+                "an undecidable target set, possibly 'release'; "
+                "static-pattern first fields included; fail-closed)"
+            )
+    return problems
 
 
 def _check_evaluation_time_side_effects(
@@ -422,6 +552,9 @@ def check_release_makefile(root: Path) -> list[str]:
     # 1b. Parse/evaluation-time side effects (immediate assignments,
     # prerequisites, directive arguments) that fire before the stub.
     problems.extend(_check_evaluation_time_side_effects(all_lines))
+    # 1c. Computed rule targets / computed variable names (dynamic
+    # identities string matching cannot see through).
+    problems.extend(_check_dynamic_target_and_var_names(all_lines))
 
     # 2. Release target shape (main Makefile only; includes already refused).
     # Recipe lines start with TAB and can never define a target, so they are

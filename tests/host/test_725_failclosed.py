@@ -266,6 +266,81 @@ class MakefileExtraPrereqsRefused(unittest.TestCase):
                                  f"legit content refused: {name}")
 
 
+class MakefileDynamicNamesRefused(unittest.TestCase):
+    """Computed rule targets / computed variable names fail closed (#769).
+
+    Static only: mutants live in temp dirs and are never executed (no
+    ``make``, not even ``make -n``). Each mutant is valid GNU Make syntax
+    by manual semantics, without execution: rule-target lists undergo
+    expansion before the target set is known; an assignment left-hand
+    side undergoes expansion (computed variable names, including nested
+    ``$($(A))``); a backslash-newline is removed before parsing, so a
+    ``$(TAR\\<newline>GET)`` header joins to ``$(TARGET)``; and the
+    static-pattern form is ``targets: target-pattern: prereqs`` whose
+    first field is likewise expanded. String matching for ``release:``
+    or ``.EXTRA_PREREQS`` cannot see through ``TARGET := release`` +
+    ``$(TARGET): preflight`` or an indirectly spelled ``$(E)_PREREQS``
+    (``E := .EXTRA``) definition, so any ``$``/backtick in a target part
+    or NAME is refused as undecidable. Literal targets, literal NAMEs,
+    plain ``$(...)`` prereq references (``dev: $(OBJS)``), and literal
+    static-pattern rules stay GREEN.
+    """
+    ATTACKS = {
+        "computed-paren-target":
+            "TARGET := release\n"
+            "$(TARGET): preflight\n"
+            "preflight:\n\t@printf 'SYNTHETIC\\n'\n",
+        "computed-brace-target":
+            "TARGET := release\n"
+            "${TARGET}: preflight\n"
+            "preflight:\n\t@printf 'SYNTHETIC\\n'\n",
+        "nested-computed-target":
+            "A := TARGET\n"
+            "TARGET := release\n"
+            "$($(A)): preflight\n"
+            "preflight:\n\t@printf 'SYNTHETIC\\n'\n",
+        "continuation-computed-target":
+            "TARGET := release\n"
+            "$(TAR\\\nGET): preflight\n"
+            "preflight:\n\t@printf 'SYNTHETIC\\n'\n",
+        "static-pattern-computed-first-field":
+            "TGT := objs\n"
+            "$(TGT): %.o: %.c\n"
+            "\t@printf 'SYNTHETIC\\n'\n",
+        "computed-extra-prereqs-name":
+            "E := .EXTRA\n"
+            "$(E)_PREREQS := preflight\n",
+        "export-computed-brace-name":
+            "NAME := FOO\n"
+            "export ${NAME} := preflight\n",
+        "override-computed-deferred-name":
+            "NAME := FOO\n"
+            "override $(NAME) = preflight\n",
+    }
+    LEGIT = {
+        "plain-ref-prereqs":
+            "dev: $(OBJS)\n\t@printf 'SYNTHETIC\\n'\n",
+        "plain-static-defs":
+            "FOO := bar\nBAZ = $(FOO)/qux\n",
+        "plain-static-targets": "all: dev\n",
+        "static-pattern-literal":
+            "objs: %.o: %.c\n\t@printf 'SYNTHETIC\\n'\n",
+        "info-with-colon": "$(info build: starting)\n",
+    }
+
+    def test_dynamic_names_fail_closed(self):
+        for name, addition in self.ATTACKS.items():
+            with self.subTest(mutant=name):
+                self.assertTrue(_guard_on_mutant(addition),
+                                f"dynamic-name mutant passed: {name}")
+
+    def test_static_names_stay_green(self):
+        for name, addition in self.LEGIT.items():
+            with self.subTest(mutant=name):
+                self.assertEqual(_guard_on_mutant(addition), [],
+                                 f"static content refused: {name}")
+
+
 class WholeGate(unittest.TestCase):
     def test_all_invariants_hold(self):
         ok, results = gate.run_all()
