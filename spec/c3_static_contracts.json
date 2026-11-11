@@ -45,6 +45,7 @@
       "src/dev_boot_internal.s",
       "src/ex_bcdbin.s",
       "src/ex_binbcd.s",
+      "src/ex_dspoff.s",
       "src/ex_rnd.s",
       "src/experimental_bios_boot.s",
       "src/math/ma_div16s.s",
@@ -193,6 +194,30 @@
       "role": "api",
       "tam": [],
       "transfers": []
+    },
+    "src/ex_dspoff.s": {
+      "role": "api",
+      "tam": [
+        {
+          "mask": "0x01",
+          "value": "0xFF",
+          "purpose": "MPR0 = hardware page for the VDC window (IRQ masked by SEI)"
+        },
+        {
+          "mask": "0x01",
+          "value": "restore",
+          "reason": "caller MPR0 saved by TMA #$01 and restored before return"
+        }
+      ],
+      "transfers": [],
+      "mmio": {
+        "device": "VDC address / data ports",
+        "addresses": [
+          "0x0000",
+          "0x0002"
+        ],
+        "mapping": "window"
+      }
     },
     "src/ex_rnd.s": {
       "role": "api",
