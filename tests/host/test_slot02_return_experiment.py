@@ -44,6 +44,10 @@ class ProductionWiringGuardTests(unittest.TestCase):
         self.assertNotIn(0x02, overrides())
         self.assertFalse((ROOT / "src" / "overrides" / "slot_02.s").exists())
 
+    def test_no_slot_33_override_on_disk(self):
+        self.assertNotIn(0x33, overrides())
+        self.assertFalse((ROOT / "src" / "overrides" / "slot_33.s").exists())
+
     def test_experiment_stub_lives_outside_overrides(self):
         stub = ROOT / "tests" / "integration" / "slot02_return_stub.s"
         self.assertTrue(stub.is_file())
@@ -56,7 +60,7 @@ class PatchAccountingTests(unittest.TestCase):
     def test_patch_preview_exact_five_bytes(self):
         base = bytearray(0x2000)
         base[0x10A:0x10F] = bytes((0xA2, 0x02, 0x4C, 0x45, 0xE2))
-        off, before, after = patch_preview(bytes(base), 0xE10A, 0xE245, self.STUB)
+        off, before, after = patch_preview(bytes(base), 0x02, 0xE10A, 0xE245, self.STUB)
         self.assertEqual((off, before, after),
                          (0x10A, bytes((0xA2, 0x02, 0x4C, 0x45, 0xE2)),
                           bytes((0x60, 0xEA, 0xEA, 0xEA, 0xEA))))
@@ -65,17 +69,17 @@ class PatchAccountingTests(unittest.TestCase):
     def test_patch_rejected_when_before_bytes_differ(self):
         base = bytes(0x2000)
         with self.assertRaises(ValueError):
-            patch_preview(base, 0xE10A, 0xE245, self.STUB)
+            patch_preview(base, 0x02, 0xE10A, 0xE245, self.STUB)
 
     def test_patch_rejected_outside_bios_window(self):
         base = bytes(0x2000)
         with self.assertRaises(ValueError):
-            patch_preview(base, 0x7FFF, 0xE245, self.STUB)
+            patch_preview(base, 0x02, 0x7FFF, 0xE245, self.STUB)
 
     def test_apply_patch_containment(self):
         base = bytearray(0x2000)
         base[0x10A:0x10F] = bytes((0xA2, 0x02, 0x4C, 0x45, 0xE2))
-        off, before, after = patch_preview(bytes(base), 0xE10A, 0xE245, self.STUB)
+        off, before, after = patch_preview(bytes(base), 0x02, 0xE10A, 0xE245, self.STUB)
         patched = apply_patch(bytes(base), off, before, after)
         self.assertEqual(patched[off:off + 5], after)
         self.assertEqual(len(patched), len(base))
@@ -88,7 +92,7 @@ class PatchAccountingTests(unittest.TestCase):
         # before-bytes and must refuse.
         base = bytearray(0x2000)
         base[0x10A:0x10F] = bytes((0xA2, 0x02, 0x4C, 0x45, 0xE2))
-        off, before, after = patch_preview(bytes(base), 0xE10A, 0xE245, self.STUB)
+        off, before, after = patch_preview(bytes(base), 0x02, 0xE10A, 0xE245, self.STUB)
         tampered = bytearray(base)
         tampered[0x10B] = 0x03  # corrupt the slot byte inside the window
         with self.assertRaises(ValueError):
@@ -98,9 +102,9 @@ class PatchAccountingTests(unittest.TestCase):
         base = bytearray(0x2000)
         base[0x10A:0x10F] = bytes((0xA2, 0x02, 0x4C, 0x45, 0xE2))
         with self.assertRaises(ValueError):
-            patch_preview(bytes(base), 0xE10A, 0xE245, bytes((0x8D, 0x00, 0x20)))
+            patch_preview(bytes(base), 0x02, 0xE10A, 0xE245, bytes((0x8D, 0x00, 0x20)))
         with self.assertRaises(ValueError):
-            patch_preview(bytes(base), 0xE10A, 0xE245, bytes((RTS, 0xEA, 0xEA, 0xEA, 0xEA, 0xEA)))
+            patch_preview(bytes(base), 0x02, 0xE10A, 0xE245, bytes((RTS, 0xEA, 0xEA, 0xEA, 0xEA, 0xEA)))
 
 
 class VariantCleanupTests(unittest.TestCase):
@@ -122,6 +126,51 @@ class VariantCleanupTests(unittest.TestCase):
                 self.assertFalse((out / name).exists(), name)
             for name in keep:
                 self.assertTrue((out / name).is_file(), name)
+
+
+class MultiSlotPatchTests(unittest.TestCase):
+    STUB = bytes((RTS,))
+
+    def _base_with(self, slots_addrs, unimpl):
+        base = bytearray(0x3000)
+        for slot, addr in slots_addrs:
+            off = addr - 0xE000
+            base[off:off + 5] = bytes((0xA2, slot, 0x4C, unimpl & 0xFF, (unimpl >> 8) & 0xFF))
+        return bytes(base)
+
+    def test_two_slot_windows(self):
+        from build_slot02_return_loader import apply_patches, patch_preview
+        base = self._base_with([(0x02, 0xE10A), (0x33, 0xE1A0)], 0xE245)
+        patches = [patch_preview(base, s, a, 0xE245, self.STUB)
+                   for s, a in ((0x02, 0xE10A), (0x33, 0xE1A0))]
+        patched = apply_patches(base, patches)
+        self.assertEqual(patched[0x10A:0x10F], bytes((0x60, 0xEA, 0xEA, 0xEA, 0xEA)))
+        self.assertEqual(patched[0x1A0:0x1A5], bytes((0x60, 0xEA, 0xEA, 0xEA, 0xEA)))
+        diffs = [i for i, (a, b) in enumerate(zip(base, patched)) if a != b]
+        self.assertEqual(diffs, list(range(0x10A, 0x10F)) + list(range(0x1A0, 0x1A5)))
+
+    def test_second_slot_wrong_slot_byte_rejected(self):
+        from build_slot02_return_loader import patch_preview
+        base = self._base_with([(0x33, 0xE1A0)], 0xE245)
+        tampered = bytearray(base)
+        tampered[0x1A1] = 0x34  # slot byte no longer $33
+        with self.assertRaises(ValueError):
+            patch_preview(bytes(tampered), 0x33, 0xE1A0, 0xE245, self.STUB)
+
+    def test_empty_slots_rejected(self):
+        from build_slot02_return_loader import build_slot02_return_bios
+        with self.assertRaises(ValueError):
+            build_slot02_return_bios(Path("/nonexistent"), Path("/tmp/nonexistent-out-756"),
+                                     0x109, slots=())
+
+    def test_manifest_lists_both_slots(self):
+        m = experiment_manifest("base.pce", "exp.pce", b"\x00" * 256 * 1024,
+                                {"api_unimplemented": 0xE245}, "redacted", "debug",
+                                "slot02-33ret", ["-D", "IPL_PUBLIC"], (0x02, 0x33))
+        self.assertEqual(m["slots"], ["$02", "$33"])
+        self.assertEqual(m["patch"]["targets"], ["api_slot_02", "api_slot_33"])
+        self.assertFalse(m["release_eligible"])
+        self.assertIn("NOT genuine CD_BASE", m["assumption"])
 
 
 class ManifestFlagTests(unittest.TestCase):
@@ -243,6 +292,46 @@ class ClassifySimulatedTests(unittest.TestCase):
     def test_missing_run_is_fail(self):
         verdict, _ = S.classify_simulated(_records([], [_run("cold")]), self.STUB)
         self.assertEqual(verdict, "FAIL")
+
+    def test_two_slot_prefix_next_api(self):
+        prefix = ((2, "JSR"), (51, "JSR"))
+        calls = [_call("cold", a=0xAA), _call("cold", entry=0xE099, slot=51, a=0xCC),
+                 _call("cold", entry=0xE009, slot=3, a=0xDD),
+                 _call("warm", a=0xAA), _call("warm", entry=0xE099, slot=51, a=0xCC),
+                 _call("warm", entry=0xE009, slot=3, a=0xDD)]
+        runs = [_run("cold", reason="api_unimplemented", pc=self.STUB, x=3),
+                _run("warm", reason="api_unimplemented", pc=self.STUB, x=3)]
+        verdict, detail = S.classify_simulated(_records(calls, runs), self.STUB, prefix)
+        self.assertEqual(verdict, "SIMULATED_NEXT_API")
+        self.assertIn("non-returning", detail)
+
+    def test_two_slot_prefix_short_sequence_unexpected(self):
+        # Only the first assumed call recorded, then a stub halt: the trace
+        # cannot explain the halt.
+        prefix = ((2, "JSR"), (51, "JSR"))
+        calls = [_call("cold"), _call("warm")]
+        runs = [_run("cold", reason="api_unimplemented", pc=self.STUB, x=2),
+                _run("warm", reason="api_unimplemented", pc=self.STUB, x=2)]
+        verdict, _ = S.classify_simulated(_records(calls, runs), self.STUB, prefix)
+        self.assertEqual(verdict, "SIMULATED_UNEXPECTED_FIRST")
+
+    def test_two_slot_prefix_second_call_mismatch(self):
+        prefix = ((2, "JSR"), (51, "JSR"))
+        calls = [_call("cold"), _call("cold", entry=0xE009, slot=3),
+                 _call("warm"), _call("warm", entry=0xE009, slot=3)]
+        runs = [_run("cold", reason="api_unimplemented", pc=self.STUB, x=3),
+                _run("warm", reason="api_unimplemented", pc=self.STUB, x=3)]
+        verdict, _ = S.classify_simulated(_records(calls, runs), self.STUB, prefix)
+        self.assertEqual(verdict, "SIMULATED_UNEXPECTED_FIRST")
+
+    def test_two_slot_prefix_clean_return_then_halt(self):
+        prefix = ((2, "JSR"), (51, "JSR"))
+        calls = [_call("cold"), _call("cold", entry=0xE099, slot=51),
+                 _call("warm"), _call("warm", entry=0xE099, slot=51)]
+        runs = [_run("cold", reason="cd_halt_fail", pc=0xF100),
+                _run("warm", reason="cd_halt_fail", pc=0xF100)]
+        verdict, _ = S.classify_simulated(_records(calls, runs), self.STUB, prefix)
+        self.assertEqual(verdict, "SIMULATED_RETURN_THEN_HALT")
 
     def test_never_confirms(self):
         calls = [_call("cold"), _call("warm")]
