@@ -11,6 +11,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -35,6 +36,17 @@ def _minimal_scan_root(tmp: Path) -> Path:
                 "tools/environment.py", "tools/rom.py",
                 "spec/api_slots.json"):
         _copy_into(tmp, rel)
+    return tmp
+
+
+def _mode_mutation_root(directory: str, rel: str, extra: str) -> Path:
+    """Tmp root with HEAD build files plus `extra` appended to `rel` (a mode-fork mutant)."""
+    tmp = Path(directory)
+    (tmp / "tools").mkdir(parents=True)
+    shutil.copyfile(ROOT / "tools/build.py", tmp / "tools/build.py")
+    shutil.copyfile(ROOT / "tools/build_rom.py", tmp / "tools/build_rom.py")
+    target = tmp / rel
+    target.write_text(target.read_text(encoding="utf-8") + extra, encoding="utf-8")
     return tmp
 
 
@@ -146,6 +158,161 @@ class BuildDiffAuditGate(unittest.TestCase):
             self.assertTrue(any("compile_probe" in p for p in problems),
                             f"probe import not detected: {problems}")
 
+    def test_mutation_args_mode_source_swap_fails_closed(self):
+        # MAJOR-2 bypass class: the pre-fix line-regex allowed any line
+        # containing `args.mode`, so a mode-gated ROM-input swap was missed.
+        with tempfile.TemporaryDirectory() as directory:
+            tmp = _mode_mutation_root(
+                directory, "tools/build.py",
+                '\nif args.mode == "release":\n    source = source.with_name("stock-core.pce")\n')
+            problems = VBD.check_mode_branches(tmp)
+            self.assertTrue(any("build.py" in p and "source" in p for p in problems),
+                            f"args.mode source swap not detected: {problems}")
+
+    def test_mutation_debug_alias_fork_fails_closed(self):
+        # MAJOR-2 bypass class: `debug` is assigned from a mode test, so a
+        # branch on the alias with no `mode` name on its line was unchecked.
+        with tempfile.TemporaryDirectory() as directory:
+            tmp = _mode_mutation_root(
+                directory, "tools/build_rom.py",
+                '\nif debug:\n    objects = objects[:1]\n')
+            problems = VBD.check_mode_branches(tmp)
+            self.assertTrue(any("build_rom.py" in p and "objects" in p for p in problems),
+                            f"debug-alias link-input fork not detected: {problems}")
+
+    def test_mutation_environ_mode_fork_fails_closed(self):
+        # MAJOR-2 bypass class: the pre-fix line-regex allowed any line
+        # containing `os.environ.get(`, so a MODE-environ fork was missed.
+        with tempfile.TemporaryDirectory() as directory:
+            tmp = _mode_mutation_root(
+                directory, "tools/build.py",
+                '\nimport os\nif os.environ.get("MODE", "debug") == "release":\n'
+                '    config = config.with_name("other.cfg")\n')
+            problems = VBD.check_mode_branches(tmp)
+            self.assertTrue(any("build.py" in p and "config" in p for p in problems),
+                            f"MODE-environ config fork not detected: {problems}")
+
+    def test_mutation_ternary_source_fork_fails_closed(self):
+        # MAJOR-2 bypass class: a ternary selects a ROM input by mode without
+        # any `if mode` line, so the line-regex never saw it.
+        with tempfile.TemporaryDirectory() as directory:
+            tmp = _mode_mutation_root(
+                directory, "tools/build.py",
+                '\nsource = source if mode == "debug" else source.with_name("x.s")\n')
+            problems = VBD.check_mode_branches(tmp)
+            self.assertTrue(any("ternary" in p for p in problems),
+                            f"mode ternary source fork not detected: {problems}")
+
+    def test_mutation_conditional_import_fails_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            tmp = _mode_mutation_root(
+                directory, "tools/build_rom.py",
+                '\nif mode == "debug":\n    import geargrafx_api\n')
+            problems = VBD.check_mode_branches(tmp)
+            self.assertTrue(any("import" in p for p in problems),
+                            f"mode-gated import not detected: {problems}")
+
+    def test_mutation_conditional_side_effects_fail_closed(self):
+        mutants = [
+            ("tools/build.py",
+             '\nif mode == "debug":\n    subprocess.run(["echo", "probe"], check=True)\n',
+             "side-effect"),
+            ("tools/build.py",
+             '\nif mode == "debug":\n    command += ["-D", "RELEASE=1"]\n',
+             "command"),
+            ("tools/build_rom.py",
+             '\nif mode == "release":\n    objects.append(obj)\n',
+             "append"),
+            ("tools/build.py",
+             '\nif mode == "release":\n    metadata["rom_sha256"] = "00" * 32\n',
+             "write"),
+            ("tools/build.py",
+             '\nif mode == "release":\n    return "evil"\n',
+             "control-flow"),
+        ]
+        for rel, extra, hint in mutants:
+            with self.subTest(extra=extra.strip().splitlines()[0]):
+                with tempfile.TemporaryDirectory() as directory:
+                    tmp = _mode_mutation_root(directory, rel, extra)
+                    problems = VBD.check_mode_branches(tmp)
+                    self.assertTrue(any(hint in p for p in problems),
+                                    f"mode-gated {hint} not detected: {problems}")
+
+    def test_allowed_debug_only_ops_stay_green(self):
+        # The allowlist is debug flags/listings, validation, logging, and the
+        # manifest echo: these must not fail closed.
+        with tempfile.TemporaryDirectory() as directory:
+            tmp = _mode_mutation_root(
+                directory, "tools/build.py",
+                '\nif mode == "debug":\n    command += ["-g"]\n    print("debug mode")\n')
+            self.assertEqual(VBD.check_mode_branches(tmp), [])
+
+    def test_artifact_identical_outputs_checked(self):
+        with tempfile.TemporaryDirectory() as directory:
+            tmp = _minimal_scan_root(Path(directory))
+            blob = b"PCE!" + b"\xff" * 8188
+            for mode in ("debug", "release"):
+                out = tmp / f"build/{mode}"
+                out.mkdir(parents=True)
+                (out / "smoke-test-not-bios.pce").write_bytes(blob)
+            problems, disposition, evidence = VBD.scan_release_artifacts(tmp)
+            self.assertEqual(problems, [])
+            self.assertTrue(disposition.startswith("CHECKED"), disposition)
+            self.assertTrue(evidence["compared"])
+            self.assertEqual(evidence["debug_sha256"], evidence["release_sha256"])
+
+    def test_artifact_differing_outputs_fail(self):
+        with tempfile.TemporaryDirectory() as directory:
+            tmp = _minimal_scan_root(Path(directory))
+            for mode, fill in (("debug", b"\xff"), ("release", b"\x00")):
+                out = tmp / f"build/{mode}"
+                out.mkdir(parents=True)
+                (out / "smoke-test-not-bios.pce").write_bytes(b"PCE!" + fill * 8188)
+            problems, disposition, evidence = VBD.scan_release_artifacts(tmp)
+            self.assertTrue(any("differs" in p for p in problems),
+                            f"differing ROMs not detected: {problems} / {disposition}")
+            self.assertTrue(evidence["compared"])
+            self.assertNotEqual(evidence["debug_sha256"], evidence["release_sha256"])
+
+    def test_artifact_skipped_is_never_pass(self):
+        # No build outputs and no rebuildable sources: the comparison is
+        # SKIPPED, and the byte-identity verdict must not read PASS.
+        with tempfile.TemporaryDirectory() as directory:
+            tmp = Path(directory)
+            (tmp / "tools").mkdir(parents=True)
+            shutil.copyfile(ROOT / "tools/build.py", tmp / "tools/build.py")
+            shutil.copyfile(ROOT / "tools/build_rom.py", tmp / "tools/build_rom.py")
+            problems, disposition, evidence = VBD.scan_release_artifacts(tmp)
+            self.assertEqual(problems, [])
+            self.assertTrue(disposition.startswith("SKIPPED"), disposition)
+            self.assertFalse(evidence["compared"])
+        # build_report wiring with an unavailable toolchain (simulated): a
+        # skipped comparison never yields byte_identity PASS.
+        with tempfile.TemporaryDirectory() as directory:
+            tmp = _minimal_scan_root(Path(directory))
+            with mock.patch.object(VBD, "_rebuild_mode_roms",
+                                    return_value=(None, None, "simulated: pinned cc65 unavailable")):
+                report = VBD.build_report(tmp)
+            self.assertTrue(report["release_artifact_scan"].startswith("SKIPPED"),
+                            report["release_artifact_scan"])
+            self.assertEqual(report["byte_identity"]["verdict"], "SKIPPED")
+            self.assertNotEqual(report["byte_identity"]["verdict"], "PASS")
+
+    def test_head_byte_identity_compared_when_buildable(self):
+        try:
+            from environment import cc65_skip_reason  # noqa: E402
+        except Exception as error:  # noqa: BLE001
+            self.skipTest(f"toolchain check unavailable: {error}")
+        reason = cc65_skip_reason()
+        if reason is not None:
+            self.skipTest(f"SKIP cc65-dependent: {reason}")
+        problems, disposition, evidence = VBD.scan_release_artifacts(ROOT)
+        self.assertTrue(evidence["compared"], disposition)
+        self.assertEqual(problems, [], f"HEAD rebuilt ROMs differ: {problems}")
+        self.assertEqual(evidence["debug_sha256"], evidence["release_sha256"])
+        report = VBD.build_report(ROOT)
+        self.assertEqual(report["byte_identity"]["verdict"], "PASS")
+
     def test_report_keeps_unknowns_and_release_eligible_false(self):
         report = VBD.build_report(ROOT)
         self.assertEqual(report["verdict"], "PASS", f"gate fails on HEAD: {report['problems']}")
@@ -161,6 +328,17 @@ class BuildDiffAuditGate(unittest.TestCase):
                     "spec/hardware_observations.json"):
             payload = json.loads((ROOT / rel).read_text(encoding="utf-8"))
             self.assertIs(payload.get("release_eligible"), False)
+
+    def test_report_byte_identity_never_pass_when_skipped(self):
+        report = VBD.build_report(ROOT)
+        verdict = report["byte_identity"]["verdict"]
+        self.assertIn(verdict, ("PASS", "FAIL", "SKIPPED"))
+        if verdict == "PASS":
+            self.assertTrue(report["byte_identity"]["detail"].startswith("CHECKED"))
+            self.assertEqual(report["byte_identity"]["debug_sha256"],
+                              report["byte_identity"]["release_sha256"])
+        else:
+            self.assertFalse(report["byte_identity"]["detail"].startswith("CHECKED (byte-identical"))
 
     def test_cli_check_passes_on_head(self):
         self.assertEqual(VBD.main([]), 0)
