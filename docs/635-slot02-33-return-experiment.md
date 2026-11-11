@@ -36,6 +36,10 @@ image: `A2 02/33 4C 45 E2` -> `60 EA EA EA EA`, same `api_unimplemented`
 - `SIMULATED_NEXT_API` requires the halt PC to equal the verified stub and
   the halt X to equal the last call slot, in BOTH cycles; the last call is
   non-returning by construction.
+- Exit codes follow the shared table in `docs/635-slot02-return-experiment.md`
+  (only completed conditional observations exit 0). The commercial path
+  requires the matching synthetic PASS receipt for slots `(0x02, 0x33)`
+  (issue 758); stale or missing receipts BLOCK the run.
 
 ## Synthetic proof (three-way differential)
 
