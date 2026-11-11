@@ -128,7 +128,10 @@ _MODE_CARRIERS = ("command", "debug")
 # Filesystem/subprocess side effects: forbidden inside a mode-dependent region.
 # Mutating list methods are included so link-input lists cannot grow by mode;
 # the single exception (`command`, debug flags only) is validated separately
-# before this denylist applies.
+# before the allowlist below applies. These sets are kept only to label the
+# known side-effect class in diagnostics; enforcement is the allowlist in
+# _check_mode_region (any unlisted call fails closed, so helper indirection
+# cannot hide behind a denylist miss).
 _EFFECTFUL_CALL_ATTRS = frozenset({
     "run", "call", "check_call", "check_output", "Popen", "system", "popen",
     "write_text", "write_bytes", "open", "mkdir", "unlink", "rmtree",
@@ -140,6 +143,23 @@ _EFFECTFUL_CALL_ATTRS = frozenset({
 _EFFECTFUL_CALL_NAMES = frozenset({
     "open", "exec", "eval", "compile", "__import__", "setattr", "input",
     "breakpoint", "exit", "quit",
+})
+
+# Allowlist of bare-function calls provably without ROM effect inside a
+# mode-dependent region. Only logging (`print`), pure coercion/introspection
+# (`str`/`repr`/`len`/`bool` -- `str(output / ...)` appears inside the allowed
+# `command` debug-flag values), and nothing else. Exception construction
+# (`ValueError` et al, meaningful only under `raise`/`assert`) is listed
+# separately below. Every other `name(...)` -- including helpers such as
+# `modify_rom()`, aliases (`f = modify_rom; f()`), and nested closures -- is
+# unprovable and fails closed. Method/object calls (`obj.method(...)`) are
+# never allowlisted here: only `command.append/extend/insert` with debug-only
+# operands pass, validated separately before this list applies.
+_MODE_SAFE_CALL_NAMES = frozenset({
+    "print", "str", "repr", "len", "bool",
+})
+_MODE_EXCEPTION_CTORS = frozenset({
+    "ValueError", "TypeError", "RuntimeError", "AssertionError", "Exception",
 })
 
 
@@ -391,11 +411,17 @@ def _check_mode_region(stmts: list[ast.stmt], rel: str, derived: set[str],
                        lines: list[str]) -> list[str]:
     """Validate every effect inside a mode-dependent region (body + orelse).
 
-    Allowed: `raise`/`assert` (validation), `print` (logging), assignments to
-    the `command`/`debug` carriers (`command` only grows by -g/-l/output
-    paths), and pure reads/constructors. Everything else -- stores or writes
-    to any other name/attribute/item, imports, mode-defined functions,
-    side-effect calls, and control-flow escapes -- fails closed.
+    Allowlist: `raise`/`assert` (validation, including exception constructors
+    under them), `print` (logging), assignments to the `command`/`debug`
+    carriers (`command` only grows by -g/-l/output paths), pure
+    coercion/introspection calls (`str`/`repr`/`len`/`bool`), and pure
+    reads/constructors. Everything else -- stores or writes to any other
+    name/attribute/item, imports, mode-defined functions, ANY other function
+    call (`modify_rom()`, aliases such as `f()`, nested closures), ANY method
+    or object call (`obj.write(...)`, `source.with_name(...)`,
+    `objects.append(...)`, `subprocess.run(...)`), indirect/dynamic callees
+    (`handlers[k]()`, `getattr(...)()`, lambdas), and control-flow escapes --
+    fails closed as an unprovable mode-dependent effect.
     """
     problems: list[str] = []
     nodes: list[ast.AST] = []
@@ -485,6 +511,8 @@ def _check_mode_region(stmts: list[ast.stmt], rel: str, derived: set[str],
                     problems.append(
                         f"{where}: mode-dependent `command.{func.attr}` is not limited to"
                         f" -g/-l/output paths: {snippet(node)!r}")
+            elif isinstance(func, ast.Name) and func.id in (_MODE_SAFE_CALL_NAMES | _MODE_EXCEPTION_CTORS):
+                pass  # allowlisted: logging, pure coercion, or validation ctors
             elif (isinstance(func, ast.Name) and func.id in _EFFECTFUL_CALL_NAMES) or (
                     isinstance(func, ast.Attribute) and func.attr in _EFFECTFUL_CALL_ATTRS):
                 if isinstance(func, ast.Attribute):
@@ -494,9 +522,19 @@ def _check_mode_region(stmts: list[ast.stmt], rel: str, derived: set[str],
                 problems.append(
                     f"{where}: mode-dependent side-effect call `{callee}`"
                     f" (ROM inputs/bytes must not vary by mode): {snippet(node)!r}")
-            elif not isinstance(func, (ast.Name, ast.Attribute)):
+            elif isinstance(func, ast.Name):
                 problems.append(
-                    f"{where}: mode-dependent call through an unresolvable callee: {snippet(node)!r}")
+                    f"{where}: mode-dependent unprovable function call `{func.id}`"
+                    f" (alias/nested/helper calls must not vary by mode;"
+                    f" only print/str/repr/len/bool/validation ctors allowed): {snippet(node)!r}")
+            elif isinstance(func, ast.Attribute):
+                problems.append(
+                    f"{where}: mode-dependent unprovable method/object call `{func.attr}`"
+                    f" (side-effect call; ROM inputs/bytes must not vary by mode): {snippet(node)!r}")
+            else:
+                problems.append(
+                    f"{where}: mode-dependent call through an unresolvable/indirect callee"
+                    f" (ROM inputs/bytes must not vary by mode): {snippet(node)!r}")
         elif isinstance(node, (ast.Import, ast.ImportFrom)):
             problems.append(
                 f"{where}: mode-dependent import (probe modules must never be mode-gated):"
@@ -578,17 +616,87 @@ def check_mode_branches(root: Path = ROOT) -> list[str]:
 def check_release_gates(root: Path = ROOT) -> list[str]:
     """The existing BLOCKED release gates must still refuse."""
     problems: list[str] = []
-    # 1. Makefile `release` target stays a refusal (static text check).
+    # 1. Makefile `release` target stays exactly the 2-line BLOCKED stub
+    # (static recipe check, consistent with PR #769
+    # tools/failclosed_gate.py::check_makefile_release; no cross-branch
+    # import -- this gate duplicates the whitelist so the two stay
+    # consistent via review/serial merge, not via shared code). A blacklist
+    # over BLOCKED/exit-1 substrings anywhere in the file would accept a
+    # gutted `release:` recipe so long as those strings appeared under some
+    # other target, so only the exact `release:` recipe is examined here.
     makefile = root / "Makefile"
     try:
         text = makefile.read_text(encoding="utf-8")
     except OSError as error:
         return [f"Makefile: unreadable ({error})"]
-    release_block = "\n".join(
-        line for line in text.splitlines()
-        if "BLOCKED" in line or line.strip() in ("release:", "@exit 1"))
-    if "BLOCKED" not in release_block or "@exit 1" not in release_block:
-        problems.append("Makefile: `release` target no longer refuses with BLOCKED/exit 1")
+    match = re.search(r"^release:\n((?:\t.*\n?)+)", text, re.M)
+    if match is None:
+        problems.append("Makefile: missing `release:` target with a TAB-indented recipe")
+    else:
+        recipe = match.group(1)
+        lines = recipe.splitlines()
+        if len(lines) != 2:
+            problems.append(
+                "Makefile: `release` recipe must be exactly 2 lines"
+                f" (@echo BLOCKED-stub + @exit 1), found {len(lines)}")
+        for index, line in enumerate(lines, start=1):
+            if not line.startswith("\t"):
+                problems.append(f"Makefile: `release` line {index}: must start with TAB")
+                continue
+            body = line[1:]
+            if body.startswith("-"):
+                problems.append(
+                    f"Makefile: `release` line {index}: '-' (ignore-error) prefix forbidden"
+                    " (would neutralise 'exit 1')")
+            if not body.startswith("@"):
+                problems.append(
+                    f"Makefile: `release` line {index}: must use '@' prefix"
+                    f" (got {body[:12]!r}; conditional/silent bypass refused)")
+        if lines:
+            body1 = lines[0][1:] if lines[0].startswith("\t") else lines[0]
+            if not re.fullmatch(r"@echo\s+'BLOCKED:.*'\s+>&2\s*", body1):
+                problems.append(
+                    "Makefile: `release` line 1 must be \"@echo 'BLOCKED: ...' >&2\""
+                    f" (got {body1!r}; preceding build commands refused)")
+        if len(lines) >= 2:
+            body2 = lines[1][1:] if lines[1].startswith("\t") else lines[1]
+            if body2.strip() != "@exit 1":
+                if "exit 1" not in body2:
+                    problems.append("Makefile: `release` recipe must end with '@exit 1'")
+                else:
+                    problems.append(
+                        f"Makefile: `release` line 2 must be exactly '@exit 1'"
+                        f" (got {body2!r}; conditional/chained success refused)")
+            if ";" in body2 or "||" in body2 or "&&" in body2 or "|" in body2:
+                problems.append(
+                    "Makefile: `release` line 2: shell chaining"
+                    f" (';'/||/&&/|) forbidden (got {body2!r})")
+        if "BLOCKED" not in recipe:
+            problems.append("Makefile: `release` recipe lacks BLOCKED")
+        if re.search(r"exit\s+0\b", recipe):
+            problems.append("Makefile: `release` recipe must not contain 'exit 0'"
+                            " (conditional success refused)")
+        code_outside_quotes = re.sub(r"'[^']*'", "''", recipe)
+        code_no_redir = code_outside_quotes.replace(">&2", "")
+        for token in (";", "||", "&&", "|", "`", "$(", "${", ">", "<", "#"):
+            if token in code_no_redir:
+                problems.append(
+                    f"Makefile: `release` recipe: {token!r} outside quoted message forbidden"
+                    " (chaining/substitution/redirection refused)")
+                break
+        if re.search(r"\btrue\b", code_no_redir) or re.search(r"\bfalse\b", code_no_redir):
+            problems.append(
+                "Makefile: `release` recipe must not contain 'true'/'false'"
+                " (success-masking refused)")
+        for forbidden in ("build_rom.py", "--mode release", "release_eligible=true",
+                          "ALLOWED", "release_eligible = True", "build_rom",
+                          "$(PYTHON)", "${", "rm ", "rm\t", "cp ", "mv ",
+                          "chmod", "chown", "curl", "wget", "python"):
+            if forbidden in recipe:
+                problems.append(
+                    f"Makefile: `release` recipe must not contain {forbidden!r}"
+                    " (preceding build / dangerous statement refused)")
+                break
     if "tools/build_rom.py --release-gate" not in text:
         problems.append("Makefile: dev-release-gate no longer routes to tools/build_rom.py --release-gate")
     # 2. build_rom.release_gate must refuse even a fully overridden slot set.
@@ -743,51 +851,66 @@ def _rebuild_mode_roms(root: Path) -> tuple[bytes | None, bytes | None, str]:
     return results["debug"], results["release"], "; ".join(notes)
 
 
-def scan_release_artifacts(root: Path = ROOT) -> tuple[list[str], str, dict]:
-    """Byte-compare the debug and release smoke ROMs, rebuilding them when buildable.
+def _pinned_cc65_revision(root: Path) -> str | None:
+    """Pinned cc65 revision from this checkout (evidence field, never a build input)."""
+    try:
+        return json.loads((root / "tools/dependencies.json").read_text(encoding="utf-8"))["cc65"]["revision"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
 
-    Returns (problems, disposition, evidence). Disposition is CHECKED when both
-    ROM bytes were actually compared, SKIPPED otherwise -- a skipped comparison
-    is never reported as PASS; see the `byte_identity` report field. Evidence
-    carries `compared`, per-mode sha256, and the byte source.
+
+def scan_release_artifacts(root: Path = ROOT) -> tuple[list[str], str, dict]:
+    """Byte-compare freshly rebuilt debug+release smoke ROMs (never stale outputs).
+
+    Returns (problems, disposition, evidence). Both modes are always rebuilt
+    from the current sources in temporary directories with the pinned cc65;
+    pre-existing build/debug+build/release files are NEVER used as byte
+    evidence (they may predate the sources and would PASS stale). Disposition
+    is CHECKED when both rebuilt bytes were actually compared, SKIPPED
+    otherwise -- a skipped comparison is never reported as PASS; see the
+    `byte_identity` report field. Evidence carries `compared`, per-mode
+    sha256, the pinned toolchain revision, the rebuild status, and the byte
+    source.
     """
-    debug_rom = root / "build/debug/smoke-test-not-bios.pce"
-    release_rom = root / "build/release/smoke-test-not-bios.pce"
-    if debug_rom.is_file() and release_rom.is_file():
-        debug = debug_rom.read_bytes()
-        release = release_rom.read_bytes()
-        source = "existing build/debug+build/release outputs"
-    else:
-        debug, release, note = _rebuild_mode_roms(root)
-        if debug is None and release is None:
-            return [], (f"SKIPPED (no build outputs and no rebuild: {note or 'unavailable'};"
-                        " no byte-identity evidence)"), {
-                "compared": False, "debug_sha256": None, "release_sha256": None,
-                "source": "unavailable",
-            }
-        if debug is None or release is None:
-            missing = "debug" if debug is None else "release"
-            return ([f"smoke ROM {missing}-mode rebuild failed while the other mode succeeded"
-                     f" ({note}): mode-dependent build behavior"],
-                    f"SKIPPED (asymmetric {missing}-mode rebuild failure: {note})", {
-                "compared": False,
-                "debug_sha256": hashlib.sha256(debug).hexdigest() if debug is not None else None,
-                "release_sha256": hashlib.sha256(release).hexdigest() if release is not None else None,
-                "source": "rebuilt from source with pinned cc65",
-            })
-        source = "rebuilt from source with pinned cc65"
+    cc65_revision = _pinned_cc65_revision(root)
+    debug, release, note = _rebuild_mode_roms(root)
+    status = note or "both modes rebuilt OK"
+    base_source = ("rebuilt from current source with pinned cc65"
+                   " (build/ outputs ignored as stale)")
+    if debug is None and release is None:
+        return [], (f"SKIPPED (no rebuild: {note or 'unavailable'};"
+                    " no byte-identity evidence)"), {
+            "compared": False, "debug_sha256": None, "release_sha256": None,
+            "source": "unavailable",
+            "cc65_revision": cc65_revision,
+            "rebuild_status": status,
+        }
+    if debug is None or release is None:
+        missing = "debug" if debug is None else "release"
+        return ([f"smoke ROM {missing}-mode rebuild failed while the other mode succeeded"
+                 f" ({note}): mode-dependent build behavior"],
+                f"SKIPPED (asymmetric {missing}-mode rebuild failure: {note})", {
+            "compared": False,
+            "debug_sha256": hashlib.sha256(debug).hexdigest() if debug is not None else None,
+            "release_sha256": hashlib.sha256(release).hexdigest() if release is not None else None,
+            "source": base_source,
+            "cc65_revision": cc65_revision,
+            "rebuild_status": status,
+        })
     problems: list[str] = []
     if debug != release:
-        problems.append("build/release smoke ROM differs from build/debug"
+        problems.append("rebuilt release smoke ROM differs from rebuilt debug"
                         " (mode must only add -g/-l, never ROM bytes)")
-    problems.extend(_scan_blob(debug, "build/debug"))
-    problems.extend(_scan_blob(release, "build/release"))
+    problems.extend(_scan_blob(debug, "rebuilt debug"))
+    problems.extend(_scan_blob(release, "rebuilt release"))
     state = "identical" if debug == release else "DIFFERENT"
-    return problems, f"CHECKED (byte-{state}, {source})", {
+    return problems, f"CHECKED (byte-{state}, {base_source})", {
         "compared": True,
         "debug_sha256": hashlib.sha256(debug).hexdigest(),
         "release_sha256": hashlib.sha256(release).hexdigest(),
-        "source": source,
+        "source": base_source,
+        "cc65_revision": cc65_revision,
+        "rebuild_status": status,
     }
 
 
@@ -853,6 +976,8 @@ def build_report(root: Path = ROOT) -> dict:
             "debug_sha256": artifact_evidence["debug_sha256"],
             "release_sha256": artifact_evidence["release_sha256"],
             "source": artifact_evidence["source"],
+            "cc65_revision": artifact_evidence.get("cc65_revision"),
+            "rebuild_status": artifact_evidence.get("rebuild_status"),
         },
         "provenance": "synthetic fixtures/media only; pinned cc65; pinned Geargrafx b49ae82 reference only; "
                       "no private ./rom/ inputs used or required.",

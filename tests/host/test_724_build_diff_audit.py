@@ -238,6 +238,42 @@ class BuildDiffAuditGate(unittest.TestCase):
                     self.assertTrue(any(hint in p for p in problems),
                                     f"mode-gated {hint} not detected: {problems}")
 
+    def test_mutation_helper_indirection_fails_closed(self):
+        # MAJOR allowlist: a bare helper call under a mode branch must RED even
+        # though the callee name is not in any denylist (e.g. modify_rom()
+        # writing ROM bytes under `if mode == "release"`). Aliases, nested
+        # closures, methods, and indirect/dynamic callees are unprovable too.
+        mutants = [
+            ("tools/build.py",
+             '\ndef modify_rom():\n    pass\nif mode == "release":\n    modify_rom()\n',
+             "modify_rom"),
+            ("tools/build.py",
+             '\nif mode == "release":\n    f()\n',
+             "unprovable"),
+            ("tools/build.py",
+             '\nif mode == "release":\n    if True:\n        helper()\n',
+             "unprovable"),
+            ("tools/build.py",
+             '\nif mode == "release":\n    obj.write_rom(data)\n',
+             "write_rom"),
+            ("tools/build.py",
+             '\nif mode == "release":\n    source.with_name("x.s")\n',
+             "with_name"),
+            ("tools/build.py",
+             '\nif mode == "release":\n    handlers[mode]()\n',
+             "indirect"),
+            ("tools/build_rom.py",
+             '\nif mode == "release":\n    getattr(obj, "write")(data)\n',
+             "indirect"),
+        ]
+        for rel, extra, hint in mutants:
+            with self.subTest(extra=extra.strip().splitlines()[-1]):
+                with tempfile.TemporaryDirectory() as directory:
+                    tmp = _mode_mutation_root(directory, rel, extra)
+                    problems = VBD.check_mode_branches(tmp)
+                    self.assertTrue(any(hint in p for p in problems),
+                                    f"helper-indirection {hint!r} not detected: {problems}")
+
     def test_allowed_debug_only_ops_stay_green(self):
         # The allowlist is debug flags/listings, validation, logging, and the
         # manifest echo: these must not fail closed.
@@ -247,32 +283,84 @@ class BuildDiffAuditGate(unittest.TestCase):
                 '\nif mode == "debug":\n    command += ["-g"]\n    print("debug mode")\n')
             self.assertEqual(VBD.check_mode_branches(tmp), [])
 
+    def test_release_recipe_decoy_outside_target_fails_closed(self):
+        # check_release_gates must parse the exact `release:` recipe, not a
+        # blacklist over BLOCKED/exit-1 substrings anywhere in the file. A
+        # gutted release recipe plus a decoy comment elsewhere must still RED.
+        with tempfile.TemporaryDirectory() as directory:
+            tmp = Path(directory)
+            (tmp / "tools").mkdir(parents=True)
+            shutil.copyfile(ROOT / "tools/build.py", tmp / "tools/build.py")
+            shutil.copyfile(ROOT / "tools/build_rom.py", tmp / "tools/build_rom.py")
+            text = (ROOT / "Makefile").read_text(encoding="utf-8")
+            gutted = text.replace(
+                "@echo 'BLOCKED: BIOS APIs and System Card boot are unimplemented;"
+                " no BIOS release is available.' >&2\n\t@exit 1",
+                "@echo hi")
+            # Decoy strings outside the release target (old blacklist PASSes).
+            gutted += "\n# decoy BLOCKED @exit 1 (not the release recipe)\n"
+            (tmp / "Makefile").write_text(gutted, encoding="utf-8")
+            problems = VBD.check_release_gates(tmp)
+            self.assertTrue(any("release" in p for p in problems),
+                            f"decoy BLOCKED/exit-1 outside release target not refused: {problems}")
+
     def test_artifact_identical_outputs_checked(self):
+        # Byte evidence comes from a fresh rebuild, never from stale build/
+        # files: identical rebuilt bytes CHECK with matching sha256.
         with tempfile.TemporaryDirectory() as directory:
             tmp = _minimal_scan_root(Path(directory))
             blob = b"PCE!" + b"\xff" * 8188
-            for mode in ("debug", "release"):
-                out = tmp / f"build/{mode}"
-                out.mkdir(parents=True)
-                (out / "smoke-test-not-bios.pce").write_bytes(blob)
-            problems, disposition, evidence = VBD.scan_release_artifacts(tmp)
+            with mock.patch.object(VBD, "_rebuild_mode_roms",
+                                    return_value=(blob, blob, "mocked rebuild OK")):
+                problems, disposition, evidence = VBD.scan_release_artifacts(tmp)
             self.assertEqual(problems, [])
             self.assertTrue(disposition.startswith("CHECKED"), disposition)
             self.assertTrue(evidence["compared"])
             self.assertEqual(evidence["debug_sha256"], evidence["release_sha256"])
+            self.assertIn("rebuilt", evidence["source"])
 
     def test_artifact_differing_outputs_fail(self):
         with tempfile.TemporaryDirectory() as directory:
             tmp = _minimal_scan_root(Path(directory))
-            for mode, fill in (("debug", b"\xff"), ("release", b"\x00")):
-                out = tmp / f"build/{mode}"
-                out.mkdir(parents=True)
-                (out / "smoke-test-not-bios.pce").write_bytes(b"PCE!" + fill * 8188)
-            problems, disposition, evidence = VBD.scan_release_artifacts(tmp)
+            debug_blob = b"PCE!" + b"\xff" * 8188
+            release_blob = b"PCE!" + b"\x00" * 8188
+            with mock.patch.object(VBD, "_rebuild_mode_roms",
+                                    return_value=(debug_blob, release_blob, "mocked rebuild OK")):
+                problems, disposition, evidence = VBD.scan_release_artifacts(tmp)
             self.assertTrue(any("differs" in p for p in problems),
                             f"differing ROMs not detected: {problems} / {disposition}")
             self.assertTrue(evidence["compared"])
             self.assertNotEqual(evidence["debug_sha256"], evidence["release_sha256"])
+
+    def test_artifact_stale_identical_roms_ignored(self):
+        # MEDIUM: pre-existing identical build/debug+build/release ROMs must
+        # never PASS as current evidence. Stale blobs are ignored; the verdict
+        # follows the fresh rebuild (FAIL when rebuilt bytes differ, SKIPPED
+        # with toolchain status when unbuildable).
+        with tempfile.TemporaryDirectory() as directory:
+            tmp = _minimal_scan_root(Path(directory))
+            stale = b"PCE!" + b"\xff" * 8188
+            for mode in ("debug", "release"):
+                out = tmp / f"build/{mode}"
+                out.mkdir(parents=True)
+                (out / "smoke-test-not-bios.pce").write_bytes(stale)
+            # Rebuild differs -> FAIL despite stale-identical files.
+            with mock.patch.object(VBD, "_rebuild_mode_roms",
+                                    return_value=(b"A" * 8192, b"B" * 8192,
+                                                  "mocked: current sources differ")):
+                problems, disposition, evidence = VBD.scan_release_artifacts(tmp)
+            self.assertTrue(any("differs" in p for p in problems),
+                            f"stale-identical ROMs masked a real rebuild diff: {disposition}")
+            self.assertTrue(evidence["compared"])
+            self.assertIn("rebuilt", evidence["source"])
+            # Rebuild unbuildable -> SKIPPED (never PASS from stale).
+            with mock.patch.object(VBD, "_rebuild_mode_roms",
+                                    return_value=(None, None,
+                                                  "mocked: pinned cc65 unavailable")):
+                problems, disposition, evidence = VBD.scan_release_artifacts(tmp)
+            self.assertEqual(problems, [])
+            self.assertTrue(disposition.startswith("SKIPPED"), disposition)
+            self.assertFalse(evidence["compared"])
 
     def test_artifact_skipped_is_never_pass(self):
         # No build outputs and no rebuildable sources: the comparison is
@@ -310,8 +398,15 @@ class BuildDiffAuditGate(unittest.TestCase):
         self.assertTrue(evidence["compared"], disposition)
         self.assertEqual(problems, [], f"HEAD rebuilt ROMs differ: {problems}")
         self.assertEqual(evidence["debug_sha256"], evidence["release_sha256"])
+        self.assertIn("rebuilt", evidence["source"])
+        self.assertTrue(evidence.get("cc65_revision"), f"missing toolchain evidence: {evidence}")
+        self.assertTrue(evidence.get("rebuild_status"), f"missing rebuild status: {evidence}")
         report = VBD.build_report(ROOT)
         self.assertEqual(report["byte_identity"]["verdict"], "PASS")
+        self.assertEqual(report["byte_identity"]["debug_sha256"],
+                          report["byte_identity"]["release_sha256"])
+        self.assertTrue(report["byte_identity"].get("cc65_revision"))
+        self.assertTrue(report["byte_identity"].get("rebuild_status"))
 
     def test_report_keeps_unknowns_and_release_eligible_false(self):
         report = VBD.build_report(ROOT)

@@ -46,39 +46,57 @@ New gate: `tools/verify_build_diff.py` (runs in `make check`, hence in CI `make 
 2. **Build-logic import check** — `tools/build*.py`, `tools/environment.py`, `tools/rom.py` must not
    import probe modules (`compile_probe`, `reference_jsr_gate`, `geargrafx_api`, guard drivers) and
    must not reference `tests/integration/patches/`.
-3. **Mode-branch check (AST body check)** — every `if`/`while` test and every ternary in
+3. **Mode-branch check (AST body check, call allowlist)** — every `if`/`while` test and every ternary in
    `tools/build.py`/`tools/build_rom.py` that mentions `mode`, `args.mode`, or a `MODE`-environ
    lookup (directly or through an alias assigned from a mode test, e.g. `debug = mode == 'debug' ...`)
    has its whole body validated: only debug-info/output/manifest ops (`-g`/`-l` command flags with
-   output paths, validation `raise`, logging, the manifest `"mode"` echo) may vary by mode. Any
+   output paths, validation `raise`/`assert` including exception ctors, `print` logging,
+   pure `str`/`repr`/`len`/`bool` coercion, the manifest `"mode"` echo) may vary by mode. Every
+   other call fails closed by allowlist -- bare helpers (`modify_rom()`), aliases (`f()`),
+   nested closures, methods/objects (`obj.write(...)`, `source.with_name(...)`), and
+   indirect/dynamic callees (`handlers[k]()`, `getattr(...)()`) -- so a helper-indirection ROM
+   mutation under `if mode == "release"` cannot hide behind a denylist miss. Any
    mode-dependent ROM-input/link/byte change, import, file/subprocess effect, return payload, or
    mode-defined function FAILs closed, so a future functional fork cannot silently split debug and
    release behavior (a line-regex allowlist missed `args.mode`/`environ`/alias/ternary forks).
-4. **Release-gate check** — `Makefile: release` still refuses with `BLOCKED`/exit 1;
+4. **Release-gate check (exact `release:` recipe)** — `Makefile: release` must be exactly the 2-line
+   BLOCKED stub (`@echo 'BLOCKED: ...' >&2` + `@exit 1`, TAB/`@`-prefixed, no `-` ignore-error,
+   no chaining/substitution/`exit 0`/`true`/`build_rom`/dangerous statements), consistent with
+   PR #769 `tools/failclosed_gate.py::check_makefile_release` (duplicated whitelist, serial merge,
+   no cross-branch import); a blacklist over BLOCKED/exit-1 substrings anywhere in the file would
+   accept a gutted recipe with a decoy comment elsewhere, so only the exact recipe is examined.
    `dev-release-gate` still routes to `tools/build_rom.py --release-gate`; `release_gate()` still
    raises `ReleaseBlocked` for both the empty and the fully-overridden slot set; spec ledgers keep
    `release_eligible=false` (top-level where present, nested slots otherwise; none may be true).
 5. **Patch-isolation check** — `tests/integration/patches/` exists with its GPL `LICENSE` and
    `README.md` isolation note; no workflow upload `path:` stages it, the core `.so`, or `TOOLS_DIR`
    objects; `tools/environment.py` keeps the `TOOLS_DIR`-outside-repo refusal.
-6. **Release-artifact scan (byte-compare when buildable)** — existing `build/debug` + `build/release`
-   smoke ROMs are byte-compared when present; otherwise both modes are rebuilt from source with the
-   pinned cc65 and compared. When neither is possible the disposition is `SKIPPED` with the reason,
-   never PASS-by-absence; the report's `byte_identity.verdict` is `PASS` only when bytes were actually
-   compared equal (`FAIL` on mismatch, `SKIPPED` otherwise). Compared ROMs must also be marker-free.
+6. **Release-artifact scan (rebuilt-only byte-compare)** — both modes are always rebuilt from the
+   current sources in temporary directories with the pinned cc65 and byte-compared; pre-existing
+   `build/debug`+`build/release` files are never used as byte evidence (they may predate the
+   sources and would PASS stale). When the toolchain is unusable the disposition is `SKIPPED`
+   with the reason, never PASS-by-absence; the report's `byte_identity.verdict` is `PASS` only when
+   rebuilt bytes were actually compared equal (`FAIL` on mismatch, `SKIPPED` otherwise). Evidence
+   records rebuilt sha256s plus the pinned `cc65_revision` and rebuild status. Compared ROMs must
+   also be marker-free.
    Content signatures stay with `tools/artifact_guard.py`; license
    markers stay with `tools/provenance_guard.py`; reproducibility stays with
    `tools/rom_provenance.py`. This gate adds the hook/GPL-text and mode-fork tripwires those do not state.
 
-Regression test: `tests/host/test_724_build_diff_audit.py` (25 tests, static only + opportunistic
+Regression test: `tests/host/test_724_build_diff_audit.py` (28 tests, static only + opportunistic
 rebuild-compare). Positive: HEAD scans clean, gates intact, report verdict PASS with UNKNOWNs preserved,
-byte-identity `PASS` via rebuilt compare when the pinned cc65 is usable; release-ROM `.include`/`.incbin`
+byte-identity `PASS` via rebuilt compare when the pinned cc65 is usable (rebuilt sha256s +
+`cc65_revision`/rebuild status recorded); release-ROM `.include`/`.incbin`
 closure resolved fail-closed (e.g. `slot_3D.s` → `ex_bcdbin.s`). Negative (mutation): injected
 `gg_verify` marker, injected GPL text, new `mode=="release"` behavior branch, a probe import, plus
 MAJOR-1 include-closure classes (poisoned `ex_bcdbin.s`, brand-new unaudited `.include`, unresolvable
 `.include` → RED fail-closed) and MAJOR-2 bypass classes (`args.mode` source swap, `debug`-alias link fork,
 `MODE`-environ config fork, mode ternary source fork, mode-gated import/subprocess/`-D` flag/`append`/
-manifest-write/return) each FAIL closed; differing debug/release ROMs FAIL; a skipped comparison yields
+manifest-write/return) each FAIL closed; helper-indirection classes (bare `modify_rom()` call,
+alias `f()`, nested closure call, method/object calls, subscript/indirect callees) each FAIL closed;
+gutted `release:` recipe with a decoy BLOCKED/exit-1 comment elsewhere FAILs closed; differing rebuilt
+ROMs FAIL; stale-identical `build/` ROMs are ignored (FAIL when the rebuild differs, SKIPPED when
+unbuildable, never PASS from stale); a skipped comparison yields
 `byte_identity` `SKIPPED`, never `PASS`. `release_gate` refusal is exercised for `set()` and
 `set(range(81))`.
 
