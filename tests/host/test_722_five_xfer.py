@@ -200,6 +200,67 @@ class BoundaryBankTests(unittest.TestCase):
         self.assertIn("other-bank", got["unknown"])
 
 
+class OperandValidationTests(unittest.TestCase):
+    """Strict u16 operands: no ``& 0xFFFF`` normalization bypass."""
+
+    def test_bad_src_dst_rejected_before_verdict(self):
+        for bad in (-1, 0x10000, True, False, "0x3E80", None, 3.5):
+            for kwargs in ({"src": bad}, {"dst": bad}):
+                with self.subTest(bad=repr(bad), field=list(kwargs)):
+                    with self.assertRaises(ValueError):
+                        matrix.verdict("TII", kwargs.get("src", 0x3E80),
+                                       kwargs.get("dst", 0x3E90), 2,
+                                       list(matrix.MPR_WRAM),
+                                       matrix.wram_backing())
+
+    def test_bad_length_rejected_before_verdict(self):
+        for bad in (-1, 0x10000, True, False, "4", None, 2.0):
+            with self.subTest(bad=repr(bad)):
+                with self.assertRaises(ValueError):
+                    matrix.verdict("TII", 0x3E80, 0x3E90, bad,
+                                   list(matrix.MPR_WRAM),
+                                   matrix.wram_backing())
+
+    def test_bad_pc_rejected_before_verdict(self):
+        for bad in (-1, 0x10000, True, False, "0x3E00", 3.5):
+            with self.subTest(bad=repr(bad)):
+                with self.assertRaises(ValueError):
+                    matrix.verdict("TII", 0x3E80, 0x3E90, 2,
+                                   list(matrix.MPR_WRAM),
+                                   matrix.wram_backing(), pc=bad)
+
+    def test_bad_inputs_never_allow_static(self):
+        bad_rows = [("TII", -1, 0x3E90, 2, None),
+                    ("TII", 0x10000, 0x3E90, 2, None),
+                    ("TII", 0x3E80, 0x3E90, True, None),
+                    ("TII", 0x3E80, 0x3E90, 0x10000, None),
+                    ("TII", 0x3E80, 0x3E90, 2, -1)]
+        for op, src, dst, length, pc in bad_rows:
+            with self.subTest(src=repr(src), dst=repr(dst),
+                               length=repr(length), pc=repr(pc)):
+                try:
+                    got = matrix.verdict(op, src, dst, length,
+                                         list(matrix.MPR_WRAM),
+                                         matrix.wram_backing(), pc=pc)
+                except ValueError:
+                    continue
+                self.fail(f"bad input reached verdict {got['verdict']}")
+
+    def test_u16_boundaries_accepted_and_len0_refused(self):
+        backing = matrix.wram_backing()
+        mpr = [0xF8] * 8
+        got = matrix.verdict("TII", 0, 0, 1, mpr, backing)
+        self.assertEqual(got["verdict"], "WOULD_ALLOW_STATIC")
+        got = matrix.verdict("TII", 0xFFFF, 0xFFFF, 1, mpr, backing)
+        self.assertEqual(got["verdict"], "WOULD_ALLOW_STATIC")
+        for op in matrix.OPS:
+            with self.subTest(op=op):
+                got = matrix.verdict(op, 0x3E80, 0x3E90, 0,
+                                     list(matrix.MPR_WRAM), backing)
+                self.assertEqual(got["verdict"], "REFUSED")
+                self.assertEqual(got["reason"], "len0_never_executed")
+
+
 class FailClosedTests(unittest.TestCase):
     """Unpredictable / unpeekable source or destination fails closed."""
 

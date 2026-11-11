@@ -88,6 +88,17 @@ def _bank_of(addr, mpr):
     return mpr[(addr >> 13) & 7]
 
 
+def _require_u16(name, value):
+    """Strict 16-bit operand check: exact ``int`` (``bool`` refused), 0..65535.
+
+    No ``& 0xFFFF`` normalization: out-of-range or mistyped inputs raise
+    ``ValueError`` before any fetch or walk, so bad inputs never reach
+    ``WOULD_ALLOW_STATIC`` (or any other verdict)."""
+    if type(value) is not int or not 0 <= value <= 0xFFFF:
+        raise ValueError(f"{name} must be 0..0xFFFF: {value!r}")
+    return value
+
+
 def verdict(op, src, dst, length, mpr, backing, pc=None):
     """Pre-start verdict for one transfer instruction (host model).
 
@@ -101,12 +112,20 @@ def verdict(op, src, dst, length, mpr, backing, pc=None):
     fetch NOT_RUN explicitly).
     ``length == 0`` is refused without expanding the 65536-byte walk here;
     callers use ``peek.transfer_sequences`` directly for the exact walk.
+    ``src``/``dst``/``length`` (and ``pc`` when given) must be exact
+    ``int`` 0..0xFFFF (``bool`` refused): anything else raises ``ValueError``
+    before any fetch or walk.
     """
     if op not in OPS:
         raise ValueError(f"unknown block op: {op!r}")
+    _require_u16("src", src)
+    _require_u16("dst", dst)
+    _require_u16("length", length)
+    if pc is not None:
+        _require_u16("pc", pc)
     count = length or peek.LENGTH0_BYTES
     if pc is not None:
-        fetched = peek.fetch_t(pc & 0xFFFF, mpr, backing)
+        fetched = peek.fetch_t(pc, mpr, backing)
         if not fetched["ok"]:
             return {"op": op, "length": length, "count": count,
                     "verdict": "FAIL_CLOSED", "reason": "fetch_unpeekable",
@@ -114,11 +133,11 @@ def verdict(op, src, dst, length, mpr, backing, pc=None):
         mismatch = None
         if fetched["opcode"] != OPCODE_OF[op] or fetched["name"] != op:
             mismatch = "opcode"
-        elif fetched["src"] != (src & 0xFFFF):
+        elif fetched["src"] != src:
             mismatch = "src"
-        elif fetched["dst"] != (dst & 0xFFFF):
+        elif fetched["dst"] != dst:
             mismatch = "dst"
-        elif fetched["length"] != (length & 0xFFFF):
+        elif fetched["length"] != length:
             mismatch = "length"
         if mismatch is not None:
             return {"op": op, "length": length, "count": count,
@@ -132,8 +151,8 @@ def verdict(op, src, dst, length, mpr, backing, pc=None):
         return {"op": op, "length": 0, "count": count,
                 "verdict": "REFUSED", "reason": "len0_never_executed",
                 "gate": GATE, "unknown": None, "fetch": fetched}
-    srcs, dsts = peek.transfer_sequences(op, src & 0xFFFF, dst & 0xFFFF, length)
-    if pc is not None and peek.overlaps_instruction(pc & 0xFFFF, dsts):
+    srcs, dsts = peek.transfer_sequences(op, src, dst, length)
+    if pc is not None and peek.overlaps_instruction(pc, dsts):
         return {"op": op, "length": length, "count": count,
                 "verdict": "REFUSED", "reason": "self_overwrite",
                 "gate": GATE, "unknown": None, "fetch": fetched}
