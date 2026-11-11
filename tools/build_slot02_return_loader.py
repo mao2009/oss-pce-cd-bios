@@ -67,17 +67,23 @@ def assemble_stub_bytes(out: Path, mode: str = "debug") -> bytes:
     flat = out / "slot02_return_stub.bin"
     subprocess.run([ld65, "-C", str(cfg), "-o", str(flat), str(obj)], check=True)
     code = flat.read_bytes()
-    if not code or code[0] != RTS:
+    return validate_stub_bytes(code)
+
+
+def validate_stub_bytes(stub: bytes) -> bytes:
+    """Fail-closed stub content check (pure; RTS-first, side-effect-free, fits)."""
+    if not stub or stub[0] != RTS:
         raise ValueError("experiment stub must start with RTS ($60)")
-    if len(code) > PATCH_LEN:
-        raise ValueError(f"experiment stub ({len(code)} bytes) does not fit the 5-byte fallback slot")
-    if any(b != RTS and b != NOP for b in code):
+    if len(stub) > PATCH_LEN:
+        raise ValueError(f"experiment stub ({len(stub)} bytes) does not fit the 5-byte fallback slot")
+    if any(b != RTS and b != NOP for b in stub):
         raise ValueError("experiment stub must be side-effect-free (RTS/NOP only)")
-    return bytes(code)
+    return bytes(stub)
 
 
 def patch_preview(base: bytes, slot02_addr: int, unimpl_addr: int, stub: bytes) -> tuple[int, bytes, bytes]:
     """Pure patch computation: (file offset, before, after). Raises fail-closed."""
+    stub = validate_stub_bytes(stub)
     if type(slot02_addr) is not int or not 0xE000 <= slot02_addr <= 0xFFFF:
         raise ValueError(f"api_slot_02 address {slot02_addr!r} outside BIOS window $E000-$FFFF")
     if type(unimpl_addr) is not int or not 0xE000 <= unimpl_addr <= 0xFFFF:

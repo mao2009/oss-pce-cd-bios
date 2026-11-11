@@ -79,12 +79,17 @@ class PatchAccountingTests(unittest.TestCase):
         self.assertEqual(patched[off:off + 5], after)
         self.assertEqual(len(patched), len(base))
 
-    def test_apply_patch_refuses_tampered_base(self):
+    def test_apply_patch_refuses_window_tamper(self):
+        # apply_patch guarantees the patch stays inside the verified 5-byte
+        # window; base-image integrity itself rests on the trusted normal
+        # pipeline (build_slot02_return_bios builds the base in-process and
+        # asserts size/vectors). A tamper inside the window breaks the
+        # before-bytes and must refuse.
         base = bytearray(0x2000)
         base[0x10A:0x10F] = bytes((0xA2, 0x02, 0x4C, 0x45, 0xE2))
         off, before, after = patch_preview(bytes(base), 0xE10A, 0xE245, self.STUB)
         tampered = bytearray(base)
-        tampered[0x500] ^= 0xFF
+        tampered[0x10B] = 0x03  # corrupt the slot byte inside the window
         with self.assertRaises(ValueError):
             apply_patch(bytes(tampered), off, before, after)
 
@@ -117,7 +122,8 @@ class ClassifySimulatedTests(unittest.TestCase):
     def test_next_api_sequence(self):
         calls = [_call("cold", a=0xAA), _call("cold", entry=0xE009, slot=3, a=0xCC),
                  _call("warm", a=0xAA), _call("warm", entry=0xE009, slot=3, a=0xCC)]
-        runs = [_run("cold"), _run("warm", reason="api_unimplemented", pc=self.STUB, x=3)]
+        runs = [_run("cold", reason="api_unimplemented", pc=self.STUB, x=3),
+                _run("warm", reason="api_unimplemented", pc=self.STUB, x=3)]
         verdict, detail = S.classify_simulated(_records(calls, runs), self.STUB)
         self.assertEqual(verdict, "SIMULATED_NEXT_API")
         self.assertIn("(2, 'JSR')", detail)
