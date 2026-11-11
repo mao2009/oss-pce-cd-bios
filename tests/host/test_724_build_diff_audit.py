@@ -282,6 +282,89 @@ class BuildDiffAuditGate(unittest.TestCase):
                 directory, "tools/build.py",
                 '\nif mode == "debug":\n    command += ["-g"]\n    print("debug mode")\n')
             self.assertEqual(VBD.check_mode_branches(tmp), [])
+        # MAJOR-2: strict output-path shapes stay GREEN -- a `-l` listing
+        # rooted at the output directory, an extend() of the same shape,
+        # and a ternary selecting between two pure output paths.
+        with tempfile.TemporaryDirectory() as directory:
+            tmp = _mode_mutation_root(
+                directory, "tools/build.py",
+                '\nif mode == "debug":\n    command += ["-g", "-l", str(output / "smoke.lst")]\n'
+                '    command.extend(["-l", str(output / "extra.lst")])\n'
+                'listing = str(output / "a.lst") if mode == "debug" else str(output / "b.lst")\n')
+            self.assertEqual(VBD.check_mode_branches(tmp), [])
+
+    def test_mutation_output_path_expr_calls_fail_closed(self):
+        # MAJOR-2: the output-path check is a structural allowlist -- name
+        # presence alone never allows. A call smuggling an output name
+        # (`modify_rom(output)`) must RED even where a bare output path
+        # would pass: in `-l` command operands, in ternaries on either
+        # side, nested inside another conditional, or mixed with ROM inputs.
+        mutants = [
+            # function/alias calls hiding behind the `output` name
+            ("tools/build.py",
+             '\nif mode == "release":\n    command += ["-l", modify_rom(output)]\n',
+             "output"),
+            ("tools/build.py",
+             '\nif mode == "release":\n    command += ["-l", helper(output)]\n',
+             "output"),
+            # method/object calls with output args
+            ("tools/build.py",
+             '\nif mode == "release":\n    command += ["-g", obj.write(output)]\n',
+             "output"),
+            # indirect/dynamic callee with an output arg
+            ("tools/build.py",
+             '\nif mode == "release":\n    command += ["-l", handlers[mode](output)]\n',
+             "output"),
+            # mixed safe-name operand plus a dangerous call
+            ("tools/build.py",
+             '\nif mode == "release":\n    command += ["-g", str(output / "a.lst"), evil(output)]\n',
+             "output"),
+            # release-side-only ternary feeding the command (outside an
+            # `if` region, so no region call-walk covers it)
+            ("tools/build.py",
+             '\ncommand += (["-g"] if mode == "debug" else ["-l", evil(output)])\n',
+             "command"),
+            ("tools/build.py",
+             '\ncommand = command + (["-g"] if mode == "debug" else ["-l", evil(output)])\n',
+             "command"),
+            # ternary values selecting a call on either side
+            ("tools/build.py",
+             '\nlisting = str(output / "a.lst") if mode == "debug" else modify_rom(output)\n',
+             "ternary"),
+            ("tools/build.py",
+             '\nlisting = evil(output) if mode == "debug" else str(output / "a.lst")\n',
+             "ternary"),
+            ("tools/build.py",
+             '\nlisting = str(output / "a.lst") if mode == "debug" else handlers[mode](output)\n',
+             "ternary"),
+            # nested conditional inside a would-be path operand
+            ("tools/build.py",
+             '\nlisting = (str(output / "a.lst") if flag else evil(output))'
+             ' if mode == "debug" else str(output / "b.lst")\n',
+             "ternary"),
+            ("tools/build.py",
+             '\nif mode == "release":\n    command += ["-l",'
+             ' (str(output / "a.lst") if mode == "debug" else evil(output))]\n',
+             "output"),
+            # unapproved ROM inputs in command args (bare or mixed in)
+            ("tools/build.py",
+             '\nif mode == "release":\n    command += ["-l", str(source)]\n',
+             "output"),
+            ("tools/build.py",
+             '\nlisting = str(output / "a.lst") if mode == "debug" else str(output / source)\n',
+             "ternary"),
+            # wrong flag where a listing path belongs
+            ("tools/build.py",
+             '\nif mode == "release":\n    command += ["-o", str(output / "x.o")]\n',
+             "command"),
+        ]
+        for rel, extra, hint in mutants:
+            with self.subTest(extra=extra.strip().splitlines()[-1]):
+                with tempfile.TemporaryDirectory() as directory:
+                    tmp = _mode_mutation_root(directory, rel, extra)
+                    problems = VBD.check_mode_branches(tmp)
+                    self.assertTrue(any(hint in p for p in problems),
+                                    f"output-path-expr {hint!r} bypass not detected: {problems}")
 
     def test_release_recipe_decoy_outside_target_fails_closed(self):
         # check_release_gates must parse the exact `release:` recipe, not a

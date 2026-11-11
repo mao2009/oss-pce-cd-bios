@@ -120,6 +120,14 @@ FORBIDDEN_IMPORTS = (
 # fork cannot hide behind an allowed-looking first line.
 _DEBUG_ONLY_FLAGS = ("-g", "-l")
 
+# Roots an output-path expression may be built from: the assembler output
+# directory, per-source object paths, and linker dependency files. Any other
+# name inside a would-be path (ROM inputs such as `source`/`config`, mode
+# values, handler tables) refuses the path. Only pure `str()`/`repr()`
+# coercion may wrap such a path; every other call shape fails closed.
+_OUTPUT_ROOT_NAMES = frozenset({"output", "obj", "dep"})
+_OUTPUT_PATH_COERCIONS = frozenset({"str", "repr"})
+
 # Names a mode test may flow into without ROM effect: the assembler command
 # list (debug flags/listings only) and the `debug` carrier itself. Every later
 # use of the carrier in a test is itself a checked mode branch.
@@ -219,19 +227,56 @@ def _mode_derived_names(tree: ast.AST) -> set[str]:
     return derived
 
 
+def _is_output_path_operand(node: ast.AST) -> bool:
+    """A `/`-join fragment: a string literal or a rooted output path."""
+    if isinstance(node, ast.Constant):
+        return isinstance(node.value, str)
+    return _is_output_path_expr(node)
+
+
 def _is_output_path_expr(node: ast.AST) -> bool:
-    """Expression rooted at an output directory/object name (listings, maps, label/debug files)."""
-    names = {child.id for child in ast.walk(node)
-             if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Load)}
-    return bool(names & {"output", "obj", "dep"})
+    """Pure output-directory path expression (structural allowlist, fail-closed).
+
+    Only `output`/`obj`/`dep` roots joined by `/` (or `+` with string
+    fragments) and wrapped in a pure `str()`/`repr()` coercion pass. Name
+    presence alone never allows: ANY other call -- helpers (`modify_rom()`),
+    aliases, methods/objects (`obj.write(...)`), indirect/subscript callees
+    (`handlers[mode](...)`), or ROM inputs mixed into the path
+    (`str(output / source)`) -- fails, as do ternaries, nested conditionals,
+    f-strings, and attribute/subscript access. Anything unrecognized
+    returns False so an undetectable side effect can never read as a path.
+    """
+    if isinstance(node, ast.Call):
+        func = node.func
+        if not (isinstance(func, ast.Name) and func.id in _OUTPUT_PATH_COERCIONS):
+            return False
+        if len(node.args) != 1 or node.keywords:
+            return False
+        return _is_output_path_expr(node.args[0])
+    if isinstance(node, ast.Name):
+        return node.id in _OUTPUT_ROOT_NAMES and isinstance(node.ctx, ast.Load)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Div, ast.Add)):
+        return (_is_output_path_expr(node.left)
+                and _is_output_path_operand(node.right))
+    return False
 
 
 def _is_debug_operand(node: ast.AST, derived: set[str]) -> bool:
-    """A value a mode test may select: -g/-l flags, empty, or output paths."""
+    """A value a mode test may select: -g/-l flags, empty, or output paths.
+
+    Lists/tuples hold only flat flag/path elements (nested sequences or
+    ternaries fail); anything else must be a strict output-path expression,
+    so a call smuggling an output name (`modify_rom(output)`) never reads
+    as a debug operand.
+    """
     if isinstance(node, ast.Constant):
         return node.value in _DEBUG_ONLY_FLAGS
     if isinstance(node, (ast.List, ast.Tuple)):
-        return all(_is_debug_operand(elt, derived) for elt in node.elts)
+        return all(
+            (isinstance(elt, ast.Constant) and elt.value in _DEBUG_ONLY_FLAGS)
+            or _is_output_path_expr(elt)
+            for elt in node.elts
+        )
     return _is_output_path_expr(node)
 
 
@@ -592,7 +637,30 @@ def check_mode_branches(root: Path = ROOT) -> list[str]:
                     continue
                 targets = _assignment_target_ids(node)
                 if targets and all(target in _MODE_CARRIERS for target in targets):
-                    continue  # carrier flow; uses are checked as branches
+                    if "command" in targets and _mentions_mode(value, derived):
+                        # A mode value flowing directly into `command` outside
+                        # an `if` region (e.g. `command += (... if mode ... else
+                        # ...)`) must still carry only -g/-l/output paths;
+                        # otherwise a release-side-only ternary could smuggle
+                        # a side-effect call into the assembler command.
+                        if isinstance(node, ast.AugAssign):
+                            ok = (isinstance(node.op, ast.Add)
+                                  and _command_sequence_ok(value, derived))
+                        elif (isinstance(value, ast.BinOp) and isinstance(value.op, ast.Add)
+                                and (_mentions_mode(value.left, derived)
+                                     or _mentions_mode(value.right, derived))):
+                            other = (value.right if _mentions_mode(value.left, derived)
+                                     else value.left)
+                            ok = _command_sequence_ok(other, derived)
+                        else:
+                            ok = _command_sequence_ok(value, derived)
+                        if not ok:
+                            lineno = getattr(node, 'lineno', 0)
+                            line = lines[lineno - 1] if 1 <= lineno <= len(lines) else ""
+                            problems.append(
+                                f"{rel}:{lineno}: mode-dependent `command` update is not limited to"
+                                f" -g/-l/output paths: {line.strip()[:160]!r}")
+                    continue  # carrier flow; `debug` uses are checked as branches
                 if isinstance(value, ast.Dict) and _dict_mode_only_echo(value, derived):
                     continue  # manifest "mode" echo
                 if _has_mode_ifexp(value, derived):
