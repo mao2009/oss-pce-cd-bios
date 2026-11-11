@@ -33,6 +33,37 @@ def _target():
     raise AssertionError("target slot missing")
 
 
+def _split_candidate_parts(name):
+    """Slash-separated parts of the combined candidate name (runtime values only)."""
+    parts = []
+    for part in str(name).split("/"):
+        cleaned = part.strip()
+        if cleaned and cleaned.upper() != "UNKNOWN" and cleaned not in parts:
+            parts.append(cleaned)
+    return parts
+
+
+def _observation_names(target):
+    """Distinct individual names from the ledger name_observations (runtime values only)."""
+    names = []
+    for obs in target.get("name_observations", []) or []:
+        raw = obs.get("name") if isinstance(obs, dict) else ""
+        cleaned = raw.strip() if isinstance(raw, str) else ""
+        if cleaned and cleaned.upper() != "UNKNOWN" and cleaned not in names:
+            names.append(cleaned)
+    return names
+
+
+def _prohibited_individuals(name, extra_names=None):
+    """Ordered distinct individual candidate names to prohibit standalone use."""
+    individuals = _split_candidate_parts(name)
+    for cand in extra_names or []:
+        cleaned = cand.strip() if isinstance(cand, str) else ""
+        if cleaned and cleaned.upper() != "UNKNOWN" and cleaned not in individuals:
+            individuals.append(cleaned)
+    return individuals
+
+
 def _allowed_dollar_addrs():
     """DEV-owned dollar addresses parsed from the DEV layout source.
 
@@ -54,8 +85,16 @@ def _allowed_dollar_addrs():
     return allowed
 
 
-def scan_document(text, entry, name, allowed):
-    """Return list of boundary hits in one document text."""
+def scan_document(text, entry, name, allowed, extra_names=None):
+    """Return list of boundary hits in one document text.
+
+    Entry/dollar/hex rules are the #596 boundary (unchanged). Name rules cover
+    the combined candidate name plus each individual observation name, matched
+    case-insensitively as substrings so standalone, word-boundary-adjacent
+    (punctuation/whitespace), and embedded occurrences all flag. Only full
+    identifiers are matched, never generic fragments, so normal tech prose
+    without a full identifier stays clean.
+    """
     hits = []
     upper = text.upper()
     # Entry values: prefixed forms and bare standalone hex (hashes excluded by \b).
@@ -67,9 +106,22 @@ def scan_document(text, entry, name, allowed):
     for m in BARE_HEX.finditer(text):
         if m.group(0).upper() == bare:
             hits.append(f"entry-bare:{m.group(0)}")
-    # Names: exact candidate name from the ledger (case-sensitive).
+    # Names: exact combined candidate name (legacy, case-sensitive) plus
+    # individual observation names (case-insensitive substring). The
+    # substring form covers standalone, word-boundary-adjacent, and embedded
+    # variants without splitting identifiers into generic fragments.
     if name in text:
         hits.append("candidate-name")
+    for indiv in _prohibited_individuals(name, extra_names):
+        if indiv.upper() in upper:
+            hits.append(f"candidate-name:{indiv}")
+            continue
+        # Identifier-separator evasion: underscore written as hyphen/dot.
+        # Spaces are excluded so normal prose adjacency stays clean.
+        if "_" in indiv:
+            pattern = re.escape(indiv).replace("_", r"[-_.]")
+            if re.search(pattern, text, re.IGNORECASE):
+                hits.append(f"candidate-name-sep:{indiv}")
     # Dollar addresses: only allowlisted DEV/architecture values.
     for m in DOLLAR_ADDR.findall(text):
         if m.upper() not in allowed:
@@ -93,15 +145,17 @@ def scan_document(text, entry, name, allowed):
 class Slot4aPublicBoundaryTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.entry = _target()["candidate_entry"]
-        cls.name = _target()["candidate_name"]
+        target = _target()
+        cls.entry = target["candidate_entry"]
+        cls.name = target["candidate_name"]
+        cls.names = _prohibited_individuals(cls.name, _observation_names(target))
         cls.allowed = _allowed_dollar_addrs()
         cls.docs = {name: (ROOT / name).read_text(encoding="utf-8") for name in NEW_DOCS}
 
     def test_new_docs_carry_no_prohibited_entry_or_name(self):
         for name, text in self.docs.items():
             with self.subTest(doc=name):
-                self.assertEqual(scan_document(text, self.entry, self.name, self.allowed), [])
+                self.assertEqual(scan_document(text, self.entry, self.name, self.allowed, self.names), [])
 
     def test_scan_flags_entry_prefixed_form(self):
         synthetic = "synthetic prefix " + ("$" + self.entry[2:])
@@ -113,7 +167,68 @@ class Slot4aPublicBoundaryTest(unittest.TestCase):
 
     def test_scan_flags_candidate_name(self):
         synthetic = "synthetic name " + self.name
-        self.assertTrue(scan_document(synthetic, self.entry, self.name, self.allowed))
+        self.assertTrue(scan_document(synthetic, self.entry, self.name, self.allowed, self.names))
+
+    def test_scan_flags_each_individual_observation_name(self):
+        self.assertTrue(self.names, "ledger provides no individual names")
+        for indiv in self.names:
+            with self.subTest(indiv="length:" + str(len(indiv))):
+                synthetic = "synthetic name " + indiv
+                self.assertTrue(scan_document(synthetic, self.entry, self.name, self.allowed, self.names))
+
+    def test_scan_flags_name_case_variants(self):
+        for indiv in self.names:
+            with self.subTest(indiv="length:" + str(len(indiv))):
+                for variant in (indiv.lower(), indiv.upper(), indiv.swapcase()):
+                    synthetic = "synthetic name " + variant
+                    self.assertTrue(
+                        scan_document(synthetic, self.entry, self.name, self.allowed, self.names),
+                        msg=f"case variant missed: {variant!r}",
+                    )
+
+    def test_scan_flags_name_word_boundary_variants(self):
+        for indiv in self.names:
+            with self.subTest(indiv="length:" + str(len(indiv))):
+                for variant in (f"({indiv},)", f"[{indiv}]", f" {indiv} ", f"\"{indiv}\""):
+                    synthetic = "synthetic" + variant + "boundary"
+                    self.assertTrue(
+                        scan_document(synthetic, self.entry, self.name, self.allowed, self.names),
+                        msg=f"boundary variant missed: {variant!r}",
+                    )
+
+    def test_scan_flags_name_substring_variants(self):
+        for indiv in self.names:
+            with self.subTest(indiv="length:" + str(len(indiv))):
+                for variant in (f"xx{indiv}yy", f"prefix-{indiv}-suffix", f"{indiv}2"):
+                    synthetic = "synthetic " + variant
+                    self.assertTrue(
+                        scan_document(synthetic, self.entry, self.name, self.allowed, self.names),
+                        msg=f"substring variant missed: {variant!r}",
+                    )
+
+    def test_scan_flags_name_separator_variants(self):
+        for indiv in self.names:
+            if "_" not in indiv:
+                continue
+            with self.subTest(indiv="length:" + str(len(indiv))):
+                for variant in (indiv.replace("_", "-"), indiv.replace("_", ".")):
+                    synthetic = "synthetic " + variant
+                    self.assertTrue(
+                        scan_document(synthetic, self.entry, self.name, self.allowed, self.names),
+                        msg=f"separator variant missed: {variant!r}",
+                    )
+
+    def test_scan_accepts_generic_prose_without_full_identifier(self):
+        # Generic fragments that appear in normal tech prose must stay clean.
+        # Only full identifiers flag; no prohibited literal is written here.
+        for prose in (
+            "synthetic clean text without addresses",
+            "the system card bios key handling and memory open routine",
+            "slot-number-only reference with no entry values",
+            "public sources pending provenance approval",
+        ):
+            with self.subTest(prose=prose[:24]):
+                self.assertEqual(scan_document(prose, self.entry, self.name, self.allowed, self.names), [])
 
     def test_scan_flags_non_allowlisted_dollar_address(self):
         # Construct a generic non-allowlisted address without copying a real one.
