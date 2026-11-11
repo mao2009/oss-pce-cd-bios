@@ -9,6 +9,17 @@ NOT a System Card CD_BASE implementation. NOT an ABI claim. NOT game
 compatibility. NOT G5 success. Verdicts carry the SIMULATED_ prefix and can
 never be API_ENTRY_CONFIRMED.
 
+Exit codes: only SIMULATED_NEXT_API and SIMULATED_RETURN_THEN_HALT exit 0
+(completed, explainable conditional observations). Every other verdict --
+SIMULATED_PRE_HALT, SIMULATED_BUDGET, SIMULATED_INCOMPLETE,
+SIMULATED_DIVERGENT, SIMULATED_UNEXPECTED_FIRST, FAIL -- exits 1, while the
+sanitized evidence JSON is still saved when writable.
+
+Synthetic gate: the commercial path requires a matching synthetic PASS
+receipt (same slots, mode, experiment code hashes, repo HEAD); a missing or
+stale receipt BLOCKs the commercial run instead of reusing an unrelated
+pass.
+
 Synthetic (default): proves the instrument itself on PUBLIC-format loaders.
   Single-slot ROM (slot02ret, slots=(02,)):
     SEQ on experiment ROM  -> 2 ordered APICALLs (slot2 JSR returns, then
@@ -105,6 +116,154 @@ CALL_COMPARE_FIELDS = ("in_table", "slot", "caller_pc", "entry_pc", "sp_before",
                          "sp_delta", "caller_a", "caller_x", "caller_y", "caller_p", "mpr",
                          "stack_check", "return_matches_caller")
 
+# MAJOR-1: only a completed, explainable conditional observation exits 0.
+# Anything abnormal, incomplete, or undecidable exits non-zero -- including
+# SIMULATED_PRE_HALT (observation complete but the experiment goal unmet).
+EXIT_OK_VERDICTS = ("SIMULATED_NEXT_API", "SIMULATED_RETURN_THEN_HALT")
+
+
+def exit_code_for_verdict(verdict) -> int:
+    """Exit code for a commercial verdict (pure). 0 only for completed
+    conditional observations; every other verdict -- including every
+    SIMULATED_* abnormality -- exits 1."""
+    return 0 if verdict in EXIT_OK_VERDICTS else 1
+
+
+# MEDIUM-4: the commercial run requires a matching synthetic PASS receipt
+# (same slots, mode, code content, and repo HEAD). Long synthetic suites are
+# NOT re-run per commercial invocation; the receipt's validity is checked
+# mechanically instead. The commercial ROM bytes themselves are validated
+# separately by the whole-image diff assertion at build time.
+RECEIPT_FILES = (
+    "tests/integration/geargrafx_slot02_return.py",
+    "tools/build_slot02_return_loader.py",
+    "tests/integration/ipl_slot02_return_payload.s",
+    "tests/integration/slot02_return_stub.s",
+)
+RECEIPT_SCHEMA = "slot02-return-synthetic-receipt/v1"
+
+
+def _git_head(root=ROOT) -> str:
+    try:
+        result = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
+                                capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as error:
+        raise ValueError("cannot resolve repo HEAD for the receipt") from error
+    head = result.stdout.strip()
+    if result.returncode != 0 or not head:
+        raise ValueError("cannot resolve repo HEAD for the receipt")
+    return head
+
+
+def collect_code_hashes(root=ROOT) -> dict:
+    """SHA-256 of every experiment code file (pure I/O; fail-closed)."""
+    import hashlib
+    hashes = {}
+    for name in RECEIPT_FILES:
+        try:
+            hashes[name] = hashlib.sha256((Path(root) / name).read_bytes()).hexdigest()
+        except OSError as error:
+            raise ValueError(f"cannot hash experiment source {name}") from error
+    return hashes
+
+
+def synthetic_receipt_payload(variant, slots, mode, exp_sha, code_hashes, head, issue) -> dict:
+    """Receipt content for a synthetic PASS (pure; host-testable)."""
+    return {"schema": RECEIPT_SCHEMA, "issue": issue, "variant": variant,
+            "slots": [f"${s:02X}" for s in slots], "mode": mode,
+            "exp_rom_sha256": exp_sha, "code_sha256": dict(code_hashes),
+            "git_head": head, "result": "PASS"}
+
+
+def receipt_path(out: Path, slots, mode: str) -> Path:
+    label = "-".join(f"{s:02x}" for s in slots)
+    return out / f"synthetic-receipt-{label}-{mode}.json"
+
+
+def write_synthetic_receipt(out: Path, variant, slots, mode: str, exp_rom: Path, issue: int) -> Path:
+    """Write the PASS receipt after a green synthetic run (overwrites stale)."""
+    import hashlib
+    exp_sha = hashlib.sha256(Path(exp_rom).read_bytes()).hexdigest()
+    payload = synthetic_receipt_payload(variant, tuple(slots), mode, exp_sha,
+                                        collect_code_hashes(), _git_head(), issue)
+    path = receipt_path(out, tuple(slots), mode)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return path
+
+
+def check_synthetic_receipt(out: Path, slots, mode: str, issue: int) -> None:
+    """Require a matching synthetic PASS receipt (fail-closed BLOCKED).
+
+    Matches slots, mode, owning issue, repo HEAD, and every experiment code
+    hash. A stale pass from unrelated code, another HEAD, or another config
+    can never unlock a commercial run.
+    """
+    path = receipt_path(out, tuple(slots), mode)
+    try:
+        receipt = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise ValueError("BLOCKED: no synthetic PASS receipt; run the synthetic suite first") from error
+    problems = []
+    if receipt.get("schema") != RECEIPT_SCHEMA:
+        problems.append("schema")
+    if receipt.get("result") != "PASS":
+        problems.append("result")
+    if receipt.get("issue") != issue:
+        problems.append("issue")
+    if receipt.get("slots") != [f"${s:02X}" for s in slots]:
+        problems.append("slots")
+    if receipt.get("mode") != mode:
+        problems.append("mode")
+    if receipt.get("git_head") != _git_head():
+        problems.append("git_head")
+    if receipt.get("code_sha256") != collect_code_hashes():
+        problems.append("code_sha256")
+    if problems:
+        raise ValueError(f"BLOCKED: stale synthetic receipt ({', '.join(problems)}); "
+                         f"re-run the synthetic suite")
+    return None
+
+
+def validate_table_call(call) -> tuple:
+    """Strict structural validation of one recorded table call (pure).
+
+    Checks presence, type, and range of every required field; the entry PC
+    must equal the table slot address (0xE000 + slot*3); MPR must be 8 bytes;
+    JSR/JMP evidence (SP/stack flags) must be well-formed. Anything missing
+    or malformed is invalid -- never a success. Callers treat invalid as
+    unclassifiable (no ordering invented). Validated against the probe's
+    emission contract (unsigned ints, MPR1 WRAM-bank stack reads).
+    """
+    if not isinstance(call, dict):
+        return False, "call is not an object"
+    if call.get("in_table") is not True:
+        return False, "not a table entry"
+    slot = call.get("slot")
+    if type(slot) is not int or not 0 <= slot <= 0x50:
+        return False, f"slot out of range: {slot!r}"
+    entry = call.get("entry_pc")
+    if type(entry) is not int or not 0xE000 <= entry <= 0xFFFF:
+        return False, f"entry_pc out of range: {entry!r}"
+    if entry != 0xE000 + slot * 3:
+        return False, f"entry_pc ${entry:04X} is not the table entry for slot {slot}"
+    caller = call.get("caller_pc")
+    if type(caller) is not int or not 0x0000 <= caller <= 0xFFFF:
+        return False, f"caller_pc out of range: {caller!r}"
+    for field in ("sp_before", "sp_after", "sp_delta", "caller_a", "caller_x",
+                  "caller_y", "caller_p"):
+        value = call.get(field)
+        if type(value) is not int or not 0 <= value <= 0xFF:
+            return False, f"{field} out of byte range: {value!r}"
+    mpr = call.get("mpr")
+    if (type(mpr) is not list or len(mpr) != 8
+            or any(type(b) is not int or not 0 <= b <= 0xFF for b in mpr)):
+        return False, f"mpr must be 8 bytes: {mpr!r}"
+    if call.get("stack_check") not in ("MATCH", "MISMATCH", "UNKNOWN"):
+        return False, f"bad stack_check: {call.get('stack_check')!r}"
+    if call.get("return_matches_caller") not in (True, False, None):
+        return False, f"bad return flag: {call.get('return_matches_caller')!r}"
+    return True, ""
+
 
 def calls_match(a_calls, b_calls):
     """True when two cycles' call lists agree field-by-field (pure).
@@ -119,6 +278,8 @@ def calls_match(a_calls, b_calls):
         return False, f"call counts differ: {len(a_calls)} vs {len(b_calls)}"
     for i, (a, b) in enumerate(zip(a_calls, b_calls)):
         for field in CALL_COMPARE_FIELDS:
+            if field not in a or field not in b:
+                return False, f"call {i} field {field} missing"
             if a.get(field) != b.get(field):
                 return False, f"call {i} field {field} differs: {a.get(field)!r} vs {b.get(field)!r}"
     return True, ""
@@ -135,6 +296,9 @@ def call_sequence(calls: list, stub_addr):
         return None
     seq = []
     for idx, call in enumerate(calls):
+        valid, _why = validate_table_call(call)
+        if not valid:
+            return None
         method = E.classify_apicall(call, stub_addr)
         if method == "JSR":
             if not E.jsr_confirmed(call):
@@ -438,6 +602,13 @@ def main():
             E.verify_media_unchanged(snap)
         except ValueError as error:
             raise SystemExit(str(error))
+        # MEDIUM-4 gate: a matching synthetic PASS receipt (same slots/mode/
+        # code/HEAD) is required; stale or missing receipts BLOCK the
+        # commercial run instead of reusing an unrelated pass.
+        try:
+            check_synthetic_receipt(out, slots, args.mode, 758)
+        except ValueError as error:
+            raise SystemExit(str(error))
         from build_dev_ipl_loader_bios import parse_labels as _parse
         base_labels = out / "ipl-loader-bios-slot02-33ret-comm-base.lbl"
         try:
@@ -495,13 +666,15 @@ def main():
                     "runs": [{k: r[k] for k in ("cycle", "reason", "pc", "x", "halt_confirmed", "step")} |
                              {"apicall_truncated": r.get("apicall_truncated", False)}
                              for r in records["RUN"]]}
+        code = exit_code_for_verdict(verdict)
+        evidence["exit_code"] = code
         try:
             E.save_commercial_evidence(args.commercial_output,
                                        json.dumps(evidence, indent=2, sort_keys=True) + "\n")
         except ValueError as error:
             raise SystemExit(f"FAIL commercial evidence save failed: {error}")
-        print(f"SIMULATED commercial slot02-return: {verdict} ({detail})")
-        return 0 if verdict.startswith("SIMULATED_") else 1
+        print(f"SIMULATED commercial slot02-return: {verdict} ({detail}) exit={code}")
+        return code
 
     probe = compile_probe(out, "geargrafx_api_entry_probe.cpp", "geargrafx-slot02ret-probe")
     with tempfile.TemporaryDirectory(prefix="pce-slot02ret-") as tmp:
@@ -544,6 +717,9 @@ def main():
                     20_000_000, [(2, "JSR"), (51, "JSR"), (3, "JSR")],
                     [0xAA, 0xCC, 0xDD], 3)
         print("PASS seq23_both cold/warm: both patches return, third call observed, stub halt X=3")
+        receipt1 = write_synthetic_receipt(out, "slot02ret", (0x02,), args.mode, exp_rom, 756)
+        receipt2 = write_synthetic_receipt(out, "slot02-33ret", (0x02, 0x33), args.mode, exp23, 758)
+        print(f"PASS synthetic receipts written: {receipt1.name}, {receipt2.name}")
     print("PASS synthetic slot02+33-return experiment controls (two-return instrument verified)")
     return 0
 

@@ -39,6 +39,19 @@ else:
 STUB_SOURCE = ROOT / "tests" / "integration" / "slot02_return_stub.s"
 PATCH_LEN = 5  # `ldx #slot` (2) + `jmp api_unimplemented` (3)
 RTS, NOP = 0x60, 0xEA
+PUBLIC_DEFINES = ["-D", "IPL_PUBLIC"]
+
+
+def resolve_defines(defines) -> list:
+    """Map the caller's loader-format choice to ca65 defines (pure).
+
+    None (omitted) means the PUBLIC default; an explicit empty list means DEV
+    (no IPL_PUBLIC); a non-empty list is used as-is. The old ``or`` coercion
+    silently turned an explicit DEV request ([]) into PUBLIC -- refused now.
+    """
+    if defines is None:
+        return list(PUBLIC_DEFINES)
+    return list(defines)
 
 # B-2 allowlist: the ONLY permitted (slots, issue) combinations. This is
 # deliberately not a generic any-slot patcher: any other slot set, order,
@@ -196,14 +209,16 @@ def _clean_variant_files(output: Path, variant: str) -> None:
 
 
 def build_slot02_return_bios(original_path: Path, output: Path, sel: int, mode: str = "debug",
-                             variant: str = "slot02ret", defines=(),
+                             variant: str = "slot02ret", defines=None,
                              private_input: bool = False, slots: tuple = (0x02,),
                              issue: int = 756):
-    """Build (base_rom, exp_rom, symbols). `defines` selects PUBLIC (default) or DEV loader.
+    """Build (base_rom, exp_rom, symbols). `defines` selects the loader format.
 
+    None (default) means PUBLIC; pass [] explicitly for the DEV loader.
     `slots` lists the fallback slots patched to the RTS experiment stub
-    (label-derived addresses; hardcoded offsets forbidden). The whole-image
-    diff must be exactly those windows.
+    (label-derived addresses; hardcoded offsets forbidden). Only allowlisted
+    (slots, issue) pairs are built. The whole-image diff must be exactly
+    those windows.
     """
     if mode not in ("debug", "release"):
         raise ValueError("MODE must be debug or release")
@@ -211,7 +226,7 @@ def build_slot02_return_bios(original_path: Path, output: Path, sel: int, mode: 
         raise ValueError(
             f"slots {tuple(slots)!r} with issue {issue!r} is not an allowlisted experiment "
             f"{sorted(ALLOWED_EXPERIMENTS.items())}")
-    defines = list(defines) or ["-D", "IPL_PUBLIC"]
+    defines = resolve_defines(defines)
     output.mkdir(parents=True, exist_ok=True)
     _clean_variant_files(output, variant)
     base_variant = f"{variant}-base"

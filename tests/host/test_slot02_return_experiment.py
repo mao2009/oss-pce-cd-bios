@@ -15,7 +15,7 @@ sys.path[:0] = [str(ROOT / "tools"), str(ROOT / "tests" / "integration")]
 from build_rom import overrides  # noqa: E402
 from build_slot02_return_loader import (  # noqa: E402
     PATCH_LEN, RTS, _clean_variant_files, apply_patch, experiment_manifest,
-    patch_preview,
+    patch_preview, resolve_defines,
 )
 from environment import requires_cc65  # noqa: E402
 import geargrafx_slot02_return as S  # noqa: E402
@@ -431,6 +431,109 @@ class ClassifySimulatedTests(unittest.TestCase):
         ok2, why = S.calls_match([_call("cold")], [])
         self.assertFalse(ok2)
         self.assertIn("counts", why)
+
+    def test_calls_match_missing_field(self):
+        a = dict(_call("cold"))
+        del a["caller_pc"]
+        ok, why = S.calls_match([a], [_call("warm")])
+        self.assertFalse(ok)
+        self.assertIn("caller_pc", why)
+        b = dict(_call("cold"))
+        del b["caller_pc"]
+        ok2, _ = S.calls_match([a], [b])
+        self.assertFalse(ok2)  # missing on both sides still mismatches
+
+    def test_both_sides_missing_field_is_unexpected(self):
+        # Validation runs before comparison: corrupt records can never match.
+        a = dict(_call("cold"))
+        del a["caller_pc"]
+        b = dict(_call("warm"))
+        del b["caller_pc"]
+        runs = [_run("cold"), _run("warm")]
+        verdict, _ = S.classify_simulated(_records([a, b], runs), self.STUB)
+        self.assertEqual(verdict, "SIMULATED_UNEXPECTED_FIRST")
+
+    def test_validate_table_call_negatives(self):
+        base = _call("cold")
+        ok, _ = S.validate_table_call(dict(base))
+        self.assertTrue(ok)
+        bads = []
+        no_caller = dict(base); del no_caller["caller_pc"]  # 1: missing caller_pc
+        bads.append(no_caller)
+        no_entry = dict(base); del no_entry["entry_pc"]  # 2: missing entry_pc
+        bads.append(no_entry)
+        mismatch = dict(base); mismatch["slot"] = 3  # 3: slot/entry mismatch
+        bads.append(mismatch)
+        oob = dict(base); oob["slot"] = 0x51; oob["entry_pc"] = 0xE000 + 0x51 * 3  # 4: out of range
+        bads.append(oob)
+        short_mpr = dict(base); short_mpr["mpr"] = [255] * 7  # 5: short MPR
+        bads.append(short_mpr)
+        bad_mpr = dict(base); bad_mpr["mpr"] = [255] * 7 + [256]  # 6: MPR byte OOB
+        bads.append(bad_mpr)
+        bad_sp = dict(base); bad_sp["sp_delta"] = 256  # 7: bad SP
+        bads.append(bad_sp)
+        bad_ret = dict(base); bad_ret["return_matches_caller"] = "yes"  # 8: bad return flag
+        bads.append(bad_ret)
+        bad_type = dict(base); bad_type["caller_pc"] = "0x3014"  # 9: type mismatch
+        bads.append(bad_type)
+        self.assertEqual(len(bads), 9)
+        for bad in bads:
+            valid, _why = S.validate_table_call(bad)
+            self.assertFalse(valid, bad)
+        # Corrupt records never classify as a call sequence.
+        runs = [_run("cold"), _run("warm")]
+        verdict, _ = S.classify_simulated(
+            _records([dict(base), dict(base)], runs), self.STUB)
+        self.assertNotEqual(verdict, "FAIL")  # sanity: the valid twin classifies
+        for bad in bads:
+            calls = [dict(bad, cycle="cold"), dict(_call("warm"))]
+            verdict, _ = S.classify_simulated(_records(calls, runs), self.STUB)
+            self.assertEqual(verdict, "SIMULATED_UNEXPECTED_FIRST", bad)
+
+    def test_exit_code_mapping(self):
+        self.assertEqual(S.exit_code_for_verdict("SIMULATED_NEXT_API"), 0)
+        self.assertEqual(S.exit_code_for_verdict("SIMULATED_RETURN_THEN_HALT"), 0)
+        for abnormal in ("SIMULATED_PRE_HALT", "SIMULATED_BUDGET", "SIMULATED_INCOMPLETE",
+                         "SIMULATED_DIVERGENT", "SIMULATED_UNEXPECTED_FIRST", "FAIL",
+                         "UNKNOWN", ""):
+            self.assertEqual(S.exit_code_for_verdict(abnormal), 1, abnormal)
+
+    def test_resolve_defines(self):
+        self.assertEqual(resolve_defines(None), ["-D", "IPL_PUBLIC"])
+        self.assertEqual(resolve_defines([]), [])
+        self.assertEqual(resolve_defines(["-D", "X"]), ["-D", "X"])
+
+    def test_receipt_round_trip_and_tamper(self):
+        import json
+        import tempfile
+        code_hashes = S.collect_code_hashes()
+        head = S._git_head()
+        payload = S.synthetic_receipt_payload("slot02ret", (0x02,), "debug",
+                                              "1" * 64, code_hashes, head, 756)
+        self.assertEqual(payload["result"], "PASS")
+        self.assertEqual(payload["slots"], ["$02"])
+        with tempfile.TemporaryDirectory(prefix="pce-receipt-") as tmp:
+            out = Path(tmp)
+            (out / "synthetic-receipt-02-debug.json").write_text(
+                json.dumps(payload), encoding="utf-8")
+            S.check_synthetic_receipt(out, (0x02,), "debug", 756)  # must not raise
+            # Missing receipt BLOCKs.
+            (out / "synthetic-receipt-02-debug.json").unlink()
+            with self.assertRaises(ValueError):
+                S.check_synthetic_receipt(out, (0x02,), "debug", 756)
+            # Tampered code hashes BLOCK even with everything else equal.
+            wrong = dict(payload, code_sha256={f: "1" * 64 for f in S.RECEIPT_FILES})
+            (out / "synthetic-receipt-02-debug.json").write_text(
+                json.dumps(wrong), encoding="utf-8")
+            with self.assertRaises(ValueError):
+                S.check_synthetic_receipt(out, (0x02,), "debug", 756)
+            # Wrong slots/mode/issue BLOCK.
+            (out / "synthetic-receipt-02-debug.json").write_text(
+                json.dumps(payload), encoding="utf-8")
+            with self.assertRaises(ValueError):
+                S.check_synthetic_receipt(out, (0x02, 0x33), "debug", 756)
+            with self.assertRaises(ValueError):
+                S.check_synthetic_receipt(out, (0x02,), "debug", 758)
 
     def test_never_confirms(self):
         calls = [_call("cold"), _call("warm")]
