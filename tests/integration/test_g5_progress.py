@@ -48,17 +48,8 @@ class G5SyntheticMeasurementTests(unittest.TestCase):
 
     def _skip_reason(self):
         import shutil
-        from tools.environment import cc65_skip_reason  # noqa: E402
         try:
-            import tools.environment as env  # noqa: E402
-        except ImportError:
-            env = None
-        if env is not None:
-            reason = env.cc65_skip_reason() if hasattr(env, "cc65_skip_reason") else None
-            # tools/ on sys.path exposes environment directly.
-            pass
-        try:
-            import environment as env2  # noqa: E402
+            import environment as env2  # noqa: E402 (tools/ is on sys.path)
             reason = env2.cc65_skip_reason()
         except Exception:
             reason = "environment unavailable"

@@ -416,12 +416,12 @@ def sanitize_for_public(evidence: dict) -> dict:
             raise ValueError(f"evidence field {key!r} is private (refused for public output)")
         clean[key] = value
     text2 = _json.dumps(clean, sort_keys=True)
-    # No absolute paths, no rom dir, no CUE/BIN names, no media hashes
-    # (64-hex is allowed ONLY for pinned tool/ROM structural hashes in
-    # explicitly allowlisted fields, never for media).
+    # No media references, no absolute paths (POSIX or Windows), no home
+    # references. 64-hex structural hashes of pinned tools / built ROMs in
+    # explicitly public fields are allowed; media hashes are refused by key.
     if re.search(r"\./rom/|/rom/|\.cue|\.bin\"|\.iso", text2, re.I):
         raise ValueError("evidence carries private media references (refused)")
-    if re.search(r"/(tmp|home|Users)/", text2):
+    if re.search(r"/(tmp|home|Users)/|[A-Z]:\\\\|\\\\", text2):
         raise ValueError("evidence carries absolute paths (refused)")
     # Media title fields are refused by key above; double-guard common values.
     return clean

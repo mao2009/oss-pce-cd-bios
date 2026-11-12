@@ -310,10 +310,8 @@ def main(argv=None) -> int:
             _base_b, exp_b, add_b = build_variant_bc(
                 original, out, sel, args.mode, "g5b-slot02ret", defines_public,
                 False, (0x02,), 756)
-            rom_labels["B"] = (exp_b, {"api_unimplemented": add_b["api_unimplemented"],
-                                       "cd_halt_fail": add_b.get("cd_halt_fail"),
-                                       "cd_unexpected_interrupt": add_b.get("cd_unexpected_interrupt")})
-            # Fill cd_* from the base labels file (builder returns only slot addrs).
+            # Full halt/stub labels come from the base labels file (the builder
+            # returns only the patched-slot addrs; the patch moves nothing).
             from build_dev_ipl_loader_bios import parse_labels as _parse
             full_b = _parse(out / "ipl-loader-bios-g5b-slot02ret-base.lbl",
                             ("api_unimplemented", "cd_halt_fail", "cd_unexpected_interrupt"))
