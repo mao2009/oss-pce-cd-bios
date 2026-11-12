@@ -11,7 +11,7 @@ CD_BASE $02 proto (PR #782, branch `origin/agent-a/cd-base-proto-g5` at
 `5fe93c4b`) and Agent-B's EX_DSPOFF $33 fragment (PR #780, branch
 `origin/agent-b/ex-dspoff-real-cpu-g5` at `323562fb`) coexist as REAL
 processing in ONE experimental BIOS image, observable through harness D
-(PR #778, ref `15ae4872`, read-only consumer).
+(PR #778, pinned ref `da0fa4bc`, read-only consumer).
 
 ## What now executes (G5 contribution)
 
@@ -81,16 +81,28 @@ The builder derives everything at build time (never hardcoded or guessed):
 - Real-core: `tests/integration/test_unified_realcore.py` — loader success,
   both real arrivals/returns, order, 5-gate `REAL_SERVICE_RETURN` proof,
   harness-D pure validators (materialized read-only from pinned ref
-  `15ae4872`), commercial NOT_RUN. Requires pinned Linux + cc65 +
-  Geargrafx; SKIPs otherwise (BLOCKED in this environment, see below).
+  `da0fa4bc`; materialize failure FAILS closed, never SKIP-passes),
+  commercial NOT_RUN. Requires pinned Linux + cc65 +
+  Geargrafx; SKIPs otherwise (see Environment record below).
 - Commercial: `./rom` absent -> NOT_RUN. No bytes/hashes/paths/traces published.
 
 ## Environment record (this worker)
 
 - Before HEAD `0c7157e7` (= `origin/main`); PR heads confirmed with no drift:
-  `#782 = 5fe93c4b`, `#780 = 323562fb`, `#778 = 15ae4872`.
+  `#782 = 74739f82` (merged), `#780 = 323562fb` (merged), `#778 = da0fa4bc`.
 - Host: Windows, no pinned cc65/Geargrafx; `make setup` outcome recorded in
   the integration Issue. Real-core: BLOCKED (no toolchain; never substituted
   with host PASS).
 - Remaining blocker (single next item): a pinned-Linux run of
   `test_unified_realcore.py` + harness-D variant-D measurement.
+
+## Verification record (Agent C review fix, post-#782-merge tree)
+
+- Pinned Linux (x86_64) with pinned cc65 `71746c8` + Geargrafx `b49ae82a`:
+  `test_unified_realcore.py` 7/7 PASS (loader cold/warm, slot-$02
+  reach+return, slot-$33 reach+return, 02->33 order, 5-gate
+  REAL_SERVICE_RETURN, harness-D validators at pinned `da0fa4bc`,
+  commercial NOT_RUN). No commercial media used; synthetic media only.
+- `merged_heads` resolve to actually-merged SHAs (`74739f82`, `323562fb`)
+  on the full-fetch tree; UNRESOLVED never passes integration.
+- Host suite: full `tests/host` discover PASS (5227 tests).

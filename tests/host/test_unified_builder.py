@@ -233,6 +233,82 @@ class UnifiedProvenanceTests(unittest.TestCase):
         finally:
             U._git_output = orig
 
+    def test_resolved_ancestors_record_exact_shas(self):
+        # Positive (full-fetch integrated state): resolved ancestors are
+        # recorded EXACTLY, never altered or guessed.
+        orig = U._git_output
+        try:
+            def fake(*args):
+                if args and args[0] == "rev-parse" and len(args) > 1 and args[1] in U._MERGED_REFS:
+                    return {U._MERGED_REFS[0]: "a" * 40,
+                            U._MERGED_REFS[1]: "b" * 40}[args[1]]
+                if args and args[0] == "merge-base":
+                    return ""
+                return orig(*args)
+            U._git_output = fake
+            provenance = U.unified_repo_provenance()
+            self.assertEqual(provenance["merged_heads"],
+                             {U._MERGED_REFS[0]: "a" * 40,
+                              U._MERGED_REFS[1]: "b" * 40})
+        finally:
+            U._git_output = orig
+
+    def test_advanced_branch_ref_fails_closed_even_when_rev_parse_succeeds(self):
+        # Negative (advanced branch): the moving ref resolves to a valid SHA
+        # that is NOT integrated; recording it would claim an unmerged SHA.
+        orig = U._git_output
+        try:
+            def fake(*args):
+                if args and args[0] == "rev-parse" and len(args) > 1 and args[1] in U._MERGED_REFS:
+                    return "c" * 40
+                if args and args[0] == "merge-base":
+                    raise ValueError("BLOCKED: not an ancestor")
+                return orig(*args)
+            U._git_output = fake
+            with self.assertRaises(ValueError):
+                U.unified_repo_provenance()
+        finally:
+            U._git_output = orig
+
+    def test_unmerged_single_commit_is_not_recorded_as_merged(self):
+        # Negative (unmerged commit): the exact pre-merge #782 state, one
+        # commit ahead of HEAD, must BLOCKED instead of recording drift.
+        orig = U._git_output
+        try:
+            def fake(*args):
+                if args and args[0] == "rev-parse" and len(args) > 1 and args[1] == U._MERGED_REFS[0]:
+                    return "74739f82" + "0" * 32
+                if args and args[0] == "rev-parse" and len(args) > 1 and args[1] == U._MERGED_REFS[1]:
+                    return "d" * 40
+                if args and args[0] == "merge-base":
+                    if len(args) > 2 and args[2].startswith("74739f82"):
+                        raise ValueError("BLOCKED: merged ref is not an ancestor of HEAD")
+                    return ""
+                return orig(*args)
+            U._git_output = fake
+            with self.assertRaises(ValueError):
+                U.unified_repo_provenance()
+        finally:
+            U._git_output = orig
+
+    def test_shallow_checkout_missing_ref_never_claims_merged_sha(self):
+        # A shallow clone missing a ref records UNRESOLVED, never a guessed
+        # SHA; downstream integration must not pass on it (see the
+        # real-core D-validation gate requiring 40-hex merged heads).
+        orig = U._git_output
+        try:
+            def fake(*args):
+                if args and args[0] == "rev-parse" and len(args) > 1 and args[1] in U._MERGED_REFS:
+                    raise ValueError("BLOCKED: ref absent")
+                return orig(*args)
+            U._git_output = fake
+            provenance = U.unified_repo_provenance()
+            for ref, value in provenance["merged_heads"].items():
+                self.assertTrue(value.startswith("UNRESOLVED"), ref)
+                self.assertIsNone(re.fullmatch(r"[0-9a-f]{40}", value))
+        finally:
+            U._git_output = orig
+
 
 class UnifiedManifestContractTests(unittest.TestCase):
     """The G5-native fields harness-D needs, checked against a builder-shaped manifest."""
