@@ -12,7 +12,7 @@ CD_BASE $02 proto (PR #782, branch `origin/agent-a/cd-base-proto-g5` at
 `origin/agent-b/ex-dspoff-real-cpu-g5` at
 `323562fb5af373ab97aa9a0600bfe42d22a2944c`) coexist as REAL
 processing in ONE experimental BIOS image, observable through harness D
-(PR #778, pinned ref `5e14b2c0c1118b643041214d254505de8df7ae99`,
+(PR #778, pinned ref `c43771886330cca50c11bea62c5f890b22bc7782`,
 read-only consumer; this pin supersedes the earlier `522fe6575d50b25365c58ac605722332177e30c5` pin (sanitizer-only follow-up; D verifiers unchanged), which itself supersedes the earlier `da0fa4bc` pin, which
 predates the two-stage slot-$02 wiring fix and is no longer the claimed basis).
 
@@ -85,7 +85,7 @@ The builder derives everything at build time (never hardcoded or guessed):
 - Real-core: `tests/integration/test_unified_realcore.py` (11 tests) — loader success,
   both real arrivals/returns, order, 5-gate `REAL_SERVICE_RETURN` proof,
   harness-D pure validators (materialized read-only from pinned ref
-  `5e14b2c0c1118b643041214d254505de8df7ae99` — two-stage-aware
+  `c43771886330cca50c11bea62c5f890b22bc7782` — two-stage-aware
   `verify_d_rom_slot_targets` at this pin: table $E006 -> api_slot_02 ->
   cd_base_proto_entry, slot $33 direct table->body; materialize failure FAILS
   closed, never SKIP-passes),
@@ -116,7 +116,7 @@ The builder derives everything at build time (never hardcoded or guessed):
   `tests/integration/test_unified_realcore.py` 11/11 PASS (loader cold/warm,
   slot-$02 reach+return, slot-$33 reach+return, 02->33 order, 5-gate
   REAL_SERVICE_RETURN, harness-D validators at pinned
-  `5e14b2c0c1118b643041214d254505de8df7ae99` including two-stage-aware
+  `c43771886330cca50c11bea62c5f890b22bc7782` including two-stage-aware
   `verify_d_rom_slot_targets` plus negative validators, commercial NOT_RUN).
   No commercial media used; synthetic media only.
 - `merged_heads` resolve to actually-merged full SHAs
