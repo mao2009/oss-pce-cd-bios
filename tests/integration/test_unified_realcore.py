@@ -25,7 +25,7 @@ oracle); this file asserts the shadow/VDC-programming side effects visible in
 the cd-flow buffer.
 
 Harness-D consumption: the pure validators from tools/g5_progress_model.py at
-pinned PR #778 head 5e14b2c0 run read-only against this build's
+pinned PR #778 head c4377188 run read-only against this build's
 manifest/ROM/medium (validate_experimental_manifest, derive_native_slots,
 verify_d_rom_bytes, check_embedded_selection_vs_executed with the MEASURED
 medium identity, per-slot table-target checks via parse_slot_table_target
@@ -66,7 +66,7 @@ BUFFER_BASE = 0x2800
 RES_OFF = 0x3100 - BUFFER_BASE
 SEQ02 = 0xE006
 ENTRY33 = 0xE099
-HARNESS_REF = "5e14b2c0c1118b643041214d254505de8df7ae99"  # pinned PR #778 head (full 40-hex SHA); read-only D-consumption, never a moving ref
+HARNESS_REF = "c43771886330cca50c11bea62c5f890b22bc7782"  # pinned PR #778 head (full 40-hex SHA); read-only D-consumption, never a moving ref
 P_MASK = 0xCF  # PHP pushes B=1/bit5=1; PLP ignores them (same mask as the $33 oracle)
 
 SEQ_PAYLOAD_ASM = r"""
