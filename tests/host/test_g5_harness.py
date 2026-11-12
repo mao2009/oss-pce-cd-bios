@@ -1030,7 +1030,7 @@ class PublicEvidenceLeakFixTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             M.sanitize_for_public({"schema": M.SCHEMA, "reason": self.SECRET64})
         with self.assertRaises(ValueError):
-            M.sanitize_for_public({"schema": M.SCHEMA, "note": f"note {self.SECRET64.upper()}"}) 
+            M.sanitize_for_public({"schema": M.SCHEMA, "note": f"note {self.SECRET64.upper()}"})
         # Mixed-case variant.
         mixed = "".join(c.upper() if i % 2 else c.lower() for i, c in enumerate(self.SECRET64))
         with self.assertRaises(ValueError):
