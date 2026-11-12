@@ -902,6 +902,13 @@ class LinkRealCoreTests(unittest.TestCase):
                 self.assertEqual(phases, [(selected["lba"], 1)], fixture)
 
     def test_c_offdisc_read_fail(self):
+        # Cold+warm premature-STATUS negative (review 5872704142): an
+        # off-disc READ(6) for LBA 150 on the INDEX01=0 synthetic disc never
+        # reaches DATA_IN; the guest DATA_IN wait sees early STATUS and takes
+        # @premature -> code $70, stage 5, 0 bytes, scsi_status 0 (STATUS byte
+        # never read), msg 0, last_bus $D8. Host mirror scsi="premature"
+        # pins this exact triple; scsi="tail_bad"/"timeout" stay BLOCKED
+        # on the real core (no bad-status/timeout fault injection available).
         from build_cdload_exec import encode_sector
         records, manifest, selected, code = self.cases[("idx0", "c")]
         self.check_loader_success(records, manifest, selected, code)
@@ -910,10 +917,20 @@ class LinkRealCoreTests(unittest.TestCase):
             res = buf[RES_OFF:RES_OFF + 35]
             self.assertEqual(res[0], 0xAA)
             self.assertEqual(res[1], 0x70)
-            self.assertEqual(res[8], 0x15)
+            # P after the $70 return: C=1, Z=0 (A=$70: N=0).
+            p = res[8]
+            self.assertEqual(p, 0x15)
+            self.assertTrue(p & 0x01, run["cycle"])
+            self.assertFalse(p & 0x02, run["cycle"])
+            # SP balanced, MPRs restored, on both cycles.
+            self.assertEqual(res[10], 0xFF, run["cycle"])
+            self.assertEqual(list(buf[RES_OFF + 27:RES_OFF + 35]),
+                             EXPECTED_MPR, run["cycle"])
+            # All 10 LINK_RES bytes: 70 05 00 00 00 00 D8 00 00 96.
             lr = buf[RES_OFF + 11:RES_OFF + 21]
-            self.assertEqual(lr[0], 0x70)
-            self.assertEqual((lr[7], lr[8], lr[9]), (0, 0, 0x96))
+            self.assertEqual(list(lr),
+                             [0x70, 5, 0, 0, 0, 0, 0xD8, 0, 0, 0x96],
+                             run["cycle"])
             # Off-disc READ never reaches DATA_IN: bootloader DATA_IN present,
             # link DATA_IN absent, but LINK_RES proves the link attempted LBA 150.
             # LOAD_SECTOR only updates on DATA_IN, so no (150,1) phase exists.

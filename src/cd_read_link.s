@@ -38,9 +38,13 @@
 ;       LINK_CDB $27E8, transfer exactly 2048 bytes to RAM $2800 via the same polled
 ;       CD-ROM2 protocol as src/cd_read_probe.s (copied, not linked: that file halts
 ;       and cannot return; cd_load_exec_probe.s performs PCEX header/EXEC handling
-;       unsuitable for a raw transfer). Distinguish success ($00), READ fail ($70:
-;       premature STATUS / bad SCSI status), timeout ($71: bus/select/command/data/
-;       ACK/timeout, bus not freed).
+;       unsuitable for a raw transfer). Distinguish success ($00), READ fail ($70
+;       via two disjoint paths: @premature = early STATUS in the DATA_IN wait
+;       -> stage 5 + partial bytes, STATUS byte never read (SCSI stays 0);
+;       @tail_bad = bad SCSI/message status AFTER the 2048-byte transfer
+;       -> stage 8 + 2048 bytes), timeout ($71: bus/select/command/data-ACK/
+;       status/message/bus-free wait expiry; stage/bytes = the wait site:
+;       stages 2/3/4 carry 0 bytes, stage 5 partial, stages 6/7/8 full 2048).
 ;   Returns:
 ;     A=code, C=0/Z=1 on success, C=1/Z=0 on error (N=bit7 of A).
 ;     X/Y/MPRs preserved (no TAM, no TXS, no I/O mapping change); I/D/V/T preserved

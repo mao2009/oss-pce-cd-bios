@@ -48,9 +48,16 @@ $20` → `$62 OVER_CAP`; `LBA < win` → `$63 BEFORE`; `LBA >= win+16` → `$64 
 Stage stays `1` on refusal.
 
 Valid request: `READ(6)` (`$08`, LBA 21 bits, count `1`) from `LINK_CDB`, exactly 2048
-bytes to `$2800`. Success `$00` (`C=0/Z=1`); `READ fail $70` (premature STATUS / bad
-SCSI status); `timeout $71` (bus/select/command/data/ACK/status/message timeout, bus
-not freed). `X/Y/MPR` preserved, `I/D/V/T` preserved, stack balanced (4/4), `A` = code.
+bytes to `$2800`. Success `$00` (`C=0/Z=1`); `READ fail $70` via two disjoint paths
+(review 5872704142): `@premature` = early STATUS during the DATA_IN wait -> stage 5 +
+partial bytes, STATUS byte never read (SCSI stays 0; pinned on the real core for an
+off-disc READ as `LINK_RES 70 05 00 00 00 00 D8 ...` cold+warm); `@tail_bad` = bad
+SCSI/message status AFTER the full 2048-byte transfer -> stage 8 + 2048 bytes
+(host-only: synthetic drive always returns GOOD, so BLOCKED on the real core).
+`timeout $71` (bus/select/command/data-ACK/status/message/bus-free wait expiry;
+stage/bytes = the wait site: stages 2/3/4 carry 0 bytes, stage 5 partial, stages
+6/7/8 full 2048; host-only per-site model, BLOCKED on the real core). `X/Y/MPR`
+preserved, `I/D/V/T` preserved, stack balanced (4/4), `A` = code.
 
 Side effects: `LINK_RES $2320-$2329` (code/stage/bytes LO-HI/SCSI/msg/last/LBA HI-MID-LO)
 updated on every call; `LINK_CDB $27E8-$27ED` on valid path only; ZP `$00-$11` scratch.
@@ -61,8 +68,8 @@ payload/code, all MPRs.
 
 ## 3. Evidence kinds
 
-- Host: `tests/host/test_cd_read_link_v1.py` (24: adder/carry/max-LBA, valid/refusal,
-  no-SCSI, preservation, re-run, fail/timeout inject, sector match) +
+- Host: `tests/host/test_cd_read_link_v1.py` (38: adder/carry/max-LBA, valid/refusal,
+  no-SCSI, preservation, re-run, premature/tail_bad/timeout fault-model incl. unreachable-combo rejection, sector match) +
   `tests/host/test_cd_read_link_build.py` (6: source discipline, no TAM/TXS/slot,
   normal ROM untouched, mirror-code agreement). No Geargrafx needed. Never VERIFIED.
 - Real-core (pinned `b49ae82a`, cc65 `71746c8`): focused integration
