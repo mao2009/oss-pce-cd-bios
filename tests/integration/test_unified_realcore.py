@@ -25,17 +25,17 @@ oracle); this file asserts the shadow/VDC-programming side effects visible in
 the cd-flow buffer.
 
 Harness-D consumption: the pure validators from tools/g5_progress_model.py at
-pinned PR #778 head da0fa4bc run read-only against this build's
+pinned PR #778 head 522fe657 run read-only against this build's
 manifest/ROM/medium (validate_experimental_manifest, derive_native_slots,
 verify_d_rom_bytes, check_embedded_selection_vs_executed with the MEASURED
-medium identity, plus per-slot table-target checks via parse_slot_table_target
-and the explicit-expected verifiers for BOTH wiring stages). Whole-manifest
-verify_d_rom_slot_targets is NOT asserted here: it expects a direct table->body
-JMP for slot $02, which contradicts this image's intentional two-stage wiring
-(table $E006 -> api_slot_02 -> cd_base_proto_entry); a two-stage-aware #778
-fix is required there (review 5872009910). Materialize failure FAILS closed
-(BLOCKED); it never SKIP-passes, and integration never passes on UNRESOLVED
-provenance.
+medium identity, per-slot table-target checks via parse_slot_table_target
+and the explicit-expected verifiers for BOTH wiring stages, plus the
+whole-manifest verify_d_rom_slot_targets which is two-stage-aware at this pin:
+it verifies the intentional two-stage wiring natively
+(table $E006 -> api_slot_02 -> cd_base_proto_entry; review 5872009910 fix)
+while slot $33 stays a direct table->body redirect. Materialize failure FAILS
+closed (BLOCKED); it never SKIP-passes, and integration never passes on
+UNRESOLVED provenance.
 
 Commercial media: ./rom/*.cue auto-detect only. Zero cues -> NOT_RUN. Any cue
 present -> BLOCKED (no commercial boot path exists; media never opened, read,
@@ -66,7 +66,7 @@ BUFFER_BASE = 0x2800
 RES_OFF = 0x3100 - BUFFER_BASE
 SEQ02 = 0xE006
 ENTRY33 = 0xE099
-HARNESS_REF = "da0fa4bc736e82671eae877f9b2d9f2d3b5cfb00"  # pinned PR #778 head (short da0fa4bc); read-only D-consumption, never a moving ref
+HARNESS_REF = "522fe6575d50b25365c58ac605722332177e30c5"  # pinned PR #778 head (full 40-hex SHA); read-only D-consumption, never a moving ref
 P_MASK = 0xCF  # PHP pushes B=1/bit5=1; PLP ignores them (same mask as the $33 oracle)
 
 SEQ_PAYLOAD_ASM = r"""
@@ -428,10 +428,11 @@ class UnifiedRealCoreTests(unittest.TestCase):
         if model_path is None:
             self.fail("BLOCKED: pinned harness ref " + HARNESS_REF[:12] +
                         " not materializable; D validation unmeasured (never SKIP-pass)")
-        # Sanity: the materialized blob is the latest-#778 spec that carries
-        # the required slot-target verifier (guards against a wrong-ref mixup).
+        # Sanity: the materialized blob is the two-stage-aware #778 spec
+        # (guards against a wrong-ref mixup with the stale da0fa4bc pin).
         blob = model_path.read_bytes().decode("utf-8", errors="strict")
         self.assertIn("def verify_d_rom_slot_targets", blob)
+        self.assertIn("_verify_native_slot02_two_stage", blob)
         spec = importlib.util.spec_from_file_location("g5_progress_model_pinned", model_path)
         model = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(model)
@@ -452,9 +453,10 @@ class UnifiedRealCoreTests(unittest.TestCase):
         model.check_embedded_selection_vs_executed(
             self.manifest, {"lba": self.selected["lba"],
                              "identity": self.selected["media_identity"]})
-        # Both-stage JMP wiring through the pinned latest-#778 primitives:
-        # stage 1 is the ROM table hop, stage 2 of slot $02 is the
-        # api_slot_02 -> proto body hop (byte-exact JMP+NOP pad).
+        # Both-stage JMP wiring through the pinned two-stage-aware primitives:
+        # stage 1 is the ROM table hop ($E006 -> api_slot_02), stage 2 of slot
+        # $02 is the api_slot_02 -> proto body hop (byte-exact JMP+NOP pad),
+        # while slot $33 stays a direct table redirect ($E099 -> body).
         labels = self.manifest["labels"]
         api_slot_02 = labels["api_slot_02"]
         proto_entry = labels["cd_base_proto_entry"]
@@ -466,6 +468,56 @@ class UnifiedRealCoreTests(unittest.TestCase):
         second = self.exp[api_slot_02 - 0xE000:api_slot_02 - 0xE000 + 5]
         self.assertEqual(bytes(second), bytes((0x4C, proto_entry & 0xFF,
                                                 (proto_entry >> 8) & 0xFF, 0xEA, 0xEA)))
+        # Whole-manifest verifier: two-stage-aware at this pin, so the
+        # correct unified ROM must be accepted (the stale da0fa4bc pin
+        # BLOCKED even the correct ROM here with a direct table->body
+        # expectation for slot $02).
+        model.verify_d_rom_slot_targets(self.exp, self.manifest)
+
+    def _pinned_model(self):
+        model_path = self._materialize_harness_model()
+        if model_path is None:
+            self.fail("BLOCKED: pinned harness ref " + HARNESS_REF[:12] +
+                        " not materializable; D validation unmeasured (never SKIP-pass)")
+        spec = importlib.util.spec_from_file_location("g5_progress_model_pinned_neg", model_path)
+        model = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(model)
+        return model
+
+    def test_harness_d_rejects_fake_rts_body(self):
+        model = self._pinned_model()
+        proto = self.manifest["labels"]["cd_base_proto_entry"]
+        tampered = bytearray(self.exp)
+        tampered[proto - 0xE000] = 0x60  # fabricated immediate return
+        with self.assertRaisesRegex(ValueError, "BLOCKED"):
+            model.verify_d_rom_slot_targets(bytes(tampered), self.manifest)
+
+    def test_harness_d_rejects_stub_tamper(self):
+        model = self._pinned_model()
+        api_slot_02 = self.manifest["labels"]["api_slot_02"]
+        tampered = bytearray(self.exp)
+        tampered[api_slot_02 - 0xE000 + 1] ^= 0xFF  # wrong 2nd-hop dest
+        with self.assertRaisesRegex(ValueError, "BLOCKED"):
+            model.verify_d_rom_slot_targets(bytes(tampered), self.manifest)
+
+    def test_harness_d_rejects_missing_target(self):
+        import copy
+        model = self._pinned_model()
+        manifest = copy.deepcopy(self.manifest)
+        manifest["cd_base_proto"].pop("proto_entry", None)
+        manifest.get("labels", {}).pop("cd_base_proto_entry", None)
+        with self.assertRaisesRegex(ValueError, "BLOCKED"):
+            model.verify_d_rom_slot_targets(self.exp, manifest)
+
+    def test_harness_d_rejects_manifest_mismatch(self):
+        import copy
+        model = self._pinned_model()
+        manifest = copy.deepcopy(self.manifest)
+        proto = manifest["labels"]["cd_base_proto_entry"]
+        wrong = proto + 0x10 if proto + 0x10 <= 0xFFFF else proto - 0x10
+        manifest["cd_base_proto"]["proto_entry"] = "$%04X" % wrong
+        with self.assertRaisesRegex(ValueError, "BLOCKED"):
+            model.verify_d_rom_slot_targets(self.exp, manifest)
 
     def _materialize_harness_model(self):
         dest_dir = self.work / "harness-ref"
