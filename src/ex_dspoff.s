@@ -1,13 +1,15 @@
-; EX_DSPOFF — DEV-only synthetic fragment, slot $33, candidate entry $E099 (Issue #61).
+; EX_DSPOFF — project-own DEV display-control routine, slot $33, candidate entry $E099 (Issue #61).
 ;
 ; Project-own routine, NOT the reference System Card EX_DSPOFF ABI (remains UNVERIFIED).
-; NOT linked into the DEV ROM on this branch (see docs/61-dspoff-contract.md: the
-; OVERRIDES segment ends at $E7FB with 5 bytes of slack below the $E800 probe
-; overlay, so a ~44-byte override cannot be wired without breaking the layout
-; ceiling). This file is a standalone fragment for host-model verification and
-; for a future slot_33.s include when the ceiling is resolved. It must not be
-; assembled into bank0, must not be called via the $E099 jump-table entry, and
-; confers no DEV_CALLABLE, ABI VERIFIED, or release eligibility.
+; NOT linked into the normal DEV ROM: the OVERRIDES segment ends at $E7FB with
+; 5 bytes of slack below the $E800 probe overlay (see docs/61-dspoff-contract.md),
+; so no src/overrides/slot_33.s exists and the normal $E099 entry keeps its
+; nonreturning stub. The experimental System-Card-sized DEV image DOES link this
+; file into its BOOT region (src/experimental_bios_boot.s includes it) and redirects
+; the experimental $E099 entry to the linked body
+; (tools/build_experimental_bios_boot.py; docs/ex-dspoff-real-cpu-g5.md). That
+; experimental path is DEV ONLY, NOT a compatible System Card BIOS, and confers
+; no DEV_CALLABLE, ABI VERIFIED, or release eligibility.
 ;
 ; Reuses the DEV VDC CR display-family discipline of src/overrides/slot_2E.s
 ; (EX_BGON, Issue #56) byte-for-byte except for the mask: the family owns CR low
