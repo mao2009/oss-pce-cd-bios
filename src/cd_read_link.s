@@ -22,7 +22,14 @@
 ;     WINDOW_LEN=16 (synthetic-only data-track length; exclusive end = start+16).
 ;   Computation (REAL processing, not a bare RTS):
 ;     - 24-bit add LBA = base + block WITH carry (LO->MID->HI). Carry out of bit 23
-;       is OVER_CAP (never wraps).
+;       is OVER_CAP (refused; never used as a READ address).
+;     - LINK_RES LBA spec: LR_LHI/LR_LMID/LR_LLO hold the low 24 bits of
+;       base+block (total & $FFFFFF) on every call except INVALID_STATE
+;       (which stores $00/$00/$00; no base is claimed). In particular an
+;       OVER_CAP via 24-bit carry reports the wrapped value (e.g. base
+;       $FFFFFF + block 1 -> LR $00/$00/$00 with code $62); an OVER_CAP via
+;       HI >= $20 without carry reports the computed LBA (e.g. $200000).
+;       BEFORE/AFTER/WINDOW/valid paths report the computed LBA.
 ;     - Refuse BEFORE any $1800 access when: last != $00 (INVALID_STATE $60),
 ;       window HI >= $20 (INVALID_WINDOW $61), carry or LBA HI >= $20 (OVER_CAP $62),
 ;       LBA < window start (BEFORE $63), LBA >= window start+16 (AFTER $64).
@@ -174,15 +181,19 @@ cd_read_link_entry:
     lda ST_HI
     adc BLK_HI
     sta lhi
-    bcc @no_wrap
-    jmp @ref_cap               ; carry out of bit 23: definitely over 21 bits
-@no_wrap:
+    ; LINK_RES LBA spec (OVER_CAP): LR_LHI/LMID/LLO = low 24 bits of
+    ; base+block (total & $FFFFFF) on every non-INVALID_STATE call, stored
+    ; BEFORE the carry check so a 24-bit wrap cannot leave stale bytes.
+    ; e.g. base $FFFFFF + block 1 -> LR $00/$00/$00 with code $62.
     lda lhi
     sta LR_LHI
     lda lmid
     sta LR_LMID
     lda llo
     sta LR_LLO
+    bcc @no_wrap
+    jmp @ref_cap               ; carry out of bit 23: definitely over 21 bits
+@no_wrap:
     ; --- 21-bit cap: HI >= $20 refused ---
     lda lhi
     cmp #$20

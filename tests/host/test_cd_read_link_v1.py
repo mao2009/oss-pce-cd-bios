@@ -121,9 +121,66 @@ class LinkRefusalTests(unittest.TestCase):
         self.assertEqual(out["a"], L.ERR_INVALID_WINDOW)
         self.assertFalse(out["issued"])
 
+    def test_24bit_wrap_reports_wrapped_lba(self):
+        # LINK_RES LBA spec (OVER_CAP via carry): low 24 bits of base+block.
+        # base $FFFFFF + block 1 = $1000000 -> carry, wrapped $000000, $62.
+        out = L.link(**base_args(base=0xFFFFFF, block=1, win=150))
+        self.assertEqual(out["a"], L.ERR_OVER_CAP)
+        self.assertEqual((out["c"], out["z"]), (1, 0))
+        self.assertFalse(out["issued"])
+        self.assertEqual(out["stage"], 1)
+        self.assertEqual(out["lba"], 0)
+        self.assertEqual((out["lba_hi"], out["lba_mid"], out["lba_lo"]),
+                         (0, 0, 0))
+        lr = out["link_res"]
+        self.assertEqual(lr, {"code": L.ERR_OVER_CAP, "stage": 1,
+                              "bytes": 0, "scsi_status": 0, "msg": 0,
+                              "last_bus": 0,
+                              "lba_hi": 0, "lba_mid": 0, "lba_lo": 0})
+
+    def test_24bit_wrap_plus_two_reports_wrapped_lba_one(self):
+        out = L.link(**base_args(base=0xFFFFFF, block=2, win=150))
+        self.assertEqual(out["a"], L.ERR_OVER_CAP)
+        self.assertFalse(out["issued"])
+        self.assertEqual(out["lba"], 1)
+        self.assertEqual((out["lba_hi"], out["lba_mid"], out["lba_lo"]),
+                         (0, 0, 1))
+        self.assertEqual((out["link_res"]["lba_hi"],
+                          out["link_res"]["lba_mid"],
+                          out["link_res"]["lba_lo"]), (0, 0, 1))
+
+    def test_normal_read_then_wrap_refuse_same_execution(self):
+        # Sequential calls model one guest execution: a valid READ must not
+        # leak its LBA into the following 24-bit wrap refusal (stale-LR guard).
+        first = L.link(**base_args(base=150, block=0, win=150))
+        self.assertEqual(first["a"], 0)
+        self.assertTrue(first["issued"])
+        self.assertEqual(first["lba"], 150)
+        self.assertEqual((first["lba_hi"], first["lba_mid"], first["lba_lo"]),
+                         (0, 0, 150))
+        self.assertEqual(first["link_res"]["bytes"], 2048)
+        second = L.link(**base_args(base=0xFFFFFF, block=1, win=150))
+        self.assertEqual(second["a"], L.ERR_OVER_CAP)
+        self.assertEqual((second["c"], second["z"]), (1, 0))
+        self.assertFalse(second["issued"])
+        self.assertEqual(second["stage"], 1)
+        self.assertEqual(second["lba"], 0)
+        self.assertEqual((second["lba_hi"], second["lba_mid"],
+                          second["lba_lo"]), (0, 0, 0))
+        lr = second["link_res"]
+        self.assertEqual(lr["code"], L.ERR_OVER_CAP)
+        self.assertEqual(lr["stage"], 1)
+        self.assertEqual(lr["bytes"], 0)
+        self.assertEqual(lr["scsi_status"], 0)
+        self.assertEqual(lr["msg"], 0)
+        self.assertEqual(lr["last_bus"], 0)
+        self.assertEqual((lr["lba_hi"], lr["lba_mid"], lr["lba_lo"]),
+                         (0, 0, 0))
+
     def test_no_scsi_on_any_refusal(self):
         cases = [
-            base_args(base=0x1FFFFF, block=1, win=150),  # cap
+            base_args(base=0x1FFFFF, block=1, win=150),  # cap (HI>=0x20)
+            base_args(base=0xFFFFFF, block=1, win=150),  # cap (24-bit wrap)
             base_args(base=150, block=16, win=150),      # after
             base_args(base=150, block=0, win=160),       # before
         ]

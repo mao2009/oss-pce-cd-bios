@@ -478,6 +478,132 @@ payload_done:
     jmp (RETVEC)
 """
 
+PAYLOAD_D = r"""
+.setcpu "huc6280"
+.segment "PAYLOAD"
+.export payload_entry, payload_done
+RESBASE = $3100
+MARK = $3F00
+RETVEC = $3F10
+.ifndef LINKADDR
+.error "LINKADDR required"
+.endif
+.ifndef IDXHI
+.error "IDXHI required"
+.endif
+.ifndef IDXMID
+.error "IDXMID required"
+.endif
+.ifndef IDXLO
+.error "IDXLO required"
+.endif
+payload_entry:
+    cld
+    lda #IDXHI
+    sta $2400
+    lda #IDXMID
+    sta $2401
+    lda #IDXLO
+    sta $2402
+    lda #$01
+    sta $2403
+    lda #$00
+    sta $2404
+    sta $2405
+    sta $2406
+    sta $2407
+    lda #IDXLO
+    sta $20F5
+    lda #IDXMID
+    sta $20F6
+    lda #IDXHI
+    sta $20F7
+    lda #$00
+    sta $20F2
+    sta $20F3
+    sta $20F4
+    jsr LINKADDR
+    sta RESBASE+1
+    ldx #$09
+@cp0:
+    lda $2320,x
+    sta RESBASE+22,x
+    dex
+    bpl @cp0
+    ldx #$1F
+@hd0:
+    lda $2800,x
+    sta RESBASE+52,x
+    dex
+    bpl @hd0
+    lda #$FF
+    sta $2400
+    sta $2401
+    sta $2402
+    lda #$01
+    sta $20F2
+    lda #$00
+    sta $20F3
+    sta $20F4
+    jsr LINKADDR
+    sta RESBASE+2
+    php
+    pla
+    sta RESBASE+4
+    ldx #$09
+@cp1:
+    lda $2320,x
+    sta RESBASE+32,x
+    dex
+    bpl @cp1
+    ldx #$1F
+@hd1:
+    lda $2800,x
+    sta RESBASE+84,x
+    dex
+    bpl @hd1
+    tsx
+    txa
+    sta RESBASE+5
+    ldx #$07
+@cpst:
+    lda $2400,x
+    sta RESBASE+6,x
+    dex
+    bpl @cpst
+    tma #$01
+    sta RESBASE+14
+    tma #$02
+    sta RESBASE+15
+    tma #$04
+    sta RESBASE+16
+    tma #$08
+    sta RESBASE+17
+    tma #$10
+    sta RESBASE+18
+    tma #$20
+    sta RESBASE+19
+    tma #$40
+    sta RESBASE+20
+    tma #$80
+    sta RESBASE+21
+    lda #$AA
+    sta RESBASE
+    lda #$A5
+    sta MARK
+    lda #$5A
+    sta MARK+1
+    tma #$02
+    sta MARK+4
+    tsx
+    txa
+    sta MARK+5
+    lda #$3C
+    sta MARK+6
+payload_done:
+    jmp (RETVEC)
+"""
+
 
 def build_payload(source_text, out_dir, name, link_addr, idx_lo, idx_mid, idx_hi):
     from environment import executable
@@ -569,7 +695,7 @@ class LinkRealCoreTests(unittest.TestCase):
         from make_cd_image import sector_payload
         for fixture, build_fn, idx in (("idx150", cd_base_probe.build_fixture, 150),
                                        ("idx0", cd_base_probe.build_zero_fixture, 0)):
-            for payload_name, source in (("a", PAYLOAD_A), ("b1", PAYLOAD_B1), ("b2", PAYLOAD_B2)):
+            for payload_name, source in (("a", PAYLOAD_A), ("b1", PAYLOAD_B1), ("b2", PAYLOAD_B2), ("d", PAYLOAD_D)):
                 case_dir = root / f"{fixture}-{payload_name}"
                 case_dir.mkdir()
                 if fixture == "idx150":
@@ -797,6 +923,71 @@ class LinkRealCoreTests(unittest.TestCase):
             self.assertNotIn((150, 1), data_phases)  # off-disc: no DATA_IN
             # $2800 untouched (0 bytes transferred, still bootloader sector).
             self.assertEqual(buf[:2048], encode_sector(selected["lba"], code))
+
+    def test_d_valid_then_24bit_wrap_refuse(self):
+        # Same-execution stale-LR guard: a valid READ followed by a 24-bit
+        # wrap refusal (base $FFFFFF + block 1). The wrap must report code
+        # $62 with the wrapped LBA $00/$00/$00 (LINK_RES LBA spec), issue no
+        # SCSI, and leave $2800 holding the first sector. Cold+warm.
+        from build_cdload_exec import encode_sector
+        for fixture in ("idx150", "idx0"):
+            records, manifest, selected, code = self.cases[(fixture, "d")]
+            self.check_loader_success(records, manifest, selected, code)
+            for run in records["RUN"]:
+                buf = bytes.fromhex(run["buffer_hex"])
+                res = buf[RES_OFF:RES_OFF + 200]
+                self.assertEqual(res[0], 0xAA, fixture)
+                # A values: first call $00 (valid), second $62 (wrap cap).
+                self.assertEqual(res[1], 0, fixture)
+                self.assertEqual(res[2], 0x62, fixture)
+                # P after the wrap refusal: C=1, Z=0 (A=$62: N=0).
+                p = res[4]
+                self.assertTrue(p & 0x01, fixture)   # C set
+                self.assertFalse(p & 0x02, fixture)  # Z clear
+                self.assertEqual(res[5], 0xFF, fixture)  # SP balanced
+                # Proto state preserved (link never writes $2400-$2407):
+                # second call set base $FFFFFF, gen 1, last 0.
+                self.assertEqual(list(buf[RES_OFF + 6:RES_OFF + 14]),
+                                 [0xFF, 0xFF, 0xFF, 1, 0, 0, 0, 0], fixture)
+                self.assertEqual(list(buf[RES_OFF + 14:RES_OFF + 22]),
+                                 EXPECTED_MPR, fixture)
+                # First LINK_RES snapshot: success, LBA=IDX, 2048 bytes.
+                lr0 = buf[RES_OFF + 22:RES_OFF + 32]
+                self.assertEqual(lr0[0], 0, fixture)
+                self.assertEqual(lr0[1], 8, fixture)
+                self.assertEqual(int.from_bytes(lr0[2:4], "little"), 2048,
+                                 fixture)
+                self.assertEqual(lr0[4], 0, fixture)
+                self.assertEqual(lr0[5], 0, fixture)
+                self.assertEqual((lr0[7], lr0[8], lr0[9]),
+                                 (0, 0, selected["lba"] & 0xFF), fixture)
+                # Second LINK_RES snapshot: all 10 bytes of the wrap refusal.
+                lr1 = buf[RES_OFF + 32:RES_OFF + 42]
+                self.assertEqual(lr1[0], 0x62, fixture)
+                self.assertEqual(lr1[1], 1, fixture)
+                self.assertEqual(int.from_bytes(lr1[2:4], "little"), 0,
+                                 fixture)
+                self.assertEqual(lr1[4], 0, fixture)   # SCSI status
+                self.assertEqual(lr1[5], 0, fixture)   # MSG
+                self.assertEqual(lr1[6], 0, fixture)   # last bus phase
+                # Wrapped LBA, not the stale first-call LBA.
+                self.assertEqual((lr1[7], lr1[8], lr1[9]), (0, 0, 0),
+                                 fixture)
+                # $2800 heads: post-call0 head holds the first sector head;
+                # post-call1 head must be identical (refusal wrote nothing).
+                self.assertEqual(buf[RES_OFF + 52:RES_OFF + 84],
+                                 buf[RES_OFF + 84:RES_OFF + 116], fixture)
+                # Final $2800 = first sector (valid READ result, preserved).
+                self.assertEqual(buf[:2048],
+                                 encode_sector(selected["lba"], code), fixture)
+                # SCSI: bootloader DATA_IN + one link DATA_IN (the valid
+                # call); the wrap refusal issues nothing new.
+                data_phases = [(r["load_sector"], r["load_count"])
+                               for r in records["PHASE"]
+                               if r["cycle"] == run["cycle"]
+                               and r["scsi_phase"] == 4]
+                self.assertEqual(data_phases.count((selected["lba"], 1)), 2,
+                                 fixture)
 
 
 if __name__ == "__main__":

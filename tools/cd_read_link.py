@@ -10,6 +10,14 @@ MAX_U24 = 0xFFFFFF
 MAX_READ6 = 0x1FFFFF
 WINDOW_LEN = 16  # synthetic-only data-track window length (frames)
 
+# LINK_RES LBA spec (mirrors the guest contract in src/cd_read_link.s):
+# LR_LHI/LR_LMID/LR_LLO hold the low 24 bits of base+block (total & $FFFFFF)
+# on every call except INVALID_STATE (which stores $00/$00/$00; no base is
+# claimed). In particular an OVER_CAP via 24-bit carry reports the wrapped
+# value (e.g. base $FFFFFF + block 1 -> LR $00/$00/$00 with code $62); an
+# OVER_CAP via HI >= $20 without carry reports the computed LBA.
+# BEFORE/AFTER/WINDOW/valid paths report the computed LBA.
+
 LINK_RES_ADDR = 0x2320
 STATE_ADDR = 0x2400
 BUF_ADDR = 0x2800
