@@ -8,10 +8,13 @@ eligible. DEV_CALLABLE 0, reference JSR 0/81, ABI VERIFIED 0/81. Issues
 
 G5 = reach a commercial PC-Engine CD title screen. This union makes Agent-A's
 CD_BASE $02 proto (PR #782, branch `origin/agent-a/cd-base-proto-g5` at
-`5fe93c4b`) and Agent-B's EX_DSPOFF $33 fragment (PR #780, branch
-`origin/agent-b/ex-dspoff-real-cpu-g5` at `323562fb`) coexist as REAL
+`74739f82ad39f92794b79a8f61cb683f461ebf54`) and Agent-B's EX_DSPOFF $33 fragment (PR #780, branch
+`origin/agent-b/ex-dspoff-real-cpu-g5` at
+`323562fb5af373ab97aa9a0600bfe42d22a2944c`) coexist as REAL
 processing in ONE experimental BIOS image, observable through harness D
-(PR #778, pinned ref `da0fa4bc`, read-only consumer).
+(PR #778, pinned ref `522fe6575d50b25365c58ac605722332177e30c5`,
+read-only consumer; this pin supersedes the earlier `da0fa4bc` pin, which
+predates the two-stage slot-$02 wiring fix and is no longer the claimed basis).
 
 ## What now executes (G5 contribution)
 
@@ -76,33 +79,50 @@ The builder derives everything at build time (never hardcoded or guessed):
 
 ## Verification status
 
-- Host: `tests/host/test_unified_builder.py` (19 tests) — union patch order,
-  window exactness, provenance derivation, manifest contract. PASS without cc65.
-- Real-core: `tests/integration/test_unified_realcore.py` — loader success,
+- Host: `tests/host/test_unified_builder.py` (26 tests) — union patch order,
+  window exactness, provenance derivation, manifest contract. PASS without cc65
+  (measured 26/26 on the docs-fix worker, pinned Linux).
+- Real-core: `tests/integration/test_unified_realcore.py` (11 tests) — loader success,
   both real arrivals/returns, order, 5-gate `REAL_SERVICE_RETURN` proof,
   harness-D pure validators (materialized read-only from pinned ref
-  `da0fa4bc`; materialize failure FAILS closed, never SKIP-passes),
+  `522fe6575d50b25365c58ac605722332177e30c5` — two-stage-aware
+  `verify_d_rom_slot_targets` at this pin: table $E006 -> api_slot_02 ->
+  cd_base_proto_entry, slot $33 direct table->body; materialize failure FAILS
+  closed, never SKIP-passes),
   commercial NOT_RUN. Requires pinned Linux + cc65 +
-  Geargrafx; SKIPs otherwise (see Environment record below).
+  Geargrafx; SKIPs otherwise (see Environment record below). Measured 11/11 PASS
+  on the docs-fix worker (pinned Linux,
+  TOOLS_DIR=/tmp/oss-pce-cd-bios-tools-1000).
 - Commercial: `./rom` absent -> NOT_RUN. No bytes/hashes/paths/traces published.
 
-## Environment record (this worker)
+## Environment record (union worker, historical)
 
-- Before HEAD `0c7157e7` (= `origin/main`); PR heads confirmed with no drift:
-  `#782 = 74739f82` (merged), `#780 = 323562fb` (merged), `#778 = da0fa4bc`.
+- Base was `origin/main`; PR heads confirmed with no drift at union time
+  (actually-merged full SHAs are recorded in the Verification record below;
+  no short-SHA pin is claimed here).
 - Host: Windows, no pinned cc65/Geargrafx; `make setup` outcome recorded in
-  the integration Issue. Real-core: BLOCKED (no toolchain; never substituted
-  with host PASS).
-- Remaining blocker (single next item): a pinned-Linux run of
-  `test_unified_realcore.py` + harness-D variant-D measurement.
+  the integration Issue. Real-core: BLOCKED at that time (no toolchain; never
+  substituted with host PASS).
+- Remaining blocker (single next item at that time): a pinned-Linux run of
+  `test_unified_realcore.py` + harness-D variant-D measurement — now done,
+  see Verification record below.
 
-## Verification record (Agent C review fix, post-#782-merge tree)
+## Verification record (docs-fix worker, HEAD `aa4d9dadc26078c8e5fc498865b948204909ef21` tree)
 
-- Pinned Linux (x86_64) with pinned cc65 `71746c8` + Geargrafx `b49ae82a`:
-  `test_unified_realcore.py` 7/7 PASS (loader cold/warm, slot-$02
-  reach+return, slot-$33 reach+return, 02->33 order, 5-gate
-  REAL_SERVICE_RETURN, harness-D validators at pinned `da0fa4bc`,
-  commercial NOT_RUN). No commercial media used; synthetic media only.
-- `merged_heads` resolve to actually-merged SHAs (`74739f82`, `323562fb`)
+- Pinned Linux (x86_64), TOOLS_DIR=/tmp/oss-pce-cd-bios-tools-1000, pinned cc65
+  `71746c829e77f74c2b601a7d16821170c2610df3` + Geargrafx
+  `b49ae82a012eade566d72e9d61c9d95a5caa4da3`:
+  `tests/host/test_unified_builder.py` 26/26 PASS;
+  `tests/integration/test_unified_realcore.py` 11/11 PASS (loader cold/warm,
+  slot-$02 reach+return, slot-$33 reach+return, 02->33 order, 5-gate
+  REAL_SERVICE_RETURN, harness-D validators at pinned
+  `522fe6575d50b25365c58ac605722332177e30c5` including two-stage-aware
+  `verify_d_rom_slot_targets` plus negative validators, commercial NOT_RUN).
+  No commercial media used; synthetic media only.
+- `merged_heads` resolve to actually-merged full SHAs
+  (`74739f82ad39f92794b79a8f61cb683f461ebf54`,
+  `323562fb5af373ab97aa9a0600bfe42d22a2944c`)
   on the full-fetch tree; UNRESOLVED never passes integration.
-- Host suite: full `tests/host` discover PASS (5227 tests).
+- Full `tests/host` discover (previously reported 5227 PASS by the Agent C review
+  fix) was not re-run on this worker; no PASS is claimed here beyond the 26
+  builder tests measured above.
