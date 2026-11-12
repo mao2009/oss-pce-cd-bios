@@ -59,8 +59,8 @@ No `src/overrides/slot_33.s` was added; `overrides()` still lacks `$33`.
 
 | Kind | Result |
 |------|--------|
-| Host targeted (`tests/host/test_ex_dspoff_real_cpu.py`, 12 tests) | **PASS**: normal-ROM stub + overlay padding intact; experimental redirect bytes, body placement/prologue, manifest gates, ledger/mapping unchanged, synthetic-only medium |
-| Focused integration (`tests/integration/test_ex_dspoff_real_cpu.py`, 9 tests, `make integration-test`) | **PASS** on pinned real core: 9 runs (ok `F2→32`; CR `00`/`FF→3F`/`C0→00`/high-`1F`-kept; `SP=$05` min-in-contract + `SP=$07`; unseeded reject; `$02`-scaffold→`$33` two-call flow), 6/6 mutants rejected, cold/warm repeatable |
+| Host targeted (`tests/host/test_ex_dspoff_wired.py`, 12 tests) | **PASS**: normal-ROM stub + overlay padding intact; experimental redirect bytes, body placement/prologue, manifest gates, ledger/mapping unchanged, synthetic-only medium |
+| Focused integration (`tests/integration/test_ex_dspoff_real_core.py`, 9 tests, `make integration-test`) | **PASS** on pinned real core: 9 runs (ok `F2→32`; CR `00`/`FF→3F`/`C0→00`/high-`1F`-kept; `SP=$05` min-in-contract + `SP=$07`; unseeded reject; `$02`-scaffold→`$33` two-call flow), 6/6 mutants rejected, cold/warm repeatable |
 | Pinned real-core regressions | **PASS**: `geargrafx_experimental_track_contract.py` (shifted BOOT), `geargrafx_dev_ipl_boot.py` (shared units), `geargrafx_dev_bgon.py` (normal ROM) |
 | Commercial CD / System Card reference / second emulator / hardware | **NOT_RUN / SKIP**: `./rom/` is absent and no private bytes, hashes, paths, images, or traces were consumed or published. No title-screen or retail-game claim is made |
 | Reference BIOS JSR / ABI VERIFIED / DEV_CALLABLE | 0 / 81 unchanged; `spec/dev_implementations.json` slot EX_DSPOFF stays `implementation: null`, `UNKNOWN`, `NOT_READY`, approval null; counts stay 16 DEV / 65 stubs |
@@ -107,6 +107,6 @@ success or G5 progress claim; the only real processing measured is `$33`.
 Original project-own code (MIT, repository `LICENSE`); no reference BIOS bytes;
 S1–S4 stay `REFERENCE_ONLY`; no `vendor/` payload; `./rom/` never read.
 Reproduce: `make setup` (Linux x86_64, pinned tools) then
-`python3 -m unittest tests.host.test_ex_dspoff_real_cpu` and
-`python3 -m unittest tests.integration.test_ex_dspoff_real_cpu`
+`python3 -m unittest tests.host.test_ex_dspoff_wired` and
+`python3 -m unittest tests.integration.test_ex_dspoff_real_core`
 (`OSS_PCE_REQUIRE_CC65=1` in required CI: missing tools fail, never skip).

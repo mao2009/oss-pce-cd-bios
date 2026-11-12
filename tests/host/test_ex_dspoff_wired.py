@@ -8,7 +8,7 @@ System-Card-sized DEV image instead links the project-own DEV EX_DSPOFF fragment
 its own $E099 table entry to that body (tools/build_experimental_bios_boot.py).
 
 No emulator and no real-core run here; the pinned real-core execution lives in
-tests/integration/test_ex_dspoff_real_cpu.py. NOT the reference System Card ABI:
+tests/integration/test_ex_dspoff_real_core.py. NOT the reference System Card ABI:
 reference mapping stays HYPOTHESIS, ABI VERIFIED stays 0/81, DEV_CALLABLE stays 0,
 release_eligible stays False. Commercial media is never touched (NOT_RUN).
 """
