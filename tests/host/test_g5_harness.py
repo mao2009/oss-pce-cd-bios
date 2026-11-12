@@ -180,6 +180,59 @@ class ManifestTests(unittest.TestCase):
         self.assertIn("branch", msg)
         self.assertIn("pinned_geargrafx", msg)
 
+    def test_native_slot_entry_malformed_entry_blocked(self):
+        # Review 5872703030 fail-open: valid slot + unparsable entry must be
+        # BLOCKED, never a silent pass on the slot alone.
+        with self.assertRaises(ValueError) as cm:
+            M.derive_native_slots(
+                {"cd_base_proto": {"slot": "$02", "entry": "garbage"}})
+        self.assertIn("BLOCKED", str(cm.exception))
+
+    def test_native_slot_entry_mismatch_blocked(self):
+        # Slot $02 wired to the $33 table entry ($E099) is a mismatch.
+        with self.assertRaises(ValueError) as cm:
+            M.derive_native_slots(
+                {"cd_base_proto": {"slot": "$02", "entry": "$E099"}})
+        self.assertIn("BLOCKED", str(cm.exception))
+        self.assertIn("mismatch", str(cm.exception).lower())
+
+    def test_native_slot_entry_wrong_types_blocked(self):
+        # Non-str/int entry types (list/dict/float/bool) never parse.
+        for bad in (["$E006"], {"addr": "$E006"}, 3.5, True, b"$E006"):
+            with self.assertRaises(ValueError, msg=f"entry={bad!r}") as cm:
+                M.derive_native_slots(
+                    {"cd_base_proto": {"slot": "$02", "entry": bad}})
+            self.assertIn("BLOCKED", str(cm.exception))
+
+    def test_native_slot_entry_out_of_range_blocked(self):
+        # Parsable but outside the BIOS window / not slot-aligned.
+        for bad in ("$1234", "$FFFF", "$E007", 0x1234, "$E0F1"):
+            with self.assertRaises(ValueError, msg=f"entry={bad!r}") as cm:
+                M.derive_native_slots(
+                    {"cd_base_proto": {"slot": "$02", "entry": bad}})
+            self.assertIn("BLOCKED", str(cm.exception))
+
+    def test_native_bad_slot_boundaries_blocked(self):
+        # Slots outside $00..$50 are refused even with a matching entry.
+        for bad_slot in ("$51", "$FF", "0x51", 0x51, -1):
+            with self.assertRaises(ValueError, msg=f"slot={bad_slot!r}") as cm:
+                M.derive_native_slots(
+                    {"cd_base_proto": {"slot": bad_slot, "entry": "$E006"}})
+            self.assertIn("BLOCKED", str(cm.exception))
+        # Entry past the last slot boundary ($E000+3*$50=$E0F0) is refused.
+        with self.assertRaises(ValueError) as cm:
+            M.derive_native_slots(
+                {"cd_base_proto": {"slot": "$02", "entry": "$E0F3"}})
+        self.assertIn("BLOCKED", str(cm.exception))
+
+    def test_native_slot_entry_consistent_shapes_pass(self):
+        # Normal shape keeps passing across notations (slot<->entry agree).
+        for slot_key, entry in (("$02", "$E006"), ("02", "E006"),
+                                ("0x02", "0xE006"), (2, 0xE006)):
+            slots = M.derive_native_slots(
+                {"cd_base_proto": {"slot": slot_key, "entry": entry}})
+            self.assertEqual(slots, (0x02,))
+
 
 class RealServiceProofTests(unittest.TestCase):
     def stub_runs(self, x=3):

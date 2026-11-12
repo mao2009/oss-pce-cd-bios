@@ -313,10 +313,18 @@ def derive_native_slots(manifest: dict) -> tuple:
             slot = _native_slot_from_entry(addr)
         if slot is None:
             raise ValueError("BLOCKED: native cd_base_proto has neither slot nor entry")
-        # Cross-check slot vs entry when both present.
+        # Cross-check slot vs entry when both present. Any explicit entry
+        # that fails to parse is BLOCKED (fail-closed); a silent pass here
+        # would let a malformed entry ride on a valid slot (fail-open).
         if raw_slot is not None and raw_entry is not None:
             addr = _parse_native_addr(raw_entry)
-            if addr is not None and _native_slot_from_entry(addr) != slot:
+            if addr is None:
+                raise ValueError(f"BLOCKED: native cd_base_proto.entry bad {raw_entry!r}")
+            try:
+                entry_slot = _native_slot_from_entry(addr)
+            except ValueError as e:
+                raise ValueError(f"BLOCKED: native cd_base_proto.entry bad ({e})") from None
+            if entry_slot != slot:
                 raise ValueError("BLOCKED: native cd_base_proto slot/entry mismatch")
         slots.append(slot)
     dsp = manifest.get(NATIVE_DSPOFF_KEY)
