@@ -65,6 +65,15 @@ def entry_of(slot: int) -> int:
     return 0xE000 + slot * 3
 
 
+# Public structural identifier for the experimental D ROM in public
+# evidence. The real --experimental-rom filename (e.g. a private
+# "PrivateGame.pce" checkout name) must NEVER enter public evidence:
+# the local path stays the load/execute/SHA-verify identity only.
+# A/B/C keep their deterministic synthetic build names (public); D is
+# always this fixed marker.
+D_PUBLIC_ROM_ID = "experimental-D"
+
+
 def git_head() -> str:
     r = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"],
                        capture_output=True, text=True, timeout=30)
@@ -535,7 +544,10 @@ def main(argv=None) -> int:
                                                 title_basis="", title_evidence=None,
                                                 expected_slots=d_expected_slots)
                         summary["media"] = "synthetic"
-                        summary["rom_name"] = Path(rom_d).name
+                        # Problem A: never publish the real experimental ROM
+                        # basename in public evidence; the local path remains
+                        # the load/verify identity only.
+                        summary["rom_name"] = D_PUBLIC_ROM_ID
                         results["D"] = summary
                         print(f"variant=D apis={summary['api_count']} verdict={summary['verdict']}")
 

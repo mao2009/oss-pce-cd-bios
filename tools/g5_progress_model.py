@@ -1081,6 +1081,10 @@ _PRIVATE_VALUE_RES = (
     # Media filenames: .bin/.cue/.iso/.chd (case-insensitive). The
     # trailing boundary keeps plain words ("binary") and dotted words
     # ("foo.binary") passing while "game.bin"/".BIN\"/"x.chd" refuse.
+    # NOTE: .pce is intentionally NOT a value-pattern here: the fix for the
+    # experimental-ROM filename leak kills the publication path itself
+    # (harness D rom_name is a fixed structural identifier), not the
+    # extension string.
     re.compile(r"\.(bin|cue|iso|chd)(?![A-Za-z0-9])", re.I),
     # Private checkout/media dir marker (legacy ./rom/ and /rom/).
     re.compile(r"\./rom/|/rom/", re.I),
@@ -1093,6 +1097,32 @@ _PRIVATE_VALUE_RES = (
     re.compile(r"[A-Za-z]:[\\/]|\\\\", re.I),
 )
 
+# Free-text 64-hex-digit identifier (private media SHA-256 shape).
+# Case-insensitive (lower/upper/mixed); token boundaries keep normal PCs
+# ($E245/0xE245), slot numbers ($02), ordinary numbers, short git SHAs
+# (7-8 chars) and 40-hex repo HEADs passing: only an exact 64-hex token
+# refuses. Fixed public revision keys below are exempt field-by-field;
+# any other (free-text) field refuses even when an allowlisted key exists
+# nearby. The rejection message never re-emits the value.
+_SHA64_TOKEN_RE = re.compile(r"(?<![0-9A-Fa-f])[0-9A-Fa-f]{64}(?![0-9A-Fa-f])")
+
+# Fixed public revision keys whose own value may legitimately hold pinned
+# hex (head/pinned_*). Exemption is per-field only (leaf key match), never
+# a global bypass for sibling free-text fields.
+_REVISION_VALUE_ALLOW_KEYS = frozenset({
+    "head", "pinned_geargrafx", "pinned_geargrafx_short",
+    "pinned_cc65", "pinned_cc65_short",
+})
+
+
+def _leaf_key(key_path: str) -> str:
+    """Leaf field name for a sanitizer key_path (pure)."""
+    leaf = str(key_path).rsplit(".", 1)[-1]
+    # Strip list indices: "results[0]" -> "results".
+    if "[" in leaf:
+        leaf = leaf.split("[", 1)[0]
+    return leaf.strip().lower()
+
 
 def _check_private_value(value: str, key_path: str) -> None:
     if not isinstance(value, str):
@@ -1100,6 +1130,11 @@ def _check_private_value(value: str, key_path: str) -> None:
     for rx in _PRIVATE_VALUE_RES:
         if rx.search(value):
             raise ValueError(f"evidence {key_path!r} carries private media/path references (refused)")
+    # Fail-closed free-text SHA-256: any 64-hex token in a non-allowlisted
+    # field refuses (case-insensitive, recursive via _sanitize_recursive).
+    if _leaf_key(key_path) not in _REVISION_VALUE_ALLOW_KEYS:
+        if _SHA64_TOKEN_RE.search(value):
+            raise ValueError(f"evidence {key_path!r} carries private identifier references (refused)")
 
 
 def _sanitize_recursive(obj, key_path: str):
@@ -1132,6 +1167,9 @@ def sanitize_for_public(evidence: dict) -> dict:
       - private media names/paths/hashes/images/raw traces/RAM dumps are
         refused by key (cue/media/dump/save/trace/stack/ram/image/...) and
         by value (./rom/, .cue/.bin/.iso, absolute/POSIX/Windows paths);
+      - any 64-hex-digit token in free-text evidence (detail/reason/note/
+        nested fields) is refused fail-closed (case-insensitive); only the
+        fixed public revision keys (head/pinned_*) are exempt field-by-field;
       - structural counts/slots/PCs/verdicts/pins pass.
     A fingerprint/hash is NOT permission to publish: media hashes are
     refused even when offered as fingerprints (any *hash*/*sha* key outside

@@ -1000,3 +1000,90 @@ class MediaIdentityStrictTests(unittest.TestCase):
         man = {"selection_contract": {"lba": 5, "media_identity": {"cue": "s.cue"}}}
         M.check_embedded_selection_vs_executed(
             man, {"lba": 5, "identity": {"cue": "s.cue"}})  # no raise
+
+class PublicEvidenceLeakFixTests(unittest.TestCase):
+    """Task 1 (PR #778): public-evidence leak closures (Problem A + B)."""
+
+    SECRET64 = "9f3a" * 16  # 64 hex, mixed digits/letters (case-insensitive shape)
+
+    def test_d_fixed_identifier_passes_and_real_name_absent(self):
+        # Problem A: D public evidence uses the fixed structural identifier;
+        # the real experimental filename (e.g. PrivateGame.pce) never appears.
+        import g5_harness as H
+        import inspect
+        import json as _json
+        ev = {"schema": M.SCHEMA, "variant": "D", "rom_name": H.D_PUBLIC_ROM_ID,
+              "verdict": "UNKNOWN", "media": "synthetic"}
+        clean = M.sanitize_for_public(ev)
+        self.assertEqual(clean["rom_name"], "experimental-D")
+        self.assertNotIn("PrivateGame", _json.dumps(clean))
+        self.assertEqual(H.D_PUBLIC_ROM_ID, "experimental-D")
+        src = inspect.getsource(H.main) + inspect.getsource(H)
+        self.assertNotIn('summary["rom_name"] = Path(rom_d).name', src)
+        self.assertIn("D_PUBLIC_ROM_ID", inspect.getsource(H.main))
+
+    def test_64hex_in_detail_rejected(self):
+        with self.assertRaises(ValueError):
+            M.sanitize_for_public({"schema": M.SCHEMA, "detail": f"saw {self.SECRET64} here"})
+
+    def test_64hex_in_reason_note_rejected(self):
+        with self.assertRaises(ValueError):
+            M.sanitize_for_public({"schema": M.SCHEMA, "reason": self.SECRET64})
+        with self.assertRaises(ValueError):
+            M.sanitize_for_public({"schema": M.SCHEMA, "note": f"note {self.SECRET64.upper()}"}) 
+        # Mixed-case variant.
+        mixed = "".join(c.upper() if i % 2 else c.lower() for i, c in enumerate(self.SECRET64))
+        with self.assertRaises(ValueError):
+            M.sanitize_for_public({"schema": M.SCHEMA, "detail": mixed})
+
+    def test_nested_64hex_rejected(self):
+        with self.assertRaises(ValueError):
+            M.sanitize_for_public({"schema": M.SCHEMA,
+                                   "outer": {"detail": self.SECRET64}})
+        with self.assertRaises(ValueError):
+            M.sanitize_for_public({"schema": M.SCHEMA,
+                                   "results": [{"note": f"x {self.SECRET64} y"}]})
+        with self.assertRaises(ValueError):
+            M.sanitize_for_public({"schema": M.SCHEMA,
+                                   "reason": {"reason": f"saw {self.SECRET64} nested"}})
+
+    def test_64hex_rejection_does_not_releak_secret(self):
+        try:
+            M.sanitize_for_public({"schema": M.SCHEMA, "detail": self.SECRET64})
+            self.fail("expected ValueError")
+        except ValueError as e:
+            self.assertNotIn(self.SECRET64, str(e))
+            self.assertNotIn(self.SECRET64[:16], str(e))
+        upper = self.SECRET64.upper()
+        try:
+            M.sanitize_for_public({"schema": M.SCHEMA, "note": upper})
+            self.fail("expected ValueError")
+        except ValueError as e:
+            self.assertNotIn(upper, str(e))
+
+    def test_allowlisted_revision_keys_still_pass(self):
+        ev = {"schema": M.SCHEMA, "head": "b" * 40,
+              "pinned_geargrafx": M.PINNED_GEARGRAFX,
+              "pinned_cc65": M.PINNED_CC65,
+              "variant": "A", "verdict": "PRE_API_BLOCKER", "media": "synthetic",
+              "rom_name": "experimental-D"}
+        clean = M.sanitize_for_public(ev)
+        self.assertEqual(clean["head"], "b" * 40)
+        # Allowlisted key nearby never whitelists sibling free text.
+        with self.assertRaises(ValueError):
+            M.sanitize_for_public({"schema": M.SCHEMA, "head": "b" * 40,
+                                   "detail": self.SECRET64})
+
+    def test_normal_values_not_overrejected(self):
+        for note in ("cold/warm both observed", "this is binary data", "and/or note"):
+            clean = M.sanitize_for_public({"schema": M.SCHEMA, "note": note})
+            self.assertEqual(clean["note"], note)
+        ev = {"schema": M.SCHEMA, "variant": "A", "verdict": "PRE_API_BLOCKER",
+              "api_count": 0, "pc": 0xE245, "slot": "$02",
+              "status": "OBSERVED_STRUCTURAL_ONLY", "media": "synthetic",
+              "head": "c" * 40, "pinned_cc65_short": M.PINNED_CC65_SHORT}
+        clean = M.sanitize_for_public(ev)
+        self.assertEqual(clean["status"], "OBSERVED_STRUCTURAL_ONLY")
+        # Short git SHA (7 chars) in free text still passes.
+        clean2 = M.sanitize_for_public({"schema": M.SCHEMA, "note": "pin 71746c8 ok"})
+        self.assertIn("71746c8", clean2["note"])
