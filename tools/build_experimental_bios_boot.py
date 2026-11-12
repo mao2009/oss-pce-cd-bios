@@ -31,7 +31,13 @@ EXPERIMENTAL_BOOT_FLAG = "EXPERIMENTAL_BIOS_BOOT"
 ROM_NAME = "experimental-dev-only-not-compatible-syscard-sized.pce"
 REQUIRED = ("experimental_bios_reset", "experimental_bios_init", "experimental_bios_selection_halt", "experimental_selection", "cd_entry",
             "cd_buffer_ready", "cd_data_done", "cd_halt_ok", "cd_halt_fail", "cd_unexpected_interrupt", "cd_cdb",
-             "cd_payload_return", "cd_set_read_lba", "cd_entry_selected")
+             "cd_payload_return", "cd_set_read_lba", "cd_entry_selected", "cd_base_proto_entry")
+# Experimental CD_BASE proto wiring (slot $02 only, this image only; normal ROM untouched).
+# api_slot_02 fallback (5 bytes: LDX #$02; JMP api_unimplemented) is replaced by
+# JMP cd_base_proto_entry + NOP pad. Whole-image diff is asserted to be exactly
+# those 5 bytes. NOT a genuine ABI, NOT compatible, release_eligible=False.
+SLOT02_PATCH_LEN = 5
+_PROTO_PATCH_LABELS = ("api_slot_02", "api_unimplemented", "cd_base_proto_entry")
 PAYLOAD_LABELS = ("payload_entry", "payload_done")
 
 
@@ -50,7 +56,30 @@ def _experimental_boot_units(selected):
     return [
         (ROOT / "src/experimental_bios_boot.s", assembler_defines(selected)),
         (ROOT / "src/cd_load_exec_probe.s", ["-D", EXPERIMENTAL_BOOT_FLAG]),
+        (ROOT / "src/cd_base_proto.s", []),
     ]
+
+
+def _patch_slot02_to_proto(bank: bytes, slot02_addr: int, unimpl_addr: int, proto_addr: int) -> bytes:
+    """Return bank with api_slot_02 fallback replaced by JMP proto+NOPs. Fail-closed."""
+    for name, addr in (("api_slot_02", slot02_addr), ("api_unimplemented", unimpl_addr),
+                        ("cd_base_proto_entry", proto_addr)):
+        if type(addr) is not int or not 0xE000 <= addr <= 0xFFFF:
+            raise ValueError(f"{name} address {addr!r} outside BIOS window $E000-$FFFF")
+    if not 0xE100 <= slot02_addr <= 0xFFF6 - SLOT02_PATCH_LEN:
+        raise ValueError(f"api_slot_02 at ${slot02_addr:04X} outside FALLBACK/code area")
+    if not 0xE100 <= proto_addr <= 0xFFF6:
+        raise ValueError(f"cd_base_proto_entry at ${proto_addr:04X} outside bank0 body")
+    off = slot02_addr - 0xE000
+    if off + SLOT02_PATCH_LEN > len(bank):
+        raise ValueError("api_slot_02 offset outside bank")
+    before = bytes((0xA2, 0x02, 0x4C, unimpl_addr & 0xFF, (unimpl_addr >> 8) & 0xFF))
+    if bytes(bank[off:off + SLOT02_PATCH_LEN]) != before:
+        raise ValueError(f"pre-patch bytes at ${slot02_addr:04X} are not the slot-02 fallback sequence")
+    after = bytes((0x4C, proto_addr & 0xFF, (proto_addr >> 8) & 0xFF, 0xEA, 0xEA))
+    patched = bytearray(bank)
+    patched[off:off + SLOT02_PATCH_LEN] = after
+    return bytes(patched)
 
 
 def experimental_boot_units(cue_path):
@@ -79,7 +108,7 @@ def build_experimental_payload(output: Path, mode="debug") -> tuple[bytes, dict]
     return code, symbols
 
 
-def build_experimental_bios_boot(original_path: Path, output: Path, mode="debug", cue_path=None, payload_code=None) -> Path:
+def build_experimental_bios_boot(original_path: Path, output: Path, mode="debug", cue_path=None, payload_code=None, payload_symbols=None) -> Path:
     if mode not in ("debug", "release"):
         raise ValueError("MODE must be debug or release")
     if cue_path is None:
@@ -116,20 +145,56 @@ def build_experimental_bios_boot(original_path: Path, output: Path, mode="debug"
     bank_bytes = bank.read_bytes()
     if len(bank_bytes) != BANK_BYTES:
         raise ValueError("experimental boot bank is not 8 KiB")
+    # Experimental slot-$02 wiring: patch api_slot_02 fallback to JMP proto.
+    # Pre-patch bank must match the normal DEV ROM in the API area, proving the
+    # normal ROM is untouched and only this experimental image diverges.
+    if bank_bytes[:0x1000] != original[:0x1000]:
+        raise ValueError("experimental pre-patch bank changed the API table/override area")
+    patch_addrs = parse_needed_labels(labels, _PROTO_PATCH_LABELS)
+    if any(n not in patch_addrs for n in _PROTO_PATCH_LABELS):
+        raise ValueError(f"experimental slot-02 patch symbols missing: {_PROTO_PATCH_LABELS}")
+    patched_bank = _patch_slot02_to_proto(bank_bytes, patch_addrs["api_slot_02"],
+                                            patch_addrs["api_unimplemented"],
+                                            patch_addrs["cd_base_proto_entry"])
+    # Whole-image diff vs the normal DEV ROM must be exactly the 5-byte patch
+    # window plus the experimental BOOT area (>= $F000, offset >= 0x1000).
+    # The API-area diff is asserted byte-exact below; BOOT divergence is
+    # expected (experimental reset/loader/proto) and covered by the vector/SEI
+    # checks that follow.
+    slot02_off = patch_addrs["api_slot_02"] - 0xE000
+    api_diff = [i for i in range(0x1000) if patched_bank[i] != original[i]]
+    if set(api_diff) != set(range(slot02_off, slot02_off + SLOT02_PATCH_LEN)):
+        raise ValueError("experimental slot-02 patch diff is not exactly the 5-byte fallback window")
     rom = output / ROM_NAME
-    rom.write_bytes(bank_bytes + b"\xff" * (IMAGE_BYTES - BANK_BYTES))
+    rom.write_bytes(patched_bank + b"\xff" * (IMAGE_BYTES - BANK_BYTES))
     data = rom.read_bytes()
-    if len(data) != IMAGE_BYTES or data[:0x1000] != original[:0x1000] or data[BANK_BYTES:] != b"\xff" * (IMAGE_BYTES - BANK_BYTES):
-        raise ValueError("experimental image changed the API table, size, or unused banks")
+    if len(data) != IMAGE_BYTES or data[BANK_BYTES:] != b"\xff" * (IMAGE_BYTES - BANK_BYTES):
+        raise ValueError("experimental image changed size or unused banks")
+    if data[:slot02_off] != original[:slot02_off] or data[slot02_off + SLOT02_PATCH_LEN:0x1000] != original[slot02_off + SLOT02_PATCH_LEN:0x1000]:
+        raise ValueError("experimental image changed the API area outside the slot-02 patch window")
     reset_vector = int.from_bytes(data[0x1FFE:0x2000], "little")
     if reset_vector != rom_symbols["experimental_bios_reset"] or rom_symbols["experimental_bios_init"] != reset_vector + 1:
         raise ValueError("reset vector is not the experimental one-byte SEI followed by init")
     if data[reset_vector & 0x1FFF] != 0x78:
         raise ValueError("experimental reset must start with SEI")
 
-    code, pay_symbols = build_experimental_payload(output, mode)
-    if code != payload_code:
-        raise ValueError("experimental ROM payload differs from the finalized media payload")
+    if payload_symbols is None:
+        code, pay_symbols = build_experimental_payload(output, mode)
+        if code != payload_code:
+            raise ValueError("experimental ROM payload differs from the finalized media payload")
+    else:
+        # Custom proto-test payload (Agent-A): entry must be EXEC, 1..255 bytes,
+        # symbols must carry payload_entry/payload_done. Media containment was
+        # already verified via user_sector above; no standard-payload equality.
+        if set(payload_symbols) != set(PAYLOAD_LABELS):
+            raise ValueError(f"custom payload symbols must be {PAYLOAD_LABELS}")
+        if payload_symbols.get("payload_entry") != EXEC_ADDRESS:
+            raise ValueError("custom payload_entry must equal EXEC_ADDRESS")
+        for name in PAYLOAD_LABELS:
+            addr = payload_symbols[name]
+            if type(addr) is not int or not EXEC_ADDRESS <= addr < EXEC_ADDRESS + 0x800:
+                raise ValueError(f"custom {name} ${addr!r} outside payload window")
+        code, pay_symbols = payload_code, dict(payload_symbols)
     symbols = {name: rom_symbols[name] for name in REQUIRED}
     symbols.update({name: pay_symbols[name] for name in PAYLOAD_LABELS})
     # The shared integration judge uses semantic trace names; these aliases point to this image's new reset labels.
@@ -151,6 +216,17 @@ def build_experimental_bios_boot(original_path: Path, output: Path, mode="debug"
         "pinned_cc65": DEPENDENCIES["cc65"]["revision"], "api_implementation": API_IMPLEMENTATION,
         "cd_read_api_slot_03": "NOT_IMPLEMENTED", "system_card_abi": "NO_CLAIM", "release_eligible": False,
         "dev_callable": False, "private_media_used": False,
+        "cd_base_proto": {"contract": "CD_BASE_PROTO_V1-experimental-only-not-genuine-abi",
+                            "slot": "$02", "entry": "$E006",
+                            "proto_entry": f"${patch_addrs['cd_base_proto_entry']:04X}",
+                            "patch": {"target": "api_slot_02", "length_bytes": SLOT02_PATCH_LEN,
+                                      "before": "ldx #$02; jmp api_unimplemented",
+                                      "after": f"jmp ${patch_addrs['cd_base_proto_entry']:04X} + NOP pad"},
+                            "assumption": ("EXPERIMENTAL processing: LBA/index/state/MPR/RAM handling "
+                                           "per src/cd_base_proto.s; NOT genuine System Card CD_BASE, "
+                                           "NOT an ABI claim, NOT compatibility evidence."),
+                            "reference_jsr": "0/81", "abi_verified": "0/81",
+                            "state": "$2400-$2407 owned, $2408-$240A scratch"},
     }
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     return rom
