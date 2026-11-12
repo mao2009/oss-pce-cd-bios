@@ -128,8 +128,17 @@ def run_variant_synthetic(probe, rom: Path, labels: dict, tmp: Path, name: str,
 def summarize_run(records: dict, stub_addr: int | None, variant_key: str,
                   return_kind: str, frame_progress: bool = False,
                   screen_changed: bool = False, title_observed: bool = False,
-                  title_basis: str = "") -> dict:
-    """Reduce raw probe records to G5 metrics + verdict (pure-ish, no I/O)."""
+                  title_basis: str = "", title_evidence: dict | None = None,
+                  real_service_proof: dict | None = None,
+                  expected_slots: tuple | list | None = None) -> dict:
+    """Reduce raw probe records to G5 metrics + verdict (pure-ish, no I/O).
+
+    For D (REAL_SERVICE) the return proof is derived from measured probe
+    records when not supplied explicitly: arrival/SP/MPR/order gates via
+    M.derive_real_service_proof. A bare manifest declaration never yields
+    REAL_SERVICE_RETURN (MAJOR-2). expected_slots comes from the validated
+    D manifest; None means order unmeasured (never guessed).
+    """
     runs = records.get("RUN", [])
     apis = records.get("APICALL", [])
     per_cycle = {}
@@ -142,6 +151,7 @@ def summarize_run(records: dict, stub_addr: int | None, variant_key: str,
     cold_calls = per_cycle["cold"]["calls"]
     warm_calls = per_cycle["warm"]["calls"]
     cold_run, warm_run = per_cycle["cold"]["run"], per_cycle["warm"]["run"]
+    proof_for_d = real_service_proof
     if cold_run is None or warm_run is None:
         verdict, detail = "BLOCKED", "missing cold/warm runs"
         identical = False
@@ -158,13 +168,25 @@ def summarize_run(records: dict, stub_addr: int | None, variant_key: str,
         if seq is None and identical and (cold_calls or warm_calls):
             verdict, detail = "UNKNOWN", "entry present without JSR/JMP evidence"
         else:
+            # MAJOR-2: D proof comes from measured records, never the manifest
+            # declaration alone. Derive when the caller did not supply an
+            # explicit proof (harness path); host tests may supply one directly.
+            proof_for_d = real_service_proof
+            if variant_key == "D" and return_kind == "REAL_SERVICE" and proof_for_d is None:
+                try:
+                    obs_slots = [s for s, _m in calls_list]
+                    proof_for_d = M.derive_real_service_proof(
+                        cold_calls, warm_calls, obs_slots, expected_slots)
+                except (ValueError, TypeError):
+                    proof_for_d = None
             verdict, detail = M.classify_g5(
                 variant_key=variant_key, calls=calls_list, runs=[cold_run, warm_run],
                 stub_addr=stub_addr, return_kind=return_kind,
                 cold_warm_identical=identical, frame_progress=frame_progress,
                 screen_changed=screen_changed, title_observed=title_observed,
-                title_basis=title_basis,
-                next_blocker=(f"${calls_list[-1][0]:02X}" if calls_list else None))
+                title_basis=title_basis, title_evidence=title_evidence,
+                next_blocker=(f"${calls_list[-1][0]:02X}" if calls_list else None),
+                real_service_proof=proof_for_d, expected_slots=expected_slots)
     # Structural metrics (sanitized: counts/PCs/slots only, no dumps).
     def _run_bits(r):
         if r is None:
@@ -204,9 +226,12 @@ def summarize_run(records: dict, stub_addr: int | None, variant_key: str,
         "frames": {"status": "MEASURED" if frame_progress else "NOT_MEASURED",
                    "progress": bool(frame_progress), "screen_changed": bool(screen_changed)},
         "title": M.title_status(observed=bool(title_observed),
-                                basis=title_basis, screen_changed=bool(screen_changed)),
+                                basis=title_basis, screen_changed=bool(screen_changed),
+                                evidence=title_evidence),
         "stub_addr": stub_addr,
         "calls_cold": [_call_bits(c) for c in cold_calls],
+        "real_service_proof": proof_for_d if variant_key == "D" else None,
+        "expected_slots": [f"${s:02X}" for s in expected_slots] if expected_slots is not None else None,
     }
 
 
@@ -229,6 +254,7 @@ def main(argv=None) -> int:
     p.add_argument("--experimental-manifest", type=Path, default=None)
     p.add_argument("--title-observed", action="store_true")
     p.add_argument("--title-basis", default="")
+    p.add_argument("--title-evidence", default="", help="structured title observation JSON (source/target/cold_warm/confirmation_method/fake_rts_relation); required for G5_OBSERVED")
     p.add_argument("--frame-progress", action="store_true",
                    help="CLAIMED frame progress (recorded as CLAIMED_UNVERIFIED, never measured)")
     p.add_argument("--screen-changed", action="store_true",
@@ -285,6 +311,22 @@ def main(argv=None) -> int:
         print("NOTE: frame/screen progress is CLAIMED_UNVERIFIED (no tracer ran); "
               "screen change alone is NEVER title", file=sys.stderr)
 
+    # MEDIUM-2: structured title evidence (never a bare string claim).
+    title_evidence = None
+    if args.title_evidence.strip():
+        try:
+            title_evidence = json.loads(args.title_evidence)
+        except ValueError:
+            print("FAIL: --title-evidence is not valid JSON", file=sys.stderr)
+            return 1
+        ok, why = M.validate_title_evidence(title_evidence)
+        if not ok:
+            print(f"FAIL: --title-evidence invalid ({why})", file=sys.stderr)
+            return 1
+    if args.title_observed and title_evidence is None:
+        print("NOTE: --title-observed without --title-evidence stays UNKNOWN "
+              "(title detection unimplemented or evidence incomplete; never G5_OBSERVED)", file=sys.stderr)
+
     evidence = M.evidence_skeleton(head=head, mode=args.mode)
     evidence["issue"] = "G5-harness (parent #635)"
     evidence["title_basis_stated"] = bool(args.title_basis.strip()) if args.title_observed else False
@@ -325,7 +367,10 @@ def main(argv=None) -> int:
                              ("api_unimplemented", "cd_halt_fail", "cd_unexpected_interrupt"))
             rom_labels["C"] = (exp_c, full_c)
         # D: independent input interface (never hardcoded to A/B outputs).
+        # MAJOR-4: derive from existing experimental manifests (read-only),
+        # verify size/SHA/HEAD/pins/wiring, cross-check embedded selection.
         d_manifest = None
+        d_expected_slots = None
         if args.experimental_rom:
             try:
                 d_manifest = json.loads(Path(args.experimental_manifest).read_text(encoding="utf-8"))
@@ -337,32 +382,51 @@ def main(argv=None) -> int:
             except ValueError as e:
                 print(str(e), file=sys.stderr)
                 return 3
+            d_expected_slots = tuple(checked["slots"])
             d_rom = Path(args.experimental_rom)
             try:
                 data = d_rom.read_bytes()
             except OSError:
                 print("BLOCKED: experimental ROM unreadable", file=sys.stderr)
                 return 3
-            if len(data) != 256 * 1024:
-                print("BLOCKED: experimental ROM is not a 256 KiB image", file=sys.stderr)
+            try:
+                M.verify_d_rom_bytes(data, d_manifest)
+            except ValueError as e:
+                print(str(e), file=sys.stderr)
                 return 3
-            sha = d_manifest.get("rom_sha256")
-            if sha is not None and hashlib.sha256(data).hexdigest() != sha:
-                print("BLOCKED: experimental ROM hash differs from manifest", file=sys.stderr)
-                return 3
+            branch = d_manifest.get("branch", "?")
+            head12 = (d_manifest.get("head") or "?")[:12]
             print(f"D manifest OK: slots {[f'${s:02X}' for s in checked['slots']]} "
-                  f"branch={d_manifest['branch']} head={d_manifest['head'][:12]}")
-            # D execution needs manifest labels; without them the run is
-            # BLOCKED (never guessed). Record manifest validation regardless.
+                  f"native={checked.get('native', False)} branch={branch} head={head12}")
+            # D execution needs a verified stub label; without it the run is
+            # BLOCKED (never guessed). Accept legacy labels.* or native
+            # symbols.* (read-only; A/B sources untouched).
+            d_stub = None
             d_labels = d_manifest.get("labels")
             if isinstance(d_labels, dict) and isinstance(d_labels.get("api_unimplemented"), int):
-                rom_labels["D"] = (d_rom, d_labels)
+                d_stub = d_labels["api_unimplemented"]
+            else:
+                d_syms = d_manifest.get("symbols")
+                if isinstance(d_syms, dict) and isinstance(d_syms.get("api_unimplemented"), int):
+                    d_stub = d_syms["api_unimplemented"]
+            # Native trace_symbols may carry the stub under another name;
+            # only api_unimplemented counts (never guessed from body addrs).
+            if isinstance(d_stub, int) and 0xE000 <= d_stub <= 0xFFFF:
+                try:
+                    E.verify_stub_bytes(d_rom, d_stub)
+                except ValueError as e:
+                    print(f"BLOCKED: D stub unverifiable ({e})", file=sys.stderr)
+                    return 3
+                rom_labels["D"] = (d_rom, {"api_unimplemented": d_stub,
+                                              "cd_halt_fail": d_labels.get("cd_halt_fail", d_stub) if isinstance(d_labels, dict) else d_stub,
+                                              "cd_unexpected_interrupt": d_labels.get("cd_unexpected_interrupt", d_stub) if isinstance(d_labels, dict) else d_stub})
             else:
                 results["D"] = {"variant": "D", "return_kind": "REAL_SERVICE",
                                 "verdict": "BLOCKED",
-                                "detail": "manifest valid; execution labels missing (not guessed)",
+                                "detail": ("manifest valid; execution labels missing (not guessed); "
+                                           "additional required field: labels.api_unimplemented"),
                                 "manifest_slots": [f"${s:02X}" for s in checked["slots"]],
-                                "branch": d_manifest["branch"], "head": d_manifest["head"]}
+                                "branch": d_manifest.get("branch"), "head": d_manifest.get("head")}
 
         for key in ("A", "B", "C"):
             if key not in rom_labels:
@@ -388,22 +452,41 @@ def main(argv=None) -> int:
                   f"verdict={summary['verdict']} stop={[summary['stop_cold']['cause'], summary['stop_warm']['cause']]}")
         if "D" in args.variants and "D" in rom_labels:
             rom_d, lab_d = rom_labels["D"]
-            try:
-                records = run_variant_synthetic(probe, rom_d, lab_d, tmp, "g5_seq23_d",
-                                                args.budget)
-            except (ValueError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-                results["D"] = {"variant": "D", "return_kind": "REAL_SERVICE",
-                                "verdict": "BLOCKED",
-                                "detail": f"probe failed: {type(e).__name__}"}
+            # MAJOR-4: cross-check embedded selection vs the synthetic SEQ23
+            # medium (LBA SEL). Mismatch -> BLOCKED (never measured as return).
+            if d_manifest is not None:
+                try:
+                    M.check_embedded_selection_vs_executed(
+                        d_manifest, {"lba": sel, "identity": None})
+                except ValueError as e:
+                    # No embedded LBA (legacy G5 manifests) means the linkage
+                    # is unmeasured -> BLOCKED with the required-field report.
+                    # A synthetic LBA mismatch is also BLOCKED (wrong medium).
+                    results["D"] = {"variant": "D", "return_kind": "REAL_SERVICE",
+                                    "verdict": "BLOCKED", "detail": str(e),
+                                    "manifest_slots": [f"${s:02X}" for s in (d_expected_slots or ())]}
+                    print(f"variant=D BLOCKED selection cross-check: {e}", file=sys.stderr)
+                else:
+                    try:
+                        records = run_variant_synthetic(probe, rom_d, lab_d, tmp, "g5_seq23_d",
+                                                        args.budget)
+                    except (ValueError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as e2:
+                        results["D"] = {"variant": "D", "return_kind": "REAL_SERVICE",
+                                        "verdict": "BLOCKED",
+                                        "detail": f"probe failed: {type(e2).__name__}"}
+                    else:
+                        summary = summarize_run(records, lab_d.get("api_unimplemented"), "D",
+                                                "REAL_SERVICE", frame_progress=False,
+                                                screen_changed=False, title_observed=False,
+                                                title_basis="", title_evidence=None,
+                                                expected_slots=d_expected_slots)
+                        summary["media"] = "synthetic"
+                        summary["rom_name"] = Path(rom_d).name
+                        results["D"] = summary
+                        print(f"variant=D apis={summary['api_count']} verdict={summary['verdict']}")
             else:
-                summary = summarize_run(records, lab_d.get("api_unimplemented"), "D",
-                                        "REAL_SERVICE", frame_progress=False,
-                                        screen_changed=False, title_observed=False,
-                                        title_basis="")
-                summary["media"] = "synthetic"
-                summary["rom_name"] = Path(rom_d).name
-                results["D"] = summary
-                print(f"variant=D apis={summary['api_count']} verdict={summary['verdict']}")
+                results["D"] = {"variant": "D", "return_kind": "REAL_SERVICE",
+                                "verdict": "BLOCKED", "detail": "D manifest missing"}
 
         # --- Comparison A vs B vs C (immediate). ---
         comparison = {}
@@ -513,6 +596,80 @@ def main(argv=None) -> int:
             full_cc = _parse3(comm_out / "ipl-loader-bios-g5c-comm-base.lbl",
                               ("api_unimplemented", "cd_halt_fail", "cd_unexpected_interrupt", "reset"))
             comm_roms = {"A": (rom_ca, lab_ca), "B": (exp_cb, full_cb), "C": (exp_cc, full_cc)}
+            # MAJOR-4 commercial-D: same opt-in/read-only/sanitize discipline.
+            # D runs on the commercial medium only when an experimental ROM +
+            # manifest were supplied; embedded selection is cross-checked vs
+            # the executed commercial LBA (mismatch -> BLOCKED, never measured).
+            if "D" in args.variants and args.experimental_rom and d_manifest is not None:
+                if d_expected_slots is None:
+                    try:
+                        d_expected_slots = tuple(M.validate_experimental_manifest(d_manifest)["slots"])
+                    except ValueError:
+                        d_expected_slots = None
+                d_stub_c = None
+                d_lab = d_manifest.get("labels") if isinstance(d_manifest.get("labels"), dict) else None
+                if d_lab is None and isinstance(d_manifest.get("symbols"), dict):
+                    d_lab = d_manifest.get("symbols")
+                if isinstance(d_lab, dict) and isinstance(d_lab.get("api_unimplemented"), int):
+                    d_stub_c = d_lab["api_unimplemented"]
+                try:
+                    M.check_embedded_selection_vs_executed(d_manifest, {"lba": sel_c, "identity": None})
+                except ValueError as e:
+                    c_results["D"] = {"verdict": "BLOCKED", "detail": str(e),
+                                      "api_count": 0, "last_slot": None,
+                                      "cold_warm_identical": False,
+                                      "stop_cold": {"cause": "BLOCKED", "evidence": "UNKNOWN"},
+                                      "stop_warm": {"cause": "BLOCKED", "evidence": "UNKNOWN"}}
+                    print(f"commercial variant=D BLOCKED selection cross-check: {e}", file=sys.stderr)
+                else:
+                    if d_stub_c is None:
+                        c_results["D"] = {"verdict": "BLOCKED",
+                                          "detail": "D commercial needs labels.api_unimplemented (not guessed)",
+                                          "api_count": 0, "last_slot": None,
+                                          "cold_warm_identical": False,
+                                          "stop_cold": {"cause": "BLOCKED", "evidence": "UNKNOWN"},
+                                          "stop_warm": {"cause": "BLOCKED", "evidence": "UNKNOWN"}}
+                    else:
+                        try:
+                            E.verify_stub_bytes(Path(args.experimental_rom), d_stub_c)
+                        except ValueError as e:
+                            c_results["D"] = {"verdict": "BLOCKED", "detail": f"D stub unverifiable ({e})",
+                                              "api_count": 0, "last_slot": None,
+                                              "cold_warm_identical": False,
+                                              "stop_cold": {"cause": "BLOCKED", "evidence": "UNKNOWN"},
+                                              "stop_warm": {"cause": "BLOCKED", "evidence": "UNKNOWN"}}
+                        else:
+                            # Commercial-D probe on the game IPL (structural only).
+                            d_labels_path = comm_out / "g5-commercial-labels-d.labels"
+                            d_labels_path.write_text(
+                                f"cd_halt_ok {lab_ca['reset']:04x}\ncd_halt_fail {lab_ca['cd_halt_fail']:04x}\n"
+                                f"cd_unexpected_interrupt {lab_ca['cd_unexpected_interrupt']:04x}\n"
+                                f"api_unimplemented {d_stub_c:04x}\n", encoding="ascii")
+                            try:
+                                stub_d = E.resolve_commercial_stub(d_labels_path, Path(args.experimental_rom))
+                            except ValueError as e:
+                                print(f"FAIL commercial D labels: {e}", file=sys.stderr)
+                                return 1
+                            try:
+                                d_records = E.run_probe(probe, Path(args.experimental_rom), cue_path, d_labels_path, 80_000_000, "commercial")
+                            except ValueError as e:
+                                print(f"FAIL commercial D observation: {e}", file=sys.stderr)
+                                return 1
+                            try:
+                                E.verify_media_unchanged(snap)
+                            except ValueError as e:
+                                print(str(e), file=sys.stderr)
+                                return 1
+                            d_summary = summarize_run(d_records, stub_d, "D", "REAL_SERVICE",
+                                                      title_evidence=None, expected_slots=d_expected_slots)
+                            d_summary["media"] = "commercial-structural-only"
+                            d_summary.pop("calls_cold", None)
+                            c_results["D"] = {"verdict": d_summary["verdict"], "detail": d_summary["detail"],
+                                              "api_count": d_summary["api_count"], "last_slot": d_summary["last_slot"],
+                                              "cold_warm_identical": d_summary["cold_warm_identical"],
+                                              "stop_cold": d_summary["stop_cold"],
+                                              "stop_warm": d_summary["stop_warm"]}
+                            print(f"commercial variant=D apis={d_summary['api_count']} verdict={d_summary['verdict']}")
             for key, (crom, clab) in comm_roms.items():
                 if key not in args.variants:
                     continue
