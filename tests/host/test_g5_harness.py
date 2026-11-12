@@ -540,6 +540,55 @@ class SanitizeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             M.sanitize_for_public({"schema": M.SCHEMA, "note": "wrote /tmp/opencode/x.json"})
 
+    def test_media_filename_variants_refused(self):
+        # PR #778 sanitize gap: bare/case-variant media filenames (no
+        # trailing quote) and .chd must refuse (case-insensitive).
+        for name in ("PrivateGame.bin", "PRIVATEGAME.BIN", "PrivateGame.chd",
+                     "PrivateGame.cue", "PrivateGame.iso"):
+            with self.assertRaises(ValueError, msg=name):
+                M.sanitize_for_public({"schema": M.SCHEMA, "detail": name})
+            with self.assertRaises(ValueError, msg="detail:" + name):
+                M.sanitize_for_public({"schema": M.SCHEMA,
+                                       "detail": f"secret {name} inside detail"})
+
+    def test_any_absolute_path_refused(self):
+        # PR #778 sanitize gap: rejection is not limited to /tmp/, /home/,
+        # /Users/; any POSIX absolute path, Windows drive-absolute, or UNC.
+        for p in ("/mnt/private/PrivateGame.bin", "/media/storage/game.cue",
+                  "/private/x", r"C:\Games\x.bin", "c:/games/x.bin",
+                  r"\\server\share\game.cue"):
+            with self.assertRaises(ValueError, msg=p):
+                M.sanitize_for_public({"schema": M.SCHEMA, "detail": p})
+        # Smuggled inside nested evidence fields (recursion).
+        with self.assertRaises(ValueError):
+            M.sanitize_for_public({"schema": M.SCHEMA,
+                                   "reason": {"reason": "saw /mnt/private/x.bin nested"}})
+        with self.assertRaises(ValueError):
+            M.sanitize_for_public({"schema": M.SCHEMA,
+                                   "results": [{"detail": "see PrivateGame.chd here"}]})
+
+    def test_sanitize_no_overblocking(self):
+        # False-positive guards: plain words, mid-word slashes, and normal
+        # structured evidence (PC/slot/status) must still pass.
+        for note in ("this is binary data", "cold/warm both observed", "and/or note"):
+            clean = M.sanitize_for_public({"schema": M.SCHEMA, "note": note})
+            self.assertEqual(clean["note"], note)
+        ev = {"schema": M.SCHEMA, "variant": "A", "verdict": "PRE_API_BLOCKER",
+              "api_count": 0, "pc": 0xE245, "slot": "$02",
+              "status": "OBSERVED_STRUCTURAL_ONLY"}
+        self.assertEqual(M.sanitize_for_public(ev)["status"], "OBSERVED_STRUCTURAL_ONLY")
+
+    def test_rejection_does_not_releak_value(self):
+        # Fail-closed + no re-leak: the secret path must not appear in the
+        # rejection message itself.
+        secret = "/mnt/private/PrivateGame.bin"
+        try:
+            M.sanitize_for_public({"schema": M.SCHEMA, "detail": secret})
+            self.fail("expected ValueError")
+        except ValueError as e:
+            self.assertNotIn("PrivateGame", str(e))
+            self.assertNotIn(secret, str(e))
+
     def test_commercial_public_evidence_saves_cleanly(self):
         # MAJOR-3: post-commercial saving through the sanitizer.
         ev = {"schema": M.SCHEMA, "agent": "C", "head": "a" * 40,

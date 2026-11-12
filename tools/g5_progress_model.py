@@ -1078,8 +1078,19 @@ def _is_private_key(key: str) -> bool:
 
 
 _PRIVATE_VALUE_RES = (
-    re.compile(r"\./rom/|/rom/|\.cue|\.bin\"|\.iso", re.I),
-    re.compile(r"/(tmp|home|Users)/|[A-Z]:\\\\|\\\\"),
+    # Media filenames: .bin/.cue/.iso/.chd (case-insensitive). The
+    # trailing boundary keeps plain words ("binary") and dotted words
+    # ("foo.binary") passing while "game.bin"/".BIN\"/"x.chd" refuse.
+    re.compile(r"\.(bin|cue|iso|chd)(?![A-Za-z0-9])", re.I),
+    # Private checkout/media dir marker (legacy ./rom/ and /rom/).
+    re.compile(r"\./rom/|/rom/", re.I),
+    # Any POSIX absolute-path token: "/" at start-of-value or after a
+    # delimiter, followed by a path char. A mid-word slash ("cold/warm",
+    # "and/or") is NOT a hit, so structural markers still pass.
+    re.compile(r"(?:^|[\s\"'\(\[{=:;,\.])/[^/\s\"']"),
+    # Windows drive-absolute (C:\... / C:/..., case-insensitive) and
+    # UNC (\\server\share...).
+    re.compile(r"[A-Za-z]:[\\/]|\\\\", re.I),
 )
 
 
