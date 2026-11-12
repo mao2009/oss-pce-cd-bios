@@ -44,7 +44,7 @@
 ;     $2404 last status (A code of the last call; $FF means never called,
 ;       set by the harness before the first call).
 ;     $2405/$2406/$2407 last offset HI/MID/LO (base-INDEX01 on success,
-;       cleared to 0 on error).
+;       preserved on error).
 ;     $2408/$2409/$240A scratch pregap_start LO/MID/HI (transient, written
 ;       only on the base<INDEX01 and INDEX01>=150 path; otherwise untouched).
 ;   Returns:
