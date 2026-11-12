@@ -5,6 +5,8 @@ NOT a compatible System Card BIOS. NOT a BIOS ABI implementation. NOT release el
 The image has original reset code that validates a host-built selection record (derived from an
 original synthetic CUE's INDEX 01), then reuses this repository's synthetic-only READ(6), RAM-copy,
 and payload-handoff diagnostics. It does not parse a TOC and does not consume private ROM media.
+The experimental $E099 table entry (slot $33) is redirected to a BOOT-region copy of the
+project-own DEV EX_DSPOFF fragment (src/ex_dspoff.s); the normal DEV ROM keeps its stub.
 """
 import argparse
 import hashlib
@@ -31,7 +33,7 @@ EXPERIMENTAL_BOOT_FLAG = "EXPERIMENTAL_BIOS_BOOT"
 ROM_NAME = "experimental-dev-only-not-compatible-syscard-sized.pce"
 REQUIRED = ("experimental_bios_reset", "experimental_bios_init", "experimental_bios_selection_halt", "experimental_selection", "cd_entry",
             "cd_buffer_ready", "cd_data_done", "cd_halt_ok", "cd_halt_fail", "cd_unexpected_interrupt", "cd_cdb",
-             "cd_payload_return", "cd_set_read_lba", "cd_entry_selected")
+             "cd_payload_return", "cd_set_read_lba", "cd_entry_selected", "experimental_slot_33")
 PAYLOAD_LABELS = ("payload_entry", "payload_done")
 
 
@@ -113,14 +115,43 @@ def build_experimental_bios_boot(original_path: Path, output: Path, mode="debug"
     missing = [name for name in REQUIRED if name not in rom_symbols]
     if missing:
         raise ValueError(f"experimental boot symbols missing: {missing}")
-    bank_bytes = bank.read_bytes()
+    bank_bytes = bytearray(bank.read_bytes())
     if len(bank_bytes) != BANK_BYTES:
         raise ValueError("experimental boot bank is not 8 KiB")
+    # Experimental slot $33 wiring (Issue #61; G5 real-CPU pathfinder): the ONLY
+    # first-4KiB delta vs the normal DEV ROM is the $E099 table entry, redirected
+    # from the linked nonreturning $33 fallback stub to the experimental BOOT-region
+    # body (src/experimental_bios_boot.s includes src/ex_dspoff.s; the normal ROM
+    # keeps its stub because OVERRIDES ends at $E7FB, 5 bytes below the $E800 probe
+    # overlay). Fail closed: the table must still hold the linked stub (nothing
+    # else may be redirected), and the body must sit in BOOT and start with the
+    # fragment's PHP/PHA prologue (guards against silent body drift).
+    slot33_refs = parse_needed_labels(labels, ("api_slot_33", "experimental_slot_33"))
+    slot33_stub, slot33_body = slot33_refs["api_slot_33"], slot33_refs["experimental_slot_33"]
+    if not 0xE100 <= slot33_stub < 0xFFF6:
+        raise ValueError(f"slot $33 fallback stub ${slot33_stub:04X} outside bank0 body")
+    if not 0xF000 <= slot33_body < 0xFFF6:
+        raise ValueError(f"experimental slot $33 body ${slot33_body:04X} outside the BOOT region")
+    slot33_table = 3 * 0x33
+    want_stub = bytes((0x4C, slot33_stub & 0xFF, slot33_stub >> 8))
+    if bytes(bank_bytes[slot33_table:slot33_table + 3]) != want_stub:
+        raise ValueError("slot $33 table entry is not the linked fallback stub; "
+                         "refusing to redirect an unexpected table")
+    bank_bytes[slot33_table:slot33_table + 3] = bytes((0x4C, slot33_body & 0xFF, slot33_body >> 8))
+    body_off = slot33_body - 0xE000
+    if bytes(bank_bytes[body_off:body_off + 2]) != bytes((0x08, 0x48)):  # PHP, PHA
+        raise ValueError("experimental slot $33 body does not start with the fragment prologue")
     rom = output / ROM_NAME
-    rom.write_bytes(bank_bytes + b"\xff" * (IMAGE_BYTES - BANK_BYTES))
+    rom.write_bytes(bytes(bank_bytes) + b"\xff" * (IMAGE_BYTES - BANK_BYTES))
     data = rom.read_bytes()
-    if len(data) != IMAGE_BYTES or data[:0x1000] != original[:0x1000] or data[BANK_BYTES:] != b"\xff" * (IMAGE_BYTES - BANK_BYTES):
-        raise ValueError("experimental image changed the API table, size, or unused banks")
+    if len(data) != IMAGE_BYTES or data[BANK_BYTES:] != b"\xff" * (IMAGE_BYTES - BANK_BYTES):
+        raise ValueError("experimental image changed the size or unused banks")
+    # First-4KiB identity vs the normal DEV ROM, allowing ONLY the documented
+    # $E099 redirect: any other delta (including the probe-overlay window) fails.
+    masked = bytearray(data[:0x1000])
+    masked[slot33_table:slot33_table + 3] = original[slot33_table:slot33_table + 3]
+    if bytes(masked) != original[:0x1000]:
+        raise ValueError("experimental image changed the API table outside slot $33")
     reset_vector = int.from_bytes(data[0x1FFE:0x2000], "little")
     if reset_vector != rom_symbols["experimental_bios_reset"] or rom_symbols["experimental_bios_init"] != reset_vector + 1:
         raise ValueError("reset vector is not the experimental one-byte SEI followed by init")
@@ -151,6 +182,15 @@ def build_experimental_bios_boot(original_path: Path, output: Path, mode="debug"
         "pinned_cc65": DEPENDENCIES["cc65"]["revision"], "api_implementation": API_IMPLEMENTATION,
         "cd_read_api_slot_03": "NOT_IMPLEMENTED", "system_card_abi": "NO_CLAIM", "release_eligible": False,
         "dev_callable": False, "private_media_used": False,
+        "experimental_slot_33": {
+            "table_entry": "0xE099",
+            "table_bytes": "4C %02x %02x" % (slot33_body & 0xFF, slot33_body >> 8),
+            "fallback_stub": f"{slot33_stub:#06x}",
+            "body": f"{slot33_body:#06x}",
+            "contract": ("project-own DEV EX_DSPOFF (work-RAM shadow $2502/$2503, AND #$3F "
+                           "immediate write, C=0 ok / C=1 unseeded reject); NOT the reference ABI"),
+            "normal_rom_table_entry": "unchanged nonreturning stub",
+        },
     }
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     return rom
