@@ -81,3 +81,19 @@ experimental_selection:
     .byte EXP_SELECTED_LBA_HI, EXP_SELECTED_LBA_MID, EXP_SELECTED_LBA_LO
 experimental_selection_prefix:
     .byte "XSEL", 1, 1
+
+; ---- Experimental slot $33 entry (Issue #61; G5 real-CPU pathfinder) ----
+; Real EX_DSPOFF processing for the EXPERIMENTAL image only (DEV ONLY, NOT a
+; compatible System Card BIOS, NOT the reference ABI, release_eligible=false).
+; The normal DEV ROM keeps its nonreturning $33 stub: OVERRIDES ends at $E7FB
+; with 5 bytes of slack below the $E800 probe overlay, so no
+; src/overrides/slot_33.s exists. This entry lives in the BOOT region (link
+; offsets >= 0x1000, outside the builder's first-4KiB identity window) and
+; tools/build_experimental_bios_boot.py redirects the experimental $E099 table
+; entry to it. Contract is exactly src/ex_dspoff.s (single source via .include,
+; no duplicated logic): work-RAM shadow $2502/$2503 discipline, AND #$3F
+; immediate write, C=0 ok / C=1 unseeded reject, MPR0=$FF window with SEI, AR
+; left at 5, caller SP >= $05.
+.export experimental_slot_33
+experimental_slot_33:
+.include "ex_dspoff.s"
