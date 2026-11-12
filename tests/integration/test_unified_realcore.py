@@ -171,10 +171,20 @@ payload_entry:
     bpl @cpin
     lda #$AA
     sta RESBASE
+    ; Loader MARK protocol (cd_payload_return): $3F00=$A5, $3F01=$5A,
+    ; $3F04=MPR1 ($F8, never remapped here), $3F05=SP ($FF, balanced),
+    ; $3F06=$3C. Written last: any imbalance would fail the halt check.
     lda #$A5
     sta $3F00
     lda #$5A
     sta $3F01
+    tma #$02
+    sta $3F04
+    tsx
+    txa
+    sta $3F05
+    lda #$3C
+    sta $3F06
 payload_done:
     jmp (RETVEC)
 """

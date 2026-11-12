@@ -248,16 +248,16 @@ class ExperimentalSlot33RealCpuTests(unittest.TestCase):
                                                         "rejected_by": str(caught.exception)})
 
     def test_two_call_flow_reaches_slot_33_after_slot_02_scaffolding(self):
-        # SIMULATED $02 scaffolding (fake RTS in this variant only) so the guest can
-        # observe whether boot-flow order reaches $33 and returns: the $33 processing
-        # below is REAL (redirected table entry, dev_cr oracle).
-        a, x, y, p, sp = REGS
-        code, halt = guest_two_call(GUEST_ADDR, ENTRY02, ENTRY, 0xF2, 0x00, a, x, y, p, sp)
-        rows = dev.run_probe(self.probe, self._variant(code, "two-call", patch02_rts=True),
-                             self.cue, count=cr.RUN_STEPS)
-        result = cr.check("two-call", rows, halt, a, x, y, p, sp, 0xF2, 0x00,
-                          SET_MASK, CLEAR_MASK, seed_shadow=True)
-        self.evidence["runs"].append({"case": "two-call-slot02-scaffold-then-real-33", **result})
+        # UNION SUPERSEDED (G5 Agent A+B, issue #783): the union image makes
+        # slot $02 REAL (JMP proto), so the fake-RTS scaffolding this test
+        # relied on cannot apply (_variant fail-closes with "refusing
+        # scaffolding", and the union forbids fake RTS anywhere in the D
+        # path). The $02-then-$33 order with real calls and returns moved to
+        # test_unified_realcore.py (SEQ payload, cold/warm); the $33 oracle
+        # coverage stays in this module's remaining tests. Agent B's sources
+        # and PR are untouched.
+        raise unittest.SkipTest("superseded by the union real-$02 SEQ; "
+                                "fake-RTS scaffolding inapplicable")
 
     def test_wired_table_points_at_boot_body(self):
         table = bytes(self.exp[3 * SLOT:3 * SLOT + 3])
