@@ -74,6 +74,7 @@
     "fixture": [
       "src/ad_trans_dma_probe.s",
       "src/adt_dma_routine_boot.s",
+      "src/cd_base_proto.s",
       "src/cd_load_exec_payload.s",
       "src/cd_load_exec_probe.s",
       "src/cd_read_probe.s",
@@ -84,6 +85,7 @@
     "fixture_reasons": {
       "src/ad_trans_dma_probe.s": "development-only hardware diagnostic guest (#400 / #299), not firmware code",
       "src/adt_dma_routine_boot.s": "development-only boot and driver for the adt_dma_sector routine test (#300); uses .macro",
+      "src/cd_base_proto.s": "experimental-only CD_BASE prototype fragment for synthetic media (Agent-A G5); never linked into the normal/production BIOS, not firmware code",
       "src/cd_load_exec_payload.s": "development-only payload of the load-and-execute experiment (#14 / #5)",
       "src/cd_load_exec_probe.s": "development-only load-and-execute experiment (#14 / #5)",
       "src/cd_read_probe.s": "development-only CD-ROM2 sector-read diagnostic (#5)",

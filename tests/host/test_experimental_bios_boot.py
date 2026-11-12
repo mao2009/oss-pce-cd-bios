@@ -22,7 +22,7 @@ class ExperimentalBootSelectionTests(unittest.TestCase):
             root = Path(tmp)
             write_case(root, "NONE", "V1")
             units = {path.name: defines for path, defines in experimental_boot_units(root / CUE_NAME)}
-        self.assertEqual(set(units), {"experimental_bios_boot.s", "cd_load_exec_probe.s"})
+        self.assertEqual(set(units), {"experimental_bios_boot.s", "cd_load_exec_probe.s", "cd_base_proto.s"})
         self.assertEqual(units["cd_load_exec_probe.s"], ["-D", EXPERIMENTAL_BOOT_FLAG])
 
     def test_new_reset_source_has_the_fail_closed_synthetic_flow(self):
