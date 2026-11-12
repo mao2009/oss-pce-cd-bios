@@ -92,9 +92,16 @@ def link(base_hi, base_mid, base_lo, gen, last,
                              "scsi_status": 0, "msg": 0, "last_bus": 0,
                              "lba_hi": hi, "lba_mid": mid, "lba_lo": lo}}
 
-    # Invalid-state: base never established (proto last != 0/DATA).
+    # Invalid-state: base never established (proto last != 0/DATA). The guest
+    # zero-clears LR_LHI/LMID/LLO on this path (no LBA is claimed), so the
+    # host mirror must NOT compute an LBA here.
     if last != 0:
-        return refuse(ERR_INVALID_STATE)
+        return {"a": ERR_INVALID_STATE, "c": 1, "z": 0, "issued": False,
+                "lba": 0, "lba_hi": 0, "lba_mid": 0, "lba_lo": 0,
+                "stage": 1, "state": dict(state),
+                "link_res": {"code": ERR_INVALID_STATE, "stage": 1, "bytes": 0,
+                             "scsi_status": 0, "msg": 0, "last_bus": 0,
+                             "lba_hi": 0, "lba_mid": 0, "lba_lo": 0}}
     # Invalid-window: window start must fit READ(6) 21 bits.
     if win_hi >= 0x20:
         return refuse(ERR_INVALID_WINDOW)

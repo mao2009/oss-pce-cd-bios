@@ -42,6 +42,22 @@ class LinkSourceTests(unittest.TestCase):
         self.assertIn("sec\n    rts", text)
         self.assertIn("clc\n    rts", text)
 
+    def test_alt_initialized_before_first_wait(self):
+        text = SRC.read_text(encoding="utf-8")
+        # MEDIUM-1: alt ($0B) is initialised to $FF at entry, before the first
+        # wait, and the DATA_IN path still overrides it with PH_STATUS.
+        self.assertIn("sta alt", text)
+        self.assertIn("lda #PH_STATUS\n    sta alt", text)
+        # The init must occur before the invalid-state refusal target.
+        idx_init = text.index("sta alt")
+        idx_state = text.index("@ref_state:")
+        self.assertLess(idx_init, idx_state)
+        # link_wait_phase must not unconditionally re-init alt at entry.
+        wp = text[text.index("link_wait_phase:"):text.index("link_ack_byte:")]
+        self.assertTrue(wp.startswith("link_wait_phase:\n    lda #0"))
+        self.assertNotIn("sta alt", wp.split("@poll:")[0])
+
+
     def test_addresses_and_error_taxonomy(self):
         text = SRC.read_text(encoding="utf-8")
         for token in ("$2400", "$2401", "$2402", "$2403", "$2404",

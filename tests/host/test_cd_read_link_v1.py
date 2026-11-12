@@ -169,6 +169,51 @@ class LinkRefusalTests(unittest.TestCase):
         self.assertEqual(tmo["a"], L.ERR_READ_TIMEOUT)
         self.assertTrue(ok["issued"] and fail["issued"] and tmo["issued"])
 
+    def test_invalid_state_nonzero_base_block_zeroes_lba(self):
+        args = base_args(base=0x123456, block=0x789ABC, win=150)
+        args["last"] = 0x31
+        out = L.link(**args)
+        self.assertEqual(out["a"], L.ERR_INVALID_STATE)
+        self.assertFalse(out["issued"])
+        self.assertEqual(out["lba"], 0)
+        self.assertEqual((out["lba_hi"], out["lba_mid"], out["lba_lo"]), (0, 0, 0))
+        self.assertEqual(out["stage"], 1)
+        self.assertEqual(out["link_res"]["code"], L.ERR_INVALID_STATE)
+        self.assertEqual(out["link_res"]["stage"], 1)
+        self.assertEqual(out["link_res"]["bytes"], 0)
+        self.assertEqual(out["link_res"]["scsi_status"], 0)
+        self.assertEqual(out["link_res"]["msg"], 0)
+        self.assertEqual(out["link_res"]["last_bus"], 0)
+        self.assertEqual((out["link_res"]["lba_hi"], out["link_res"]["lba_mid"],
+                          out["link_res"]["lba_lo"]), (0, 0, 0))
+
+    def test_refusal_paths_verify_all_link_res_fields(self):
+        # WINDOW
+        args = base_args(base=150, block=0, win=150)
+        args["win_hi"] = 0x20
+        out = L.link(**args)
+        self.assertEqual(out["a"], L.ERR_INVALID_WINDOW)
+        self.assertFalse(out["issued"])
+        self.assertEqual(out["stage"], 1)
+        self.assertEqual(out["link_res"]["stage"], 1)
+        self.assertEqual(out["link_res"]["bytes"], 0)
+        self.assertEqual(out["link_res"]["scsi_status"], 0)
+        self.assertEqual(out["link_res"]["msg"], 0)
+        self.assertEqual(out["link_res"]["last_bus"], 0)
+        # CAP
+        out = L.link(**base_args(base=0x1FFFFF, block=1, win=150))
+        self.assertEqual(out["a"], L.ERR_OVER_CAP)
+        self.assertEqual(out["link_res"]["code"], L.ERR_OVER_CAP)
+        # BEFORE
+        out = L.link(**base_args(base=150, block=0, win=160))
+        self.assertEqual(out["a"], L.ERR_BEFORE)
+        self.assertEqual(out["link_res"]["code"], L.ERR_BEFORE)
+        # AFTER
+        out = L.link(**base_args(base=150, block=16, win=150))
+        self.assertEqual(out["a"], L.ERR_AFTER)
+        self.assertEqual(out["link_res"]["code"], L.ERR_AFTER)
+        self.assertEqual(out["link_res"]["bytes"], 0)
+
     def test_bad_types_rejected(self):
         with self.assertRaises(ValueError):
             L.link(**{**base_args(), "blk_lo": True})

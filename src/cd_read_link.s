@@ -146,6 +146,12 @@ cd_read_link_entry:
     sta LR_SCSI
     sta LR_MSG
     sta LR_LAST
+    ; MEDIUM-1: initialise the one-shot early-abort phase ($0B alt) before the
+    ; first wait so caller-residue RAM cannot cause a false timeout. Re-inited
+    ; only here (per call), never unconditionally inside link_wait_phase. The
+    ; DATA_IN path still overrides alt with PH_STATUS before its wait.
+    lda #$FF
+    sta alt
     ; --- invalid-state: proto base never established (last != $00/DATA) ---
     lda ST_LAST
     beq @have_base
