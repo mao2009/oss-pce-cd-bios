@@ -127,7 +127,9 @@ def build_experimental_bios_boot(original_path: Path, output: Path, mode="debug"
     # else may be redirected), and the body must sit in BOOT and start with the
     # fragment's PHP/PHA prologue (guards against silent body drift).
     slot33_refs = parse_needed_labels(labels, ("api_slot_33", "experimental_slot_33"))
-    slot33_stub, slot33_body = slot33_refs["api_slot_33"], slot33_refs["experimental_slot_33"]
+    slot33_stub, slot33_body = slot33_refs.get("api_slot_33"), slot33_refs.get("experimental_slot_33")
+    if slot33_stub is None or slot33_body is None:
+        raise ValueError("experimental slot $33 labels missing from the link")
     if not 0xE100 <= slot33_stub < 0xFFF6:
         raise ValueError(f"slot $33 fallback stub ${slot33_stub:04X} outside bank0 body")
     if not 0xF000 <= slot33_body < 0xFFF6:
