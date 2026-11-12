@@ -125,6 +125,39 @@ def run_variant_synthetic(probe, rom: Path, labels: dict, tmp: Path, name: str,
     return records
 
 
+def blocked_d_result(detail: str, manifest_slots=None) -> dict:
+    """Standard fail-closed D BLOCKED record (pure; never raises)."""
+    try:
+        slots = [f"${s:02X}" for s in (manifest_slots or ())]
+    except Exception:
+        slots = []
+    return {"variant": "D", "return_kind": "REAL_SERVICE",
+            "verdict": "BLOCKED", "detail": str(detail),
+            "manifest_slots": slots,
+            "api_count": 0, "last_slot": None,
+            "cold_warm_identical": False,
+            "stop_cold": {"cause": "BLOCKED", "evidence": "UNKNOWN"},
+            "stop_warm": {"cause": "BLOCKED", "evidence": "UNKNOWN"}}
+
+
+def commercial_d_should_continue(d_manifest, c_results) -> bool:
+    """Fail-closed gate for the commercial D path (pure).
+
+    Returns True only when the manifest is still present AND no D result
+    (BLOCKED or otherwise) has been recorded. After a ROM re-verify failure
+    the caller sets d_manifest=None and records c_results['D']=BLOCKED;
+    this gate then stops the rest of the D path so no later
+    d_manifest.get()/d_manifest[] dereference can raise AttributeError.
+    """
+    if d_manifest is None:
+        return False
+    if not isinstance(d_manifest, dict):
+        return False
+    if isinstance(c_results, dict) and "D" in c_results:
+        return False
+    return True
+
+
 def summarize_run(records: dict, stub_addr: int | None, variant_key: str,
                   return_kind: str, frame_progress: bool = False,
                   screen_changed: bool = False, title_observed: bool = False,
@@ -453,18 +486,29 @@ def main(argv=None) -> int:
                   f"verdict={summary['verdict']} stop={[summary['stop_cold']['cause'], summary['stop_warm']['cause']]}")
         if "D" in args.variants and "D" in rom_labels:
             rom_d, lab_d = rom_labels["D"]
-            # MAJOR-4: cross-check embedded selection vs the synthetic SEQ23
-            # medium (LBA SEL). Mismatch -> BLOCKED (never measured as return).
-            # Identity is measured from the generated synthetic cue when possible;
-            # an LBA coincidence alone is never enough (MEDIUM).
+            # MAJOR-4 + Fix4: cross-check embedded selection vs the EXACT
+            # synthetic SEQ23 medium actually executed below. The cue is built
+            # once; its content identity is measured from that same cue and
+            # matched against the manifest. LBA coincidence alone never
+            # suffices, and an identity fetch failure (None) is BLOCKED --
+            # never an identity=None bypass.
+            d_cue, d_halt = seq23_disc(tmp, "g5_seq23_d")
             synth_identity = None
             try:
-                _cue, _halt = seq23_disc(tmp, "g5_seq23_identity")
                 import experimental_track_selection as _ets
-                synth_identity = _ets.media_identity(_cue)
+                synth_identity = _ets.media_identity(d_cue)
             except Exception:
                 synth_identity = None
-            if d_manifest is not None:
+            if synth_identity is None:
+                results["D"] = blocked_d_result(
+                    "BLOCKED: synthetic executed-medium identity unmeasured; "
+                    "cannot cross-check embedded vs executed medium",
+                    d_expected_slots)
+                print("variant=D BLOCKED executed-medium identity unmeasured", file=sys.stderr)
+            elif d_manifest is None:
+                results["D"] = blocked_d_result("BLOCKED: D manifest missing",
+                                                  d_expected_slots)
+            else:
                 try:
                     M.check_embedded_selection_vs_executed(
                         d_manifest, {"lba": sel, "identity": synth_identity})
@@ -472,14 +516,14 @@ def main(argv=None) -> int:
                     # No embedded LBA (legacy G5 manifests) means the linkage
                     # is unmeasured -> BLOCKED with the required-field report.
                     # A synthetic LBA mismatch is also BLOCKED (wrong medium).
-                    results["D"] = {"variant": "D", "return_kind": "REAL_SERVICE",
-                                    "verdict": "BLOCKED", "detail": str(e),
-                                    "manifest_slots": [f"${s:02X}" for s in (d_expected_slots or ())]}
+                    results["D"] = blocked_d_result(str(e), d_expected_slots)
                     print(f"variant=D BLOCKED selection cross-check: {e}", file=sys.stderr)
                 else:
                     try:
-                        records = run_variant_synthetic(probe, rom_d, lab_d, tmp, "g5_seq23_d",
-                                                        args.budget)
+                        E.verify_stub_bytes(rom_d, lab_d["api_unimplemented"])
+                        probe_labels_d = S.run_labels(tmp, "g5_seq23_d", d_halt, lab_d)
+                        records = E.run_probe(probe, rom_d, d_cue, probe_labels_d,
+                                              args.budget, "synthetic")
                     except (ValueError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as e2:
                         results["D"] = {"variant": "D", "return_kind": "REAL_SERVICE",
                                         "verdict": "BLOCKED",
@@ -494,9 +538,6 @@ def main(argv=None) -> int:
                         summary["rom_name"] = Path(rom_d).name
                         results["D"] = summary
                         print(f"variant=D apis={summary['api_count']} verdict={summary['verdict']}")
-            else:
-                results["D"] = {"variant": "D", "return_kind": "REAL_SERVICE",
-                                "verdict": "BLOCKED", "detail": "D manifest missing"}
 
         # --- Comparison A vs B vs C (immediate). ---
         comparison = {}
@@ -611,97 +652,102 @@ def main(argv=None) -> int:
             # manifest were supplied; embedded selection is cross-checked vs
             # the executed commercial LBA (mismatch -> BLOCKED, never measured).
             if "D" in args.variants and args.experimental_rom and d_manifest is not None:
+                # Fix2: the re-verify below may invalidate d_manifest (TOCTOU:
+                # ROM changed/vanished after the first synthetic verify). On
+                # failure record BLOCKED and stop the ENTIRE D path via
+                # commercial_d_should_continue(); no later d_manifest.get()
+                # may run on None (previously AttributeError at the labels
+                # lookup instead of the planned BLOCKED record).
                 try:
                     _d_data = Path(args.experimental_rom).read_bytes()
                     M.verify_d_rom_bytes(_d_data, d_manifest)
                     M.verify_d_rom_slot_targets(_d_data, d_manifest)
                 except (OSError, ValueError) as _e:
-                    c_results["D"] = {"verdict": "BLOCKED", "detail": str(_e),
-                                      "api_count": 0, "last_slot": None,
-                                      "cold_warm_identical": False,
-                                      "stop_cold": {"cause": "BLOCKED", "evidence": "UNKNOWN"},
-                                      "stop_warm": {"cause": "BLOCKED", "evidence": "UNKNOWN"}}
+                    c_results["D"] = blocked_d_result(str(_e), d_expected_slots)
                     print(f"commercial variant=D BLOCKED ROM verify: {_e}", file=sys.stderr)
                     d_manifest = None
-                if d_manifest is not None and d_expected_slots is None and "D" not in c_results:
-                    try:
-                        d_expected_slots = tuple(M.validate_experimental_manifest(d_manifest)["slots"])
-                    except ValueError:
-                        d_expected_slots = None
-                d_stub_c = None
-                d_lab = d_manifest.get("labels") if isinstance(d_manifest.get("labels"), dict) else None
-                if d_lab is None and isinstance(d_manifest.get("symbols"), dict):
-                    d_lab = d_manifest.get("symbols")
-                if isinstance(d_lab, dict) and isinstance(d_lab.get("api_unimplemented"), int):
-                    d_stub_c = d_lab["api_unimplemented"]
-                # Reuse the existing read-only snapshot/identity mechanism for
-                # commercial: content identity of the mounted (snapshot-verified)
-                # medium, never the private stat snapshot itself.
-                comm_identity = None
-                try:
-                    import experimental_track_selection as _ets2
-                    comm_identity = _ets2.media_identity(cue_path)
-                except Exception:
-                    comm_identity = None
-                try:
-                    M.check_embedded_selection_vs_executed(
-                        d_manifest, {"lba": sel_c, "identity": comm_identity})
-                except ValueError as e:
-                    c_results["D"] = {"verdict": "BLOCKED", "detail": str(e),
-                                      "api_count": 0, "last_slot": None,
-                                      "cold_warm_identical": False,
-                                      "stop_cold": {"cause": "BLOCKED", "evidence": "UNKNOWN"},
-                                      "stop_warm": {"cause": "BLOCKED", "evidence": "UNKNOWN"}}
-                    print(f"commercial variant=D BLOCKED selection cross-check: {e}", file=sys.stderr)
+                if not commercial_d_should_continue(d_manifest, c_results):
+                    print("commercial variant=D BLOCKED (re-verify failed; D path stopped)",
+                          file=sys.stderr)
                 else:
-                    if d_stub_c is None:
-                        c_results["D"] = {"verdict": "BLOCKED",
-                                          "detail": "D commercial needs labels.api_unimplemented (not guessed)",
-                                          "api_count": 0, "last_slot": None,
-                                          "cold_warm_identical": False,
-                                          "stop_cold": {"cause": "BLOCKED", "evidence": "UNKNOWN"},
-                                          "stop_warm": {"cause": "BLOCKED", "evidence": "UNKNOWN"}}
+                    if d_expected_slots is None:
+                        try:
+                            d_expected_slots = tuple(M.validate_experimental_manifest(d_manifest)["slots"])
+                        except ValueError:
+                            d_expected_slots = None
+                    d_stub_c = None
+                    d_lab = d_manifest.get("labels") if isinstance(d_manifest.get("labels"), dict) else None
+                    if d_lab is None and isinstance(d_manifest.get("symbols"), dict):
+                        d_lab = d_manifest.get("symbols")
+                    if isinstance(d_lab, dict) and isinstance(d_lab.get("api_unimplemented"), int):
+                        d_stub_c = d_lab["api_unimplemented"]
+                    # Fix4: content identity of the EXACT commercial medium
+                    # actually mounted (snapshot-verified cue), never the
+                    # private stat snapshot itself. Fetch failure (None) is
+                    # BLOCKED -- never an identity=None bypass.
+                    comm_identity = None
+                    try:
+                        import experimental_track_selection as _ets2
+                        comm_identity = _ets2.media_identity(cue_path)
+                    except Exception:
+                        comm_identity = None
+                    if comm_identity is None:
+                        c_results["D"] = blocked_d_result(
+                            "BLOCKED: commercial executed-medium identity unmeasured; "
+                            "cannot cross-check embedded vs executed medium",
+                            d_expected_slots)
+                        print("commercial variant=D BLOCKED executed-medium identity unmeasured",
+                              file=sys.stderr)
                     else:
                         try:
-                            E.verify_stub_bytes(Path(args.experimental_rom), d_stub_c)
+                            M.check_embedded_selection_vs_executed(
+                                d_manifest, {"lba": sel_c, "identity": comm_identity})
                         except ValueError as e:
-                            c_results["D"] = {"verdict": "BLOCKED", "detail": f"D stub unverifiable ({e})",
-                                              "api_count": 0, "last_slot": None,
-                                              "cold_warm_identical": False,
-                                              "stop_cold": {"cause": "BLOCKED", "evidence": "UNKNOWN"},
-                                              "stop_warm": {"cause": "BLOCKED", "evidence": "UNKNOWN"}}
+                            c_results["D"] = blocked_d_result(str(e), d_expected_slots)
+                            print(f"commercial variant=D BLOCKED selection cross-check: {e}", file=sys.stderr)
                         else:
-                            # Commercial-D probe on the game IPL (structural only).
-                            d_labels_path = comm_out / "g5-commercial-labels-d.labels"
-                            d_labels_path.write_text(
-                                f"cd_halt_ok {lab_ca['reset']:04x}\ncd_halt_fail {lab_ca['cd_halt_fail']:04x}\n"
-                                f"cd_unexpected_interrupt {lab_ca['cd_unexpected_interrupt']:04x}\n"
-                                f"api_unimplemented {d_stub_c:04x}\n", encoding="ascii")
-                            try:
-                                stub_d = E.resolve_commercial_stub(d_labels_path, Path(args.experimental_rom))
-                            except ValueError as e:
-                                print(f"FAIL commercial D labels: {e}", file=sys.stderr)
-                                return 1
-                            try:
-                                d_records = E.run_probe(probe, Path(args.experimental_rom), cue_path, d_labels_path, 80_000_000, "commercial")
-                            except ValueError as e:
-                                print(f"FAIL commercial D observation: {e}", file=sys.stderr)
-                                return 1
-                            try:
-                                E.verify_media_unchanged(snap)
-                            except ValueError as e:
-                                print(str(e), file=sys.stderr)
-                                return 1
-                            d_summary = summarize_run(d_records, stub_d, "D", "REAL_SERVICE",
-                                                      title_evidence=None, expected_slots=d_expected_slots)
-                            d_summary["media"] = "commercial-structural-only"
-                            d_summary.pop("calls_cold", None)
-                            c_results["D"] = {"verdict": d_summary["verdict"], "detail": d_summary["detail"],
-                                              "api_count": d_summary["api_count"], "last_slot": d_summary["last_slot"],
-                                              "cold_warm_identical": d_summary["cold_warm_identical"],
-                                              "stop_cold": d_summary["stop_cold"],
-                                              "stop_warm": d_summary["stop_warm"]}
-                            print(f"commercial variant=D apis={d_summary['api_count']} verdict={d_summary['verdict']}")
+                            if d_stub_c is None:
+                                c_results["D"] = blocked_d_result(
+                                    "D commercial needs labels.api_unimplemented (not guessed)",
+                                    d_expected_slots)
+                            else:
+                                try:
+                                    E.verify_stub_bytes(Path(args.experimental_rom), d_stub_c)
+                                except ValueError as e:
+                                    c_results["D"] = blocked_d_result(
+                                        f"D stub unverifiable ({e})", d_expected_slots)
+                                else:
+                                    # Commercial-D probe on the game IPL (structural only).
+                                    d_labels_path = comm_out / "g5-commercial-labels-d.labels"
+                                    d_labels_path.write_text(
+                                        f"cd_halt_ok {lab_ca['reset']:04x}\ncd_halt_fail {lab_ca['cd_halt_fail']:04x}\n"
+                                        f"cd_unexpected_interrupt {lab_ca['cd_unexpected_interrupt']:04x}\n"
+                                        f"api_unimplemented {d_stub_c:04x}\n", encoding="ascii")
+                                    try:
+                                        stub_d = E.resolve_commercial_stub(d_labels_path, Path(args.experimental_rom))
+                                    except ValueError as e:
+                                        print(f"FAIL commercial D labels: {e}", file=sys.stderr)
+                                        return 1
+                                    try:
+                                        d_records = E.run_probe(probe, Path(args.experimental_rom), cue_path, d_labels_path, 80_000_000, "commercial")
+                                    except ValueError as e:
+                                        print(f"FAIL commercial D observation: {e}", file=sys.stderr)
+                                        return 1
+                                    try:
+                                        E.verify_media_unchanged(snap)
+                                    except ValueError as e:
+                                        print(str(e), file=sys.stderr)
+                                        return 1
+                                    d_summary = summarize_run(d_records, stub_d, "D", "REAL_SERVICE",
+                                                              title_evidence=None, expected_slots=d_expected_slots)
+                                    d_summary["media"] = "commercial-structural-only"
+                                    d_summary.pop("calls_cold", None)
+                                    c_results["D"] = {"verdict": d_summary["verdict"], "detail": d_summary["detail"],
+                                                      "api_count": d_summary["api_count"], "last_slot": d_summary["last_slot"],
+                                                      "cold_warm_identical": d_summary["cold_warm_identical"],
+                                                      "stop_cold": d_summary["stop_cold"],
+                                                      "stop_warm": d_summary["stop_warm"]}
+                                    print(f"commercial variant=D apis={d_summary['api_count']} verdict={d_summary['verdict']}")
             for key, (crom, clab) in comm_roms.items():
                 if key not in args.variants:
                     continue

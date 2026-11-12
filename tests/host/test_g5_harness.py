@@ -550,31 +550,36 @@ class RealRomSlotTargetTests(unittest.TestCase):
             M.verify_d_rom_bytes(data, man)
 
     def test_verify_slot_targets_rejects_fake_rts(self):
+        # Fix1 two-stage: table -> api_slot_02 stub whose body is a bare RTS.
         data = bytearray(M.ROM_BYTES)
-        # slot 2 table -> $F000, body starts with RTS (fake)
-        data[6:9] = bytes((0x4C, 0x00, 0xF0))
-        data[0xF000 - 0xE000] = 0x60
+        data[6:9] = bytes((0x4C, 0x00, 0xE2))  # $E006 -> api_slot_02 $E200
+        data[0xE200 - 0xE000] = 0x60  # stub is RTS (fake)
         man = {"rom_name": "exp.pce", "rom_bytes": M.ROM_BYTES,
                "rom_sha256": __import__("hashlib").sha256(bytes(data)).hexdigest(),
                "cd_base_proto": {"slot": "$02", "entry": "$E006", "proto_entry": "$F000"},
                "branch": "b", "head": "a" * 40, "pinned_cc65": M.PINNED_CC65,
                "pinned_geargrafx": M.PINNED_GEARGRAFX, "release_eligible": False,
-               "dev_callable": False, "labels": {"api_unimplemented": 0xE245},
+               "dev_callable": False,
+               "labels": {"api_slot_02": 0xE200, "api_unimplemented": 0xE245},
                "selection_contract": {"lba": 1, "media_identity": "x"}}
         with self.assertRaises(ValueError):
             M.verify_d_rom_slot_targets(bytes(data), man)
 
     def test_verify_slot_targets_accepts_real_body(self):
+        # Fix1 two-stage positive (unified #784 shape): table -> api_slot_02
+        # stub holding exactly JMP proto_entry; NOP; NOP.
         data = bytearray(M.ROM_BYTES)
-        data[6:9] = bytes((0x4C, 0x00, 0xF0))
-        data[0xF000 - 0xE000] = 0x08  # PHP (real-ish)
+        data[6:9] = bytes((0x4C, 0x00, 0xE2))  # $E006 -> api_slot_02 $E200
+        data[0xE200 - 0xE000:0xE200 - 0xE000 + 5] = bytes((0x4C, 0x00, 0xF0, 0xEA, 0xEA))
+        data[0xF000 - 0xE000] = 0x08  # PHP (real-ish proto body)
         import hashlib
         man = {"rom_name": "exp.pce", "rom_bytes": M.ROM_BYTES,
                "rom_sha256": hashlib.sha256(bytes(data)).hexdigest(),
                "cd_base_proto": {"slot": "$02", "entry": "$E006", "proto_entry": "$F000"},
                "branch": "b", "head": "a" * 40, "pinned_cc65": M.PINNED_CC65,
                "pinned_geargrafx": M.PINNED_GEARGRAFX, "release_eligible": False,
-               "dev_callable": False, "labels": {"api_unimplemented": 0xE245},
+               "dev_callable": False,
+               "labels": {"api_slot_02": 0xE200, "api_unimplemented": 0xE245},
                "selection_contract": {"lba": 1, "media_identity": "x"}}
         M.verify_d_rom_slot_targets(bytes(data), man)  # no raise
 
@@ -603,3 +608,293 @@ class MediaIdentityTests(unittest.TestCase):
         man = {"selection_contract": {"lba": 265, "media_identity": {"cue_sha256": "aaa"}}}
         with self.assertRaises(ValueError):
             M.check_embedded_selection_vs_executed(man, {"lba": 265, "identity": {"cue_sha256": "bbb"}})
+
+
+def _unified_784_manifest(rom_sha, **overrides):
+    """Minimal unified (#784) native manifest for host tests (structural only)."""
+    man = {
+        "rom_name": "experimental-dev-only-not-compatible-syscard-sized.pce",
+        "rom_sha256": rom_sha, "rom_bytes": M.ROM_BYTES,
+        "pinned_cc65": M.PINNED_CC65, "pinned_geargrafx": M.PINNED_GEARGRAFX,
+        "release_eligible": False, "dev_callable": False,
+        "branch": "agent-a/unified-bios-g5", "head": "c" * 40,
+        "labels": {"api_slot_02": 0xE200, "api_unimplemented": 0xE245,
+                   "cd_base_proto_entry": 0xF000, "experimental_slot_33": 0xF100,
+                   "slot_02_table_entry": 0xE006, "slot_33_table_entry": 0xE099},
+        "symbols": {"api_unimplemented": 0xE245},
+        "selection_contract": {"lba": 7, "media_identity": "executed-id"},
+        "cd_base_proto": {"slot": "$02", "entry": "$E006", "proto_entry": "$F000",
+                          "patch": {"target": "api_slot_02", "length_bytes": 5}},
+        "experimental_slot_33": {"table_entry": "0xE099", "body": "$F100"},
+    }
+    man.update(overrides)
+    return man
+
+
+def _unified_784_rom(api_slot_02=0xE200, proto=0xF000, body33=0xF100):
+    """Unified (#784) ROM bytes: table $E006->api_slot_02->proto; $E099->body33."""
+    data = bytearray(M.ROM_BYTES)
+    data[0x02 * 3:0x02 * 3 + 3] = bytes((0x4C, api_slot_02 & 0xFF, (api_slot_02 >> 8) & 0xFF))
+    data[api_slot_02 - 0xE000:api_slot_02 - 0xE000 + 5] = bytes(
+        (0x4C, proto & 0xFF, (proto >> 8) & 0xFF, 0xEA, 0xEA))
+    data[proto - 0xE000] = 0x08  # PHP: real proto body start
+    data[0x33 * 3:0x33 * 3 + 3] = bytes((0x4C, body33 & 0xFF, (body33 >> 8) & 0xFF))
+    data[body33 - 0xE000:body33 - 0xE000 + 2] = bytes((0x08, 0x48))  # PHP/PHA
+    return bytes(data)
+
+
+class NativeSlot02TwoStageTests(unittest.TestCase):
+    """Fix1: native $02 two-stage verification (review 5872009452)."""
+
+    def test_unified_784_positive(self):
+        import hashlib
+        rom = _unified_784_rom()
+        man = _unified_784_manifest(hashlib.sha256(rom).hexdigest())
+        M.verify_d_rom_bytes(rom, man)
+        M.verify_d_rom_slot_targets(rom, man)  # no raise: both slots verified
+
+    def test_wrong_table_dest_rejected(self):
+        import hashlib
+        rom = bytearray(_unified_784_rom())
+        rom[6:9] = bytes((0x4C, 0x00, 0xE3))  # $E006 -> $E300, not api_slot_02
+        rom = bytes(rom)
+        man = _unified_784_manifest(hashlib.sha256(rom).hexdigest())
+        with self.assertRaises(ValueError) as cm:
+            M.verify_d_rom_slot_targets(rom, man)
+        self.assertIn("api_slot_02", str(cm.exception))
+
+    def test_wrong_stub_second_hop_rejected(self):
+        import hashlib
+        rom = bytearray(_unified_784_rom())
+        # Stub holds JMP $F001 instead of JMP $F000+NOPs.
+        rom[0xE200 - 0xE000:0xE200 - 0xE000 + 5] = bytes((0x4C, 0x01, 0xF0, 0xEA, 0xEA))
+        rom = bytes(rom)
+        man = _unified_784_manifest(hashlib.sha256(rom).hexdigest())
+        with self.assertRaises(ValueError) as cm:
+            M.verify_d_rom_slot_targets(rom, man)
+        self.assertIn("proto_entry", str(cm.exception))
+
+    def test_stub_fake_rts_rejected(self):
+        import hashlib
+        rom = bytearray(_unified_784_rom())
+        rom[0xE200 - 0xE000:0xE200 - 0xE000 + 5] = bytes((0x60, 0xEA, 0xEA, 0xEA, 0xEA))
+        rom = bytes(rom)
+        man = _unified_784_manifest(hashlib.sha256(rom).hexdigest())
+        with self.assertRaises(ValueError) as cm:
+            M.verify_d_rom_slot_targets(rom, man)
+        self.assertIn("fake RTS", str(cm.exception))
+
+    def test_stub_nop_rts_rejected(self):
+        import hashlib
+        rom = bytearray(_unified_784_rom())
+        rom[0xE200 - 0xE000:0xE200 - 0xE000 + 5] = bytes((0xEA, 0x60, 0xEA, 0xEA, 0xEA))
+        rom = bytes(rom)
+        man = _unified_784_manifest(hashlib.sha256(rom).hexdigest())
+        with self.assertRaises(ValueError):
+            M.verify_d_rom_slot_targets(rom, man)
+
+    def test_proto_body_rts_rejected(self):
+        import hashlib
+        rom = bytearray(_unified_784_rom())
+        rom[0xF000 - 0xE000] = 0x60  # proto body is RTS: not real processing
+        rom = bytes(rom)
+        man = _unified_784_manifest(hashlib.sha256(rom).hexdigest())
+        with self.assertRaises(ValueError) as cm:
+            M.verify_d_rom_slot_targets(rom, man)
+        self.assertIn("fake RTS", str(cm.exception))
+
+    def test_missing_api_slot_02_blocked(self):
+        import hashlib
+        rom = _unified_784_rom()
+        man = _unified_784_manifest(hashlib.sha256(rom).hexdigest())
+        del man["labels"]["api_slot_02"]
+        with self.assertRaises(ValueError) as cm:
+            M.verify_d_rom_slot_targets(rom, man)
+        self.assertIn("api_slot_02", str(cm.exception))
+
+    def test_missing_proto_entry_blocked(self):
+        import hashlib
+        rom = _unified_784_rom()
+        man = _unified_784_manifest(hashlib.sha256(rom).hexdigest())
+        del man["cd_base_proto"]["proto_entry"]
+        with self.assertRaises(ValueError) as cm:
+            M.verify_d_rom_slot_targets(rom, man)
+        self.assertIn("proto_entry", str(cm.exception))
+
+    def test_slot33_wrong_redirect_rejected(self):
+        import hashlib
+        rom = bytearray(_unified_784_rom())
+        rom[0x33 * 3:0x33 * 3 + 3] = bytes((0x4C, 0x00, 0xE2))  # -> $E200
+        rom = bytes(rom)
+        man = _unified_784_manifest(hashlib.sha256(rom).hexdigest())
+        with self.assertRaises(ValueError) as cm:
+            M.verify_d_rom_slot_targets(rom, man)
+        self.assertIn("$33", str(cm.exception))
+
+    def test_slot33_missing_body_blocked(self):
+        import hashlib
+        rom = _unified_784_rom()
+        man = _unified_784_manifest(hashlib.sha256(rom).hexdigest())
+        del man["experimental_slot_33"]["body"]
+        del man["labels"]["experimental_slot_33"]
+        with self.assertRaises(ValueError) as cm:
+            M.verify_d_rom_slot_targets(rom, man)
+        self.assertIn("$33", str(cm.exception))
+
+    def test_manifest_self_claim_alone_never_passes(self):
+        # Declared wiring + matching SHA but single-stage-patched ROM bytes
+        # (table straight to proto, stub untouched fallback) must NOT verify.
+        import hashlib
+        rom = bytearray(M.ROM_BYTES)
+        rom[6:9] = bytes((0x4C, 0x00, 0xF0))  # 1-stage straight to proto
+        rom[0xF000 - 0xE000] = 0x08
+        rom = bytes(rom)
+        man = _unified_784_manifest(hashlib.sha256(rom).hexdigest())
+        with self.assertRaises(ValueError):
+            M.verify_d_rom_slot_targets(rom, man)
+
+    def test_out_of_window_proto_entry_blocked(self):
+        import hashlib
+        rom = _unified_784_rom()
+        man = _unified_784_manifest(hashlib.sha256(rom).hexdigest())
+        man["cd_base_proto"]["proto_entry"] = "$1234"  # RAM, not BIOS window
+        with self.assertRaises(ValueError) as cm:
+            M.verify_d_rom_slot_targets(rom, man)
+        self.assertIn("BLOCKED", str(cm.exception))
+
+
+class MissingTargetBlockedTests(unittest.TestCase):
+    """Fix3: declared slot without callee target is BLOCKED, never skipped."""
+
+    def test_legacy_slot_without_target_blocked(self):
+        import hashlib
+        data = bytearray(M.ROM_BYTES)
+        data[6:9] = bytes((0x4C, 0x00, 0xF0))
+        data[0xF000 - 0xE000] = 0x08
+        rom = bytes(data)
+        man = {"schema": "exp/v1", "rom_name": "exp.pce", "branch": "b",
+               "head": "d" * 40,
+               "slot_wiring": {"02": {"kind": "real", "description": "wiring w/o target"}},
+               "pinned_cc65": M.PINNED_CC65, "pinned_geargrafx": M.PINNED_GEARGRAFX,
+               "release_eligible": False, "dev_callable": False,
+               "rom_sha256": hashlib.sha256(rom).hexdigest(),
+               "labels": {"api_unimplemented": 0xE245},
+               "selection_contract": {"lba": 1, "media_identity": "x"}}
+        with self.assertRaises(ValueError) as cm:
+            M.verify_d_rom_slot_targets(rom, man)
+        self.assertIn("no callee target", str(cm.exception))
+
+    def test_nop_rts_body_detected(self):
+        # _slot_body_is_fake_rts: NOP then RTS is fabrication, not real.
+        data = bytearray(M.ROM_BYTES)
+        data[6:9] = bytes((0x4C, 0x00, 0xF0))
+        data[0xF000 - 0xE000:0xF000 - 0xE000 + 2] = bytes((0xEA, 0x60))
+        self.assertTrue(M._slot_body_is_fake_rts(bytes(data), 0x02, 0xF000))
+        self.assertTrue(M._slot_body_is_fake_rts(bytes(data), 0x33, 0xF000))
+        # A real JMP+NOP pad body is not fake.
+        data2 = bytearray(M.ROM_BYTES)
+        data2[0xF000 - 0xE000:0xF000 - 0xE000 + 3] = bytes((0x4C, 0x10, 0xF1))
+        self.assertFalse(M._slot_body_is_fake_rts(bytes(data2), 0x02, 0xF000))
+
+    def test_native_missing_proto_not_skipped(self):
+        import hashlib
+        rom = _unified_784_rom()
+        man = _unified_784_manifest(hashlib.sha256(rom).hexdigest())
+        man["cd_base_proto"] = {"slot": "$02", "entry": "$E006"}  # no proto_entry
+        with self.assertRaises(ValueError) as cm:
+            M.verify_d_rom_slot_targets(rom, man)
+        self.assertIn("BLOCKED", str(cm.exception))
+
+
+class CommercialDFailClosedTests(unittest.TestCase):
+    """Fix2: TOCTOU second-verify failure stays BLOCKED, never AttributeError."""
+
+    def test_blocked_d_result_shape(self):
+        import g5_harness as H
+        r = H.blocked_d_result("BLOCKED: boom", (0x02, 0x33))
+        self.assertEqual(r["verdict"], "BLOCKED")
+        self.assertEqual(r["manifest_slots"], ["$02", "$33"])
+        self.assertEqual(r["stop_cold"]["cause"], "BLOCKED")
+
+    def test_gate_stops_after_manifest_cleared(self):
+        import g5_harness as H
+        c_results = {"D": H.blocked_d_result("BLOCKED: ROM verify")}
+        # The fixed harness sets d_manifest=None here; the gate must stop the
+        # rest of the D path so d_manifest.get() is never reached.
+        self.assertFalse(H.commercial_d_should_continue(None, c_results))
+        self.assertFalse(H.commercial_d_should_continue(None, {}))
+        with self.assertRaises(AttributeError):
+            None.get("labels")  # documents the old crash shape (guarded now)
+
+    def test_gate_allows_fresh_manifest(self):
+        import g5_harness as H
+        self.assertTrue(H.commercial_d_should_continue({"labels": {}}, {}))
+        self.assertFalse(H.commercial_d_should_continue({"labels": {}}, {"D": {}}))
+        self.assertFalse(H.commercial_d_should_continue("not-a-dict", {}))
+
+    def test_toctou_rom_changed_after_first_verify(self):
+        # First verify passes; the ROM then changes/vanishes before the
+        # commercial re-verify. The harness records BLOCKED and the gate stops
+        # the path -- no AttributeError, no measured verdict.
+        import hashlib
+        import g5_harness as H
+        rom = _unified_784_rom()
+        man = _unified_784_manifest(hashlib.sha256(rom).hexdigest())
+        M.verify_d_rom_bytes(rom, man)
+        M.verify_d_rom_slot_targets(rom, man)  # first verify OK
+        mutated = bytearray(rom)
+        mutated[6:9] = bytes((0x4C, 0x00, 0xE3))  # table hijacked after verify
+        mutated = bytes(mutated)
+        c_results = {}
+        d_manifest = man
+        try:
+            M.verify_d_rom_bytes(mutated, d_manifest)
+            M.verify_d_rom_slot_targets(mutated, d_manifest)
+        except (OSError, ValueError) as e:
+            c_results["D"] = H.blocked_d_result(str(e), (0x02, 0x33))
+            d_manifest = None
+        self.assertIn("D", c_results)
+        self.assertEqual(c_results["D"]["verdict"], "BLOCKED")
+        self.assertFalse(H.commercial_d_should_continue(d_manifest, c_results))
+        # Guarded access pattern (the fix): never dereference cleared manifest.
+        d_lab = None
+        if H.commercial_d_should_continue(d_manifest, c_results):
+            d_lab = d_manifest.get("labels")
+        self.assertIsNone(d_lab)
+
+
+class MediaIdentityStrictTests(unittest.TestCase):
+    """Fix4: identity of the actually-executed medium required on both sides."""
+
+    def test_both_none_blocked(self):
+        man = {"selection_contract": {"lba": 5}}
+        with self.assertRaises(ValueError) as cm:
+            M.check_embedded_selection_vs_executed(man, {"lba": 5, "identity": None})
+        self.assertIn("BLOCKED", str(cm.exception))
+
+    def test_manifest_without_identity_blocked_even_when_executed_none(self):
+        man = {"selection_contract": {"lba": 5}}
+        with self.assertRaises(ValueError):
+            M.check_embedded_selection_vs_executed(man, {"lba": 5, "identity": None})
+
+    def test_executed_without_identity_blocked(self):
+        man = {"selection_contract": {"lba": 5, "media_identity": "A"}}
+        with self.assertRaises(ValueError):
+            M.check_embedded_selection_vs_executed(man, {"lba": 5, "identity": None})
+
+    def test_fetch_failure_identity_none_never_bypasses(self):
+        # Identity fetch failure (None) must BLOCKED even when the LBA matches.
+        man = {"selection_contract": {"lba": 5, "media_identity": "A"}}
+        with self.assertRaises(ValueError) as cm:
+            M.check_embedded_selection_vs_executed(man, {"lba": 5, "identity": None})
+        self.assertIn("unmeasured", str(cm.exception))
+
+    def test_lba_coincidence_alone_blocked(self):
+        man = {"selection_contract": {"lba": 5}}
+        with self.assertRaises(ValueError):
+            M.check_embedded_selection_vs_executed(man, {"lba": 5, "identity": None})
+
+    def test_matching_measured_identity_passes(self):
+        man = {"selection_contract": {"lba": 5, "media_identity": {"cue": "s.cue"}}}
+        M.check_embedded_selection_vs_executed(
+            man, {"lba": 5, "identity": {"cue": "s.cue"}})  # no raise

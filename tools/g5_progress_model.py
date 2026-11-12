@@ -541,16 +541,22 @@ def check_embedded_selection_vs_executed(manifest: dict, executed: dict | None) 
         raise ValueError(f"BLOCKED: embedded selection LBA {embedded_lba!r} != "
                          f"executed medium LBA {executed.get('lba')!r}")
     exec_id = executed.get("identity")
-    # Identity must be measured on both sides whenever either side carries one;
-    # an LBA coincidence alone is never enough (MEDIUM: reject a different
-    # medium whose INDEX01 LBA merely coincides). Missing side -> unmeasured
-    # -> BLOCKED.
-    if embedded_id is not None or exec_id is not None:
-        if embedded_id is None or exec_id is None:
-            raise ValueError("BLOCKED: media identity unmeasured; "
-                             "cannot cross-check embedded vs executed medium")
-        if exec_id != embedded_id:
-            raise ValueError("BLOCKED: embedded media identity != executed medium identity")
+    # Identity is required on BOTH sides (synthetic and commercial): the
+    # executed medium's content identity must be measured from the exact
+    # medium actually mounted for the probe, and the manifest's embedded
+    # identity must match it. An LBA coincidence alone never suffices (a
+    # different medium whose INDEX01 LBA coincides would otherwise pass), and
+    # an unmeasured side (None, e.g. identity-fetch failure) is BLOCKED,
+    # never a pass. Private identifiers never enter public evidence; this
+    # check only passes/fails here.
+    if embedded_id is None:
+        raise ValueError("BLOCKED: manifest carries no embedded media identity; "
+                         "cannot cross-check executed medium")
+    if exec_id is None:
+        raise ValueError("BLOCKED: executed medium identity unmeasured; "
+                         "cannot cross-check embedded vs executed medium")
+    if exec_id != embedded_id:
+        raise ValueError("BLOCKED: embedded media identity != executed medium identity")
 
 
 # ---------------------------------------------------------------------------
@@ -1290,9 +1296,152 @@ def _slot_body_is_fake_rts(data, slot, target):
         return False
     if data[off] == 0x60:
         return True
+    # NOP-slide then RTS: a fabricated immediate return padded with NOPs
+    # (e.g. EA 60 / EA EA 60 as produced by RTS+NOP-pad experiments) is the
+    # same fabrication as a bare RTS, never real processing. Only leading
+    # NOPs count: a real JMP body starts with $4C, so this cannot misfire on
+    # the verified JMP+NOP wiring.
+    i = off
+    while i < len(data) and data[i] == 0xEA and i - off < 4:
+        i += 1
+    if i > off and i < len(data) and data[i] == 0x60:
+        return True
     if off + 5 <= len(data) and data[off] == 0xA2 and data[off + 1] == slot and data[off + 2] == 0x4C:
         return True
     return False
+
+
+def _manifest_label_addr(manifest, name):
+    """Link-derived address for manifest label `name` (pure, read-only).
+
+    Accepts the labels.* link table first, then symbols.* (both are
+    link-derived, never hardcoded). Ints pass through; hex strings
+    ("$E123"/"0xE123"/"E123") are parsed. Anything else -> None
+    (the caller reports BLOCKED with the missing-target reason).
+    """
+    if not isinstance(manifest, dict):
+        return None
+    for section in ("labels", "symbols"):
+        sec = manifest.get(section)
+        if isinstance(sec, dict) and name in sec:
+            val = sec[name]
+            if isinstance(val, int) and not isinstance(val, bool):
+                if 0xE000 <= val <= 0xFFFF:
+                    return val
+                return None
+            parsed = _parse_native_addr(val)
+            if parsed is not None and 0xE000 <= parsed <= 0xFFFF:
+                return parsed
+            return None
+    return None
+
+
+def _native_proto_entry_addr(manifest):
+    """Native $02 callee: cd_base_proto.proto_entry (pure, read-only)."""
+    if not isinstance(manifest, dict):
+        return None
+    base = manifest.get(NATIVE_CD_BASE_KEY)
+    if not isinstance(base, dict):
+        return None
+    return _parse_native_addr(base.get("proto_entry"))
+
+
+def _native_slot33_body_addr(manifest):
+    """Native $33 callee body address (pure, read-only).
+
+    Canonical source is experimental_slot_33.body; labels/symbols
+    experimental_slot_33 is accepted as the link-derived alias. None when
+    the manifest declares the slot without identifying its callee.
+    """
+    if not isinstance(manifest, dict):
+        return None
+    dsp = manifest.get(NATIVE_DSPOFF_KEY)
+    if isinstance(dsp, dict) and dsp.get("body") is not None:
+        addr = _parse_native_addr(dsp.get("body"))
+        if addr is not None and 0xE000 <= addr <= 0xFFFF:
+            return addr
+        return None
+    lab = _manifest_label_addr(manifest, "experimental_slot_33")
+    if lab is not None:
+        return lab
+    if isinstance(dsp, dict):
+        for key in ("routine", "target", "entry_target", "callee",
+                    "impl_entry", "real_entry", "proto_entry"):
+            if dsp.get(key) is not None:
+                addr = _parse_native_addr(dsp.get(key))
+                if addr is not None and 0xE000 <= addr <= 0xFFFF:
+                    return addr
+    return None
+
+
+def _verify_native_slot02_two_stage(data, manifest):
+    """Verify native $02 two-stage wiring $E006 -> api_slot_02 -> proto (pure).
+
+    Unified BIOS (#784) wiring: the slot table entry $E006 holds JMP
+    api_slot_02, and the api_slot_02 stub holds EXACTLY the 5 bytes
+    JMP cd_base_proto_entry; NOP; NOP (4C LL HH EA EA). Raises BLOCKED on a
+    missing target at either hop, a wrong JMP dest at either hop, a fake
+    RTS / non-returning fallback at either hop, or the proto body equalling
+    the unimplemented stub. Returns (table_target, proto_entry).
+    """
+    data = bytes(data)
+    api_slot_02 = _manifest_label_addr(manifest, "api_slot_02")
+    if api_slot_02 is None:
+        raise ValueError("BLOCKED: native slot $02 declares no labels.api_slot_02 "
+                         "stub target (missing; refusing self-claimed wiring)")
+    proto = _native_proto_entry_addr(manifest)
+    if proto is None or not 0xE000 <= proto <= 0xFFFF:
+        raise ValueError("BLOCKED: native slot $02 declares no cd_base_proto.proto_entry "
+                         "callee target (missing; refusing self-claimed wiring)")
+    table_target = parse_slot_table_target(data, 0x02)
+    if table_target != api_slot_02:
+        raise ValueError("BLOCKED: slot $02 ROM table JMP target %04X != "
+                         "manifest labels.api_slot_02 %04X" % (table_target, api_slot_02))
+    # First hop body must be the redirect stub, never a return/fallback.
+    if _slot_body_is_fake_rts(data, 0x02, table_target):
+        raise ValueError("BLOCKED: slot $02 stub %04X is a fake RTS / "
+                         "non-returning fallback" % table_target)
+    off = api_slot_02 - 0xE000
+    if off + 5 > len(data):
+        raise ValueError("BLOCKED: slot $02 stub %04X outside BIOS window" % api_slot_02)
+    want = bytes((0x4C, proto & 0xFF, (proto >> 8) & 0xFF, 0xEA, 0xEA))
+    if bytes(data[off:off + 5]) != want:
+        raise ValueError("BLOCKED: slot $02 stub %04X is not JMP proto_entry %04X+NOP pad "
+                         "(wrong second-hop dest or patched bytes)" % (api_slot_02, proto))
+    # Second hop callee must be real processing, never a stub/return.
+    if _slot_body_is_fake_rts(data, 0x02, proto):
+        raise ValueError("BLOCKED: slot $02 proto body %04X is a fake RTS / "
+                         "non-returning fallback" % proto)
+    stub = _manifest_label_addr(manifest, "api_unimplemented")
+    if isinstance(stub, int) and proto == stub:
+        raise ValueError("BLOCKED: slot $02 proto body %04X equals the unimplemented stub" % proto)
+    return table_target, proto
+
+
+def _verify_native_slot33_direct(data, manifest):
+    """Verify native $33 direct table redirect $E099 -> body (pure).
+
+    Raises BLOCKED when the manifest declares the slot without identifying
+    the body, on a wrong table dest, or on a fake RTS / stub body.
+    Returns (table_target, body).
+    """
+    data = bytes(data)
+    body = _native_slot33_body_addr(manifest)
+    if body is None:
+        raise ValueError("BLOCKED: native slot $33 declares no body callee target "
+                         "(missing; refusing self-claimed wiring)")
+    table_target = parse_slot_table_target(data, 0x33)
+    if table_target != body:
+        raise ValueError("BLOCKED: slot $33 ROM table JMP target %04X != "
+                         "manifest-declared body %04X" % (table_target, body))
+    if _slot_body_is_fake_rts(data, 0x33, table_target):
+        raise ValueError("BLOCKED: slot $33 ROM target %04X is a fake RTS / "
+                         "non-returning fallback" % table_target)
+    stub = _manifest_label_addr(manifest, "api_unimplemented")
+    if isinstance(stub, int) and table_target == stub:
+        raise ValueError("BLOCKED: slot $33 ROM target %04X equals the unimplemented stub"
+                         % table_target)
+    return table_target, body
 
 
 def verify_d_rom_slot_targets(data, manifest):
@@ -1307,24 +1456,36 @@ def verify_d_rom_slot_targets(data, manifest):
         raise ValueError(str(e)) from None
     slots = list(checked["slots"])
     expected = _all_expected_targets(manifest)
-    # stub address for equality check
-    stub = None
-    labels = manifest.get("labels")
-    symbols = manifest.get("symbols")
-    if isinstance(labels, dict) and isinstance(labels.get("api_unimplemented"), int) and not isinstance(labels.get("api_unimplemented"), bool):
-        stub = labels["api_unimplemented"]
-    elif isinstance(symbols, dict) and isinstance(symbols.get("api_unimplemented"), int) and not isinstance(symbols.get("api_unimplemented"), bool):
-        stub = symbols["api_unimplemented"]
+    # stub address for equality check (link-derived labels/symbols only).
+    stub = _manifest_label_addr(manifest, "api_unimplemented")
+    has_native_base = isinstance(manifest.get(NATIVE_CD_BASE_KEY), dict)
+    has_native_dsp = isinstance(manifest.get(NATIVE_DSPOFF_KEY), dict)
     for slot in slots:
+        # Native $02 is TWO-stage ($E006 -> api_slot_02 -> proto_entry);
+        # a one-stage table->proto comparison would BLOCKED even the correct
+        # unified (#784) ROM, and a manifest self-claim alone never suffices:
+        # both hops are verified against exact ROM bytes below.
+        if slot == 0x02 and has_native_base:
+            _verify_native_slot02_two_stage(data, manifest)
+            continue
+        # Native $33 stays a direct table redirect ($E099 -> body).
+        if slot == 0x33 and has_native_dsp:
+            _verify_native_slot33_direct(data, manifest)
+            continue
         target = parse_slot_table_target(data, slot)
         if _slot_body_is_fake_rts(data, slot, target):
             raise ValueError("BLOCKED: slot %02X ROM target %04X is a fake RTS / non-returning fallback" % (slot, target))
         if isinstance(stub, int) and target == stub:
             raise ValueError("BLOCKED: slot %02X ROM target %04X equals the unimplemented stub" % (slot, target))
+        # Every declared D slot must identify its callee target; a manifest
+        # that declares a slot/entry but omits the body/proto target is
+        # BLOCKED, never a skipped ROM comparison.
         exp = expected.get(slot)
-        if exp is not None:
-            if target != exp:
-                raise ValueError("BLOCKED: slot %02X ROM JMP target %04X != manifest-declared %04X" % (slot, target, exp))
+        if exp is None:
+            raise ValueError("BLOCKED: slot %02X declares no callee target "
+                             "(body/proto_entry missing; refusing self-claimed wiring)" % slot)
+        if target != exp:
+            raise ValueError("BLOCKED: slot %02X ROM JMP target %04X != manifest-declared %04X" % (slot, target, exp))
     if not slots:
         raise ValueError("BLOCKED: no wired slots to verify")
 
