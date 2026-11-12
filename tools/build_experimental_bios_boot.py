@@ -184,10 +184,21 @@ def unified_repo_provenance() -> dict:
         try:
             sha = _git_output("rev-parse", ref)
         except ValueError:
+            # Unresolvable ref: absent from the build clone. Recorded, never
+            # guessed; distinct from a present-but-non-integrated ref below.
             merged_heads[ref] = "UNRESOLVED (ref absent at build time)"
             continue
         if not re.fullmatch(r"[0-9a-f]{40}", sha):
             raise ValueError(f"BLOCKED: merged ref {ref} is not a 40-hex SHA: {sha!r}")
+        # Re-verify at build time that the resolved SHA is actually integrated
+        # into HEAD. A ref that has advanced beyond HEAD is NOT integrated and
+        # must fail closed rather than record a wrong SHA.
+        try:
+            _git_output("merge-base", "--is-ancestor", sha, "HEAD")
+        except ValueError as error:
+            raise ValueError(
+                f"BLOCKED: merged ref {ref} resolves to {sha}, which is not an "
+                f"ancestor of HEAD (non-integrated / drift): {error}") from error
         merged_heads[ref] = sha
     try:
         pinned_cc65 = DEPENDENCIES["cc65"]["revision"]

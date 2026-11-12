@@ -61,7 +61,9 @@ The builder derives everything at build time (never hardcoded or guessed):
   fallback names the HEAD; non-40-hex fails closed).
 - `merged_heads`: `git rev-parse` of `origin/agent-a/cd-base-proto-g5` and
   `origin/agent-b/ex-dspoff-real-cpu-g5`; a ref absent from the build clone is
-  recorded `UNRESOLVED`, never guessed.
+  recorded `UNRESOLVED`, never guessed. A resolved ref that is not an
+  ancestor of HEAD (advanced/non-integrated) fails closed instead of recording
+  a wrong SHA.
 - `pinned_cc65` / `pinned_geargrafx`: `tools/environment.py DEPENDENCIES`.
 - `labels` (+ `symbols` superset): link-derived `api_slot_02`, `api_slot_33`,
   `api_unimplemented` (verified stub address for halt classification),

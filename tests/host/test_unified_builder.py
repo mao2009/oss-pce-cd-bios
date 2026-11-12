@@ -192,6 +192,47 @@ class UnifiedProvenanceTests(unittest.TestCase):
                 self.skipTest(f"{ref} absent at build time")
         self.assertNotEqual(heads[U._MERGED_REFS[0]], heads[U._MERGED_REFS[1]])
 
+    def test_unresolvable_merged_ref_is_recorded_not_failed(self):
+        orig = U._git_output
+        try:
+            def fake(*args):
+                if args and args[0] == "rev-parse" and len(args) > 1 and args[1] == U._MERGED_REFS[0]:
+                    raise ValueError("BLOCKED: ref absent")
+                return orig(*args)
+            U._git_output = fake
+            provenance = U.unified_repo_provenance()
+            self.assertTrue(provenance["merged_heads"][U._MERGED_REFS[0]].startswith("UNRESOLVED"))
+        finally:
+            U._git_output = orig
+
+    def test_non_integrated_merged_ref_fails_closed(self):
+        orig = U._git_output
+        try:
+            def fake(*args):
+                if args and args[0] == "rev-parse" and len(args) > 1 and args[1] in U._MERGED_REFS:
+                    return "a" * 40
+                if args and args[0] == "merge-base":
+                    raise ValueError("BLOCKED: not an ancestor")
+                return orig(*args)
+            U._git_output = fake
+            with self.assertRaises(ValueError):
+                U.unified_repo_provenance()
+        finally:
+            U._git_output = orig
+
+    def test_merged_head_ancestry_is_verified_via_merge_base(self):
+        calls = []
+        orig = U._git_output
+        try:
+            def fake(*args):
+                calls.append(args)
+                return orig(*args)
+            U._git_output = fake
+            U.unified_repo_provenance()
+            self.assertTrue(any(c and c[0] == "merge-base" and "--is-ancestor" in c for c in calls))
+        finally:
+            U._git_output = orig
+
 
 class UnifiedManifestContractTests(unittest.TestCase):
     """The G5-native fields harness-D needs, checked against a builder-shaped manifest."""
