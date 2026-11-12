@@ -391,6 +391,7 @@ def main(argv=None) -> int:
                 return 3
             try:
                 M.verify_d_rom_bytes(data, d_manifest)
+                M.verify_d_rom_slot_targets(data, d_manifest)
             except ValueError as e:
                 print(str(e), file=sys.stderr)
                 return 3
@@ -454,10 +455,19 @@ def main(argv=None) -> int:
             rom_d, lab_d = rom_labels["D"]
             # MAJOR-4: cross-check embedded selection vs the synthetic SEQ23
             # medium (LBA SEL). Mismatch -> BLOCKED (never measured as return).
+            # Identity is measured from the generated synthetic cue when possible;
+            # an LBA coincidence alone is never enough (MEDIUM).
+            synth_identity = None
+            try:
+                _cue, _halt = seq23_disc(tmp, "g5_seq23_identity")
+                import experimental_track_selection as _ets
+                synth_identity = _ets.media_identity(_cue)
+            except Exception:
+                synth_identity = None
             if d_manifest is not None:
                 try:
                     M.check_embedded_selection_vs_executed(
-                        d_manifest, {"lba": sel, "identity": None})
+                        d_manifest, {"lba": sel, "identity": synth_identity})
                 except ValueError as e:
                     # No embedded LBA (legacy G5 manifests) means the linkage
                     # is unmeasured -> BLOCKED with the required-field report.
@@ -601,7 +611,19 @@ def main(argv=None) -> int:
             # manifest were supplied; embedded selection is cross-checked vs
             # the executed commercial LBA (mismatch -> BLOCKED, never measured).
             if "D" in args.variants and args.experimental_rom and d_manifest is not None:
-                if d_expected_slots is None:
+                try:
+                    _d_data = Path(args.experimental_rom).read_bytes()
+                    M.verify_d_rom_bytes(_d_data, d_manifest)
+                    M.verify_d_rom_slot_targets(_d_data, d_manifest)
+                except (OSError, ValueError) as _e:
+                    c_results["D"] = {"verdict": "BLOCKED", "detail": str(_e),
+                                      "api_count": 0, "last_slot": None,
+                                      "cold_warm_identical": False,
+                                      "stop_cold": {"cause": "BLOCKED", "evidence": "UNKNOWN"},
+                                      "stop_warm": {"cause": "BLOCKED", "evidence": "UNKNOWN"}}
+                    print(f"commercial variant=D BLOCKED ROM verify: {_e}", file=sys.stderr)
+                    d_manifest = None
+                if d_manifest is not None and d_expected_slots is None and "D" not in c_results:
                     try:
                         d_expected_slots = tuple(M.validate_experimental_manifest(d_manifest)["slots"])
                     except ValueError:
@@ -612,8 +634,18 @@ def main(argv=None) -> int:
                     d_lab = d_manifest.get("symbols")
                 if isinstance(d_lab, dict) and isinstance(d_lab.get("api_unimplemented"), int):
                     d_stub_c = d_lab["api_unimplemented"]
+                # Reuse the existing read-only snapshot/identity mechanism for
+                # commercial: content identity of the mounted (snapshot-verified)
+                # medium, never the private stat snapshot itself.
+                comm_identity = None
                 try:
-                    M.check_embedded_selection_vs_executed(d_manifest, {"lba": sel_c, "identity": None})
+                    import experimental_track_selection as _ets2
+                    comm_identity = _ets2.media_identity(cue_path)
+                except Exception:
+                    comm_identity = None
+                try:
+                    M.check_embedded_selection_vs_executed(
+                        d_manifest, {"lba": sel_c, "identity": comm_identity})
                 except ValueError as e:
                     c_results["D"] = {"verdict": "BLOCKED", "detail": str(e),
                                       "api_count": 0, "last_slot": None,

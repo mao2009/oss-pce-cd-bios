@@ -492,15 +492,22 @@ def _validate_native_manifest(manifest: dict) -> dict:
 
 
 def verify_d_rom_bytes(data: bytes, manifest: dict) -> None:
-    """Verify a D ROM image against its manifest (pure). Raises BLOCKED."""
+    """Verify a D ROM image against its manifest (pure). Raises BLOCKED.
+
+    ROM SHA256 is REQUIRED for D execution (never optional): a missing or
+    malformed hash is BLOCKED, and a mismatch is BLOCKED.
+    """
     if not isinstance(data, bytes):
         raise ValueError("BLOCKED: experimental ROM bytes unreadable")
     if len(data) != ROM_BYTES:
         raise ValueError(f"BLOCKED: experimental ROM is not a 256 KiB image ({len(data)} bytes)")
-    sha = manifest.get("rom_sha256") if isinstance(manifest, dict) else None
-    if sha is not None:
-        if hashlib.sha256(data).hexdigest() != sha:
-            raise ValueError("BLOCKED: experimental ROM hash differs from manifest")
+    if not isinstance(manifest, dict):
+        raise ValueError("BLOCKED: experimental manifest is not an object")
+    sha = manifest.get("rom_sha256")
+    if not isinstance(sha, str) or not _SHA256_RE.match(sha):
+        raise ValueError("BLOCKED: experimental manifest rom_sha256 required for D execution")
+    if hashlib.sha256(data).hexdigest() != sha:
+        raise ValueError("BLOCKED: experimental ROM hash differs from manifest")
 
 
 def check_embedded_selection_vs_executed(manifest: dict, executed: dict | None) -> None:
@@ -533,8 +540,16 @@ def check_embedded_selection_vs_executed(manifest: dict, executed: dict | None) 
     if executed.get("lba") != embedded_lba:
         raise ValueError(f"BLOCKED: embedded selection LBA {embedded_lba!r} != "
                          f"executed medium LBA {executed.get('lba')!r}")
-    if embedded_id is not None and executed.get("identity") is not None:
-        if executed["identity"] != embedded_id:
+    exec_id = executed.get("identity")
+    # Identity must be measured on both sides whenever either side carries one;
+    # an LBA coincidence alone is never enough (MEDIUM: reject a different
+    # medium whose INDEX01 LBA merely coincides). Missing side -> unmeasured
+    # -> BLOCKED.
+    if embedded_id is not None or exec_id is not None:
+        if embedded_id is None or exec_id is None:
+            raise ValueError("BLOCKED: media identity unmeasured; "
+                             "cannot cross-check embedded vs executed medium")
+        if exec_id != embedded_id:
             raise ValueError("BLOCKED: embedded media identity != executed medium identity")
 
 
@@ -619,32 +634,45 @@ def derive_real_service_proof(cold_calls: list, warm_calls: list,
     try:
         if isinstance(observed_slots, list) and len(observed_slots) >= 2:
             post_return = True
+            nret = len(observed_slots) - 1
             # Returned calls are all but the last (stub-halted, non-returning).
-            returned = (cold_calls or [])[:len(observed_slots) - 1]
-            if returned and len(returned) == len(observed_slots) - 1:
-                arrived = all(
-                    isinstance(c, dict)
-                    and c.get("in_table") is True
-                    and c.get("sp_delta") == 2
-                    and c.get("stack_check") == "MATCH"
-                    and c.get("return_matches_caller") is True
-                    for c in returned
-                )
-            # SP chain: every later sp_before equals the first.
-            if isinstance(cold_calls, list) and len(cold_calls) >= 2:
+            returned_cold = (cold_calls or [])[:nret] if isinstance(cold_calls, list) else []
+            returned_warm = (warm_calls or [])[:nret] if isinstance(warm_calls, list) else []
+            if (returned_cold and len(returned_cold) == nret
+                    and returned_warm and len(returned_warm) == nret):
+                def _arrived_ok(calls):
+                    return all(
+                        isinstance(c, dict)
+                        and c.get("in_table") is True
+                        and c.get("sp_delta") == 2
+                        and c.get("stack_check") == "MATCH"
+                        and c.get("return_matches_caller") is True
+                        for c in calls
+                    )
+                arrived = _arrived_ok(returned_cold) and _arrived_ok(returned_warm)
+            # SP chain: every call (cold + warm) sp_before equals the first.
+            sp_calls = []
+            if isinstance(cold_calls, list):
+                sp_calls.extend(cold_calls)
+            if isinstance(warm_calls, list):
+                sp_calls.extend(warm_calls)
+            if (isinstance(cold_calls, list) and len(cold_calls) >= 2
+                    and isinstance(warm_calls, list) and warm_calls):
                 first_sp = (cold_calls[0] or {}).get("sp_before")
                 if isinstance(first_sp, int):
                     sp_ok = all(
                         isinstance(c, dict) and c.get("sp_before") == first_sp
-                        for c in cold_calls
+                        for c in sp_calls
                     )
-            # MPR consistency: every call mpr equals the first call mpr.
-            if isinstance(cold_calls, list) and cold_calls:
+            # MPR consistency: every call (cold + warm) mpr equals the first.
+            mpr_calls = sp_calls
+            if (isinstance(cold_calls, list) and cold_calls
+                    and isinstance(warm_calls, list) and warm_calls):
                 first_mpr = (cold_calls[0] or {}).get("mpr")
                 if isinstance(first_mpr, list) and len(first_mpr) == 8:
                     mpr_ok = all(
                         isinstance(c, dict) and c.get("mpr") == first_mpr
-                        for c in cold_calls
+                        for c in mpr_calls
                     )
             # Expected order: observed starts with manifest expected slots.
             if expected_slots is not None:
@@ -1120,3 +1148,215 @@ def evidence_skeleton(*, head: str, mode: str) -> dict:
         "pinned_cc65_short": PINNED_CC65_SHORT,
         **safety_block(),
     }
+
+# ---------------------------------------------------------------------------
+# MAJOR-1: real ROM slot-$02 JMP target + slot-$33 table redirect.
+# ---------------------------------------------------------------------------
+
+
+def _parse_slot_arg(slot):
+    try:
+        return normalize_slot_key(slot)
+    except ValueError:
+        if isinstance(slot, int) and not isinstance(slot, bool) and 0 <= slot <= 0x50:
+            return slot
+        raise
+
+
+def parse_slot_table_target(data, slot):
+    """Parse the 3-byte JMP target at ROM table entry $E000+3*slot."""
+    if not isinstance(data, (bytes, bytearray)) or len(data) != ROM_BYTES:
+        raise ValueError("BLOCKED: experimental ROM bytes unreadable")
+    data = bytes(data)
+    sl = _parse_slot_arg(slot)
+    off = sl * 3
+    if off + 3 > len(data):
+        raise ValueError("BLOCKED: slot %02X table entry outside ROM" % sl)
+    if data[off] != 0x4C:
+        raise ValueError("BLOCKED: slot %02X table entry is not a JMP (got %02X)" % (sl, data[off]))
+    target = data[off + 1] | (data[off + 2] << 8)
+    if not (0xE000 <= target <= 0xFFFF):
+        raise ValueError("BLOCKED: slot %02X JMP target %04X outside BIOS window" % (sl, target))
+    return target
+
+
+slot_table_target = parse_slot_table_target
+rom_slot_table_target = parse_slot_table_target
+
+
+def _native_expected_targets(manifest):
+    out = {}
+    if not isinstance(manifest, dict):
+        return out
+    base = manifest.get(NATIVE_CD_BASE_KEY)
+    if isinstance(base, dict):
+        slot = None
+        raw_slot = base.get("slot")
+        raw_entry = base.get("entry")
+        try:
+            if raw_slot is not None:
+                slot = normalize_slot_key(raw_slot)
+            elif raw_entry is not None:
+                addr = _parse_native_addr(raw_entry)
+                if addr is not None:
+                    slot = _native_slot_from_entry(addr)
+        except ValueError:
+            slot = None
+        if slot is None and raw_entry is not None:
+            addr = _parse_native_addr(raw_entry)
+            if addr is not None:
+                try:
+                    slot = _native_slot_from_entry(addr)
+                except ValueError:
+                    slot = None
+        target = None
+        for key in ("proto_entry", "body", "routine", "target", "entry_target",
+                    "callee", "impl_entry", "real_entry"):
+            if target is None and base.get(key) is not None:
+                target = _parse_native_addr(base.get(key))
+        syms = manifest.get("symbols") if isinstance(manifest.get("symbols"), dict) else None
+        if target is None and isinstance(syms, dict):
+            for name in ("cd_base_proto", "proto_entry", "slot_02_body"):
+                if target is None and syms.get(name) is not None:
+                    v = syms.get(name)
+                    if isinstance(v, int) and not isinstance(v, bool):
+                        target = v
+                    else:
+                        target = _parse_native_addr(v)
+        if slot is not None:
+            out[slot] = target
+    dsp = manifest.get(NATIVE_DSPOFF_KEY)
+    if isinstance(dsp, dict):
+        raw_table = dsp.get("table_entry")
+        slot = None
+        if raw_table is not None:
+            addr = _parse_native_addr(raw_table)
+            if addr is not None:
+                try:
+                    slot = _native_slot_from_entry(addr)
+                except ValueError:
+                    slot = None
+        target = None
+        for key in ("body", "routine", "target", "entry_target", "callee",
+                    "impl_entry", "real_entry", "proto_entry"):
+            if target is None and dsp.get(key) is not None:
+                target = _parse_native_addr(dsp.get(key))
+        syms = manifest.get("symbols") if isinstance(manifest.get("symbols"), dict) else None
+        if target is None and isinstance(syms, dict):
+            for name in ("experimental_slot_33", "ex_dspoff", "slot_33_body"):
+                if target is None and syms.get(name) is not None:
+                    v = syms.get(name)
+                    if isinstance(v, int) and not isinstance(v, bool):
+                        target = v
+                    else:
+                        target = _parse_native_addr(v)
+        if slot is not None:
+            out[slot] = target
+    return out
+
+
+def _legacy_expected_targets(manifest):
+    out = {}
+    if not isinstance(manifest, dict):
+        return out
+    wiring = manifest.get("slot_wiring")
+    if isinstance(wiring, dict):
+        for slot_key, entry in wiring.items():
+            try:
+                slot = normalize_slot_key(slot_key)
+            except ValueError:
+                continue
+            if isinstance(entry, dict):
+                target = None
+                for key in ("target", "body", "routine", "entry_target", "callee",
+                            "impl_entry", "real_entry", "proto_entry"):
+                    if target is None and entry.get(key) is not None:
+                        target = _parse_native_addr(entry.get(key))
+                out[slot] = target
+    return out
+
+
+def _all_expected_targets(manifest):
+    out = {}
+    out.update(_legacy_expected_targets(manifest))
+    out.update(_native_expected_targets(manifest))
+    return out
+
+
+def _slot_body_is_fake_rts(data, slot, target):
+    data = bytes(data)
+    off = target - 0xE000
+    if off < 0 or off >= len(data):
+        return False
+    if data[off] == 0x60:
+        return True
+    if off + 5 <= len(data) and data[off] == 0xA2 and data[off + 1] == slot and data[off + 2] == 0x4C:
+        return True
+    return False
+
+
+def verify_d_rom_slot_targets(data, manifest):
+    if not isinstance(data, (bytes, bytearray)) or len(data) != ROM_BYTES:
+        raise ValueError("BLOCKED: experimental ROM bytes unreadable")
+    data = bytes(data)
+    if not isinstance(manifest, dict):
+        raise ValueError("BLOCKED: experimental manifest is not an object")
+    try:
+        checked = validate_experimental_manifest(manifest)
+    except ValueError as e:
+        raise ValueError(str(e)) from None
+    slots = list(checked["slots"])
+    expected = _all_expected_targets(manifest)
+    # stub address for equality check
+    stub = None
+    labels = manifest.get("labels")
+    symbols = manifest.get("symbols")
+    if isinstance(labels, dict) and isinstance(labels.get("api_unimplemented"), int) and not isinstance(labels.get("api_unimplemented"), bool):
+        stub = labels["api_unimplemented"]
+    elif isinstance(symbols, dict) and isinstance(symbols.get("api_unimplemented"), int) and not isinstance(symbols.get("api_unimplemented"), bool):
+        stub = symbols["api_unimplemented"]
+    for slot in slots:
+        target = parse_slot_table_target(data, slot)
+        if _slot_body_is_fake_rts(data, slot, target):
+            raise ValueError("BLOCKED: slot %02X ROM target %04X is a fake RTS / non-returning fallback" % (slot, target))
+        if isinstance(stub, int) and target == stub:
+            raise ValueError("BLOCKED: slot %02X ROM target %04X equals the unimplemented stub" % (slot, target))
+        exp = expected.get(slot)
+        if exp is not None:
+            if target != exp:
+                raise ValueError("BLOCKED: slot %02X ROM JMP target %04X != manifest-declared %04X" % (slot, target, exp))
+    if not slots:
+        raise ValueError("BLOCKED: no wired slots to verify")
+
+
+def verify_slot02_jmp_target(*args, **kwargs):
+    if len(args) == 2 and isinstance(args[1], dict):
+        data, manifest = args
+        return verify_d_rom_slot_targets(data, manifest)
+    if len(args) >= 2:
+        data = args[0]
+        slot = args[1]
+        sl = _parse_slot_arg(slot)
+        target = parse_slot_table_target(data, sl)
+        if len(args) >= 3 and args[2] is not None:
+            exp = _parse_native_addr(args[2])
+            if exp is None and isinstance(args[2], int) and not isinstance(args[2], bool):
+                exp = args[2]
+            if exp is not None and target != exp:
+                raise ValueError("BLOCKED: slot %02X ROM JMP target %04X != expected %04X" % (sl, target, exp))
+        if _slot_body_is_fake_rts(data, sl, target):
+            raise ValueError("BLOCKED: slot %02X ROM target %04X is a fake RTS" % (sl, target))
+        return target
+    if "data" in kwargs:
+        return verify_slot02_jmp_target(kwargs["data"], kwargs.get("manifest", kwargs.get("slot", 0x02)), kwargs.get("expected"))
+    raise ValueError("BLOCKED: invalid arguments")
+
+
+verify_slot33_table_redirect = verify_slot02_jmp_target
+verify_slot02_target = verify_slot02_jmp_target
+verify_slot33_redirect = verify_slot02_jmp_target
+check_slot02_jmp_target = verify_slot02_jmp_target
+check_slot33_table_redirect = verify_slot02_jmp_target
+verify_rom_slot_targets = verify_d_rom_slot_targets
+check_rom_slot_targets = verify_d_rom_slot_targets
+verify_real_rom_slot_targets = verify_d_rom_slot_targets

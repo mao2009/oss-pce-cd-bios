@@ -520,3 +520,86 @@ class SafetyTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RealRomSlotTargetTests(unittest.TestCase):
+    def test_parse_slot_table_target_jmp(self):
+        data = bytearray(M.ROM_BYTES)
+        # slot 2 entry at offset 6: JMP $F000
+        data[6:9] = bytes((0x4C, 0x00, 0xF0))
+        target = M.parse_slot_table_target(bytes(data), 0x02)
+        self.assertEqual(target, 0xF000)
+
+    def test_parse_slot_table_target_rejects_non_jmp(self):
+        data = bytearray(M.ROM_BYTES)
+        data[6] = 0x60  # RTS
+        with self.assertRaises(ValueError):
+            M.parse_slot_table_target(bytes(data), 0x02)
+
+    def test_verify_d_rom_bytes_requires_sha(self):
+        data = bytes(M.ROM_BYTES)
+        man = {"rom_name": "exp.pce", "rom_bytes": M.ROM_BYTES}
+        with self.assertRaises(ValueError):
+            M.verify_d_rom_bytes(data, man)
+
+    def test_verify_d_rom_bytes_hash_mismatch(self):
+        data = bytes(M.ROM_BYTES)
+        man = {"rom_name": "exp.pce", "rom_bytes": M.ROM_BYTES,
+               "rom_sha256": "0" * 64}
+        with self.assertRaises(ValueError):
+            M.verify_d_rom_bytes(data, man)
+
+    def test_verify_slot_targets_rejects_fake_rts(self):
+        data = bytearray(M.ROM_BYTES)
+        # slot 2 table -> $F000, body starts with RTS (fake)
+        data[6:9] = bytes((0x4C, 0x00, 0xF0))
+        data[0xF000 - 0xE000] = 0x60
+        man = {"rom_name": "exp.pce", "rom_bytes": M.ROM_BYTES,
+               "rom_sha256": __import__("hashlib").sha256(bytes(data)).hexdigest(),
+               "cd_base_proto": {"slot": "$02", "entry": "$E006", "proto_entry": "$F000"},
+               "branch": "b", "head": "a" * 40, "pinned_cc65": M.PINNED_CC65,
+               "pinned_geargrafx": M.PINNED_GEARGRAFX, "release_eligible": False,
+               "dev_callable": False, "labels": {"api_unimplemented": 0xE245},
+               "selection_contract": {"lba": 1, "media_identity": "x"}}
+        with self.assertRaises(ValueError):
+            M.verify_d_rom_slot_targets(bytes(data), man)
+
+    def test_verify_slot_targets_accepts_real_body(self):
+        data = bytearray(M.ROM_BYTES)
+        data[6:9] = bytes((0x4C, 0x00, 0xF0))
+        data[0xF000 - 0xE000] = 0x08  # PHP (real-ish)
+        import hashlib
+        man = {"rom_name": "exp.pce", "rom_bytes": M.ROM_BYTES,
+               "rom_sha256": hashlib.sha256(bytes(data)).hexdigest(),
+               "cd_base_proto": {"slot": "$02", "entry": "$E006", "proto_entry": "$F000"},
+               "branch": "b", "head": "a" * 40, "pinned_cc65": M.PINNED_CC65,
+               "pinned_geargrafx": M.PINNED_GEARGRAFX, "release_eligible": False,
+               "dev_callable": False, "labels": {"api_unimplemented": 0xE245},
+               "selection_contract": {"lba": 1, "media_identity": "x"}}
+        M.verify_d_rom_slot_targets(bytes(data), man)  # no raise
+
+
+class MediaIdentityTests(unittest.TestCase):
+    def test_mismatch_rejected(self):
+        man = {"selection_contract": {"lba": 5, "media_identity": "A"}}
+        with self.assertRaises(ValueError):
+            M.check_embedded_selection_vs_executed(man, {"lba": 5, "identity": "B"})
+
+    def test_unmeasured_executed_rejected(self):
+        man = {"selection_contract": {"lba": 5, "media_identity": "A"}}
+        with self.assertRaises(ValueError):
+            M.check_embedded_selection_vs_executed(man, {"lba": 5, "identity": None})
+
+    def test_unmeasured_manifest_rejected_when_executed_has_identity(self):
+        man = {"selection_contract": {"lba": 5}}
+        with self.assertRaises(ValueError):
+            M.check_embedded_selection_vs_executed(man, {"lba": 5, "identity": "A"})
+
+    def test_matching_identity_passes(self):
+        man = {"selection_contract": {"lba": 5, "media_identity": "A"}}
+        M.check_embedded_selection_vs_executed(man, {"lba": 5, "identity": "A"})
+
+    def test_different_medium_same_lba_rejected(self):
+        man = {"selection_contract": {"lba": 265, "media_identity": {"cue_sha256": "aaa"}}}
+        with self.assertRaises(ValueError):
+            M.check_embedded_selection_vs_executed(man, {"lba": 265, "identity": {"cue_sha256": "bbb"}})
