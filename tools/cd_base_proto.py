@@ -103,14 +103,31 @@ def proto_v1_full(inputs, sel_track, index01, state=None):
         if len(ordered) != 8:
             raise ValueError("inputs must be 8 bytes $20F8-$20FF")
     al, ah, bl, bh, cl, ch, dl, dh = (_u8(v, f"in[{i}]") for i, v in enumerate(ordered))
-    if dh != 0:
-        # Preserve base/gen/off, update last only (same fail discipline).
-        base_state = dict(state) if state is not None else None
-        out = proto_v1(al, ah, bl, bh, cl, ch, dl, sel_track, index01, base_state)
-        if out["a"] != ERR_RSVD:
-            # The guest checks $20FF ($dh) alongside $20F9/$20FA; force $12.
-            st = out["state"]
-            st["last"] = ERR_RSVD
-            return {"a": ERR_RSVD, "c": 1, "z": 0, "state": st}
-        return out
-    return proto_v1(al, ah, bl, bh, cl, ch, dl, sel_track, index01, state)
+    # Guest inspection order (src/cd_base_proto.s): track -> flags -> reserved
+    # ($20F9/$20FA/$20FF, dh inclusive) -> range -> DATA/PREGAP/BEFORE. The dh
+    # check must come BEFORE any range/state logic so no error path can update
+    # base/gen/off. Normalize/validate state first, then fail preserves
+    # base/gen/off and updates `last` only; valid inputs delegate untouched.
+    _u8(sel_track, "sel_track")
+    if type(index01) is not int or not 0 <= index01 <= MAX_READ6:
+        raise ValueError(f"index01 out of 21-bit range: {index01!r}")
+    if state is None:
+        pre = {"base_hi": 0, "base_mid": 0, "base_lo": 0, "gen": 0,
+               "last": 0xFF, "off_hi": 0, "off_mid": 0, "off_lo": 0}
+    else:
+        pre = dict(state)
+        for k in ("base_hi", "base_mid", "base_lo", "gen", "last",
+                  "off_hi", "off_mid", "off_lo"):
+            _u8(pre[k], f"state.{k}")
+
+    def _fail(code):
+        pre["last"] = code
+        return {"a": code, "c": 1, "z": 0, "state": dict(pre)}
+
+    if al != sel_track:
+        return _fail(ERR_TRACK)
+    if bh != 0x80:
+        return _fail(ERR_FLAGS)
+    if ah != 0 or bl != 0 or dh != 0:
+        return _fail(ERR_RSVD)
+    return proto_v1(al, ah, bl, bh, cl, ch, dl, sel_track, index01, pre)
