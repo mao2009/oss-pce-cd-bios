@@ -604,7 +604,7 @@
         "approved_by": null,
         "review_ref": null
       },
-      "note": "DEV ROM implemented (real VDC MWR R09 write) and real-core tested on pinned Geargrafx. NOT_READY until owner approval. NOT reference ABI/compatibility."
+      "note": "DEV_EXPERIMENTAL: programs VDC MWR (R09) low byte from A; high byte written $00 (0x00FF writable mask), X/Y preserved/unused. No VBlank wait. NOT the reference System Card EX_SCRSIZ ABI; genuine ABI unknown (0/81). No ref-BIOS JSR; release_eligible false."
     },
     {
       "id": 36,
