@@ -1,4 +1,14 @@
-# Implementation status — 2026-11-06, main `5a8dc5a`
+# Implementation status — 2026-11-13 G5 update and historical 2026-11-06 snapshot
+
+## 2026-11-13 G5 update — merged on main `faad5170`
+
+- **[#788](https://github.com/mao2009/oss-pce-cd-bios/pull/788) merged:** `$02 CD_BASE` project prototype + `$03 CD_READ` experimental link + `$33 EX_DSPOFF` project implementation execute in **one synthetic-only experimental BIOS**. Its service-chain evidence includes cold/warm Geargrafx return and READ(6) copying 2,048 bytes. It is not the genuine System Card ABI.
+- **[#790](https://github.com/mao2009/oss-pce-cd-bios/pull/790) merged:** A/B/C/D matched synthetic-CD differential: A halts at `$02`, B uses fake RTS and halts at `$33`, C uses two fake RTS patches and halts at `$03`, while D performs three *experimental* service effects then halts cleanly. D's state/shadow/LINK_RES, LBA 268 sector transfer (2,048 bytes), both RTS-mutation negatives and cold/warm comparisons are covered by the PR's evidence. The comparison payload orders calls `$02 -> $33 -> $03`; #788's standalone triple-link experiment uses a different ordering.
+- **Checks:** On PR #790 head `38e00a53`, all four GitHub Actions workflows succeeded. The author reported 5,468 host tests OK and nine focused pinned real-core integration tests passing; **this documentation change has not rerun those diagnostics**. CodeRabbit's earlier actionable threads were resolved; its final command returned “Review finished” with no additional inline findings.
+- **Scope:** Commercial input in the #790 comparison was **NOT_RUN** (no opt-in, `./rom` was not inspected). Retail title screen **not observed**; no retail compatibility, true ABI verification or release eligibility follows. Ordinary `spec/dev_implementations.json` remains 16/81 DEV implementations + 65 stubs; approved DEV_CALLABLE **0**, reference ABI VERIFIED **0/81**, reference JSR permitted **0/81**, `release_eligible=false`.
+
+See [the detailed dated G5 comparison](g5-progress-2026-11-13.md) and [experimental triple-link contract](unified-link-g5.md). The following 2026-11-06 paragraphs are a **historical snapshot**; they do not describe the later experimental G5 chain.
+
 
 This is an **evidence-scoped, dated** snapshot of [main at 5a8dc5a](https://github.com/mao2009/oss-pce-cd-bios/commit/5a8dc5a0c0f67781ea3c6a45b88d133939a7f46b), not a promise of real-time compatibility. Recheck the [current source](https://github.com/mao2009/oss-pce-cd-bios) and [Actions](https://github.com/mao2009/oss-pce-cd-bios/actions) after this date.
 
@@ -53,7 +63,7 @@ Those results are the **merged PRs' reported tests**, not tests rerun by editing
 
 1. None of the reference-BIOS candidate API contracts has independently verified ABI behavior. No public DEV tests authorize proprietary reference JSR execution.
 2. Production stack/MPR, IRQ, block-transfer and CD error/return contracts require additional independently reviewed, negative evidence; isolated safety observations are not a secure runtime guard.
-3. The multi-sector DEV loader uses a **project-specific 16-bit additive checksum** (not a commercial IPL standard). It restricts sector LBA to 16 bits, conservatively refuses the untested tail-at-$FFFF boundary, and tests a readback fault using a mutant ROM rather than an actual bus failure.
+3. The multi-sector DEV loader uses a **project-specific 16-bit additive checksum** (not a commercial IPL standard). The builder still embeds a 16-bit INDEX01 SEL; since #744 the guest computes body LBA in 24 bits and rejects over-range access. This is a project-specific diagnostic contract, not commercial IPL acceptance; the readback fault is modeled using a mutant ROM rather than a real bus failure.
 4. No firmware-mediated retail boot, cross-emulator parity, save/playability test or physical hardware compatibility has been established. Neither private BIOS ROMs nor commercial CD data are public CI inputs.
 5. `make release` / release gates continue to fail closed until proper provenance, production services, review and independent evidence are available.
 
