@@ -504,13 +504,17 @@ class ClassifySimulatedTests(unittest.TestCase):
         self.assertEqual(verdict, "SIMULATED_UNEXPECTED_FIRST")
 
     def test_slotset_genuine_only_nonstub_halt(self):
-        # No simulated slots called, non-stub halt: not a simulated progression.
+        # No simulated slots observed, non-stub halt: must NOT be classified as a
+        # simulated-return success (cold/warm match alone does not prove simulated
+        # progression; MEDIUM fix, slot-set mode).
         calls = [_call("cold", entry=0xE05A, slot=30),
                  _call("warm", entry=0xE05A, slot=30)]
         runs = [_run("cold", reason="cd_halt_fail", pc=0xF100),
                 _run("warm", reason="cd_halt_fail", pc=0xF100)]
-        verdict, _ = S.classify_simulated(_records(calls, runs), self.STUB, {0x4A})
-        self.assertEqual(verdict, "SIMULATED_RETURN_THEN_HALT")
+        verdict, detail = S.classify_simulated(_records(calls, runs), self.STUB, {0x4A})
+        self.assertEqual(verdict, "SIMULATED_UNEXPECTED_FIRST")
+        self.assertNotIn("SIMULATED_RETURN_THEN_HALT", verdict)
+        self.assertIn("unproven", detail)
 
     def test_prefix_mode_still_rejects_real_first_call(self):
         # Regression: strict prefix mode must reject when a real call precedes

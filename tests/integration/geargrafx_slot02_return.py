@@ -646,9 +646,9 @@ def classify_simulated(records, stub_addr, simulated=None):
     if not halt_ok:
         return "SIMULATED_DIVERGENT", f"cold/warm halt states differ: {halt_why}"
     if not seen_sim:
-        return ("SIMULATED_RETURN_THEN_HALT",
-                f"no simulated-slot calls in sequence {list(cold_seq)}; "
-                f"halts {[cold_run['reason'], warm_run['reason']]}")
+        return ("SIMULATED_UNEXPECTED_FIRST",
+                f"no simulated-slot calls observed in sequence {list(cold_seq)}; "
+                f"simulated-return progression unproven (halts {[cold_run['reason'], warm_run['reason']]})")
     return ("SIMULATED_RETURN_THEN_HALT",
             f"mixed sequence {list(cold_seq)} in both cycles with simulated returns, "
             f"non-stub halts {[cold_run['reason'], warm_run['reason']]}")
