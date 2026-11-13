@@ -58,7 +58,6 @@ RES_OFF = 0x3100 - BUFFER_BASE
 SEQ02 = 0xE006
 ENTRY03 = 0xE009
 ENTRY33 = 0xE099
-EXPECTED_MPR = [0xFF, 0xF8, 1, 2, 31, 3, 4, 0]
 P_MASK = 0xCF  # PHP pushes B=1/bit5=1; PLP ignores them (same mask as the $33 oracle)
 
 CHAIN_PAYLOAD_ASM = r"""
@@ -394,13 +393,12 @@ class TripleLinkRealCoreTests(unittest.TestCase):
         import shutil
         import tempfile
         from build_rom import build
-        from build_cdload_exec import EXEC_ADDRESS, EXPECTED_MPR, encode_sector
+        from build_cdload_exec import EXEC_ADDRESS, encode_sector
         from build_experimental_bios_boot import build_experimental_bios_boot
         from experimental_track_selection import selection_from_cue, snapshot_media
         from geargrafx_api import compile_probe
         from geargrafx_cdread import execute
         import make_cd_image
-        cls.EXPECTED_MPR = list(EXPECTED_MPR)
         cls.work = Path(tempfile.mkdtemp(prefix="pce-triple-link-real-core-"))
         cls.addClassCleanup(shutil.rmtree, cls.work, ignore_errors=True)
         normal_path = build(cls.work / "normal", root=ROOT)
