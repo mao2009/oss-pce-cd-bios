@@ -125,7 +125,7 @@ CD_BASE/CD_READ with genuine layouts). The triple image only boots its embedded
 synthetic selection record, so commercial media -- even when present -- has no
 boot path here. That work needs genuine-ABI research under the still-closed
 safety gates (#173/#367/#459); it is out of scope for this issue.
- 
+
 ## 7. Follow-up matched-selection verification (merged 2026-11-13)
 
 [PR #790](https://github.com/mao2009/oss-pce-cd-bios/pull/790), following this issue's [PR #788](https://github.com/mao2009/oss-pce-cd-bios/pull/788), adds an A/B/C/D **same-synthetic-medium** comparison with cold/warm Geargrafx evidence. In #790's dedicated comparison payload the call sequence is `$02 -> $33 -> $03`; this is intentionally distinct from the `$02 -> $03 -> $33` sequence documented above for #788. A/B/C demonstrate baseline and fake-RTS stopper positions, while D demonstrates three real *experimental* effects and a 2,048-byte READ(6) sector transfer. New matched-selection verification covers IPL INFO-before-BODY PHASE order, ROM-hash-bound SEL, D track/media identity, mandatory payload hash/length, DSP shadow, link transfer mutation negatives and SP/MPR1 observations.
