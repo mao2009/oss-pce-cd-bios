@@ -54,6 +54,7 @@
       "src/math/ma_mul8s.s",
       "src/math/ma_mul8u.s",
       "src/overrides/slot_1E.s",
+      "src/overrides/slot_21.s",
       "src/overrides/slot_22.s",
       "src/overrides/slot_2E.s",
       "src/overrides/slot_3A.s",
@@ -411,6 +412,29 @@
           "reset_unexpected_interrupt"
         ],
         "reset": "reset_entry"
+      }
+    },
+    "src/overrides/slot_21.s": {
+      "role": "api",
+      "tam": [
+        {
+          "mask": "0x01",
+          "value": "0xFF",
+          "purpose": "MPR0 = I/O page for joypad port $1000 (IRQ masked by SEI)"
+        },
+        {
+          "mask": "0x01",
+          "value": "restore",
+          "reason": "caller MPR0 saved by TMA #$01 and restored before return"
+        }
+      ],
+      "transfers": [],
+      "mmio": {
+        "device": "joypad port",
+        "addresses": [
+          "0x1000"
+        ],
+        "mapping": "window"
       }
     }
   }
