@@ -318,5 +318,130 @@ class LinkBootRangeTests(unittest.TestCase):
                 M.verify_d_rom_slot_targets(rom, man)  # no raise
 
 
+class LinkEntryPrologueTests(unittest.TestCase):
+    """MAJOR (independent review): BOOT callee entry must be real processing.
+
+    The builder contract requires PHP,PHA (08 48) at the BOOT link entry
+    (src/cd_read_link.s). A BOOT self-loop ($F1A0: JMP $F1A0), a JMP to
+    another BOOT address, a bare RTS, or a bad prologue is BLOCKED even when
+    the manifest and the ROM table agree. A valid PHP,PHA entry passes.
+    The entry-shape check alone never proves execution/return (real-core
+    transfer + return gates prove that); it only refuses obvious fakes.
+    """
+
+    def _rom_with_entry_bytes(self, entry_bytes: bytes):
+        rom = bytearray(_triple_rom())
+        rom[LINK_ADDR - 0xE000:LINK_ADDR - 0xE000 + len(entry_bytes)] = entry_bytes
+        return bytes(rom)
+
+    def _unanimous_manifest(self, rom: bytes):
+        return _triple_manifest_with_link(hashlib.sha256(rom).hexdigest(), LINK_ADDR)
+
+    def test_boot_self_loop_rejected(self):
+        # $F1A0: JMP $F1A0 agrees everywhere yet loops forever.
+        rom = self._rom_with_entry_bytes(bytes((0x4C, LINK_ADDR & 0xFF, (LINK_ADDR >> 8) & 0xFF)))
+        man = self._unanimous_manifest(rom)
+        with self.assertRaisesRegex(ValueError, "BLOCKED"):
+            M.verify_d_rom_slot_targets(rom, man)
+
+    def test_boot_jmp_elsewhere_rejected(self):
+        # $F1A0: JMP $F100 is inside BOOT but not the link prologue.
+        rom = self._rom_with_entry_bytes(bytes((0x4C, 0x00, 0xF1)))
+        man = self._unanimous_manifest(rom)
+        with self.assertRaisesRegex(ValueError, "BLOCKED"):
+            M.verify_d_rom_slot_targets(rom, man)
+
+    def test_rts_only_rejected(self):
+        rom = self._rom_with_entry_bytes(bytes((0x60,)))
+        man = self._unanimous_manifest(rom)
+        with self.assertRaisesRegex(ValueError, "BLOCKED"):
+            M.verify_d_rom_slot_targets(rom, man)
+
+    def test_bad_prologue_rejected(self):
+        for bad in (bytes((0xEA, 0xEA)), bytes((0x00, 0x00)), bytes((0x08, 0xEA))):
+            with self.subTest(bad=bad.hex()):
+                rom = self._rom_with_entry_bytes(bad)
+                man = self._unanimous_manifest(rom)
+                with self.assertRaisesRegex(ValueError, "BLOCKED"):
+                    M.verify_d_rom_slot_targets(rom, man)
+
+    def test_valid_php_pha_accepted(self):
+        rom = self._rom_with_entry_bytes(bytes((0x08, 0x48)))
+        man = self._unanimous_manifest(rom)
+        M.verify_d_rom_bytes(rom, man)
+        M.verify_d_rom_slot_targets(rom, man)  # no raise
+
+
+class LinkAliasConsistencyTests(unittest.TestCase):
+    """MEDIUM (independent review): manifest aliases must be unanimous.
+
+    Every present cd_read_link alias source (link_entry/body/routine/...
+    plus labels/symbols cd_read_link_entry) must name the same BOOT address.
+    A present-but-malformed, out-of-BOOT, or disagreeing alias is BLOCKED.
+    Omission stays allowed (two-block manifests, legitimate alias omission).
+    """
+
+    def _valid_rom(self):
+        rom = bytearray(_triple_rom())
+        # Second legal BOOT slot for mismatch cases carries the prologue so
+        # the test isolates the manifest contradiction, not ROM bytes.
+        rom[0xF1B0 - 0xE000:0xF1B0 - 0xE000 + 2] = bytes((0x08, 0x48))
+        return bytes(rom)
+
+    def test_canonical_plus_bad_label_rejected(self):
+        rom = self._valid_rom()
+        man = _triple_manifest_with_link(hashlib.sha256(rom).hexdigest(), LINK_ADDR)
+        man["labels"]["cd_read_link_entry"] = 0xF1B0
+        with self.assertRaisesRegex(ValueError, "BLOCKED"):
+            M.verify_d_rom_slot_targets(rom, man)
+
+    def test_canonical_plus_bad_symbol_rejected(self):
+        rom = self._valid_rom()
+        man = _triple_manifest_with_link(hashlib.sha256(rom).hexdigest(), LINK_ADDR)
+        man["symbols"]["cd_read_link_entry"] = 0xF1B0
+        with self.assertRaisesRegex(ValueError, "BLOCKED"):
+            M.verify_d_rom_slot_targets(rom, man)
+
+    def test_labels_symbols_disagree_rejected(self):
+        rom = self._valid_rom()
+        man = _triple_manifest_with_link(hashlib.sha256(rom).hexdigest(), LINK_ADDR)
+        man["labels"]["cd_read_link_entry"] = LINK_ADDR
+        man["symbols"]["cd_read_link_entry"] = 0xF1B0
+        with self.assertRaisesRegex(ValueError, "BLOCKED"):
+            M.verify_d_rom_slot_targets(rom, man)
+
+    def test_different_legal_boot_addresses_rejected(self):
+        # Both $F1A0 and $F1B0 are legal BOOT, but they disagree.
+        rom = self._valid_rom()
+        man = _triple_manifest_with_link(hashlib.sha256(rom).hexdigest(), LINK_ADDR)
+        man["cd_read_link"]["body"] = "$F1B0"
+        with self.assertRaisesRegex(ValueError, "BLOCKED"):
+            M.verify_d_rom_slot_targets(rom, man)
+
+    def test_malformed_alias_rejected(self):
+        for bad in ("not-an-addr", "", True):
+            with self.subTest(bad=repr(bad)):
+                rom = self._valid_rom()
+                man = _triple_manifest_with_link(hashlib.sha256(rom).hexdigest(), LINK_ADDR)
+                man["labels"]["cd_read_link_entry"] = bad
+                with self.assertRaisesRegex(ValueError, "BLOCKED"):
+                    M.verify_d_rom_slot_targets(rom, man)
+
+    def test_all_aliases_agree_accepted(self):
+        rom = self._valid_rom()
+        man = _triple_manifest_with_link(hashlib.sha256(rom).hexdigest(), LINK_ADDR)
+        M.verify_d_rom_bytes(rom, man)
+        M.verify_d_rom_slot_targets(rom, man)  # no raise
+
+    def test_alias_omission_still_accepted(self):
+        # Legitimate omission: only the canonical entry names the callee.
+        rom = self._valid_rom()
+        man = _triple_manifest(hashlib.sha256(rom).hexdigest())
+        man["symbols"].pop("cd_read_link_entry", None)
+        # _triple_manifest labels has the canonical address; drop symbols only.
+        M.verify_d_rom_bytes(rom, man)
+        M.verify_d_rom_slot_targets(rom, man)  # no raise
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -55,16 +55,23 @@ recorded in the manifest `cd_read_link` block (`slot $03`, `entry $E009`,
   byte-exact (coincidental single-byte equality tolerated, unexpected deltas fail).
 - Manifest: `cd_read_link` native block, `labels` gain `api_slot_03`,
   `cd_read_link_entry`, `slot_03_table_entry`; `merged_heads` gains
-  `origin/agent-b/cd-read-link-g5` (resolved + ancestry-checked at build time,
-  never hardcoded); `unified_bios` records slots `$02/$03/$33`, patch order, and
-  the linkage note (proto state flows into the link with no test seeding).
+  `origin/agent-b/cd-read-link-g5` (confirmed integrated HEAD = merge second
+  parent when the ref is absent, ancestry-checked at build time, never a
+  subject-match guess; `merge_commits` keeps the integrating merge separately;
+  undeterminable cases are UNRESOLVED, never hardcoded); `unified_bios`
+  records slots `$02/$03/$33`, patch order, and the linkage note (proto state
+  flows into the link with no test seeding).
 
 ## 4. Harness-D consumption (`tools/g5_progress_model.py`, extended)
 
 - Native `cd_read_link` block handling mirrors `$33`: slot derivation (with
-  slot/entry cross-check), expected-target mapping, and a direct
-  `$E009 -> link` verifier (wrong dest / fake RTS / stub-equality / missing
-  target all BLOCKED). The pre-triple two-block manifest still validates
+  slot/entry cross-check), unanimous alias resolution (every present
+  `link_entry`/body/routine/... plus labels/symbols `cd_read_link_entry` must
+  agree; malformed/out-of-BOOT/disagreeing aliases BLOCKED, omission allowed),
+  expected-target mapping, and a direct `$E009 -> link` verifier (wrong dest /
+  fake RTS / stub-equality / missing target / BOOT self-loop / stray BOOT JMP /
+  bad PHP,PHA prologue all BLOCKED; entry-shape check alone never proves
+  execution/return). The pre-triple two-block manifest still validates
   (backward compatible).
 - `tools/g5_harness.py` itself is unchanged (read-only consumer): variant D
   accepts the triple manifest through the same gates. Note: the harness CLI's
@@ -72,17 +79,33 @@ recorded in the manifest `cd_read_link` block (`slot $03`, `entry $E009`,
   harness-generated SEQ23 disc; a ROM built for a different (e.g. chain/refuse)
   payload BLOCKs there by construction -- the D measurement for such ROMs is the
   model validators plus the real-core runs below, exactly as for #784.
-- Commercial media: opt-in `--commercial` + `./rom/*.cue` auto-detect only.
-  No CUE in the worktree -> NOT_RUN. Any CUE present but without a commercial
-  boot path in this image -> BLOCKED (media never opened, read, or published:
+- G5 A/B/C/D comparison status (Issue #787 acceptance, NOT claimed complete):
+  harness synthetic SEQ23 D with this triple ROM is BLOCKED by the embedded-vs-
+  executed selection gate (different payload/disc by construction; recorded as
+  BLOCKED, never PASS). A/B/C synthetic SEQ23 differential (1/2/3 APIs, fake
+  RTS) is NOT re-measured in this PR (NOT_RUN here); D real processing
+  (proto state without pre-seed, valid READ(6) + 2048B RAM match, dspoff return,
+  order, cold/warm, next-blocker on refusals) is measured by the real-core
+  chain/refuse cases below on their own synthetic media, not by the harness
+  SEQ23 disc. Fake-RTS vs real progress is distinguished by callee-exclusive
+  side effects (LINK_RES + `$2800` transfer vs no transfer), never by manifest
+  declaration alone. A matched-selection harness A/B/C/D run remains open and
+  needs Owner judgment (possible child issue); this doc does not claim it done.
+- Commercial media: opt-in `--commercial` + safe detector reuse
+  (`tools/commercial_media.py`: worktree-aware `rom/` resolution with main-
+  worktree fallback, recursive CUE detection, symlink/traversal rejection).
+  No CUE -> NOT_RUN. Any CUE present but without a commercial boot path in
+  this image -> BLOCKED (media never opened, read, executed, or published:
   status and count only, never bytes/hashes/paths/traces).
 
 ## 5. Verification status
 
 - Host (toolchain-free unless noted): `tests/host/test_unified_builder.py`
-  (updated: 3 units, 3 windows, 3 merged refs),
-  `tests/host/test_unified_link_builder.py` (new: `$03` redirect, triple
-  windows/manifest/model incl. negatives and two-block backward compat),
+  (updated: 3 units, 3 windows, 3 merged refs + strict merge-parent/second-
+  parent checks with UNRESOLVED on fake/ambiguous/shallow cases),
+  `tests/host/test_unified_link_builder.py` (`$03` redirect, triple
+  windows/manifest/model incl. BOOT-range/self-loop/prologue negatives,
+  alias-unanimity negatives, and two-block backward compat),
   `tests/host/test_experimental_bios_boot.py` + `tests/host/test_ex_dspoff_wired.py`
   (updated: 3 units / 3 windows). Full `tests/host` discover in CI.
 - Real-core (pinned `b49ae82a`, cc65 `71746c8`, synthetic only):

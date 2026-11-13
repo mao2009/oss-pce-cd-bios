@@ -458,10 +458,27 @@ class TripleLinkRealCoreTests(unittest.TestCase):
 
     @classmethod
     def _commercial_status(cls):
-        rom_dir = ROOT / "rom"
-        cues = []
-        if rom_dir.is_dir():
-            cues = list(rom_dir.glob("*.cue")) + list(rom_dir.glob("*.CUE"))
+        # LOW (independent review): reuse the safe commercial-media detector
+        # (worktree-aware rom/ resolution, recursive CUE detection, symlink /
+        # traversal rejection, sanitized errors). Private filenames/paths/hashes
+        # never enter evidence (count only). No commercial boot path exists for
+        # this image: media is never opened, read, or executed here.
+        try:
+            import commercial_media as CM
+        except ImportError as e:
+            return {"status": "BLOCKED", "reason": f"BLOCKED: commercial detector unavailable ({e})"}
+        try:
+            rom_dir = CM.resolve_rom_dir(ROOT)
+        except ValueError as e:
+            return {"status": "BLOCKED", "reason": str(e)[:200]}
+        try:
+            cues = CM.detect_cue_files(rom_dir)
+        except ValueError as e:
+            msg = str(e)
+            if msg.startswith("NOT_RUN"):
+                return {"status": "NOT_RUN",
+                        "reason": "./rom carries no CUE; synthetic media only"}
+            return {"status": "BLOCKED", "reason": msg[:200]}
         if not cues:
             return {"status": "NOT_RUN",
                     "reason": "./rom carries no CUE; synthetic media only"}

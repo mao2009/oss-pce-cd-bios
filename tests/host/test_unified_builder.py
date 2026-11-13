@@ -195,8 +195,15 @@ class UnifiedProvenanceTests(unittest.TestCase):
         self.assertTrue(provenance["branch"])
         self.assertRegex(provenance["head"], r"\A[0-9a-f]{40}\Z")
         self.assertEqual(set(provenance["merged_heads"]), set(U._MERGED_REFS))
+        self.assertEqual(set(provenance["merge_commits"]), set(U._MERGED_REFS))
         for sha in provenance["merged_heads"].values():
             self.assertTrue(re.fullmatch(r"[0-9a-f]{40}", sha) or sha.startswith("UNRESOLVED"))
+        for sha in provenance["merge_commits"].values():
+            self.assertTrue(re.fullmatch(r"[0-9a-f]{40}", sha) or sha.startswith("UNRESOLVED"))
+        # Merged HEADs are never hardcoded literals.
+        source = (ROOT / "tools" / "build_experimental_bios_boot.py").read_text(encoding="utf-8")
+        self.assertNotIn("5fe93c4b", source)
+        self.assertNotIn("323562fb", source)
         self.assertEqual(provenance["pinned_cc65"], DEPENDENCIES["cc65"]["revision"])
         self.assertEqual(provenance["pinned_geargrafx"], DEPENDENCIES["geargrafx"]["revision"])
 
@@ -226,22 +233,28 @@ class UnifiedProvenanceTests(unittest.TestCase):
     def test_deleted_branch_falls_back_to_single_merge_commit(self):
         # Post-merge branch deletion (refs #782/#780/#785 gone from the
         # server): the integrating merge commit is discovered from history
-        # instead of guessed. Other refs use the real clone state.
+        # and the confirmed integrated HEAD is its second parent (never the
+        # merge commit itself, never a subject-match guess). Other refs use
+        # the real clone state.
         orig = U._git_output
         short = U._MERGED_REFS[0].removeprefix("origin/")
         merge_sha = "e" * 40
+        second_sha = "f" * 40
         try:
             def fake(*args):
                 if args and args[0] == "rev-parse" and len(args) > 1 and args[1] == U._MERGED_REFS[0]:
                     raise ValueError("BLOCKED: ref absent (deleted post-merge)")
                 if args and args[0] == "log":
                     return f"{merge_sha} Merge pull request #999 from someone/{short}"
+                if args and args[0] == "rev-list":
+                    return f"{merge_sha} {'a' * 40} {second_sha}"
                 if args and args[0] == "merge-base":
                     return ""
                 return orig(*args)
             U._git_output = fake
             provenance = U.unified_repo_provenance()
-            self.assertEqual(provenance["merged_heads"][U._MERGED_REFS[0]], merge_sha)
+            self.assertEqual(provenance["merged_heads"][U._MERGED_REFS[0]], second_sha)
+            self.assertEqual(provenance["merge_commits"][U._MERGED_REFS[0]], merge_sha)
         finally:
             U._git_output = orig
 
@@ -382,6 +395,138 @@ class UnifiedProvenanceTests(unittest.TestCase):
             for ref, value in provenance["merged_heads"].items():
                 self.assertTrue(value.startswith("UNRESOLVED"), ref)
                 self.assertIsNone(re.fullmatch(r"[0-9a-f]{40}", value))
+            for ref, value in provenance["merge_commits"].items():
+                self.assertTrue(value.startswith("UNRESOLVED"), ref)
+        finally:
+            U._git_output = orig
+
+
+class UnifiedProvenanceStrictTests(unittest.TestCase):
+    """MEDIUM (independent review): merge provenance must not guess from subject.
+
+    Subject-only match never yields PROVENANCE VERIFIED: the integrating
+    merge commit's parent relationship (second parent = true branch HEAD)
+    and ancestry into HEAD are verified. Undeterminable cases are UNRESOLVED.
+    No hardcoded SHA, no gate relaxation.
+    """
+
+    def _fake_for_absent(self, log_line, rev_list_out=None, ancestor_second=True):
+        orig = U._git_output
+        short = U._MERGED_REFS[0].removeprefix("origin/")
+        def fake(*args):
+            if args and args[0] == "rev-parse" and len(args) > 1 and args[1] == U._MERGED_REFS[0]:
+                raise ValueError("BLOCKED: ref absent")
+            if args and args[0] == "rev-parse" and len(args) > 1 and args[1] in U._MERGED_REFS[1:]:
+                return "d" * 40
+            if args and args[0] == "log":
+                return log_line
+            if args and args[0] == "rev-list":
+                if isinstance(rev_list_out, Exception):
+                    raise rev_list_out
+                return rev_list_out
+            if args and args[0] == "merge-base":
+                # ancestor_second=False simulates a fake subject match whose
+                # second parent is not integrated (subject alone proves nothing).
+                if len(args) > 2 and args[2] == "b" * 40 and not ancestor_second:
+                    raise ValueError("BLOCKED: not an ancestor (fake subject match)")
+                return ""
+            return orig(*args)
+        return fake, orig
+
+    def test_subject_only_fake_merge_is_unresolved(self):
+        # Subject matches, merge ancestor of HEAD, but the claimed integrated
+        # HEAD (second parent) is not an ancestor -> UNRESOLVED, never VERIFIED.
+        short = U._MERGED_REFS[0].removeprefix("origin/")
+        merge_sha = "e" * 40
+        second_sha = "b" * 40
+        log_line = f"{merge_sha} Merge pull request #999 from someone/{short}"
+        rev_list = f"{merge_sha} {'a' * 40} {second_sha}"
+        fake, orig = self._fake_for_absent(log_line, rev_list, ancestor_second=False)
+        try:
+            U._git_output = fake
+            provenance = U.unified_repo_provenance()
+            self.assertTrue(provenance["merged_heads"][U._MERGED_REFS[0]].startswith("UNRESOLVED"))
+            self.assertEqual(provenance["merge_commits"][U._MERGED_REFS[0]], merge_sha)
+        finally:
+            U._git_output = orig
+
+    def test_bad_parents_are_unresolved(self):
+        # Non-2-parent merge (octopus / non-merge / truncated) cannot yield
+        # a confirmed HEAD -> UNRESOLVED heads, merge still recorded.
+        short = U._MERGED_REFS[0].removeprefix("origin/")
+        merge_sha = "e" * 40
+        log_line = f"{merge_sha} Merge pull request #999 from someone/{short}"
+        for bad in (f"{merge_sha} {'a' * 40}",
+                    f"{merge_sha} {'a' * 40} {'b' * 40} {'c' * 40}",
+                    "not-a-sha-line"):
+            with self.subTest(parents=bad[:20]):
+                fake, orig = self._fake_for_absent(log_line, bad, ancestor_second=True)
+                try:
+                    U._git_output = fake
+                    provenance = U.unified_repo_provenance()
+                    self.assertTrue(provenance["merged_heads"][U._MERGED_REFS[0]].startswith("UNRESOLVED"))
+                    self.assertEqual(provenance["merge_commits"][U._MERGED_REFS[0]], merge_sha)
+                finally:
+                    U._git_output = orig
+
+    def test_multiple_candidates_are_unresolved(self):
+        # Two subject matches -> no single merge -> UNRESOLVED both fields.
+        short = U._MERGED_REFS[0].removeprefix("origin/")
+        log_line = (f"{'aa' + '0' * 38} Merge pull request #1 from o/{short}\n" +
+                    f"{'bb' + '0' * 38} Merge remote-tracking branch 'origin/{short}' into x")
+        fake, orig = self._fake_for_absent(log_line, "unused", ancestor_second=True)
+        try:
+            U._git_output = fake
+            provenance = U.unified_repo_provenance()
+            self.assertTrue(provenance["merged_heads"][U._MERGED_REFS[0]].startswith("UNRESOLVED"))
+            self.assertTrue(provenance["merge_commits"][U._MERGED_REFS[0]].startswith("UNRESOLVED"))
+        finally:
+            U._git_output = orig
+
+    def test_shallow_missing_parents_are_unresolved(self):
+        # Shallow history: merge found but parents unavailable -> UNRESOLVED
+        # heads (safe side), merge still recorded.
+        short = U._MERGED_REFS[0].removeprefix("origin/")
+        merge_sha = "e" * 40
+        log_line = f"{merge_sha} Merge pull request #999 from someone/{short}"
+        fake, orig = self._fake_for_absent(log_line, ValueError("BLOCKED: shallow"), ancestor_second=True)
+        try:
+            U._git_output = fake
+            provenance = U.unified_repo_provenance()
+            self.assertTrue(provenance["merged_heads"][U._MERGED_REFS[0]].startswith("UNRESOLVED"))
+            self.assertEqual(provenance["merge_commits"][U._MERGED_REFS[0]], merge_sha)
+        finally:
+            U._git_output = orig
+
+    def test_legit_merge_records_second_parent(self):
+        short = U._MERGED_REFS[0].removeprefix("origin/")
+        merge_sha = "e" * 40
+        second_sha = "f" * 40
+        log_line = f"{merge_sha} Merge pull request #999 from someone/{short}"
+        rev_list = f"{merge_sha} {'a' * 40} {second_sha}"
+        fake, orig = self._fake_for_absent(log_line, rev_list, ancestor_second=True)
+        try:
+            U._git_output = fake
+            provenance = U.unified_repo_provenance()
+            self.assertEqual(provenance["merged_heads"][U._MERGED_REFS[0]], second_sha)
+            self.assertEqual(provenance["merge_commits"][U._MERGED_REFS[0]], merge_sha)
+        finally:
+            U._git_output = orig
+
+    def test_merge_second_parent_parsing(self):
+        orig = U._git_output
+        try:
+            U._git_output = lambda *a, **k: "m" + "0" * 39 + " " + "a" * 40 + " " + "b" * 40 if a[:1] == ("rev-list",) else (_ for _ in ()).throw(ValueError("unexpected"))
+            # Invalid merge SHA shape -> None (never a guess).
+            self.assertIsNone(U._merge_second_parent("not-a-sha"))
+            # Octopus (3 parents) -> None.
+            U._git_output = lambda *a, **k: "e" * 40 + " " + "a" * 40 + " " + "b" * 40 + " " + "c" * 40
+            self.assertIsNone(U._merge_second_parent("e" * 40))
+            # Git error (shallow) -> None.
+            def failing(*a, **k):
+                raise ValueError("BLOCKED: shallow")
+            U._git_output = failing
+            self.assertIsNone(U._merge_second_parent("e" * 40))
         finally:
             U._git_output = orig
 

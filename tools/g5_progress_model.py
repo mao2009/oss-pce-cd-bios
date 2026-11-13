@@ -1570,12 +1570,24 @@ def _require_link_boot_range(addr) -> int:
                      "(self-loop/fallback addresses are never real processing)" % (addr,))
 
 
+# All manifest sources that may name the $03 link callee. Every present
+# source must agree (unanimity); omission is allowed for backward
+# compatibility (two-block manifests, legitimate alias omission).
+_LINK_ALIAS_KEYS = ("link_entry", "body", "routine", "target",
+                    "entry_target", "callee", "impl_entry", "real_entry",
+                    "proto_entry")
+
+
 def _checked_link_addr(raw):
     """Parse one link_entry candidate (pure).
 
     None when absent/unparsable (the caller tries the next alias source);
     the BOOT address when valid; BLOCKED raise when parsable but outside
     BOOT (a self-loop or fallback address hiding in an alias is refused).
+
+    Kept for single-source callers; the strict multi-source resolver below
+    (_native_link_entry_addr) requires unanimity across all present aliases
+    and treats a present-but-unparsable alias as BLOCKED (never silent skip).
     """
     if raw is None or isinstance(raw, bool):
         return None
@@ -1585,38 +1597,103 @@ def _checked_link_addr(raw):
     return _require_link_boot_range(addr)
 
 
+def _parse_link_candidate(raw, source: str) -> int | None:
+    """Parse one present link callee candidate (pure, strict).
+
+    None only when the source is absent (raw is None: legitimate omission,
+    the caller skips it). Any present value must parse to a BOOT address:
+    a bool, an unparsable string, or an out-of-BOOT address raises BLOCKED
+    (a contradictory/malformed alias hiding beside the canonical entry is
+    refused, never silently ignored).
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, bool):
+        raise ValueError("BLOCKED: native cd_read_link alias %s is malformed (%r)" % (source, raw))
+    if isinstance(raw, int):
+        addr = raw
+    else:
+        addr = _parse_native_addr(raw)
+        if addr is None:
+            raise ValueError("BLOCKED: native cd_read_link alias %s is malformed (%r)" % (source, raw))
+    return _require_link_boot_range(addr)
+
+
 def _native_link_entry_addr(manifest):
     """Native $03 callee: cd_read_link.link_entry (pure, read-only).
 
-    Canonical source is cd_read_link.link_entry; labels/symbols
-    cd_read_link_entry and the remaining block aliases are accepted as
-    link-derived aliases. Every path enforces the BOOT range (a parsable
-    out-of-BOOT address raises BLOCKED instead of falling through). None
-    only when the manifest declares the slot without identifying any callee.
+    Every present alias source must agree on one BOOT address (unanimity):
+    cd_read_link.link_entry/body/routine/target/entry_target/callee/
+    impl_entry/real_entry/proto_entry plus labels.cd_read_link_entry plus
+    symbols.cd_read_link_entry. A present-but-malformed, out-of-BOOT, or
+    disagreeing alias raises BLOCKED (a contradiction hiding beside the
+    canonical entry is refused). None only when no source names a callee
+    (legitimate omission; the two-block manifest stays valid). Every parsed
+    address enforces the BOOT range ($F000 <= entry < $FFF6).
     """
     if not isinstance(manifest, dict):
         return None
+    candidates: list = []
     link = manifest.get(NATIVE_CD_READ_KEY)
     if isinstance(link, dict):
-        addr = _checked_link_addr(link.get("link_entry"))
-        if addr is not None:
-            return addr
-        for key in ("body", "routine", "target", "entry_target", "callee",
-                    "impl_entry", "real_entry", "proto_entry"):
-            addr = _checked_link_addr(link.get(key))
-            if addr is not None:
-                return addr
+        for key in _LINK_ALIAS_KEYS:
+            if link.get(key) is not None:
+                addr = _parse_link_candidate(link.get(key), f"cd_read_link.{key}")
+                if addr is not None:
+                    candidates.append(addr)
     labs = manifest.get("labels") if isinstance(manifest.get("labels"), dict) else None
     if isinstance(labs, dict) and "cd_read_link_entry" in labs:
-        addr = _checked_link_addr(labs.get("cd_read_link_entry"))
+        addr = _parse_link_candidate(labs.get("cd_read_link_entry"), "labels.cd_read_link_entry")
         if addr is not None:
-            return addr
+            candidates.append(addr)
     syms = manifest.get("symbols") if isinstance(manifest.get("symbols"), dict) else None
     if isinstance(syms, dict) and "cd_read_link_entry" in syms:
-        addr = _checked_link_addr(syms.get("cd_read_link_entry"))
+        addr = _parse_link_candidate(syms.get("cd_read_link_entry"), "symbols.cd_read_link_entry")
         if addr is not None:
-            return addr
-    return None
+            candidates.append(addr)
+    if not candidates:
+        return None
+    first = candidates[0]
+    for other in candidates[1:]:
+        if other != first:
+            raise ValueError("BLOCKED: native cd_read_link aliases disagree "
+                             "(%s; refusing contradictory manifest)" % (candidates,))
+    return first
+
+
+def _require_link_entry_prologue(data, link_entry: int) -> None:
+    """Fail-closed callee-entry check for the $03 link helper (pure).
+
+    The builder contract (tools/build_experimental_bios_boot.py
+    _redirect_slot03_to_link) requires the BOOT callee to start with the
+    link prologue PHP,PHA (bytes 08 48, src/cd_read_link.s cd_read_link_entry).
+    A bare JMP at the entry -- a BOOT self-loop (e.g. $F1A0: JMP $F1A0) or a
+    JMP to another BOOT address -- is never real processing and is refused
+    explicitly before the generic prologue comparison. A bare RTS / NOP-slide
+    RTS is refused by the existing fake-RTS gate; anything else without the
+    PHP,PHA prologue is refused as body drift.
+
+    This entry-shape check is necessary but never sufficient: it does not
+    prove the service executed or returned (that proof comes only from
+    measured real-core execution: LINK_RES + $2800 transfer + return gates).
+    """
+    data = bytes(data)
+    off = link_entry - 0xE000
+    if off < 0 or off + 2 > len(data):
+        raise ValueError("BLOCKED: slot $03 link entry %04X outside BIOS window" % link_entry)
+    b0 = data[off]
+    if b0 == 0x4C:
+        if off + 3 > len(data):
+            raise ValueError("BLOCKED: slot $03 link entry %04X truncated JMP" % link_entry)
+        tgt = data[off + 1] | (data[off + 2] << 8)
+        if tgt == link_entry:
+            raise ValueError("BLOCKED: slot $03 link entry %04X is a BOOT self-loop "
+                             "JMP (never real processing)" % link_entry)
+        raise ValueError("BLOCKED: slot $03 link entry %04X is JMP $%04X "
+                         "(not the PHP,PHA prologue; never real processing)" % (link_entry, tgt))
+    if not (data[off] == 0x08 and data[off + 1] == 0x48):
+        raise ValueError("BLOCKED: slot $03 link entry %04X lacks the PHP,PHA prologue "
+                         "(got %02X %02X; refusing body drift)" % (link_entry, data[off], data[off + 1]))
 
 
 def _verify_native_slot03_direct(data, manifest):
@@ -1627,9 +1704,14 @@ def _verify_native_slot03_direct(data, manifest):
     entry keeps the link's EXPERIMENTAL contract only; genuine $03 ABI
     stays UNKNOWN/BLOCKED. The callee must resolve inside BOOT
     ($F000 <= entry < $FFF6) on every resolver path, so a self-loop such
-    as $E009 -> JMP $E009 is refused. Raises BLOCKED when the manifest
+    as $E009 -> JMP $E009 is refused, and the ROM callee entry must start
+    with the builder's PHP,PHA prologue (08 48 per src/cd_read_link.s); a
+    BOOT self-loop (e.g. $F1A0: JMP $F1A0), a JMP to another BOOT address,
+    a bare RTS, or a bad prologue is BLOCKED. Raises BLOCKED when the manifest
     declares the slot without identifying the link, outside BOOT, on a
-    wrong table dest, or on a fake RTS / stub body.
+    wrong table dest, or on a fake RTS / stub / non-prologue body.
+    The entry-shape check alone never proves execution or return; that
+    proof comes only from measured real-core transfer + return gates.
     Returns (table_target, link_entry).
     """
     data = bytes(data)
@@ -1648,6 +1730,7 @@ def _verify_native_slot03_direct(data, manifest):
     if isinstance(stub, int) and table_target == stub:
         raise ValueError("BLOCKED: slot $03 ROM target %04X equals the unimplemented stub"
                          % table_target)
+    _require_link_entry_prologue(data, table_target)
     return table_target, link
 
 

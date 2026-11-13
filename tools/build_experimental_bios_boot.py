@@ -218,6 +218,10 @@ def _discover_merge_commit(short_ref: str) -> str | None:
     ("Merge pull request #N from <owner>/<short>") or the union sub-merge shape
     ("Merge remote-tracking branch 'origin/<short>' into ..."). Zero or
     multiple matches -> None (UNRESOLVED downstream, never a guess).
+
+    Subject match alone never proves integration: the caller must verify the
+    merge commit's parent relationship and ancestry before recording any
+    integrated HEAD (see unified_repo_provenance).
     """
     try:
         out = _git_output("log", "--format=%H %s", "--merges")
@@ -240,16 +244,45 @@ def _discover_merge_commit(short_ref: str) -> str | None:
     return found[0]
 
 
+def _merge_second_parent(merge_sha: str) -> str | None:
+    """Return the integrated branch HEAD (second parent) of a merge commit.
+
+    Pure derivation (never guessed): `git rev-list --parents -n 1 <merge>`
+    must yield exactly `<merge> <parent1> <parent2>`; the second parent is
+    the integrated branch HEAD for standard 2-parent GitHub/union merges.
+    Any other shape (non-merge, octopus, shallow-missing parents, git
+    error) -> None (UNRESOLVED downstream, never a guess).
+    """
+    if not re.fullmatch(r"[0-9a-f]{40}", merge_sha or ""):
+        return None
+    try:
+        out = _git_output("rev-list", "--parents", "-n", "1", merge_sha)
+    except ValueError:
+        return None
+    parts = out.strip().split()
+    if len(parts) != 3 or parts[0] != merge_sha:
+        return None
+    second = parts[2]
+    if not re.fullmatch(r"[0-9a-f]{40}", second):
+        return None
+    return second
+
+
 def unified_repo_provenance() -> dict:
     """Derive G5-native manifest provenance at build time; never hardcoded or guessed.
 
     branch: current branch (detached-HEAD fallback names the HEAD instead).
     head: full 40-hex HEAD that built this image.
-    merged_heads: rev-parse of each merged input branch; when the branch ref
-      is absent (deleted post-merge, shallow clone, ...), the integrating
-      merge commit is discovered from main history instead (_discover_merge_commit).
-      A ref with no single discoverable merge commit is recorded as UNRESOLVED,
-      never guessed. Every resolved SHA is ancestry-checked against HEAD.
+    merged_heads: the confirmed integrated branch HEAD for each merged input
+      (rev-parse when the ref is present; the merge commit's second parent
+      when the ref is absent but a single integrating merge is discoverable;
+      UNRESOLVED when the true HEAD cannot be determined by merge method,
+      shallow history, or ambiguity -- never a subject-match guess).
+    merge_commits: the integrating merge commit for each absent ref (or
+      UNRESOLVED when no single merge is discoverable / parents unavailable).
+      For present refs the merge commit is not resolved (direct ref path).
+      Kept as a separate meaning from merged_heads for audit; existing
+      merged_heads consumers (40-hex ancestry check) keep working.
     pins: cc65/Geargrafx revisions from tools/environment.py DEPENDENCIES.
     """
     head = _git_output("rev-parse", "HEAD")
@@ -263,21 +296,48 @@ def unified_repo_provenance() -> dict:
                 break
         else:
             branch = f"detached@{head[:12]}"
-    merged_heads = {}
+    merged_heads: dict = {}
+    merge_commits: dict = {}
     for ref in _MERGED_REFS:
         try:
             sha = _git_output("rev-parse", ref)
         except ValueError:
             # Branch ref absent (deleted post-merge, shallow clone, ...):
             # discover the integrating merge commit instead of guessing.
-            # No single discoverable merge -> UNRESOLVED, never a guess;
-            # distinct from a present-but-non-integrated ref below.
+            # Subject match alone never proves integration: the merge's
+            # parent relationship and ancestry are verified below; anything
+            # undeterminable -> UNRESOLVED, never a guessed HEAD.
             short = ref.removeprefix("origin/")
             discovered = _discover_merge_commit(short)
             if discovered is None:
                 merged_heads[ref] = "UNRESOLVED (no single merge commit at build time)"
+                merge_commits[ref] = "UNRESOLVED (no single merge commit at build time)"
                 continue
-            sha = discovered
+            # The discovered merge itself must be integrated into HEAD;
+            # a subject-only match outside history proves nothing.
+            try:
+                _git_output("merge-base", "--is-ancestor", discovered, "HEAD")
+            except ValueError:
+                merged_heads[ref] = ("UNRESOLVED (discovered merge %s not an ancestor "
+                                     "of HEAD; subject match alone proves nothing)" % discovered)
+                merge_commits[ref] = discovered
+                continue
+            second = _merge_second_parent(discovered)
+            if second is None:
+                merged_heads[ref] = ("UNRESOLVED (merge %s parents undeterminable; "
+                                     "cannot confirm integrated HEAD)" % discovered)
+                merge_commits[ref] = discovered
+                continue
+            try:
+                _git_output("merge-base", "--is-ancestor", second, "HEAD")
+            except ValueError:
+                merged_heads[ref] = ("UNRESOLVED (integrated HEAD %s not an ancestor "
+                                     "of HEAD; subject match alone proves nothing)" % second)
+                merge_commits[ref] = discovered
+                continue
+            merged_heads[ref] = second
+            merge_commits[ref] = discovered
+            continue
         if not re.fullmatch(r"[0-9a-f]{40}", sha):
             raise ValueError(f"BLOCKED: merged ref {ref} is not a 40-hex SHA: {sha!r}")
         # Re-verify at build time that the resolved SHA is actually integrated
@@ -290,6 +350,7 @@ def unified_repo_provenance() -> dict:
                 f"BLOCKED: merged ref {ref} resolves to {sha}, which is not an "
                 f"ancestor of HEAD (non-integrated / drift): {error}") from error
         merged_heads[ref] = sha
+        merge_commits[ref] = "UNRESOLVED (direct ref present; merge commit not resolved)"
     try:
         pinned_cc65 = DEPENDENCIES["cc65"]["revision"]
         pinned_geargrafx = DEPENDENCIES["geargrafx"]["revision"]
@@ -298,6 +359,7 @@ def unified_repo_provenance() -> dict:
     if not pinned_cc65 or not pinned_geargrafx:
         raise ValueError("BLOCKED: pinned toolchain revisions are empty")
     return {"branch": branch, "head": head, "merged_heads": merged_heads,
+            "merge_commits": merge_commits,
             "pinned_cc65": pinned_cc65, "pinned_geargrafx": pinned_geargrafx}
 
 
@@ -491,6 +553,7 @@ def build_experimental_bios_boot(original_path: Path, output: Path, mode="debug"
         "dev_callable": False, "private_media_used": False,
         "branch": provenance["branch"], "head": provenance["head"],
         "merged_heads": provenance["merged_heads"],
+        "merge_commits": provenance["merge_commits"],
         "cd_base_proto": {"contract": "CD_BASE_PROTO_V1-experimental-only-not-genuine-abi",
                             "slot": "$02", "entry": "$E006",
                             "proto_entry": f"${patch_addrs['cd_base_proto_entry']:04X}",
