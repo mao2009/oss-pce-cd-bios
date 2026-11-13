@@ -214,10 +214,68 @@ class UnifiedProvenanceTests(unittest.TestCase):
             def fake(*args):
                 if args and args[0] == "rev-parse" and len(args) > 1 and args[1] == U._MERGED_REFS[0]:
                     raise ValueError("BLOCKED: ref absent")
+                if args and args[0] == "log":
+                    return ""  # clone carries no merge history either
                 return orig(*args)
             U._git_output = fake
             provenance = U.unified_repo_provenance()
             self.assertTrue(provenance["merged_heads"][U._MERGED_REFS[0]].startswith("UNRESOLVED"))
+        finally:
+            U._git_output = orig
+
+    def test_deleted_branch_falls_back_to_single_merge_commit(self):
+        # Post-merge branch deletion (refs #782/#780/#785 gone from the
+        # server): the integrating merge commit is discovered from history
+        # instead of guessed. Other refs use the real clone state.
+        orig = U._git_output
+        short = U._MERGED_REFS[0].removeprefix("origin/")
+        merge_sha = "e" * 40
+        try:
+            def fake(*args):
+                if args and args[0] == "rev-parse" and len(args) > 1 and args[1] == U._MERGED_REFS[0]:
+                    raise ValueError("BLOCKED: ref absent (deleted post-merge)")
+                if args and args[0] == "log":
+                    return f"{merge_sha} Merge pull request #999 from someone/{short}"
+                if args and args[0] == "merge-base":
+                    return ""
+                return orig(*args)
+            U._git_output = fake
+            provenance = U.unified_repo_provenance()
+            self.assertEqual(provenance["merged_heads"][U._MERGED_REFS[0]], merge_sha)
+        finally:
+            U._git_output = orig
+
+    def test_merge_commit_discovery_needs_exactly_one_match(self):
+        orig = U._git_output
+        try:
+            for marker in ("empty", "zero", "multi", "badsha"):
+                def fake_one(*a, marker=marker, **k):
+                    _ = k
+                    if a[:1] == ("log",):
+                        table = {
+                            "empty": "",
+                            "zero": "ab12 Merge pull request #1 from o/other-branch",
+                            "multi": ("aa" + "0" * 38 + " Merge pull request #1 from o/agent-a/cd-base-proto-g5\n" +
+                                      "bb" + "0" * 38 + " Merge remote-tracking branch 'origin/agent-a/cd-base-proto-g5' into x"),
+                            "badsha": "notasha Merge pull request #1 from o/agent-a/cd-base-proto-g5",
+                        }
+                        return table[marker]
+                    raise ValueError("unexpected git call")
+                U._git_output = fake_one
+                self.assertIsNone(U._discover_merge_commit("agent-a/cd-base-proto-g5"),
+                                  f"discovery must not guess ({marker})")
+            U._git_output = lambda *a, **k: (  # noqa: E731
+                "cc" + "0" * 38 + " Merge pull request #782 from mao2009/agent-a/cd-base-proto-g5"
+                if a[:1] == ("log",) else (_ for _ in ()).throw(ValueError("unexpected")))
+            self.assertEqual(U._discover_merge_commit("agent-a/cd-base-proto-g5"), "cc" + "0" * 38)
+            U._git_output = lambda *a, **k: (  # noqa: E731
+                "dd" + "0" * 38 + " Merge remote-tracking branch 'origin/agent-a/cd-base-proto-g5' into y"
+                if a[:1] == ("log",) else (_ for _ in ()).throw(ValueError("unexpected")))
+            self.assertEqual(U._discover_merge_commit("agent-a/cd-base-proto-g5"), "dd" + "0" * 38)
+            def failing(*a, **k):
+                raise ValueError("BLOCKED: git log failed")
+            U._git_output = failing
+            self.assertIsNone(U._discover_merge_commit("agent-a/cd-base-proto-g5"))
         finally:
             U._git_output = orig
 
@@ -316,6 +374,8 @@ class UnifiedProvenanceTests(unittest.TestCase):
             def fake(*args):
                 if args and args[0] == "rev-parse" and len(args) > 1 and args[1] in U._MERGED_REFS:
                     raise ValueError("BLOCKED: ref absent")
+                if args and args[0] == "log":
+                    return ""  # shallow clone carries no merge history either
                 return orig(*args)
             U._git_output = fake
             provenance = U.unified_repo_provenance()

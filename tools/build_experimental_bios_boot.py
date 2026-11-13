@@ -207,13 +207,46 @@ def _git_output(*args: str) -> str:
     return result.stdout.strip()
 
 
+def _discover_merge_commit(short_ref: str) -> str | None:
+    """Find the single merge commit that integrated short_ref (branch deleted post-merge).
+
+    Pure derivation from main history (never hardcoded, never guessed): the
+    merge subject must match the GitHub PR-merge shape
+    ("Merge pull request #N from <owner>/<short>") or the union sub-merge shape
+    ("Merge remote-tracking branch 'origin/<short>' into ..."). Zero or
+    multiple matches -> None (UNRESOLVED downstream, never a guess).
+    """
+    try:
+        out = _git_output("log", "--format=%H %s", "--merges")
+    except ValueError:
+        return None
+    short = re.escape(short_ref)
+    patterns = (re.compile(rf"^Merge pull request #\d+ from \S+/{short}$"),
+                re.compile(rf"^Merge remote-tracking branch 'origin/{short}' into \S+$"))
+    found = []
+    for line in out.splitlines():
+        if len(line) < 42 or line[40] != " ":
+            continue
+        sha, _, subject = line.partition(" ")
+        if not re.fullmatch(r"[0-9a-f]{40}", sha):
+            continue
+        if any(pattern.match(subject) for pattern in patterns):
+            found.append(sha)
+    if len(found) != 1:
+        return None
+    return found[0]
+
+
 def unified_repo_provenance() -> dict:
     """Derive G5-native manifest provenance at build time; never hardcoded or guessed.
 
     branch: current branch (detached-HEAD fallback names the HEAD instead).
     head: full 40-hex HEAD that built this image.
-    merged_heads: rev-parse of each merged input branch; a ref absent from the
-      build clone is recorded as UNRESOLVED, never guessed.
+    merged_heads: rev-parse of each merged input branch; when the branch ref
+      is absent (deleted post-merge, shallow clone, ...), the integrating
+      merge commit is discovered from main history instead (_discover_merge_commit).
+      A ref with no single discoverable merge commit is recorded as UNRESOLVED,
+      never guessed. Every resolved SHA is ancestry-checked against HEAD.
     pins: cc65/Geargrafx revisions from tools/environment.py DEPENDENCIES.
     """
     head = _git_output("rev-parse", "HEAD")
@@ -232,10 +265,16 @@ def unified_repo_provenance() -> dict:
         try:
             sha = _git_output("rev-parse", ref)
         except ValueError:
-            # Unresolvable ref: absent from the build clone. Recorded, never
-            # guessed; distinct from a present-but-non-integrated ref below.
-            merged_heads[ref] = "UNRESOLVED (ref absent at build time)"
-            continue
+            # Branch ref absent (deleted post-merge, shallow clone, ...):
+            # discover the integrating merge commit instead of guessing.
+            # No single discoverable merge -> UNRESOLVED, never a guess;
+            # distinct from a present-but-non-integrated ref below.
+            short = ref.removeprefix("origin/")
+            discovered = _discover_merge_commit(short)
+            if discovered is None:
+                merged_heads[ref] = "UNRESOLVED (no single merge commit at build time)"
+                continue
+            sha = discovered
         if not re.fullmatch(r"[0-9a-f]{40}", sha):
             raise ValueError(f"BLOCKED: merged ref {ref} is not a 40-hex SHA: {sha!r}")
         # Re-verify at build time that the resolved SHA is actually integrated
