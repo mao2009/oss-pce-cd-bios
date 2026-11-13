@@ -31,6 +31,15 @@ Current DEV implementation count: 17/81; current stubs: 64/81; owner-approved DE
 - [ ] Implement callable `CD_RESET`, `CD_BASE`, `CD_READ` only as contracts permit, with inputs/outputs, flags, RAM/MPR/stack/IRQ, errors and negative tests. Current bus/host models are **not** callable BIOS services
 - [ ] Test those new callers end-to-end, independently cross-check significant behaviors and satisfy all provenance/compatibility gates before any firmware release
 
+## G5 checkpoint — 2026-11-13 (experimental, synthetic)
+
+- [x] Merge [PR #788](https://github.com/mao2009/oss-pce-cd-bios/pull/788): three project-owned experimental service fragments (`$02`, `$03`, `$33`) connected in one synthetic-disc BIOS image, including READ(6) 2,048-byte transfer; NOT genuine ABI services.
+- [x] Merge [PR #790](https://github.com/mao2009/oss-pce-cd-bios/pull/790): matched A/B/C fake-return versus D experimental-real effects under one synthetic medium, with cold/warm, ROM/manifest/PHASE matching, payload SHA/length, SP/MPR1 checks and mutation negatives. The comparison calls `$02 -> $33 -> $03`, distinct from #788 standalone ordering.
+- [ ] **G5 retail title screen observed**: still **NOT_OBSERVED**. Prioritize opt-in, read-only local commercial measurement and classify the actual first IPL/API blocker before selecting the next genuine implementation; no proprietary inputs in source, CI or reports.
+- [ ] Validate genuine reference caller ABI and production stack/MPR/IRQ/return/error semantics; JSR allowed `0/81`, ABI VERIFIED `0/81`, DEV_CALLABLE `0`, release gated off.
+
+See [dated G5 evidence and limits](g5-progress-2026-11-13.md). These experimental checks do not complete M2's **firmware-mediated original-disc boot** or M3 retail compatibility.
+
 ## M2 — Self-authored CD program boot
 
 - [x] Diagnostic guest sector read (not a BIOS service)
