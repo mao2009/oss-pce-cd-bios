@@ -389,7 +389,16 @@ class MatchedSelectionRealCoreTests(unittest.TestCase):
         }
 
     @classmethod
-    def _commercial_status(cls):
+    def _commercial_status(cls, opt_in: bool = False):
+        # MEDIUM-3 opt-in boundary: without an explicit opt-in this
+        # synthetic-only test never touches ./rom (no resolve_rom_dir,
+        # no detect_cue_files, no existence check or listing). Callers pass
+        # opt_in=True explicitly to use the existing safe detector
+        # (tools/commercial_media reuse); this file never opts in, so evidence
+        # is always NOT_RUN without private-dir access. No new env vars.
+        if opt_in is not True:
+            return {"status": "NOT_RUN",
+                    "reason": "./rom carries no CUE; synthetic media only"}
         try:
             import commercial_media as CM
         except ImportError as e:
@@ -433,6 +442,60 @@ class MatchedSelectionRealCoreTests(unittest.TestCase):
         raw = (self.cue.parent / "oss-pce-cd-test.bin").read_bytes()
         self.assertEqual(raw[(SEL + 2) * RAW_BYTES + USER_OFFSET:(SEL + 2) * RAW_BYTES + USER_OFFSET + 2048],
                          L.body_for(self.code, 1)[:2048])
+
+    def test_ipl_phase_matches_rom_sel(self):
+        """MEDIUM-1: measured IPL PHASE proves the ROM-bound SEL at runtime.
+
+        Manifest SEL alone (even hash-bound) cannot prove which SEL the ROM
+        actually used -- a manifest-only SEL edit keeps rom_sha256 valid.
+        The public IPL loader contract reads INFO at SEL+1 then BODY at
+        SEL+IPLBLK (IPLBLK=2 on the unified disc); A/B/C halt at stubs only
+        after a successful IPL boot, so their DATA_IN PHASE must contain
+        both LBAs. Expected LBAs derive from the ROM-bound SEL (helper,
+        never test constants); measured PHASE is the runtime proof.
+        Missing PHASE or either LBA -> BLOCKED (never a silent pass, never
+        reconstructed from PHASE alone). Service READs (D link at SEL+3)
+        are excluded: only A/B/C IPL variants are checked here.
+        """
+        import g5_progress_model as M
+        sel_by_variant = {entry["variant"]: entry["lba"] for entry in self.abc_sels}
+        for variant in ("A", "B", "C"):
+            records, _ = self.cases[variant]
+            with self.subTest(variant=variant):
+                for run in records["RUN"]:
+                    with self.subTest(cycle=run["cycle"]):
+                        phases = [(r["load_sector"], r["load_count"]) for r in records["PHASE"]
+                                  if r["cycle"] == run["cycle"] and r.get("scsi_phase") == 4]
+                        M.verify_ipl_phase_matches_sel(phases, sel_by_variant[variant], 2)
+
+    def test_sp_mpr_preserved(self):
+        """LOW: D SP/MPR preservation from RUN + payload records (cold/warm).
+
+        Expected values derive from pre-execution state, never groundless
+        constants: SP $FF is the payload's own TXS setup (`ldx #$FF; txs`,
+        same discipline as #788 chain); MPR1 $F8 is the bootloader pre-state
+        (`lda #$F8; tam #$02`, work RAM $2000-$3FFF, preserved by the $03/$33
+        contracts which perform no TAM). Return positions must be
+        $02->$33->$03. MPR0/other MPRs have no payload/RUN record field and
+        stay UNKNOWN (never claimed from post-hoc equality alone).
+        """
+        records, _ = self.cases["D"]
+        for run in records["RUN"]:
+            with self.subTest(cycle=run["cycle"]):
+                buf = bytes.fromhex(run["buffer_hex"])
+                rec = unified_record(buf)
+                # $03 return SP vs pre-state TXS $FF.
+                self.assertEqual(rec["sp3"], 0xFF)
+                # Final halt SP vs pre-state TXS $FF.
+                self.assertEqual(run["sp"], 0xFF)
+                self.assertEqual(buf[0x3F05 - 0x2800], 0xFF)
+                # MPR1 vs pre-state bootloader $F8.
+                self.assertEqual(buf[0x3F04 - 0x2800], 0xF8)
+                # Return positions observed in order.
+                self.assertEqual((rec["order1"], rec["order33"], rec["order3"]),
+                                 (0x02, 0x33, 0x03))
+                # MPR0/others: no record field -> UNKNOWN, never claimed.
+                self.assertNotIn("mpr0", rec)
 
     def test_variants_reach_expected_apis(self):
         # A: 1 API ($02 stub X=2). B: 2 APIs ($02 fake, $33 stub X=51).

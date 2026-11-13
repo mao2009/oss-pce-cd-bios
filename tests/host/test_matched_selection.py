@@ -288,5 +288,168 @@ class IplSelFromBuiltRomTests(unittest.TestCase):
             M.read_ipl_sel_from_built_rom(rom, man_bc, "B")
 
 
+class PayloadMandatoryTests(unittest.TestCase):
+    """MEDIUM-2: D payload SHA/length are mandatory for matched-selection."""
+
+    def test_sha_missing_blocked(self):
+        code = b"\x01\x02\x03"
+        man = _d_manifest(code=code)
+        del man["payload_sha256"]
+        with self.assertRaisesRegex(ValueError, "BLOCKED"):
+            M.verify_matched_selection(d_manifest=man, abc_sels=_abc(),
+                                       unified_code=code, executed=_executed())
+
+    def test_length_missing_blocked(self):
+        code = b"\x01\x02\x03"
+        man = _d_manifest(code=code)
+        del man["payload_bytes"]
+        with self.assertRaisesRegex(ValueError, "BLOCKED"):
+            M.verify_matched_selection(d_manifest=man, abc_sels=_abc(),
+                                       unified_code=code, executed=_executed())
+
+    def test_sha_malformed_blocked(self):
+        for bad in ("zzzz", "a" * 63, "", 123, None, True):
+            with self.subTest(sha=repr(bad)):
+                code = b"\x01\x02\x03"
+                man = _d_manifest(code=code)
+                man["payload_sha256"] = bad
+                with self.assertRaisesRegex(ValueError, "BLOCKED"):
+                    M.verify_matched_selection(d_manifest=man, abc_sels=_abc(),
+                                               unified_code=code, executed=_executed())
+
+    def test_sha_mismatch_blocked(self):
+        man = _d_manifest(code=b"\x01\x02\x03")
+        with self.assertRaisesRegex(ValueError, "BLOCKED"):
+            M.verify_matched_selection(d_manifest=man, abc_sels=_abc(),
+                                       unified_code=b"\x09\x09", executed=_executed())
+
+    def test_length_mismatch_blocked(self):
+        code = b"\x01\x02\x03"
+        man = _d_manifest(code=code)
+        man["payload_bytes"] = len(code) + 1
+        with self.assertRaisesRegex(ValueError, "BLOCKED"):
+            M.verify_matched_selection(d_manifest=man, abc_sels=_abc(),
+                                       unified_code=code, executed=_executed())
+
+    def test_length_str_bool_blocked(self):
+        for bad in ("3", True, False, 3.0, None):
+            with self.subTest(length=repr(bad)):
+                code = b"\x01\x02\x03"
+                man = _d_manifest(code=code)
+                man["payload_bytes"] = bad
+                with self.assertRaisesRegex(ValueError, "BLOCKED"):
+                    M.verify_matched_selection(d_manifest=man, abc_sels=_abc(),
+                                               unified_code=code, executed=_executed())
+
+    def test_sha_length_match_passes(self):
+        code = b"\x01\x02\x03"
+        M.verify_matched_selection(d_manifest=_d_manifest(code=code),
+                                   abc_sels=_abc(), unified_code=code,
+                                   executed=_executed())
+
+
+class IplPhaseTests(unittest.TestCase):
+    """MEDIUM-1: measured IPL PHASE must contain manifest-SEL INFO/BODY reads."""
+
+    def test_manifest_only_tamper_blocked(self):
+        with self.assertRaisesRegex(ValueError, "BLOCKED"):
+            M.verify_ipl_phase_matches_sel([(1, 1), (2, 1)], 265, 2)
+
+    def test_phase_tamper_blocked(self):
+        with self.assertRaisesRegex(ValueError, "BLOCKED"):
+            M.verify_ipl_phase_matches_sel([(266, 1), (999, 1)], 265, 2)
+
+    def test_phase_missing_blocked(self):
+        for bad in ([], None, "x"):
+            with self.subTest(phases=repr(bad)):
+                with self.assertRaisesRegex(ValueError, "BLOCKED"):
+                    M.verify_ipl_phase_matches_sel(bad, 265, 2)
+
+    def test_valid_passes(self):
+        M.verify_ipl_phase_matches_sel([(266, 1), (267, 1), (266, 1), (267, 1)], 265, 2)
+
+
+class SpMprTests(unittest.TestCase):
+    """LOW: SP/MPR preservation is checkable from payload+RUN records."""
+
+    def _buffer_with(self, sp3=0xFF, mpr1=0xF8, order3=0x03):
+        from tests.integration.test_matched_selection_realcore import RES_OFF
+        buf = bytearray(6144)
+        buf[RES_OFF + 0x22] = sp3
+        buf[RES_OFF + 0x23] = order3
+        buf[0x3F04 - 0x2800] = mpr1
+        return bytes(buf)
+
+    def test_sp_change_caught(self):
+        from tests.integration.test_matched_selection_realcore import unified_record
+        rec = unified_record(self._buffer_with(sp3=0xFE))
+        self.assertNotEqual(rec["sp3"], 0xFF)
+
+    def test_mpr1_change_caught(self):
+        buf = self._buffer_with(mpr1=0x00)
+        self.assertNotEqual(buf[0x3F04 - 0x2800], 0xF8)
+
+    def test_return_position_mismatch_caught(self):
+        from tests.integration.test_matched_selection_realcore import unified_record
+        rec = unified_record(self._buffer_with(order3=0x02))
+        self.assertNotEqual(rec["order3"], 0x03)
+
+
+class CommercialOptInTests(unittest.TestCase):
+    """MEDIUM-3: no private ./rom access without explicit opt-in."""
+
+    def _status(self):
+        import tests.integration.test_matched_selection_realcore as T
+        return T.MatchedSelectionRealCoreTests._commercial_status
+
+    def test_no_opt_in_never_touches_detector(self):
+        import sys
+        class _ExplodingModule:
+            def __getattr__(self, name):
+                raise AssertionError(f"detector accessed without opt-in: {name}")
+        sys.modules["commercial_media"] = _ExplodingModule()
+        try:
+            got = self._status()(opt_in=False)
+        finally:
+            del sys.modules["commercial_media"]
+        self.assertEqual(got["status"], "NOT_RUN")
+        self.assertNotIn("rom", got["reason"].lower().replace("./rom carries", ""))
+
+    def test_no_arg_defaults_to_not_run(self):
+        got = self._status()()
+        self.assertEqual(got["status"], "NOT_RUN")
+
+    def test_opt_in_reuses_safe_detector(self):
+        import sys, types
+        fake = types.ModuleType("commercial_media")
+        fake.resolve_rom_dir = lambda root: root / "rom"
+        fake.detect_cue_files = lambda rom_dir: [rom_dir / "a.cue", rom_dir / "b.cue"]
+        sys.modules["commercial_media"] = fake
+        try:
+            got = self._status()(opt_in=True)
+        finally:
+            del sys.modules["commercial_media"]
+        self.assertEqual(got["status"], "BLOCKED")
+        self.assertEqual(got["cue_count"], 2)
+        blob = __import__("json").dumps(got)
+        self.assertNotIn("a.cue", blob)
+        self.assertNotRegex(blob, r"[0-9a-f]{64}")
+
+    def test_opt_in_symlink_blocked(self):
+        import sys, types
+        fake = types.ModuleType("commercial_media")
+        def _raise(root):
+            raise ValueError("BLOCKED: ./rom/ contains a symlinked directory")
+        fake.resolve_rom_dir = _raise
+        fake.detect_cue_files = lambda d: []
+        sys.modules["commercial_media"] = fake
+        try:
+            got = self._status()(opt_in=True)
+        finally:
+            del sys.modules["commercial_media"]
+        self.assertEqual(got["status"], "BLOCKED")
+        self.assertIn("symlink", got["reason"])
+
+
 if __name__ == "__main__":
     unittest.main()
