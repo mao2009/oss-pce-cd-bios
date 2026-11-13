@@ -13,10 +13,13 @@ proto base state $2400-$2402: the CHAIN payload calls the proto first and the
 link consumes the just-computed state.
 
 Cases (each a custom <256-byte payload at $3000, INDEX01=0 synthetic disc):
-  chain:  JSR $E006 (base == INDEX01 -> DATA) -> JSR $E009 (block 0,
-          window INDEX01 -> valid READ(6), 2048 bytes to $2800) ->
-          seed VDC shadow -> JSR $E099 (C=0 ok) -> MARK halt at cd_halt_ok.
-          Proves propagation, the real transfer, and the dspoff return.
+  chain:  JSR $E006 (base == INDEX01 -> DATA) -> JSR $E009 (block 1,
+          window INDEX01 -> valid READ(6) of the sector AFTER the boot
+          sector, 2048 bytes to $2800) -> seed VDC shadow -> JSR $E099
+          (C=0 ok) -> MARK halt at cd_halt_ok. Reading a different sector
+          than the bootloader proves the transfer changed RAM: a missing
+          copy can no longer compare equal. Proves propagation, the real
+          transfer, and the dspoff return.
   refuse: JSR $E009 with last != $00 (INVALID_STATE $60, pre-proto) ->
           JSR $E006 (DATA) -> block HI $20 (OVER_CAP $62) ->
           window INDEX01+10 (BEFORE $63) -> block 16 (AFTER $64).
@@ -107,8 +110,9 @@ payload_entry:
     sta RESBASE+4,x
     dex
     bpl @cpst
-    lda #$00
+    lda #$01
     sta $20F2
+    lda #$00
     sta $20F3
     sta $20F4
     lda #IDXLO
@@ -441,6 +445,11 @@ class TripleLinkRealCoreTests(unittest.TestCase):
             labels_path = out / "trace-labels.txt"
             records = execute(probe, exp_path, cue, labels_path, STEP_BUDGET)
             cls.cases[case_name] = (records, manifest, selected, code, exp)
+            if case_name == "chain":
+                # Artifacts for the standing RTS-mutant control below.
+                cls.chain_probe = probe
+                cls.chain_cue = cue
+                cls.chain_labels_path = labels_path
         cls.evidence = {
             "scope": ("triple-link experimental DEV image real-core run "
                       "($02 CD_BASE proto -> $03 CD_READ link -> $33 EX_DSPOFF); NOT an ABI claim"),
@@ -494,29 +503,94 @@ class TripleLinkRealCoreTests(unittest.TestCase):
                 self.assertEqual(rec["order1"], 0x02)
                 self.assertEqual(rec["state"], [0, 0, 0, 1, 0, 0, 0, 0])
 
-    def test_chain_link_transfers_real_sector_from_proto_state(self):
+    def check_link_transfer(self, records, manifest, selected, code):
+        """Transfer-discriminating assertions: fail when the link copies nothing.
+
+        The link reads the sector AFTER the boot sector (block 1), so the
+        pre-transfer buffer (boot sector) differs from the expectation: only
+        a real 2048-byte copy satisfies these. A/B register coincidence on a
+        no-op path does not.
+        """
         from build_cdload_exec import encode_sector
-        records, manifest, selected, code, _ = self.cases["chain"]
-        self.check_loader_success(records, manifest)
+        from make_cd_image import sector_payload
+        expected = sector_payload(selected["lba"] + 1)
+        boot = encode_sector(0, code)
+        # Non-vacuous fixture: the two sectors must differ, else the test
+        # below could pass without any transfer.
+        self.assertNotEqual(boot, expected)
+        want_lba = (selected["lba"] + 1) & 0xFF
         for run in records["RUN"]:
             buf = bytes.fromhex(run["buffer_hex"])
             rec = chain_record(buf)
             with self.subTest(cycle=run["cycle"]):
-                # Valid request: A=0, LINK_RES code 0 / stage 8 / 2048 bytes,
-                # LBA == INDEX01 (proto base + block 0, no pre-seeding).
+                # Valid request: LINK_RES code 0 / stage 8 / 2048 bytes,
+                # LBA == INDEX01 + 1 (proto base + block 1, no pre-seeding).
+                self.assertEqual(rec["link_res"],
+                                 [0, 8, 0, 8, 0, 0, 0, 0, 0, want_lba])
+                # Post-transfer RAM changed: head differs from the boot sector
+                # the bootloader left behind, and matches the requested sector.
+                self.assertEqual(rec["head"], expected[:8])
+                self.assertNotEqual(rec["head"], boot[:8])
+                # Exactly 2048 requested sector bytes in RAM.
+                self.assertEqual(buf[:2048], expected)
+        for cycle in ("cold", "warm"):
+            phases = sorted((r["load_sector"], r["load_count"]) for r in records["PHASE"]
+                              if r["cycle"] == cycle and r["scsi_phase"] == 4)
+            # Bootloader READ(0) plus exactly one link READ(1).
+            self.assertEqual(phases, [(selected["lba"], 1), (selected["lba"] + 1, 1)])
+
+    def test_chain_link_transfers_real_sector_from_proto_state(self):
+        records, manifest, selected, code, _ = self.cases["chain"]
+        self.check_loader_success(records, manifest)
+        for run in records["RUN"]:
+            rec = chain_record(bytes.fromhex(run["buffer_hex"]))
+            with self.subTest(cycle=run["cycle"]):
+                # Return behavior around the $E009 call.
                 self.assertEqual(rec["a2"], 0)
                 self.assertEqual(rec["p2"] & 0x03, 0x02)
                 self.assertEqual(rec["sp2"], 0xFF)
                 self.assertEqual(rec["order2"], 0x03)
-                self.assertEqual(rec["link_res"],
-                                 [0, 8, 0, 8, 0, 0, 0, 0, 0, selected["lba"] & 0xFF])
-                # Exactly 2048 sector bytes in RAM, matching the boot sector.
-                self.assertEqual(rec["head"], encode_sector(0, code)[:8])
+        self.check_link_transfer(records, manifest, selected, code)
+
+    def test_mutant_rts_body_proves_transfer_assertions_bite(self):
+        """Standing mutation control for MAJOR-1 (Issue #787).
+
+        Neutralizing the link body to an immediate RTS simulates 'the link
+        never transfers': the run still halts clean with the boot sector
+        intact and only the bootloader READ on the bus. Every
+        transfer-discriminating assertion must then fail -- proving the main
+        test detects a missing copy rather than passing vacuously. A crash
+        or timeout artifact would fail the clean-halt and unchanged-RAM
+        checks first and never counts as detection.
+        """
+        from geargrafx_cdread import execute
+        from cdread_verify import check_halt_confirmation
+        from build_cdload_exec import encode_sector
+        _, manifest, selected, code, exp = self.cases["chain"]
+        link_off = manifest["labels"]["cd_read_link_entry"] - 0xE000
+        mutant = bytearray(exp)
+        self.assertEqual(bytes(mutant[link_off:link_off + 2]), bytes((0x08, 0x48)))
+        mutant[link_off] = 0x60  # RTS: JSR $E009 returns with no transfer
+        mutant_path = self.work / "mutant-link-rts.pce"
+        mutant_path.write_bytes(bytes(mutant))
+        records = execute(self.chain_probe, mutant_path, self.chain_cue,
+                          self.chain_labels_path, STEP_BUDGET)
+        # Valid no-transfer execution (not an exception/timeout artifact).
+        for run in records["RUN"]:
+            with self.subTest(cycle=run["cycle"]):
+                self.assertEqual(run["reason"], "cd_halt_ok")
+                self.assertEqual(run["pc"], manifest["trace_symbols"]["cd_halt_ok"])
+                check_halt_confirmation(run)
+                self.assertEqual(run["sp"], 0xFF)
+                buf = bytes.fromhex(run["buffer_hex"])
                 self.assertEqual(buf[:2048], encode_sector(0, code))
-                # Bootloader READ + link READ are distinguishable in PHASE.
-                phases = [(r["load_sector"], r["load_count"]) for r in records["PHASE"]
-                          if r["cycle"] == run["cycle"] and r["scsi_phase"] == 4]
-                self.assertEqual(phases.count((selected["lba"], 1)), 2)
+        for cycle in ("cold", "warm"):
+            phases = [(r["load_sector"], r["load_count"]) for r in records["PHASE"]
+                        if r["cycle"] == cycle and r["scsi_phase"] == 4]
+            self.assertEqual(phases, [(selected["lba"], 1)])
+        # RED: the transfer proof must fail on the mutant.
+        with self.assertRaises(AssertionError):
+            self.check_link_transfer(records, manifest, selected, code)
 
     def test_chain_dspoff_returns_and_next_stop(self):
         records, manifest, _, _, _ = self.cases["chain"]

@@ -1383,23 +1383,11 @@ def _native_expected_targets(manifest):
                             slot = normalize_slot_key(raw)
                         except ValueError:
                             slot = None
-        target = None
-        for key in ("link_entry", "body", "routine", "target", "entry_target",
-                    "callee", "impl_entry", "real_entry", "proto_entry"):
-            if target is None and link.get(key) is not None:
-                target = _parse_native_addr(link.get(key))
-        syms = manifest.get("symbols") if isinstance(manifest.get("symbols"), dict) else None
-        if target is None and isinstance(syms, dict):
-            for name in ("cd_read_link_entry", "link_entry", "slot_03_body"):
-                if target is None and syms.get(name) is not None:
-                    v = syms.get(name)
-                    if isinstance(v, int) and not isinstance(v, bool):
-                        target = v
-                    else:
-                        target = _parse_native_addr(v)
-        labs = manifest.get("labels") if isinstance(manifest.get("labels"), dict) else None
-        if target is None and isinstance(labs, dict) and labs.get("cd_read_link_entry") is not None:
-            target = _parse_native_addr(labs.get("cd_read_link_entry"))
+        # Target resolution is centralized in _native_link_entry_addr (single
+        # BOOT-gated resolver; no duplicated alias key lists here). A range
+        # violation raises BLOCKED out of the expected-target computation,
+        # which stays fail-closed for every verify_d_rom_slot_targets caller.
+        target = _native_link_entry_addr(manifest)
         if slot is not None:
             out[slot] = target
     return out
@@ -1562,31 +1550,72 @@ def _verify_native_slot02_two_stage(data, manifest):
     return table_target, proto
 
 
+# BOOT-region bounds for the experimental link callee (parity with the
+# builder's _redirect_slot03_to_link: $F000 <= entry < $FFF6, keeping the
+# callee clear of the API table/fallback area and the vectors).
+_LINK_BOOT_START = 0xF000
+_LINK_BOOT_VECTORS = 0xFFF6
+
+
+def _require_link_boot_range(addr) -> int:
+    """Fail-closed BOOT-range gate shared by every link_entry resolver path.
+
+    A self-looping table target (e.g. $E009 -> JMP $E009) or any address
+    outside BOOT is never the real link helper: BLOCKED, never accepted.
+    """
+    if (isinstance(addr, int) and not isinstance(addr, bool)
+            and _LINK_BOOT_START <= addr < _LINK_BOOT_VECTORS):
+        return addr
+    raise ValueError("BLOCKED: native cd_read_link entry %r outside BOOT $F000-$FFF5 "
+                     "(self-loop/fallback addresses are never real processing)" % (addr,))
+
+
+def _checked_link_addr(raw):
+    """Parse one link_entry candidate (pure).
+
+    None when absent/unparsable (the caller tries the next alias source);
+    the BOOT address when valid; BLOCKED raise when parsable but outside
+    BOOT (a self-loop or fallback address hiding in an alias is refused).
+    """
+    if raw is None or isinstance(raw, bool):
+        return None
+    addr = raw if isinstance(raw, int) else _parse_native_addr(raw)
+    if addr is None:
+        return None
+    return _require_link_boot_range(addr)
+
+
 def _native_link_entry_addr(manifest):
     """Native $03 callee: cd_read_link.link_entry (pure, read-only).
 
     Canonical source is cd_read_link.link_entry; labels/symbols
-    cd_read_link_entry is accepted as the link-derived alias. None when
-    the manifest declares the slot without identifying its callee.
+    cd_read_link_entry and the remaining block aliases are accepted as
+    link-derived aliases. Every path enforces the BOOT range (a parsable
+    out-of-BOOT address raises BLOCKED instead of falling through). None
+    only when the manifest declares the slot without identifying any callee.
     """
     if not isinstance(manifest, dict):
         return None
     link = manifest.get(NATIVE_CD_READ_KEY)
-    if isinstance(link, dict) and link.get("link_entry") is not None:
-        addr = _parse_native_addr(link.get("link_entry"))
-        if addr is not None and 0xE000 <= addr <= 0xFFFF:
-            return addr
-        return None
-    lab = _manifest_label_addr(manifest, "cd_read_link_entry")
-    if lab is not None:
-        return lab
     if isinstance(link, dict):
+        addr = _checked_link_addr(link.get("link_entry"))
+        if addr is not None:
+            return addr
         for key in ("body", "routine", "target", "entry_target", "callee",
                     "impl_entry", "real_entry", "proto_entry"):
-            if link.get(key) is not None:
-                addr = _parse_native_addr(link.get(key))
-                if addr is not None and 0xE000 <= addr <= 0xFFFF:
-                    return addr
+            addr = _checked_link_addr(link.get(key))
+            if addr is not None:
+                return addr
+    labs = manifest.get("labels") if isinstance(manifest.get("labels"), dict) else None
+    if isinstance(labs, dict) and "cd_read_link_entry" in labs:
+        addr = _checked_link_addr(labs.get("cd_read_link_entry"))
+        if addr is not None:
+            return addr
+    syms = manifest.get("symbols") if isinstance(manifest.get("symbols"), dict) else None
+    if isinstance(syms, dict) and "cd_read_link_entry" in syms:
+        addr = _checked_link_addr(syms.get("cd_read_link_entry"))
+        if addr is not None:
+            return addr
     return None
 
 
@@ -1596,9 +1625,12 @@ def _verify_native_slot03_direct(data, manifest):
     Triple-link wiring: the slot table entry $E009 holds JMP
     cd_read_link_entry (the BOOT-region CD_READ_LINK_V1 helper). The wired
     entry keeps the link's EXPERIMENTAL contract only; genuine $03 ABI
-    stays UNKNOWN/BLOCKED. Raises BLOCKED when the manifest declares the
-    slot without identifying the link, on a wrong table dest, or on a fake
-    RTS / stub body. Returns (table_target, link_entry).
+    stays UNKNOWN/BLOCKED. The callee must resolve inside BOOT
+    ($F000 <= entry < $FFF6) on every resolver path, so a self-loop such
+    as $E009 -> JMP $E009 is refused. Raises BLOCKED when the manifest
+    declares the slot without identifying the link, outside BOOT, on a
+    wrong table dest, or on a fake RTS / stub body.
+    Returns (table_target, link_entry).
     """
     data = bytes(data)
     link = _native_link_entry_addr(manifest)

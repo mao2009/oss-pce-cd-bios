@@ -18,7 +18,8 @@ $02 (proto state) and $33 (display fragment), but any sector transfer still need
 test-seeded `$2400-$2402` plus a direct-JSR helper outside any slot. After: a test
 payload calls `JSR $E006` (proto computes base state), then `JSR $E009` (link
 consumes that state with block/window inputs -- no test pre-seeding of `$2400`),
-which issues a real READ(6) transferring exactly 2048 bytes to `$2800`, then
+which issues a real READ(6) of the sector AFTER the boot sector, transferring
+exactly 2048 bytes to `$2800` (so a missing copy cannot compare equal), then
 `JSR $E099` (dspoff), then halts clean. Order markers prove 02-then-03-then-33,
 SP/MPRs intact, cold+warm repeatable.
 

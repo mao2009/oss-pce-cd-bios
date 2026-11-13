@@ -72,6 +72,22 @@ def _triple_manifest(rom_sha, **overrides):
     return man
 
 
+def _triple_rom_bytes_with_table(link_target):
+    """Full 256 KiB ROM whose $E009 table entry JMPs to link_target."""
+    data = bytearray(_triple_rom())
+    data[0x03 * 3:0x03 * 3 + 3] = bytes((0x4C, link_target & 0xFF, (link_target >> 8) & 0xFF))
+    return bytes(data)
+
+
+def _triple_manifest_with_link(rom_sha, link_entry):
+    """Triple manifest whose every link_entry source agrees on link_entry."""
+    man = _triple_manifest(rom_sha)
+    man["cd_read_link"] = dict(man["cd_read_link"], link_entry=link_entry)
+    man["labels"] = dict(man["labels"], cd_read_link_entry=link_entry)
+    man["symbols"] = dict(man["symbols"], cd_read_link_entry=link_entry)
+    return man
+
+
 def _triple_rom(api_slot_02=SLOT02_ADDR, proto=PROTO_ADDR,
                 body33=BODY33_ADDR, link=LINK_ADDR):
     data = bytearray(M.ROM_BYTES)
@@ -205,7 +221,9 @@ class TripleModelTests(unittest.TestCase):
 
     def test_link_equals_stub_rejected(self):
         # Table and manifest agree on the stub itself: the wiring claims the
-        # unimplemented halt as real processing -> BLOCKED as stub equality.
+        # unimplemented halt as real processing -> BLOCKED. The stub lives
+        # in the fallback area, so the BOOT-range gate refuses first (the
+        # stub-equality check behind it stays as defense-in-depth).
         rom = bytearray(_triple_rom())
         rom[0x03 * 3:0x03 * 3 + 3] = bytes((0x4C, UNIMPL_ADDR & 0xFF, UNIMPL_ADDR >> 8))
         rom = bytes(rom)
@@ -216,7 +234,7 @@ class TripleModelTests(unittest.TestCase):
         man["labels"]["cd_read_link_entry"] = UNIMPL_ADDR
         with self.assertRaises(ValueError) as cm:
             M.verify_d_rom_slot_targets(rom, man)
-        self.assertIn("unimplemented stub", str(cm.exception))
+        self.assertIn("BLOCKED", str(cm.exception))
 
     def test_missing_link_entry_blocked(self):
         rom = _triple_rom()
@@ -236,6 +254,68 @@ class TripleModelTests(unittest.TestCase):
         man = _triple_manifest(hashlib.sha256(rom).hexdigest())
         with self.assertRaises(ValueError):
             M.verify_d_rom_slot_targets(rom, man)
+
+
+class LinkBootRangeTests(unittest.TestCase):
+    """MAJOR-2: link_entry must resolve inside BOOT ($F000 <= entry < $FFF6).
+
+    Every resolver path (manifest block, labels alias, symbols alias) is
+    gated; a self-looping or out-of-region table target is BLOCKED even when
+    the manifest and the ROM agree on it. Existing fake-RTS / stub-equality /
+    wiring checks are unaffected (covered by TripleModelTests).
+    """
+
+    def test_self_loop_rejected(self):
+        # $E009 -> JMP $E009 agrees everywhere yet loops forever instead of
+        # running the link helper.
+        rom = _triple_rom_bytes_with_table(0xE009)
+        man = _triple_manifest_with_link(hashlib.sha256(rom).hexdigest(), 0xE009)
+        with self.assertRaisesRegex(ValueError, "BLOCKED"):
+            M.verify_d_rom_slot_targets(rom, man)
+
+    def test_below_boot_rejected(self):
+        rom = _triple_rom_bytes_with_table(0xE500)
+        man = _triple_manifest_with_link(hashlib.sha256(rom).hexdigest(), 0xE500)
+        with self.assertRaisesRegex(ValueError, "BLOCKED"):
+            M.verify_d_rom_slot_targets(rom, man)
+
+    def test_vectors_and_above_rejected(self):
+        for addr in (0xFFF6, 0xFFFF):
+            with self.subTest(addr=hex(addr)):
+                rom = _triple_rom_bytes_with_table(addr)
+                man = _triple_manifest_with_link(hashlib.sha256(rom).hexdigest(), addr)
+                with self.assertRaisesRegex(ValueError, "BLOCKED"):
+                    M.verify_d_rom_slot_targets(rom, man)
+
+    def test_labels_alias_cannot_evade_range(self):
+        # Block declares the slot without a target; only the labels alias
+        # names an out-of-BOOT address -> still BLOCKED.
+        rom = _triple_rom_bytes_with_table(0xE500)
+        man = _triple_manifest(hashlib.sha256(rom).hexdigest())
+        del man["cd_read_link"]["link_entry"]
+        man["labels"]["cd_read_link_entry"] = 0xE500
+        man["symbols"].pop("cd_read_link_entry", None)
+        with self.assertRaisesRegex(ValueError, "BLOCKED"):
+            M.verify_d_rom_slot_targets(rom, man)
+
+    def test_symbols_alias_cannot_evade_range(self):
+        rom = _triple_rom_bytes_with_table(0xE500)
+        man = _triple_manifest(hashlib.sha256(rom).hexdigest())
+        del man["cd_read_link"]["link_entry"]
+        man["labels"].pop("cd_read_link_entry", None)
+        man["symbols"]["cd_read_link_entry"] = 0xE500
+        with self.assertRaisesRegex(ValueError, "BLOCKED"):
+            M.verify_d_rom_slot_targets(rom, man)
+
+    def test_boot_bounds_still_accepted(self):
+        for addr in (0xF000, 0xF1A0, 0xFFF5):
+            with self.subTest(addr=hex(addr)):
+                rom = bytearray(_triple_rom_bytes_with_table(addr))
+                rom[addr - 0xE000:addr - 0xE000 + 2] = bytes((0x08, 0x48))
+                rom = bytes(rom)
+                man = _triple_manifest_with_link(hashlib.sha256(rom).hexdigest(), addr)
+                M.verify_d_rom_bytes(rom, man)
+                M.verify_d_rom_slot_targets(rom, man)  # no raise
 
 
 if __name__ == "__main__":
