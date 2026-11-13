@@ -85,7 +85,65 @@ spin:
 payload_halt:
     bra payload_halt
 .else
-.error "SEQ, SEQ23 or SPIN2 is required"
+.ifdef SEQ4A
+.ifndef SEQ4A_SLOT
+.error "SEQ4A requires -DSEQ4A_SLOT (slot-$4A table entry)"
+.endif
+.ifndef SEQ3
+.error "SEQ4A requires -DSEQ3 (slot-$03 table entry)"
+.endif
+payload_entry:
+    lda #$AA
+    ldx #$11
+    ldy #$22
+    jsr SEQ4A_SLOT
+    lda #$CC
+    ldx #$11
+    ldy #$22
+    jsr SEQ3
+    lda #MARK
+    sta PRES
+payload_halt:
+    bra payload_halt
+.else
+.ifdef SEQ234A
+.ifndef SEQ2
+.error "SEQ234A requires -DSEQ2 (slot-$02 table entry)"
+.endif
+.ifndef SEQ33
+.error "SEQ234A requires -DSEQ33 (slot-$33 table entry)"
+.endif
+.ifndef SEQ4A_SLOT
+.error "SEQ234A requires -DSEQ4A_SLOT (slot-$4A table entry)"
+.endif
+.ifndef SEQ4
+.error "SEQ234A requires -DSEQ4 (slot-$03 table entry)"
+.endif
+payload_entry:
+    lda #$AA
+    ldx #$11
+    ldy #$22
+    jsr SEQ2
+    lda #$CC
+    ldx #$11
+    ldy #$22
+    jsr SEQ33
+    lda #$DD
+    ldx #$11
+    ldy #$22
+    jsr SEQ4A_SLOT
+    lda #$EE
+    ldx #$11
+    ldy #$22
+    jsr SEQ4
+    lda #MARK
+    sta PRES
+payload_halt:
+    bra payload_halt
+.else
+.error "SEQ, SEQ23, SPIN2, SEQ4A or SEQ234A is required"
+.endif
+.endif
 .endif
 .endif
 .endif

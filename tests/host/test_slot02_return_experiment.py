@@ -50,6 +50,10 @@ class ProductionWiringGuardTests(unittest.TestCase):
         self.assertNotIn(0x33, overrides())
         self.assertFalse((ROOT / "src" / "overrides" / "slot_33.s").exists())
 
+    def test_no_slot_4A_override_on_disk(self):
+        self.assertNotIn(0x4A, overrides())
+        self.assertFalse((ROOT / "src" / "overrides" / "slot_4A.s").exists())
+
     def test_experiment_stub_lives_outside_overrides(self):
         stub = ROOT / "tests" / "integration" / "slot02_return_stub.s"
         self.assertTrue(stub.is_file())
@@ -178,13 +182,17 @@ class MultiSlotPatchTests(unittest.TestCase):
 
     def test_allowlist_rejects_nonlisted_combinations(self):
         from build_slot02_return_loader import ALLOWED_EXPERIMENTS, build_slot02_return_bios
-        self.assertEqual(ALLOWED_EXPERIMENTS, {(0x02,): 756, (0x02, 0x33): 758})
+        self.assertEqual(ALLOWED_EXPERIMENTS, {(0x02,): 756, (0x02, 0x33): 758, (0x4A,): 793, (0x02, 0x33, 0x4A): 793})
         bad = [((0x02, 0x02), 756),  # duplicate
                ((0x33,), 758),  # unlisted set
                ((0x33, 0x02), 758),  # unlisted order
                ((0x02, 0x33), 756),  # issue mismatch
                ((0x02,), 999),  # unknown issue
-               ((), 756)]  # empty
+               ((), 756),  # empty
+               ((0x4A, 0x02), 793),  # unlisted order
+               ((0x02, 0x4A), 793),  # unlisted set
+               ((0x4A,), 756),  # issue mismatch
+               ((0x02, 0x33, 0x4A), 758)]  # issue mismatch
         for slots, issue in bad:
             with self.assertRaises(ValueError, msg=f"{slots}/{issue}"):
                 build_slot02_return_bios(Path("/nonexistent"), Path("/tmp/nonexistent-out-allow"),

@@ -190,6 +190,8 @@ RECEIPT_SCHEMA = "slot02-return-synthetic-receipt/v2"
 RECEIPT_VARIANTS = {
     ("slot02ret", (0x02,), 756),
     ("slot02-33ret", (0x02, 0x33), 758),
+    ("slot4aret", (0x4A,), 793),
+    ("slot02-33-4aret", (0x02, 0x33, 0x4A), 793),
 }
 _SHA256_RE = None  # compiled lazily to keep imports light
 
@@ -584,8 +586,14 @@ def classify_simulated(records, stub_addr, expect_prefix=((2, "JSR"),)):
             f"halts {[cold_run['reason'], warm_run['reason']]}")
 
 
-def judge_seq(tmp, probe, rom, base_addrs, stub_addr, name, defines, budget, on_base: bool):
-    """Strict synthetic judge for one SEQ/SPIN2 case (raises on mismatch)."""
+def judge_seq(tmp, probe, rom, base_addrs, stub_addr, name, defines, budget, on_base: bool,
+              return_slot: int = 2):
+    """Strict synthetic judge for one SEQ/SPIN2/SEQ4A case (raises on mismatch).
+
+    `return_slot` is the slot expected to return on the experiment ROM (and to
+    be the only call on the base control / budget case). The halting tail call
+    is slot 3 ($E009) in SEQ/SEQ4A payloads.
+    """
     code = build_seq_payload(tmp, name, defines)
     body = L.body_for(code, 1)
     # PUBLIC-format loaders take 0..7 MPR indices (mapped to $80+index in
@@ -613,32 +621,33 @@ def judge_seq(tmp, probe, rom, base_addrs, stub_addr, name, defines, budget, on_
             if len(calls) != 1:
                 fails.append(f"{cycle}: control expects 1 APICALL, got {len(calls)}")
                 continue
-            if E.classify_apicall(calls[0], stub_addr) != "JSR" or calls[0]["slot"] != 2:
-                fails.append(f"{cycle}: control call is not slot-2 JSR")
-            halt_ok, halt_why = check_expected_halt(run, reason="api_unimplemented", x=2, pc=stub_addr)
+            if E.classify_apicall(calls[0], stub_addr) != "JSR" or calls[0]["slot"] != return_slot:
+                fails.append(f"{cycle}: control call is not slot-{return_slot} JSR")
+            halt_ok, halt_why = check_expected_halt(run, reason="api_unimplemented", x=return_slot, pc=stub_addr)
             if not halt_ok:
                 fails.append(f"{cycle}: control halt rejected: {halt_why}")
         elif name.startswith("spin2"):
-            if len(calls) != 1 or calls[0]["slot"] != 2:
-                fails.append(f"{cycle}: expected single slot-2 call, got {len(calls)}")
+            if len(calls) != 1 or calls[0]["slot"] != return_slot:
+                fails.append(f"{cycle}: expected single slot-{return_slot} call, got {len(calls)}")
             budget_ok, budget_why = check_expected_budget(run)
             if not budget_ok:
                 fails.append(f"{cycle}: post-return spin must be budget: {budget_why}")
         else:
-            # SEQ: slot 2 returns (experiment), slot 3 is unimplemented so the
-            # run must end at the stub halt with X=3. The first return is
+            # SEQ/SEQ4A: first slot returns (experiment), slot 3 is unimplemented
+            # so the run must end at the stub halt with X=3. The first return is
             # proven by resumption (A marker) and by SP restoration:
             # the second call starts with the same SP as the first.
             seq = call_sequence(calls, stub_addr)
-            if seq != [(2, "JSR"), (3, "JSR")]:
-                fails.append(f"{cycle}: sequence {seq} != [(2, JSR), (3, JSR)]")
+            expected_seq = [(return_slot, "JSR"), (3, "JSR")]
+            if seq != expected_seq:
+                fails.append(f"{cycle}: sequence {seq} != {expected_seq}")
                 continue
             if calls[0]["caller_a"] != 0xAA or calls[1]["caller_a"] != 0xCC:
                 fails.append(f"{cycle}: resumption marker missing {calls[0].get('caller_a')}/{calls[1].get('caller_a')}")
             if calls[0]["caller_x"] != 0x11 or calls[1]["caller_x"] != 0x11:
                 fails.append(f"{cycle}: entry regs clobbered")
             if calls[1]["sp_before"] != calls[0]["sp_before"]:
-                fails.append(f"{cycle}: SP not restored by slot-2 return")
+                fails.append(f"{cycle}: SP not restored by slot-{return_slot} return")
             halt_ok, halt_why = check_expected_halt(run, reason="api_unimplemented", x=3, pc=stub_addr)
             if not halt_ok:
                 fails.append(f"{cycle}: expected stub halt X=3 at stub: {halt_why}")
@@ -717,6 +726,7 @@ def main():
     parser.add_argument("--commercial-output", type=Path)
     parser.add_argument("--commercial-auto-loader", action="store_true")
     parser.add_argument("--commercial-loader-format", choices=("public", "dev"), default="public")
+    parser.add_argument("--commercial-variant", choices=("slot02-33ret", "slot4aret", "slot02-33-4aret"), default="slot02-33ret")
     args = parser.parse_args()
 
     has_commercial_args = (
@@ -765,12 +775,35 @@ def main():
         except ValueError as error:
             raise SystemExit(str(error))
         defines = ["-D", "IPL_PUBLIC"] if args.commercial_loader_format == "public" else []
-        slots = (0x02, 0x33)
-        prefix = ((2, "JSR"), (51, "JSR"))
+        if args.commercial_variant == "slot02-33ret":
+            slots = (0x02, 0x33)
+            prefix = ((2, "JSR"), (51, "JSR"))
+            variant = "slot02-33ret"
+            issue = 758
+            assumption = ("SIMULATED slots $02+$33 RTS return (regs/flags/MPR preserved); "
+                          "conditioned on this fabrication, NOT genuine CD_BASE/EX_DSPOFF, "
+                          "NOT compatibility")
+        elif args.commercial_variant == "slot4aret":
+            slots = (0x4A,)
+            prefix = ((74, "JSR"),)
+            variant = "slot4aret"
+            issue = 793
+            assumption = ("SIMULATED slot $4A RTS return (regs/flags/MPR preserved); "
+                          "conditioned on this fabrication, NOT genuine KEY_BIOS/EX_MEMOPEN, "
+                          "NOT compatibility")
+        else:
+            slots = (0x02, 0x33, 0x4A)
+            prefix = ((2, "JSR"), (51, "JSR"), (74, "JSR"))
+            variant = "slot02-33-4aret"
+            issue = 793
+            assumption = ("SIMULATED slots $02+$33+$4A RTS return (regs/flags/MPR preserved); "
+                          "conditioned on this fabrication, NOT genuine CD_BASE/EX_DSPOFF/KEY_BIOS, "
+                          "NOT compatibility")
+        comm_variant = f"{variant}-comm"
         try:
             base_rom, exp_rom, _addrs = build_slot02_return_bios(
-                original, out, sel, args.mode, "slot02-33ret-comm",
-                defines, private_input=True, slots=slots, issue=758)
+                original, out, sel, args.mode, comm_variant,
+                defines, private_input=True, slots=slots, issue=issue)
         except Exception as error:
             raise SystemExit(f"FAIL commercial experiment loader build: {error}")
         try:
@@ -781,11 +814,11 @@ def main():
         # code/HEAD) is required; stale or missing receipts BLOCK the
         # commercial run instead of reusing an unrelated pass.
         try:
-            check_synthetic_receipt(out, "slot02-33ret", slots, args.mode, 758)
+            check_synthetic_receipt(out, variant, slots, args.mode, issue)
         except ValueError as error:
             raise SystemExit(str(error))
         from build_dev_ipl_loader_bios import parse_labels as _parse
-        base_labels = out / "ipl-loader-bios-slot02-33ret-comm-base.lbl"
+        base_labels = out / f"ipl-loader-bios-{comm_variant}-base.lbl"
         try:
             full = _parse(base_labels, ("cd_halt_fail", "cd_unexpected_interrupt", "api_unimplemented",
                                          "reset"))
@@ -803,7 +836,7 @@ def main():
             if full["reset"] in (full["cd_halt_fail"], full["cd_unexpected_interrupt"],
                                    full["api_unimplemented"]):
                 raise SystemExit("FAIL commercial labels collision for dummy halt")
-            labels_path = out / "commercial-labels-slot02-33ret-comm.labels"
+            labels_path = out / f"commercial-labels-{comm_variant}.labels"
             labels_path.write_text(
                 f"cd_halt_ok {full['reset']:04x}\n"
                 f"cd_halt_fail {full['cd_halt_fail']:04x}\n"
@@ -834,9 +867,8 @@ def main():
                       f"slot={c['slot']} delta={c['sp_delta']} "
                       f"method={E.classify_apicall(c, exp_stub)} return={c.get('stack_check')}")
         evidence = {"verdict": verdict, "detail": detail,
-                    "assumption": ("SIMULATED slots $02+$33 RTS return (regs/flags/MPR preserved); "
-                                   "conditioned on this fabrication, NOT genuine CD_BASE/EX_DSPOFF, "
-                                   "NOT compatibility"),
+                    "assumption": assumption,
+                    "variant": variant, "slots": [f"${s:02X}" for s in slots], "issue": issue,
                     "apicalls": records["APICALL"],
                     "runs": [{k: r[k] for k in ("cycle", "reason", "pc", "x", "halt_confirmed", "step")} |
                              {"apicall_truncated": r.get("apicall_truncated", False)}
@@ -860,17 +892,34 @@ def main():
         _base23, exp23, _addrs23 = build_slot02_return_bios(
             original, out, L.SEL, args.mode, "slot02-33ret", defines,
             slots=(0x02, 0x33), issue=758)
+        _base4a, exp4a, _addrs4a = build_slot02_return_bios(
+            original, out, L.SEL, args.mode, "slot4aret", defines,
+            slots=(0x4A,), issue=793)
+        _base234a, exp234a, _addrs234a = build_slot02_return_bios(
+            original, out, L.SEL, args.mode, "slot02-33-4aret", defines,
+            slots=(0x02, 0x33, 0x4A), issue=793)
         from build_dev_ipl_loader_bios import parse_labels as _parse
         full = _parse(out / "ipl-loader-bios-slot02ret-base.lbl",
                       ("cd_halt_fail", "cd_unexpected_interrupt", "api_unimplemented"))
         full23 = _parse(out / "ipl-loader-bios-slot02-33ret-base.lbl",
                         ("cd_halt_fail", "cd_unexpected_interrupt", "api_unimplemented"))
+        full4a = _parse(out / "ipl-loader-bios-slot4aret-base.lbl",
+                        ("cd_halt_fail", "cd_unexpected_interrupt", "api_unimplemented"))
+        full234a = _parse(out / "ipl-loader-bios-slot02-33-4aret-base.lbl",
+                          ("cd_halt_fail", "cd_unexpected_interrupt", "api_unimplemented"))
         stub_addr = full["api_unimplemented"]
         stub23 = full23["api_unimplemented"]
+        stub4a = full4a["api_unimplemented"]
+        stub234a = full234a["api_unimplemented"]
         E.verify_stub_bytes(exp_rom, stub_addr)
         E.verify_stub_bytes(base_rom, stub_addr)
         E.verify_stub_bytes(exp23, stub23)
-        slot2, slot3, slot33 = entry_of(0x02), entry_of(0x03), entry_of(0x33)
+        E.verify_stub_bytes(_base23, stub23)
+        E.verify_stub_bytes(exp4a, stub4a)
+        E.verify_stub_bytes(_base4a, stub4a)
+        E.verify_stub_bytes(exp234a, stub234a)
+        E.verify_stub_bytes(_base234a, stub234a)
+        slot2, slot3, slot33, slot4a = entry_of(0x02), entry_of(0x03), entry_of(0x33), entry_of(0x4A)
         judge_seq(tmp, probe, exp_rom, full, stub_addr, "seq_return",
                   [f"-DSEQ", f"-DSEQ2=${slot2:04X}", f"-DSEQ3=${slot3:04X}"], 20_000_000, False)
         print("PASS seq_return cold/warm: slot2 JSR returned, slot3 JSR observed in order, SP restored, stub halt X=3")
@@ -892,10 +941,27 @@ def main():
                     20_000_000, [(2, "JSR"), (51, "JSR"), (3, "JSR")],
                     [0xAA, 0xCC, 0xDD], 3)
         print("PASS seq23_both cold/warm: both patches return, third call observed, stub halt X=3")
+        # Slot $4A returning experiment (Issue #793, DEV_EXPERIMENTAL/SIMULATED).
+        judge_seq(tmp, probe, exp4a, full4a, stub4a, "seq4a_return",
+                  [f"-DSEQ4A", f"-DSEQ4A_SLOT=${slot4a:04X}", f"-DSEQ3=${slot3:04X}"],
+                  20_000_000, False, return_slot=0x4A)
+        print("PASS seq4a_return cold/warm: slot4A JSR returned, slot3 JSR observed in order, SP restored, stub halt X=3")
+        judge_seq(tmp, probe, _base4a, full4a, stub4a, "seq4a_control",
+                  [f"-DSEQ4A", f"-DSEQ4A_SLOT=${slot4a:04X}", f"-DSEQ3=${slot3:04X}"],
+                  20_000_000, True, return_slot=0x4A)
+        print("PASS seq4a_control cold/warm: same payload on base ROM halts at stub X=$4A with 1 APICALL")
+        seq234a = [f"-DSEQ234A", f"-DSEQ2=${slot2:04X}", f"-DSEQ33=${slot33:04X}",
+                   f"-DSEQ4A_SLOT=${slot4a:04X}", f"-DSEQ4=${slot3:04X}"]
+        judge_seq23(tmp, probe, exp234a, full234a, stub234a, "seq234a_both", seq234a,
+                    20_000_000, [(2, "JSR"), (51, "JSR"), (74, "JSR"), (3, "JSR")],
+                    [0xAA, 0xCC, 0xDD, 0xEE], 3)
+        print("PASS seq234a_both cold/warm: slots 2/33/4A return, fourth call observed, stub halt X=3")
         receipt1 = write_synthetic_receipt(out, "slot02ret", (0x02,), args.mode, exp_rom, 756)
         receipt2 = write_synthetic_receipt(out, "slot02-33ret", (0x02, 0x33), args.mode, exp23, 758)
-        print(f"PASS synthetic receipts written: {receipt1.name}, {receipt2.name}")
-    print("PASS synthetic slot02+33-return experiment controls (two-return instrument verified)")
+        receipt3 = write_synthetic_receipt(out, "slot4aret", (0x4A,), args.mode, exp4a, 793)
+        receipt4 = write_synthetic_receipt(out, "slot02-33-4aret", (0x02, 0x33, 0x4A), args.mode, exp234a, 793)
+        print(f"PASS synthetic receipts written: {receipt1.name}, {receipt2.name}, {receipt3.name}, {receipt4.name}")
+    print("PASS synthetic slot02/33/4A return experiment controls verified")
     return 0
 
 
