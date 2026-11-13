@@ -613,6 +613,61 @@ def check_embedded_selection_vs_executed(manifest: dict, executed: dict | None) 
         raise ValueError("BLOCKED: embedded media identity != executed medium identity")
 
 
+def read_ipl_sel_from_built_rom(rom_bytes: bytes, manifest: dict, variant: str) -> int:
+    """Read the IPL SEL (INDEX01 LBA) bound to a built A/B/C ROM (pure).
+
+    Issue #789 MEDIUM: A/B/C selection must be proven from the actually
+    generated ROM content, never from a test constant passed to the builder.
+    The builder records the SEL it assembled with (A: manifest
+    "ipl_sel_lba" int; B/C: manifest "ipl_sel" "$XXXX (synthetic)" note) and
+    binds it to the ROM bytes via manifest "rom_sha256". This helper verifies
+    the hash (catches post-build byte tampering that would change the
+    assembled IPL_SEL immediates) and parses the recorded SEL (catches a
+    rebuild/swap with a different SEL). Redacted/private manifests
+    ("ipl_sel_lba_redacted", "redacted (private media)") are BLOCKED (cannot
+    prove a synthetic SEL). Returns the SEL int (0..0xFFFF).
+
+    Track is NOT embedded in IPL ROMs (ipl_loader_rom.s takes only IPL_SEL;
+    track is a property of the executed medium's first MODE1 track,
+    validated at runtime by successful IPL boot). Callers must state that
+    A/B/C track is INFERRED from successful stub arrival on the executed
+    track (RUN halt at the expected stub with the expected X), never
+    OBSERVED from ROM bytes; only LBA is ROM-OBSERVED here.
+    """
+    if variant not in ("A", "B", "C"):
+        raise ValueError(f"BLOCKED: bad IPL variant {variant!r} (want A/B/C)")
+    if not isinstance(rom_bytes, (bytes, bytearray)):
+        raise ValueError(f"BLOCKED: variant {variant} ROM bytes unreadable")
+    if not isinstance(manifest, dict):
+        raise ValueError(f"BLOCKED: variant {variant} manifest is not an object")
+    sha = manifest.get("rom_sha256")
+    if not isinstance(sha, str) or not _SHA256_RE.match(sha):
+        raise ValueError(f"BLOCKED: variant {variant} manifest rom_sha256 required")
+    import hashlib as _hl
+    if _hl.sha256(bytes(rom_bytes)).hexdigest() != sha:
+        raise ValueError(f"BLOCKED: variant {variant} ROM hash != manifest rom_sha256 "
+                         "(post-build tampering or swapped ROM)")
+    if manifest.get("private_media_used") is True:
+        raise ValueError(f"BLOCKED: variant {variant} manifest is private-media redacted; "
+                         "cannot prove a synthetic SEL")
+    if variant == "A":
+        if "ipl_sel_lba_redacted" in manifest:
+            raise ValueError("BLOCKED: variant A manifest SEL redacted; cannot prove synthetic SEL")
+        sel = manifest.get("ipl_sel_lba")
+        if type(sel) is not int or not 0 <= sel <= 0xFFFF:
+            raise ValueError(f"BLOCKED: variant A manifest ipl_sel_lba bad {sel!r}")
+        return sel
+    note = manifest.get("ipl_sel")
+    if not isinstance(note, str):
+        raise ValueError(f"BLOCKED: variant {variant} manifest ipl_sel missing {note!r}")
+    import re as _re
+    m = _re.fullmatch(r"\$([0-9A-Fa-f]{4}) \(synthetic\)", note.strip())
+    if not m:
+        raise ValueError(f"BLOCKED: variant {variant} manifest ipl_sel not synthetic {note!r} "
+                         "(redacted/private or malformed)")
+    return int(m.group(1), 16)
+
+
 def verify_matched_selection(*, d_manifest: dict, abc_sels: list,
                              unified_code: bytes, executed: dict | None) -> None:
     """Verify A/B/C/D matched-selection on one synthetic medium (pure).

@@ -305,14 +305,33 @@ class MatchedSelectionRealCoreTests(unittest.TestCase):
                                                 "g5c-unified", defines, private_input=False,
                                                 slots=(0x02, 0x33), issue=758)
         # Mechanically verify matched inputs (same CUE/BIN/track/LBA/payload/selection).
+        # MEDIUM #790: A/B/C LBA comes from the actually generated ROM bytes
+        # bound to their builder manifests (hash-verified), never from the SEL
+        # constant passed to the builders. Track is NOT embedded in IPL ROMs
+        # (ipl_loader_rom.s takes only IPL_SEL); A/B/C track below is the
+        # executed track for the static consistency check and is recorded as
+        # INFERRED post-run from successful IPL boot (stub arrival with the
+        # expected X), never OBSERVED pre-run from ROM bytes. Only LBA is
+        # ROM-OBSERVED here; D track/LBA/identity are ROM-OBSERVED via its
+        # embedded selection_contract.
         import g5_progress_model as M
-        abc_sels = [{"variant": "A", "lba": SEL, "track": TRACK},
-                    {"variant": "B", "lba": SEL, "track": TRACK},
-                    {"variant": "C", "lba": SEL, "track": TRACK}]
+        import json as _json
+        def _read_abc_sel(variant, rom_path, manifest_path):
+            man = _json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+            return M.read_ipl_sel_from_built_rom(Path(rom_path).read_bytes(), man, variant)
+        sel_a = _read_abc_sel("A", rom_a, out_abc / "manifest-g5a-unified.json")
+        sel_b = _read_abc_sel("B", exp_b, out_abc / "manifest-g5b-unified-experiment.json")
+        sel_c = _read_abc_sel("C", exp_c, out_abc / "manifest-g5c-unified-experiment.json")
+        abc_sels = [{"variant": "A", "lba": sel_a, "track": selected["track"]},
+                    {"variant": "B", "lba": sel_b, "track": selected["track"]},
+                    {"variant": "C", "lba": sel_c, "track": selected["track"]}]
         M.verify_matched_selection(d_manifest=manifest, abc_sels=abc_sels,
                                    unified_code=code,
                                    executed={"lba": selected["lba"], "track": selected["track"],
                                              "identity": selected["media_identity"]})
+        # Keep the ROM-bound SELs for the post-run table (proves the same
+        # bytes that ran are the ones checked pre-run).
+        cls.abc_sels = abc_sels
         # On-disc payload in BOTH encodings equals the same code bytes.
         from cue_analysis import analyze, user_sector
         from make_cd_image import RAW_BYTES
@@ -333,15 +352,19 @@ class MatchedSelectionRealCoreTests(unittest.TestCase):
         d_labels = out_d / "trace-labels.txt"
         pay_done = pay_syms["payload_done"]
         cls.cases = {}
-        roms = {"A": (rom_a, lab_a_full), "B": (exp_b, None), "C": (exp_c, None), "D": (exp_path, None)}
-        # Resolve B/C full labels (base files carry halt labels).
+        roms = {"A": rom_a, "B": exp_b, "C": exp_c, "D": exp_path}
+        # Resolve full halt labels from the link label files (the builder
+        # return tuple carries only REQUIRED symbols; api_unimplemented lives
+        # in the .lbl link map and is re-parsed here, reusing parse_labels).
+        lab_a = parse_ipl(out_abc / "ipl-loader-bios-g5a-unified.lbl",
+                          ("api_unimplemented", "cd_halt_fail", "cd_unexpected_interrupt"))
         lab_b = parse_ipl(out_abc / "ipl-loader-bios-g5b-unified-base.lbl",
                           ("api_unimplemented", "cd_halt_fail", "cd_unexpected_interrupt"))
         lab_c = parse_ipl(out_abc / "ipl-loader-bios-g5c-unified-base.lbl",
                           ("api_unimplemented", "cd_halt_fail", "cd_unexpected_interrupt"))
-        label_map = {"A": lab_a_full, "B": lab_b, "C": lab_c}
+        label_map = {"A": lab_a, "B": lab_b, "C": lab_c}
         for variant in ("A", "B", "C"):
-            rom, _ = roms[variant]
+            rom = roms[variant]
             lab = label_map[variant]
             lp = cls.work / f"labels-{variant.lower()}.execute"
             lp.write_text(f"cd_halt_ok {pay_done:04x}\n"
@@ -393,9 +416,8 @@ class MatchedSelectionRealCoreTests(unittest.TestCase):
 
     def test_selection_is_matched(self):
         import g5_progress_model as M
-        abc_sels = [{"variant": "A", "lba": SEL, "track": TRACK},
-                    {"variant": "B", "lba": SEL, "track": TRACK},
-                    {"variant": "C", "lba": SEL, "track": TRACK}]
+        # ROM-bound SELs stored pre-run (same bytes that ran), not constants.
+        abc_sels = self.abc_sels
         M.verify_matched_selection(d_manifest=self.manifest_d, abc_sels=abc_sels,
                                    unified_code=self.code,
                                    executed={"lba": self.selected["lba"],

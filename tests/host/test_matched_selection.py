@@ -125,5 +125,129 @@ class MatchedSelectionTests(unittest.TestCase):
             MM.verify_d_rom_slot_targets(bytes(rom), man)
 
 
+def _ipl_manifest_a(sel=265, rom_bytes=b"ROM-A-BYTES"):
+    import hashlib as _hl
+    return {"rom_sha256": _hl.sha256(bytes(rom_bytes)).hexdigest(),
+            "private_media_used": False, "ipl_sel_lba": sel}
+
+
+def _ipl_manifest_bc(sel=265, rom_bytes=b"ROM-BC-BYTES"):
+    import hashlib as _hl
+    return {"rom_sha256": _hl.sha256(bytes(rom_bytes)).hexdigest(),
+            "private_media_used": False,
+            "ipl_sel": "$%04X (synthetic)" % sel}
+
+
+class IplSelFromBuiltRomTests(unittest.TestCase):
+    """MEDIUM #790: A/B/C SEL from ROM-bound manifests, never test constants.
+
+    RED baseline (old test-constant path): passing {"lba": SEL} constants to
+    verify_matched_selection accepts a swapped/mistbuilt ROM silently.
+    GREEN: read_ipl_sel_from_built_rom verifies rom_sha256 (catches
+    post-build byte tampering) and parses the builder-recorded SEL (catches
+    a rebuild/swap with a different SEL); redacted/private/malformed are
+    BLOCKED. Track is NOT ROM-embedded (see helper doc): A/B/C track is
+    INFERRED post-run from successful IPL boot on the executed track, never
+    OBSERVED pre-run from ROM bytes.
+    """
+
+    def test_a_positive(self):
+        rom = b"ROM-A-BYTES"
+        self.assertEqual(M.read_ipl_sel_from_built_rom(rom, _ipl_manifest_a(265, rom), "A"), 265)
+
+    def test_a_lba_tamper_blocked(self):
+        # A rebuilt/swapped with LBA 0 while executed is 265 -> BLOCKED at
+        # the matched-selection gate (not silently passed via constants).
+        rom = b"ROM-A-BYTES"
+        sel = M.read_ipl_sel_from_built_rom(rom, _ipl_manifest_a(0, rom), "A")
+        code = b"\x01\x02\x03"
+        with self.assertRaisesRegex(ValueError, "BLOCKED"):
+            M.verify_matched_selection(d_manifest=_d_manifest(code=code),
+                                       abc_sels=[{"variant": "A", "lba": sel, "track": 1},
+                                                 {"variant": "B", "lba": 265, "track": 1},
+                                                 {"variant": "C", "lba": 265, "track": 1}],
+                                       unified_code=code, executed=_executed())
+
+    def test_b_lba_tamper_blocked(self):
+        rom = b"ROM-B-BYTES"
+        sel = M.read_ipl_sel_from_built_rom(rom, _ipl_manifest_bc(0, rom), "B")
+        code = b"\x01\x02\x03"
+        with self.assertRaisesRegex(ValueError, "BLOCKED"):
+            M.verify_matched_selection(d_manifest=_d_manifest(code=code),
+                                       abc_sels=[{"variant": "A", "lba": 265, "track": 1},
+                                                 {"variant": "B", "lba": sel, "track": 1},
+                                                 {"variant": "C", "lba": 265, "track": 1}],
+                                       unified_code=code, executed=_executed())
+
+    def test_c_lba_tamper_blocked(self):
+        rom = b"ROM-C-BYTES"
+        sel = M.read_ipl_sel_from_built_rom(rom, _ipl_manifest_bc(0, rom), "C")
+        code = b"\x01\x02\x03"
+        with self.assertRaisesRegex(ValueError, "BLOCKED"):
+            M.verify_matched_selection(d_manifest=_d_manifest(code=code),
+                                       abc_sels=[{"variant": "A", "lba": 265, "track": 1},
+                                                 {"variant": "B", "lba": 265, "track": 1},
+                                                 {"variant": "C", "lba": sel, "track": 1}],
+                                       unified_code=code, executed=_executed())
+
+    def test_executed_mismatch_blocked(self):
+        rom = b"ROM-A-BYTES"
+        sel = M.read_ipl_sel_from_built_rom(rom, _ipl_manifest_a(265, rom), "A")
+        code = b"\x01\x02\x03"
+        with self.assertRaisesRegex(ValueError, "BLOCKED"):
+            M.verify_matched_selection(d_manifest=_d_manifest(code=code),
+                                       abc_sels=[{"variant": "A", "lba": sel, "track": 1},
+                                                 {"variant": "B", "lba": 265, "track": 1},
+                                                 {"variant": "C", "lba": 265, "track": 1}],
+                                       unified_code=code,
+                                       executed=_executed(lba=0))
+
+    def test_d_embedded_identity_mismatch_blocked(self):
+        code = b"\x01\x02\x03"
+        man = _d_manifest(code=code)
+        man["selection_contract"]["media_identity"] = {"cue": "other.cue"}
+        with self.assertRaisesRegex(ValueError, "BLOCKED"):
+            M.verify_matched_selection(d_manifest=man, abc_sels=_abc(),
+                                       unified_code=code, executed=_executed())
+
+    def test_payload_mismatch_via_helper_path_blocked(self):
+        rom = b"ROM-A-BYTES"
+        sel = M.read_ipl_sel_from_built_rom(rom, _ipl_manifest_a(265, rom), "A")
+        with self.assertRaisesRegex(ValueError, "BLOCKED"):
+            M.verify_matched_selection(d_manifest=_d_manifest(code=b"\x01\x02\x03"),
+                                       abc_sels=[{"variant": "A", "lba": sel, "track": 1},
+                                                 {"variant": "B", "lba": 265, "track": 1},
+                                                 {"variant": "C", "lba": 265, "track": 1}],
+                                       unified_code=b"\x09\x09", executed=_executed())
+
+    def test_all_match_positive_via_helper(self):
+        rom_a, rom_b, rom_c = b"ROM-A-BYTES", b"ROM-B-BYTES", b"ROM-C-BYTES"
+        code = b"\x01\x02\x03"
+        abc = [{"variant": "A", "lba": M.read_ipl_sel_from_built_rom(rom_a, _ipl_manifest_a(265, rom_a), "A"), "track": 1},
+               {"variant": "B", "lba": M.read_ipl_sel_from_built_rom(rom_b, _ipl_manifest_bc(265, rom_b), "B"), "track": 1},
+               {"variant": "C", "lba": M.read_ipl_sel_from_built_rom(rom_c, _ipl_manifest_bc(265, rom_c), "C"), "track": 1}]
+        M.verify_matched_selection(d_manifest=_d_manifest(code=code),
+                                   abc_sels=abc, unified_code=code,
+                                   executed=_executed())
+
+    def test_rom_hash_mismatch_blocked(self):
+        rom = b"ROM-A-BYTES"
+        man = _ipl_manifest_a(265, b"OTHER-BYTES")
+        with self.assertRaisesRegex(ValueError, "BLOCKED"):
+            M.read_ipl_sel_from_built_rom(rom, man, "A")
+
+    def test_redacted_private_blocked(self):
+        import hashlib as _hl
+        rom = b"ROM-A-BYTES"
+        man = {"rom_sha256": _hl.sha256(rom).hexdigest(), "private_media_used": True,
+               "ipl_sel_lba": 265}
+        with self.assertRaisesRegex(ValueError, "BLOCKED"):
+            M.read_ipl_sel_from_built_rom(rom, man, "A")
+        man_bc = {"rom_sha256": _hl.sha256(rom).hexdigest(), "private_media_used": False,
+                  "ipl_sel": "redacted (private media)"}
+        with self.assertRaisesRegex(ValueError, "BLOCKED"):
+            M.read_ipl_sel_from_built_rom(rom, man_bc, "B")
+
+
 if __name__ == "__main__":
     unittest.main()
