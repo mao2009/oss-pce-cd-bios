@@ -86,6 +86,10 @@ TRAMPOLINE_PAYLOADS = (
 MAX_TRAMPOLINE_PAYLOAD = max(len(p) for p in TRAMPOLINE_PAYLOADS)  # 9 bytes
 
 
+PROBE_OVERLAY_START = 0xE800
+PROBE_OVERLAY_END = 0xEFFF
+
+
 def parse_dev_map_segments(dev_map_text):
     """Parse the ld65 dev.map Segment list.
 
@@ -112,14 +116,23 @@ def parse_dev_map_segments(dev_map_text):
 
 
 def check_trampoline_region(segments, addr, payload_len, rom_data=None):
-    """Common safety validation shared by find_trampoline_address() and
-    validate_trampoline_address(). Raises ValueError if the region is unsafe."""
+    """Common safety validation shared by trampoline placement helpers.
+
+    Raises ValueError if the region is unsafe. Reserved diagnostic probe
+    overlay $E800-$EFFF must never be used by a mutation trampoline.
+    """
     end_addr = addr + payload_len - 1  # inclusive last byte of the trampoline payload
 
     # $F000 boundary: the whole payload region (start AND end) must stay below $F000.
     if addr >= 0xF000 or end_addr >= 0xF000:
         raise ValueError(
             f"trampoline region ${addr:04X}-${end_addr:04X} crosses the $F000 boundary")
+
+    # Reserved probe overlay is off-limits for test trampoline placement.
+    if not (end_addr < PROBE_OVERLAY_START or addr > PROBE_OVERLAY_END):
+        raise ValueError(
+            f"trampoline region ${addr:04X}-${end_addr:04X} intrudes into reserved "
+            f"${PROBE_OVERLAY_START:04X}-${PROBE_OVERLAY_END:04X} probe overlay")
 
     # Never overlap any defined segment (OVERRIDES, BOOT, APITABLE, FALLBACK, VECTORS, ...).
     for name, seg in segments.items():
@@ -138,29 +151,67 @@ def check_trampoline_region(segments, addr, payload_len, rom_data=None):
     return addr
 
 
+def _find_trampoline_ff_gap(segments, rom_data, payload_len):
+    """Find a safe unused-ROM gap for trampoline placement below $E800."""
+    if rom_data is None:
+        raise ValueError("no safe trampoline region below $E800 (ROM bytes unavailable)")
+    bank = rom_data[:0x2000]
+    limit = PROBE_OVERLAY_START - 0xE000
+    for run_start_off in range(limit):
+        if bank[run_start_off] != 0xFF:
+            continue
+        run_end_off = run_start_off
+        while run_end_off < limit and bank[run_end_off] == 0xFF:
+            run_end_off += 1
+        run_start = run_start_off + 0xE000
+        # try aligned start first, then natural start
+        for addr in sorted({(run_start + 1) & ~1, run_start}):
+            if addr < run_start or addr + payload_len > run_end_off + 0xE000:
+                continue
+            try:
+                return check_trampoline_region(segments, addr, payload_len, rom_data)
+            except ValueError:
+                continue
+        # continue after run
+        # (outer loop will step byte-by-byte but cheap enough; ensure progress)
+    # fallback linear scan by addresses
+    for addr in range(0xE000, PROBE_OVERLAY_START - payload_len + 1):
+        if addr & 1:
+            continue
+        try:
+            return check_trampoline_region(segments, addr, payload_len, rom_data)
+        except ValueError:
+            continue
+    for addr in range(0xE000, PROBE_OVERLAY_START - payload_len + 1):
+        try:
+            return check_trampoline_region(segments, addr, payload_len, rom_data)
+        except ValueError:
+            continue
+    raise ValueError("no safe trampoline region below $E800 outside defined segments")
+
+
+def _preferred_trampoline_address(segments):
+    if "OVERRIDES" not in segments:
+        raise ValueError("OVERRIDES segment not found in dev.map")
+    ov = segments["OVERRIDES"]
+    addr = ov["end"] + 1
+    return (addr + 1) & ~1  # round up to next even address
+
+
 def find_trampoline_address(rom_dir, rom_path=None, payload_len=MAX_TRAMPOLINE_PAYLOAD):
-    """Return a safe trampoline address right after the OVERRIDES segment end.
+    """Return a safe trampoline address for MA_MUL16S mutation testing.
 
-    The trampoline payload (up to `payload_len` bytes; the T-mutants need up to 9) is placed
-    immediately after the OVERRIDES segment end so it never overlaps override code no matter how
-    the ROM layout changes.
+    Preferred location: immediately after the OVERRIDES segment end (rounded
+    up to even). If that region cannot safely host the trampoline (including
+    reserved $E800-$EFFF probe overlay or layout constraints), fall back to a
+    safe unused-ROM ($FF) gap below $E800 outside all defined segments.
 
-    Safety checks (the common check_trampoline_region):
-    - OVERRIDES segment end must be found in dev.map (End is inclusive: first free byte = End + 1).
-    - Address rounded up to a 2-byte boundary for JMP absolute targeting.
-    - Region start AND end must stay below the $F000 boundary.
-    - Region must not overlap OVERRIDES, BOOT or any other defined segment.
-    - Every payload byte must be unused ROM ($FF); a missing/unreadable ROM or bad map fails safe.
+    Mutation coverage is preserved (JMP patch + trampoline payload semantics
+    unchanged); only placement is constrained to a safe region.
     """
     text = (rom_dir / "dev.map").read_text()  # unreadable map -> fail safe
     segments = parse_dev_map_segments(text)
-    if "OVERRIDES" not in segments:
-        raise ValueError("OVERRIDES segment not found in dev.map")
-
-    ov = segments["OVERRIDES"]
-    # End is inclusive (last byte address): first free byte is End + 1.
-    addr = ov["end"] + 1
-    addr = (addr + 1) & ~1  # round up to next even address
+    addr = _preferred_trampoline_address(segments)
 
     if rom_path is not None:
         if not rom_path.exists():
@@ -169,21 +220,24 @@ def find_trampoline_address(rom_dir, rom_path=None, payload_len=MAX_TRAMPOLINE_P
     else:
         rom_data = None
 
-    return check_trampoline_region(segments, addr, payload_len, rom_data)
+    try:
+        return check_trampoline_region(segments, addr, payload_len, rom_data)
+    except ValueError:
+        return _find_trampoline_ff_gap(segments, rom_data, payload_len)
 
 
 def validate_trampoline_address(dev_map_text, rom_data=None, payload_len=MAX_TRAMPOLINE_PAYLOAD):
     """Standalone validation used by negative test cases.
 
-    Reconstructs the trampoline address from dev.map and runs the same common safety
-    check as find_trampoline_address (no duplicated logic).
+    Reconstructs trampoline placement from dev.map (and ROM bytes when needed)
+    using the same safety/placement logic as find_trampoline_address.
     """
     segments = parse_dev_map_segments(dev_map_text)
-    if "OVERRIDES" not in segments:
-        raise ValueError("OVERRIDES segment not found in dev.map")
-    ov = segments["OVERRIDES"]
-    addr = (ov["end"] + 1 + 1) & ~1  # End inclusive -> first free byte, rounded up
-    return check_trampoline_region(segments, addr, payload_len, rom_data)
+    addr = _preferred_trampoline_address(segments)
+    try:
+        return check_trampoline_region(segments, addr, payload_len, rom_data)
+    except ValueError:
+        return _find_trampoline_ff_gap(segments, rom_data, payload_len)
 
 
 def guest_source(kind, sp, entry, sweep=None):
@@ -404,12 +458,17 @@ def routine_window(data, rom_dir):
     return body, body + size
 
 
-def trace_config(c, window, extra=0):
+def trace_config(c, window, extra=0, trampoline_range=None):
     """Window + breakpoints for caller SP c. Routine-allowed writes: its six pushes c-11..c-6 and the frame c-3..c.
     Allowed reads: c-11..c (its own bytes and the JSR return it pops)."""
     lo, hi = window
+    end = hi + extra
+    if trampoline_range is not None:
+        tlo, tend = trampoline_range
+        lo = min(lo, tlo)
+        end = max(end, tend)
     base = 0x2100
-    lines = [f"window 0x{lo:04X} 0x{hi + extra:04X}"]
+    lines = [f"window 0x{lo:04X} 0x{end:04X}"]
     w = [(0x0000, 0x20FF), (0x2200, 0xFFFF)]
     r = [(0x0000, 0x20FF), (0x2200, 0xDFFF)]
     if c - 12 >= 0:
@@ -494,14 +553,14 @@ class Rig:
         rom[self.reset - 0xE000:self.reset - 0xE000 + len(code)] = code
         return bytes(rom)
 
-    def run_table(self, entries, c, patches=(), extra_window=0, trace=True, max_per_call=STEPS_PER_CALL):
+    def run_table(self, entries, c, patches=(), extra_window=0, trace=True, max_per_call=STEPS_PER_CALL, trampoline_range=None):
         if len(entries) > MAX_ENTRIES:
             raise ValueError("too many entries for one run")
         n = next(self.n)
         code, labels = assemble_guest(guest_source("table", c, self.entry), self.reset, self.folder, f"g{n}")
         cfg = [f"halt 0x{labels['halt']:04X}", f"max {max(len(entries), 1) * max_per_call + 5000}",
                f"rec 0x{labels['rec_point']:04X} 0x{RES:04X} {RES_LEN}", f"poke 0x{TABLE:04X} {table_bytes(entries).hex()}"]
-        cfg += trace_config(c, self.window, extra_window) if trace else [f"window 0x{self.window[0]:04X} 0x{self.window[1]:04X}"]
+        cfg += trace_config(c, self.window, extra_window, trampoline_range) if trace else [f"window 0x{self.window[0]:04X} 0x{self.window[1]:04X}"]
         run = self.probe.run(self.variant(code, patches), cfg)
         return run, labels["halt"]
 
@@ -543,45 +602,45 @@ def find_unique(data, pattern, window, name):
 
 
 def mutants(data, window, trampoline_addr):
-    """name -> (patches [(file offset, bytes)], required error kinds, window extra, c). One edit each; the length and
-    stack effect are kept except M5 (a lost PLA), which must be caught as a failed return."""
+    """name -> (patches, required error kinds, window extra, c, trampoline_range_or_None).
+
+    One edit each; the length and stack effect are kept except M5 (a lost PLA),
+    which must be caught as a failed return. Trampoline mutants place a small
+    payload at `trampoline_addr` (a safe unused-ROM location, never in the
+    reserved $E800-$EFFF probe overlay) and jump to it from the routine body.
+    Trace/PC window coverage is extended to include the trampoline range.
+    """
     f = lambda pat, name: find_unique(data, bytes.fromhex(pat), window, name)
     nop_block = lambda head, name: (lambda at: [(at + 5, b"\xEA" * data[at + 4])])(f(head, name))  # BPL n -> n NOPs
-    # Place the JMP to the trampoline inside the routine body (just past its entry) so the
-    # trampoline (right after the OVERRIDES segment end) does not overlap the JMP's 3 bytes, and
-    # so the trampoline's RTS returns to the instruction after the JMP and the body can still
-    # reach its own RTS for a clean halt. body_end here is the JMP write offset inside the body.
     body_end = window[0] - 0xE000 + 3
-    # The trampoline sits right after the OVERRIDES segment end, rounded up to an even address
-    # (find_trampoline_address). For the last override (slot $4F) it equals window[1], the first byte
-    # past the body, when the OVERRIDES end is odd. If parity requires alignment, the trampoline may
-    # land one byte beyond window[1]; trampoline mutants trace with extra_window coverage.
-    if not window[0] <= trampoline_addr <= window[1] + 1:
-        raise ValueError("trampoline is outside the routine's PC window")
-    jmp = lambda code: [(body_end, bytes([0x4C, trampoline_addr & 0xFF, trampoline_addr >> 8])), (trampoline_addr - 0xE000, code)]
+    tr = lambda code: (
+        [(body_end, bytes([0x4C, trampoline_addr & 0xFF, trampoline_addr >> 8])),
+         (trampoline_addr - 0xE000, code)],
+        (trampoline_addr, trampoline_addr + len(code)),
+    )
     return {
-        "M1_multiplicand_correction_NOP": (nop_block("BD0B2110", "M1"), {"product"}, 0, 0xFF),
-        "M2_multiplier_correction_NOP": (nop_block("BD042110", "M2"), {"product"}, 0, 0xFF),
-        "M3_product_top_byte_not_stored": ([(f("9D0921", "M3"), b"\xEA\xEA\xEA")], {"product"}, 0, 0xFF),
-        "M4_Y_not_restored": ([(f("7A2860", "M4"), b"\x68")], {"Y"}, 0, 0xFF),
-        "M5_stack_restore_broken": ([(f("6868686 87A".replace(" ", ""), "M5"), b"\xEA")], {"halt", "S"}, 0, 0xFF),
-        "M6_PLP_as_PLA": ([(f("2860", "M6"), b"\x68")], {"P"}, 0, 0xFF),
-        "M7_PHP_as_PHA": ([(window[0] - 0xE000, b"\x48")], {"P"}, 0, 0xFF),
-        "M8_CLD_as_NOP": ([(window[0] - 0xE000 + 1, b"\xEA")], {"product"}, 0, 0xFF),
-        "M9_correction_SBC_as_ADC": ([(f("FD0321", "M9"), b"\x7D")], {"product"}, 0, 0xFF),
-        "M10_ROR_as_ROL": ([(f("7E0A21", "M10"), b"\x3E")], {"product"}, 0, 0xFF),
+        "M1_multiplicand_correction_NOP": (nop_block("BD0B2110", "M1"), {"product"}, 0, 0xFF, None),
+        "M2_multiplier_correction_NOP": (nop_block("BD042110", "M2"), {"product"}, 0, 0xFF, None),
+        "M3_product_top_byte_not_stored": ([(f("9D0921", "M3"), b"\xEA\xEA\xEA")], {"product"}, 0, 0xFF, None),
+        "M4_Y_not_restored": ([(f("7A2860", "M4"), b"\x68")], {"Y"}, 0, 0xFF, None),
+        "M5_stack_restore_broken": ([(f("6868686 87A".replace(" ", ""), "M5"), b"\xEA")], {"halt", "S"}, 0, 0xFF, None),
+        "M6_PLP_as_PLA": ([(f("2860", "M6"), b"\x68")], {"P"}, 0, 0xFF, None),
+        "M7_PHP_as_PHA": ([(window[0] - 0xE000, b"\x48")], {"P"}, 0, 0xFF, None),
+        "M8_CLD_as_NOP": ([(window[0] - 0xE000 + 1, b"\xEA")], {"product"}, 0, 0xFF, None),
+        "M9_correction_SBC_as_ADC": ([(f("FD0321", "M9"), b"\x7D")], {"product"}, 0, 0xFF, None),
+        "M10_ROR_as_ROL": ([(f("7E0A21", "M10"), b"\x3E")], {"product"}, 0, 0xFF, None),
         # Value-neutral side effects the final RAM diff cannot see: the product, Y, P (PHP/PLP around the probe) and S stay correct.
-        "T1_same_value_zero_page_write": (jmp(TRAMPOLINE_PAYLOADS[0]), {"trace"}, 0x100, 0x40),
-        "T2_write_and_restore_bss": (jmp(TRAMPOLINE_PAYLOADS[1]), {"trace"}, 0x100, 0x40),
-        "T3_io_read": (jmp(TRAMPOLINE_PAYLOADS[2]), {"trace"}, 0x100, 0x40),
-        "T4_same_value_stack_below_frame": (jmp(TRAMPOLINE_PAYLOADS[3]), {"trace"}, 0x100, 0x40),
+        "T1_same_value_zero_page_write": (*tr(TRAMPOLINE_PAYLOADS[0]), {"trace"}, 0x100, 0x40),
+        "T2_write_and_restore_bss": (*tr(TRAMPOLINE_PAYLOADS[1]), {"trace"}, 0x100, 0x40),
+        "T3_io_read": (*tr(TRAMPOLINE_PAYLOADS[2]), {"trace"}, 0x100, 0x40),
+        "T4_same_value_stack_below_frame": (*tr(TRAMPOLINE_PAYLOADS[3]), {"trace"}, 0x100, 0x40),
         # c = $40: $2134 is the byte just below the routine's lowest push, $213C a JSR return byte, $2141 the first byte above the frame.
-        "T6_same_value_below_lowest_push": (jmp(TRAMPOLINE_PAYLOADS[5]), {"trace"}, 0x100, 0x40),
-        "T7_same_value_jsr_return_byte": (jmp(TRAMPOLINE_PAYLOADS[6]), {"trace"}, 0x100, 0x40),
-        "T8_same_value_above_frame": (jmp(TRAMPOLINE_PAYLOADS[7]), {"trace"}, 0x100, 0x40),
-        "T9_same_value_jsr_return_low_byte": (jmp(TRAMPOLINE_PAYLOADS[8]), {"trace"}, 0x100, 0x40),
-        "T10_bss_read": (jmp(TRAMPOLINE_PAYLOADS[9]), {"trace"}, 0x100, 0x40),
-        "T5_mpr_change": (jmp(TRAMPOLINE_PAYLOADS[4]), {"mpr"}, 0x100, 0x40),
+        "T6_same_value_below_lowest_push": (*tr(TRAMPOLINE_PAYLOADS[5]), {"trace"}, 0x100, 0x40),
+        "T7_same_value_jsr_return_byte": (*tr(TRAMPOLINE_PAYLOADS[6]), {"trace"}, 0x100, 0x40),
+        "T8_same_value_above_frame": (*tr(TRAMPOLINE_PAYLOADS[7]), {"trace"}, 0x100, 0x40),
+        "T9_same_value_jsr_return_low_byte": (*tr(TRAMPOLINE_PAYLOADS[8]), {"trace"}, 0x100, 0x40),
+        "T10_bss_read": (*tr(TRAMPOLINE_PAYLOADS[9]), {"trace"}, 0x100, 0x40),
+        "T5_mpr_change": (*tr(TRAMPOLINE_PAYLOADS[4]), {"mpr"}, 0x100, 0x40),
     }
 
 
@@ -654,8 +713,8 @@ def main():
         plan = mutants(data, rig.window, trampoline_addr)
 
         def do_mutant(item):
-            name, (patches, required, extra, c) = item
-            run, halt = rig.run_table(reduced, c, patches=patches, extra_window=extra)
+            name, (patches, required, extra, c, trampoline_range) = item
+            run, halt = rig.run_table(reduced, c, patches=patches, extra_window=extra, trampoline_range=trampoline_range)
             return name, required, run, check(name, run, reduced, c, halt)
 
         with ThreadPoolExecutor(max_workers=args.jobs) as pool:
