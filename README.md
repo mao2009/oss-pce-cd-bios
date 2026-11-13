@@ -1,5 +1,12 @@
 # oss-pce-cd-bios
 
+## G5 update — 2026-11-13 (experimental, synthetic only)
+
+Merged [PR #788](https://github.com/mao2009/oss-pce-cd-bios/pull/788) and [PR #790](https://github.com/mao2009/oss-pce-cd-bios/pull/790) demonstrate a **three-service experimental chain** (`$02 CD_BASE` prototype, `$33 EX_DSPOFF`, `$03 CD_READ` link) and real Geargrafx READ(6) of 2,048 bytes on **synthetic CD media**. In the A/B/C/D matched comparison, fake-RTS variants halt at successive stubs while D performs the three experimental effects and halts cleanly, cold and warm. **No retail title screen or commercial-compatible BIOS has been demonstrated.** Ordinary DEV implementation count, ABI approval and release gates remain separate.
+
+See the [dated 2026-11-13 G5 progress/evidence report](docs/g5-progress-2026-11-13.md) for details and limitations. The older 2026-11-06 snapshot below is retained as historical context.
+
+
 An open-source project to create a **PC Engine / TurboGrafx-CD Super System Card 3.0-compatible BIOS replacement**, using original and appropriately licensed reusable OSS code.
 
 > **Status: historical main `5a8dc5a` (2026-11-06) plus this revision — development diagnostics only.** The repository does **not** yet contain a releasable or commercial-game-compatible System Card BIOS. Historical main `5a8dc5a` has **14/81** DEV implementations and **67 stubs**. This revision (EX_BGON $2E, Issue #56) has **16/81** DEV implementations and **65 stubs**. Owner-approved DEV_CALLABLE: **0**; reference ABI VERIFIED: **0/81**; reference JSR permitted: **0/81**; `release_eligible: false`. See [status](docs/status.md).
@@ -53,6 +60,7 @@ For local, **optional** diagnostics, contributors can put their own lawfully obt
 ## Documentation
 
 - [Actual implementation status (main vs open Draft PR, if any)](docs/status.md)
+- [G5 experiment and matched-selection progress (2026-11-13)](docs/g5-progress-2026-11-13.md)
 - [Architecture](docs/architecture.md)
 - [Building and setup](docs/building.md)
 - [Tests and evidence scope](docs/testing.md)
@@ -82,7 +90,7 @@ make build                        # original 8 KiB HuCARD test fixture, not BIOS
 make test                         # host tests (cc65 required)
 make test-real-core               # pinned real Geargrafx core
 make check                        # source and workflow checks
-make dev-rom                      # 256 KiB DEV ROM; 14 project-defined routines
+make dev-rom                      # 256 KiB DEV ROM; 16 project-defined routines
 make dev-test                     # DEV diagnostics; no reference ABI guarantee
 make dev-release-gate-blocked     # expected refusal
 ```
