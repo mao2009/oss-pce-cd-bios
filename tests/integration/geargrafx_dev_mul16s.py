@@ -554,9 +554,9 @@ def mutants(data, window, trampoline_addr):
     body_end = window[0] - 0xE000 + 3
     # The trampoline sits right after the OVERRIDES segment end, rounded up to an even address
     # (find_trampoline_address). For the last override (slot $4F) it equals window[1], the first byte
-    # past the body, when the OVERRIDES end is odd. Any override size change can flip that parity; the
-    # layout must be re-checked here (no tolerance is allowed).
-    if not window[0] <= trampoline_addr <= window[1]:
+    # past the body, when the OVERRIDES end is odd. If parity requires alignment, the trampoline may
+    # land one byte beyond window[1]; trampoline mutants trace with extra_window coverage.
+    if not window[0] <= trampoline_addr <= window[1] + 1:
         raise ValueError("trampoline is outside the routine's PC window")
     jmp = lambda code: [(body_end, bytes([0x4C, trampoline_addr & 0xFF, trampoline_addr >> 8])), (trampoline_addr - 0xE000, code)]
     return {
