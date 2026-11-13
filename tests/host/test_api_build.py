@@ -17,17 +17,24 @@ from tools.build_rom import (ROOT, BANK_BYTES, IMAGE_BYTES, build, load_slots, o
                              verify_dev_rom_layout, verify_dev_rom_structure, verify_image)
 
 
-def _overrides_file_offset():
-    """File offset of the OVERRIDES segment, read from the pinned bank0.cfg.
-
-    Fixture roots copy ROOT's bank0.cfg, so tamper offsets must follow it instead
-    of a hard-coded $E2A0 (moved to $E292 for the VDC CR shadow layout).
-    """
-    text = (ROOT / "src" / "bank0.cfg").read_text(encoding="utf-8")
-    match = re.search(r"OVERRIDES:[^\n]*start\s*=\s*\$(E[0-9A-F]+)", text)
-    if not match:
-        raise ValueError("OVERRIDES start not found in src/bank0.cfg")
-    return int(match.group(1), 16) - 0xE000
+def _overrides_file_offset(root=ROOT):
+    """File offset of the OVERRIDES segment, read from bank0.cfg when fixed,
+    or computed from a built ROM when dynamic (OVERRIDES follows FALLBACK)."""
+    cfg = (root / "src" / "bank0.cfg").read_text(encoding="utf-8")
+    match = re.search(r"OVERRIDES:[^\n]*start\s*=\s*\$(E[0-9A-F]+)", cfg)
+    if match:
+        return int(match.group(1), 16) - 0xE000
+    import tempfile
+    from tools.build_rom import build
+    with tempfile.TemporaryDirectory() as tmp:
+        rom = build(Path(tmp) / "offs", root=root).read_bytes()
+    ov = overrides(root)
+    if not ov:
+        raise ValueError("no overrides")
+    first = min(ov)
+    at = first * 3
+    addr = int.from_bytes(rom[at+1:at+3], 'little')
+    return addr - 0xE000
 
 
 @requires_cc65
@@ -69,7 +76,7 @@ class ApiBuildTests(unittest.TestCase):
         Z=1/N=0/I=1 with carry preserved) is verified on the real Geargrafx core in
         tests/integration/geargrafx_contracts.py; the absolute P byte is not fixed.
         """
-        self.assertEqual(set(overrides()), {0x1E, 0x22, 0x2E, 0x3A, 0x3C, 0x3D, 0x3E, 0x3F, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x4F})  # 1E measured; 22/2E/3A/3C/3D/3E/3F/40/41/42/43/44/45/46/4F project-own DEV routines
+        self.assertEqual(set(overrides()), {0x1E, 0x22, 0x23, 0x2E, 0x3A, 0x3C, 0x3D, 0x3E, 0x3F, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x4F})  # 1E measured; 22/23/2E/3A/3C/3D/3E/3F/40/41/42/43/44/45/46/4F project-own DEV routines
         at = 0x1E * 3
         entry = int.from_bytes(self.rom[at+1:at+3], 'little')
         self.assertEqual(self.rom[entry-0xe000:entry-0xe000+5], bytes.fromhex('a2 03 a0 00 60'))
@@ -138,7 +145,7 @@ class ApiBuildTests(unittest.TestCase):
     def test_manifest_never_claims_release(self):
         manifest = json.loads((self.folder/'debug/manifest.json').read_text())
         self.assertFalse(manifest['release_eligible'])
-        self.assertEqual(manifest["overridden_slots"], [0x1E, 0x22, 0x2E, 0x3A, 0x3C, 0x3D, 0x3E, 0x3F, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x4F])
+        self.assertEqual(manifest["overridden_slots"], [0x1E, 0x22, 0x23, 0x2E, 0x3A, 0x3C, 0x3D, 0x3E, 0x3F, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x4F])
         self.assertEqual(len(manifest["unimplemented_slots"]), 65)
         self.assertEqual(manifest['abi'], 'UNVERIFIED')
 
@@ -369,7 +376,9 @@ class ApiBuildTests(unittest.TestCase):
         data = bytearray(rom)
         at = 0x1E * 3
         self.assertEqual(data[at], 0x4C)
-        self.assertEqual(int.from_bytes(data[at+1:at+3], 'little'), 0xE292)
+        original_target = int.from_bytes(data[at+1:at+3], 'little')
+        self.assertGreaterEqual(original_target, 0xE247)
+        self.assertLess(original_target, 0xE800)
         data[at+1:at+3] = (0xE700).to_bytes(2, 'little')  # within $E100-$FFF6, so layout passes
         tampered = bytes(data)
         dbg = parse_dbg((self.folder / 'slot1e-table-change' / 'dev.dbg').read_text())
@@ -419,9 +428,14 @@ class ApiBuildTests(unittest.TestCase):
         root = self.folder / 'overlay-root'
         (root / 'src/overrides').mkdir(parents=True)
         (root / 'src' / 'boot.s').write_bytes((ROOT / 'src' / 'boot.s').read_bytes())
-        # Same bank0 geometry, but OVERRIDES starts at $E900 (inside the probe overlay window).
-        (root / 'src' / 'bank0.cfg').write_text(
-            (ROOT / 'src' / 'bank0.cfg').read_text().replace('start = $E292', 'start = $E900'))
+        # Same bank0 geometry, but OVERRIDES forced into the probe overlay window.
+        cfg_text = (ROOT / 'src' / 'bank0.cfg').read_text()
+        if 'start = $E292' in cfg_text:
+            cfg_text = cfg_text.replace('start = $E292', 'start = $E900')
+        else:
+            cfg_text = cfg_text.replace('OVERRIDES: load = ROM0, type = ro, optional = yes;',
+                                        'OVERRIDES: load = ROM0, type = ro, start = $E900, optional = yes;')
+        (root / 'src' / 'bank0.cfg').write_text(cfg_text)
         (root / 'src/overrides' / 'slot_1E.s').write_text(
             '.setcpu "huc6280"\n.segment "OVERRIDES"\n.export api_slot_1E\napi_slot_1E:\n'
             ' ldx #$03\n ldy #$00\n rts\n')
@@ -441,8 +455,13 @@ class ApiBuildTests(unittest.TestCase):
         mutant = self.folder / 'overlay-mutant-root'
         (mutant / 'src').mkdir(parents=True)
         shutil.copytree(ROOT / 'src', mutant / 'src', dirs_exist_ok=True)
-        (mutant / 'src' / 'bank0.cfg').write_text(
-            (ROOT / 'src' / 'bank0.cfg').read_text().replace('start = $E292', 'start = $E7F0'))
+        cfg_text = (ROOT / 'src' / 'bank0.cfg').read_text()
+        if 'start = $E292' in cfg_text:
+            cfg_text = cfg_text.replace('start = $E292', 'start = $E7F0')
+        else:
+            cfg_text = cfg_text.replace('OVERRIDES: load = ROM0, type = ro, optional = yes;',
+                                        'OVERRIDES: load = ROM0, type = ro, start = $E7F0, optional = yes;')
+        (mutant / 'src' / 'bank0.cfg').write_text(cfg_text)
         mutant_rom = build(self.folder / 'overlay-mutant', root=mutant).read_bytes()
         with self.assertRaisesRegex(ValueError, 'probe overlay'):
             build_probe_images(mutant_rom, self.folder / 'overlay-mutant-probe', root=mutant)
