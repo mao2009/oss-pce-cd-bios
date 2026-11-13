@@ -613,6 +613,204 @@ def check_embedded_selection_vs_executed(manifest: dict, executed: dict | None) 
         raise ValueError("BLOCKED: embedded media identity != executed medium identity")
 
 
+def read_ipl_sel_from_built_rom(rom_bytes: bytes, manifest: dict, variant: str) -> int:
+    """Read the IPL SEL (INDEX01 LBA) bound to a built A/B/C ROM (pure).
+
+    Issue #789 MEDIUM: A/B/C selection must be proven from the actually
+    generated ROM content, never from a test constant passed to the builder.
+    The builder records the SEL it assembled with (A: manifest
+    "ipl_sel_lba" int; B/C: manifest "ipl_sel" "$XXXX (synthetic)" note) and
+    binds it to the ROM bytes via manifest "rom_sha256". This helper verifies
+    the hash (catches post-build byte tampering that would change the
+    assembled IPL_SEL immediates) and parses the recorded SEL (catches a
+    rebuild/swap with a different SEL). Redacted/private manifests
+    ("ipl_sel_lba_redacted", "redacted (private media)") are BLOCKED (cannot
+    prove a synthetic SEL). Returns the SEL int (0..0xFFFF).
+
+    Track is NOT embedded in IPL ROMs (ipl_loader_rom.s takes only IPL_SEL;
+    track is a property of the executed medium's first MODE1 track,
+    validated at runtime by successful IPL boot). Callers must state that
+    A/B/C track is INFERRED from successful stub arrival on the executed
+    track (RUN halt at the expected stub with the expected X), never
+    OBSERVED from ROM bytes; only LBA is ROM-OBSERVED here.
+    """
+    if variant not in ("A", "B", "C"):
+        raise ValueError(f"BLOCKED: bad IPL variant {variant!r} (want A/B/C)")
+    if not isinstance(rom_bytes, (bytes, bytearray)):
+        raise ValueError(f"BLOCKED: variant {variant} ROM bytes unreadable")
+    if not isinstance(manifest, dict):
+        raise ValueError(f"BLOCKED: variant {variant} manifest is not an object")
+    sha = manifest.get("rom_sha256")
+    if not isinstance(sha, str) or not _SHA256_RE.match(sha):
+        raise ValueError(f"BLOCKED: variant {variant} manifest rom_sha256 required")
+    import hashlib as _hl
+    if _hl.sha256(bytes(rom_bytes)).hexdigest() != sha:
+        raise ValueError(f"BLOCKED: variant {variant} ROM hash != manifest rom_sha256 "
+                         "(post-build tampering or swapped ROM)")
+    if manifest.get("private_media_used") is True:
+        raise ValueError(f"BLOCKED: variant {variant} manifest is private-media redacted; "
+                         "cannot prove a synthetic SEL")
+    if variant == "A":
+        if "ipl_sel_lba_redacted" in manifest:
+            raise ValueError("BLOCKED: variant A manifest SEL redacted; cannot prove synthetic SEL")
+        sel = manifest.get("ipl_sel_lba")
+        if type(sel) is not int or not 0 <= sel <= 0xFFFF:
+            raise ValueError(f"BLOCKED: variant A manifest ipl_sel_lba bad {sel!r}")
+        return sel
+    note = manifest.get("ipl_sel")
+    if not isinstance(note, str):
+        raise ValueError(f"BLOCKED: variant {variant} manifest ipl_sel missing {note!r}")
+    import re as _re
+    m = _re.fullmatch(r"\$([0-9A-Fa-f]{4}) \(synthetic\)", note.strip())
+    if not m:
+        raise ValueError(f"BLOCKED: variant {variant} manifest ipl_sel not synthetic {note!r} "
+                         "(redacted/private or malformed)")
+    return int(m.group(1), 16)
+
+
+def verify_ipl_phase_matches_sel(phase_lbas, manifest_sel: int, iplblk: int = 2) -> None:
+    """Verify measured IPL DATA_IN LBAs match the ROM-bound SEL (pure).
+
+    Issue #789 MEDIUM-1: manifest SEL alone (even hash-bound) cannot prove
+    which SEL the ROM actually used at runtime -- a manifest-only SEL edit
+    keeps rom_sha256 valid (ROM bytes unchanged). The public IPL loader
+    contract (tests/integration/ipl_loader_rom.s) reads the information
+    sector at SEL+1 then the body at SEL+IPLBLK (24-bit, Issue #744 carry);
+    for the unified disc IPLBLK=2 (case_disc iplblk=2, INFO at SEL+1 carries
+    it). This helper requires the caller-supplied hash-bound manifest_sel
+    (from read_ipl_sel_from_built_rom, never a test constant) plus the
+    measured DATA_IN (sector, count) tuples for one cold/warm cycle, and
+    requires INFO (sel+1,1) and BODY (sel+iplblk,1) to each appear at least
+    once, with INFO observed before BODY (first-occurrence order; duplicate
+    re-reads of either sector are allowed). Extra reads are allowed (the
+    loader may re-read); subset + order, never exact-equality (avoids
+    brittleness from duplicate reads). The order is grounded in the loader
+    program (INFO read/validate before BODY read/copy in ipl_loader_rom.s)
+    and in measured PHASE preserving execution order; a reversed
+    BODY-before-INFO sequence, a missing sector, unmeasured PHASE, or an
+    unparsable SEL -> BLOCKED. Expected LBAs are derived from
+    manifest_sel+iplblk (build contract), never reconstructed from PHASE
+    alone (passing None as manifest_sel is BLOCKED). Does not confuse
+    follow-up service reads (D link READ at SEL+3) with IPL load reads:
+    callers pass only the IPL variant's measured PHASE (A/B/C halt before
+    any service READ).
+    """
+    if type(manifest_sel) is not int or not 0 <= manifest_sel <= 0xFFFF:
+        raise ValueError(f"BLOCKED: IPL manifest SEL bad {manifest_sel!r} (need 16-bit int)")
+    if type(iplblk) is not int or isinstance(iplblk, bool) or not 0 <= iplblk <= 0xFFFFFF:
+        raise ValueError(f"BLOCKED: IPL block bad {iplblk!r}")
+    if not isinstance(phase_lbas, (list, tuple)) or not phase_lbas:
+        raise ValueError("BLOCKED: IPL PHASE unmeasured or missing (need DATA_IN LBAs)")
+    seen = set()
+    for item in phase_lbas:
+        if not isinstance(item, (list, tuple)) or len(item) != 2:
+            raise ValueError(f"BLOCKED: IPL PHASE entry malformed {item!r}")
+        sector, count = item
+        if type(sector) is not int or isinstance(sector, bool) or type(count) is not int or isinstance(count, bool):
+            raise ValueError(f"BLOCKED: IPL PHASE entry bad types {item!r}")
+        seen.add((sector, count))
+    info = ((manifest_sel + 1) & 0xFFFFFF, 1)
+    body = ((manifest_sel + iplblk) & 0xFFFFFF, 1)
+    for want, name in ((info, "INFO"), (body, "BODY")):
+        if want not in seen:
+            raise ValueError(f"BLOCKED: IPL {name} read {want!r} missing from measured PHASE "
+                             f"(manifest SEL ${manifest_sel:04X} not proven at runtime)")
+    # Order: first INFO DATA_IN must precede first BODY DATA_IN (duplicates
+    # allowed). Loader reads INFO, validates, then reads BODY; measured PHASE
+    # preserves that execution order.
+    order = [(s, c) for (s, c) in phase_lbas
+             if isinstance(s, int) and not isinstance(s, bool)]
+    try:
+        first_info = next(i for i, (s, c) in enumerate(order) if (s, c) == info)
+        first_body = next(i for i, (s, c) in enumerate(order) if (s, c) == body)
+    except StopIteration:
+        raise ValueError("BLOCKED: IPL INFO/BODY order unobservable in measured PHASE")
+    if first_info > first_body:
+        raise ValueError(f"BLOCKED: IPL BODY {body!r} observed before INFO {info!r} "
+                         f"(reversed loader order; manifest SEL ${manifest_sel:04X} unproven)")
+
+
+def verify_matched_selection(*, d_manifest: dict, abc_sels: list,
+                             unified_code: bytes, executed: dict | None) -> None:
+    """Verify A/B/C/D matched-selection on one synthetic medium (pure).
+
+    Issue #789: all four variants must share the same synthetic CUE/BIN,
+    track, INDEX01 LBA, payload bytes, selection record, and run conditions.
+    D's embedded selection is cross-checked via
+    check_embedded_selection_vs_executed (LBA coincidence alone never
+    suffices; identity required both sides). Each A/B/C entry in abc_sels
+    is {"variant": "A"/"B"/"C", "lba": int, "track": int} (the SEL/track
+    the ROM was built with); every entry must equal the executed
+    track/LBA. unified_code must be 1..255 bytes starting at EXEC and must
+    match D's manifest payload_sha256/payload_bytes (both mandatory here; a
+    missing/malformed/mismatched payload field is BLOCKED, never a silent
+    substitution). executed is
+    {"lba": int, "track": int, "identity": dict} from selection_from_cue +
+    media_identity on the exact mounted CUE, or None when unmeasured
+    (BLOCKED, never a pass). Mismatch on any side -> BLOCKED. Never guesses;
+    OBSERVED/INFERRED/UNKNOWN classification happens in the caller from
+    measured probe records, never here.
+    """
+    if executed is None or not isinstance(executed, dict):
+        raise ValueError("BLOCKED: executed matched-selection unmeasured; "
+                         "cannot verify A/B/C/D inputs")
+    for key in ("lba", "track", "identity"):
+        if key not in executed:
+            raise ValueError(f"BLOCKED: executed matched-selection lacks {key}")
+    ex_lba = executed.get("lba")
+    ex_track = executed.get("track")
+    if not isinstance(ex_lba, int) or isinstance(ex_lba, bool):
+        raise ValueError("BLOCKED: executed matched-selection LBA is not an int")
+    if not isinstance(ex_track, int) or isinstance(ex_track, bool):
+        raise ValueError("BLOCKED: executed matched-selection track is not an int")
+    # D embedded vs executed (LBA + identity, never LBA alone).
+    check_embedded_selection_vs_executed(d_manifest, {"lba": ex_lba, "identity": executed.get("identity")})
+    # D embedded track vs executed track (strict int equality; bool counts
+    # as malformed, never as 0/1).
+    d_sel = d_manifest.get("selection_contract") if isinstance(d_manifest, dict) else None
+    d_track = d_sel.get("track") if isinstance(d_sel, dict) else None
+    if type(d_track) is not int or d_track != ex_track:
+        raise ValueError(f"BLOCKED: embedded D track {d_track!r} != executed track {ex_track!r}")
+    # A/B/C built SEL/track vs executed.
+    if not isinstance(abc_sels, list) or not abc_sels:
+        raise ValueError("BLOCKED: matched-selection needs A/B/C built inputs")
+    seen = set()
+    for entry in abc_sels:
+        if not isinstance(entry, dict):
+            raise ValueError("BLOCKED: matched-selection A/B/C entry is not an object")
+        variant = entry.get("variant")
+        if variant not in ("A", "B", "C"):
+            raise ValueError(f"BLOCKED: matched-selection bad variant {variant!r}")
+        if variant in seen:
+            raise ValueError(f"BLOCKED: matched-selection duplicate variant {variant}")
+        seen.add(variant)
+        for key in ("lba", "track"):
+            if entry.get(key) != (ex_lba if key == "lba" else ex_track):
+                raise ValueError(f"BLOCKED: matched-selection variant {variant} {key} "
+                                 f"{entry.get(key)!r} != executed {key} "
+                                 f"{(ex_lba if key == 'lba' else ex_track)!r}")
+    if seen != {"A", "B", "C"}:
+        raise ValueError(f"BLOCKED: matched-selection needs A/B/C, got {sorted(seen)}")
+    # Payload bytes vs D manifest (mandatory for Issue #789
+    # matched-selection; matched-selection callers must record both).
+    # Existing two-block manifests and other validators are untouched;
+    # only this function requires both fields.
+    if not isinstance(unified_code, (bytes, bytearray)) or not 1 <= len(unified_code) <= 255:
+        raise ValueError("BLOCKED: matched-selection payload must be 1..255 bytes")
+    if not isinstance(d_manifest, dict):
+        raise ValueError("BLOCKED: experimental manifest is not an object")
+    import hashlib as _hl
+    sha = d_manifest.get("payload_sha256")
+    if not isinstance(sha, str) or not _SHA256_RE.match(sha):
+        raise ValueError(f"BLOCKED: matched-selection payload_sha256 missing or malformed {sha!r}")
+    if sha != _hl.sha256(bytes(unified_code)).hexdigest():
+        raise ValueError("BLOCKED: matched-selection payload bytes != D manifest payload_sha256")
+    plen = d_manifest.get("payload_bytes")
+    if type(plen) is not int or plen != len(unified_code):
+        raise ValueError(f"BLOCKED: matched-selection payload_bytes bad {plen!r} "
+                         f"(need int len {len(unified_code)})")
+
+
 # ---------------------------------------------------------------------------
 # MAJOR-2: real-service return proof (never manifest alone).
 # ---------------------------------------------------------------------------
