@@ -613,6 +613,77 @@ def check_embedded_selection_vs_executed(manifest: dict, executed: dict | None) 
         raise ValueError("BLOCKED: embedded media identity != executed medium identity")
 
 
+def verify_matched_selection(*, d_manifest: dict, abc_sels: list,
+                             unified_code: bytes, executed: dict | None) -> None:
+    """Verify A/B/C/D matched-selection on one synthetic medium (pure).
+
+    Issue #789: all four variants must share the same synthetic CUE/BIN,
+    track, INDEX01 LBA, payload bytes, selection record, and run conditions.
+    D's embedded selection is cross-checked via
+    check_embedded_selection_vs_executed (LBA coincidence alone never
+    suffices; identity required both sides). Each A/B/C entry in abc_sels
+    is {"variant": "A"/"B"/"C", "lba": int, "track": int} (the SEL/track
+    the ROM was built with); every entry must equal the executed
+    track/LBA. unified_code must be 1..255 bytes starting at EXEC and must
+    match D's manifest payload_sha256 when present (a payload mismatch is
+    BLOCKED, never a silent substitution). executed is
+    {"lba": int, "track": int, "identity": dict} from selection_from_cue +
+    media_identity on the exact mounted CUE, or None when unmeasured
+    (BLOCKED, never a pass). Mismatch on any side -> BLOCKED. Never guesses;
+    OBSERVED/INFERRED/UNKNOWN classification happens in the caller from
+    measured probe records, never here.
+    """
+    if executed is None or not isinstance(executed, dict):
+        raise ValueError("BLOCKED: executed matched-selection unmeasured; "
+                         "cannot verify A/B/C/D inputs")
+    for key in ("lba", "track", "identity"):
+        if key not in executed:
+            raise ValueError(f"BLOCKED: executed matched-selection lacks {key}")
+    ex_lba = executed.get("lba")
+    ex_track = executed.get("track")
+    if not isinstance(ex_lba, int) or isinstance(ex_lba, bool):
+        raise ValueError("BLOCKED: executed matched-selection LBA is not an int")
+    if not isinstance(ex_track, int) or isinstance(ex_track, bool):
+        raise ValueError("BLOCKED: executed matched-selection track is not an int")
+    # D embedded vs executed (LBA + identity, never LBA alone).
+    check_embedded_selection_vs_executed(d_manifest, {"lba": ex_lba, "identity": executed.get("identity")})
+    # A/B/C built SEL/track vs executed.
+    if not isinstance(abc_sels, list) or not abc_sels:
+        raise ValueError("BLOCKED: matched-selection needs A/B/C built inputs")
+    seen = set()
+    for entry in abc_sels:
+        if not isinstance(entry, dict):
+            raise ValueError("BLOCKED: matched-selection A/B/C entry is not an object")
+        variant = entry.get("variant")
+        if variant not in ("A", "B", "C"):
+            raise ValueError(f"BLOCKED: matched-selection bad variant {variant!r}")
+        if variant in seen:
+            raise ValueError(f"BLOCKED: matched-selection duplicate variant {variant}")
+        seen.add(variant)
+        for key in ("lba", "track"):
+            if entry.get(key) != (ex_lba if key == "lba" else ex_track):
+                raise ValueError(f"BLOCKED: matched-selection variant {variant} {key} "
+                                 f"{entry.get(key)!r} != executed {key} "
+                                 f"{(ex_lba if key == 'lba' else ex_track)!r}")
+    if seen != {"A", "B", "C"}:
+        raise ValueError(f"BLOCKED: matched-selection needs A/B/C, got {sorted(seen)}")
+    # Payload bytes vs D manifest (when the manifest records it).
+    if not isinstance(unified_code, (bytes, bytearray)) or not 1 <= len(unified_code) <= 255:
+        raise ValueError("BLOCKED: matched-selection payload must be 1..255 bytes")
+    if isinstance(d_manifest, dict):
+        for key in ("payload_sha256", "payload_bytes"):
+            if key in d_manifest and d_manifest[key] is not None:
+                import hashlib as _hl
+                if key == "payload_sha256":
+                    if d_manifest[key] != _hl.sha256(bytes(unified_code)).hexdigest():
+                        raise ValueError("BLOCKED: matched-selection payload bytes != "
+                                         "D manifest payload_sha256")
+                else:
+                    if d_manifest[key] != len(unified_code):
+                        raise ValueError("BLOCKED: matched-selection payload length != "
+                                         "D manifest payload_bytes")
+
+
 # ---------------------------------------------------------------------------
 # MAJOR-2: real-service return proof (never manifest alone).
 # ---------------------------------------------------------------------------
