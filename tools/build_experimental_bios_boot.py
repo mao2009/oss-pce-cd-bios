@@ -198,8 +198,11 @@ def unified_api_windows(slot02_addr: int) -> set:
 def _git_output(*args: str) -> str:
     """Run a read-only git command against this repository. Fail-closed."""
     try:
+        # errors="replace": commit subjects may carry non-locale bytes;
+        # undecodable bytes must never crash the builder (e.g. cp932 hosts).
+        # Strict downstream checks (40-hex SHAs, exact matches) stay fail-closed.
         result = subprocess.run(["git", "-C", str(ROOT), *args], capture_output=True,
-                                text=True, timeout=30)
+                                text=True, errors="replace", timeout=30)
     except (OSError, subprocess.SubprocessError) as error:
         raise ValueError(f"BLOCKED: cannot query git {' '.join(args)}: {error}") from error
     if result.returncode != 0:
