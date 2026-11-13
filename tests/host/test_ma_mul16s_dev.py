@@ -181,3 +181,65 @@ def frame_violations(body):
 
 if __name__ == "__main__":
     unittest.main()
+
+import tempfile
+
+
+class TrampolinePlacementSafetyTests(unittest.TestCase):
+    def _mod(self):
+        import importlib.util
+        path = ROOT / "tests" / "integration" / "geargrafx_dev_mul16s.py"
+        spec = importlib.util.spec_from_file_location("geargrafx_dev_mul16s_probe_mod", path)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = mod
+        spec.loader.exec_module(mod)
+        return mod
+
+    def test_probe_overlay_intrusion_rejected(self):
+        mod = self._mod()
+        dev_map = "OVERRIDES              00E23D  00E7FD  0005C1  00001\n"
+        segments = mod.parse_dev_map_segments(dev_map)
+        rom = bytearray(b"\xFF" * 0x2000)
+        with self.assertRaises(ValueError) as ctx:
+            mod.check_trampoline_region(segments, 0xE7FE, 9, rom)
+        self.assertIn("probe overlay", str(ctx.exception).lower())
+
+    def test_safe_fallback_below_e800_when_preferred_intrudes(self):
+        mod = self._mod()
+        dev_map = (
+            "Name                   Start     End    Size  Align\n"
+            "----------------------------------------------------\n"
+            "APITABLE               00E000  00E0F2  0000F3  00001\n"
+            "FALLBACK               00E100  00E23C  00013D  00001\n"
+            "OVERRIDES              00E23D  00E7FD  0005C1  00001\n"
+            "BOOT                   00F000  00F004  000005  00001\n"
+            "VECTORS                00FFF6  00FFFF  00000A  00001\n"
+        )
+        rom = bytearray(b"\x00" * 0x2000)
+        for a in range(0xE000, 0xE0F3):
+            rom[a - 0xE000] = 0x01
+        for a in range(0xE0F3, 0xE100):
+            rom[a - 0xE000] = 0xFF
+        for a in range(0xE100, 0xE23D):
+            rom[a - 0xE000] = 0x01
+        for a in range(0xE23D, 0xE7FE):
+            rom[a - 0xE000] = 0x01
+        for a in range(0xE7FE, 0xE800):
+            rom[a - 0xE000] = 0xFF
+        for a in range(0xE800, 0xF000):
+            rom[a - 0xE000] = 0xFF
+        for a in range(0xF000, 0xF005):
+            rom[a - 0xE000] = 0x01
+        for a in range(0xF005, 0xFFF6):
+            rom[a - 0xE000] = 0xFF
+        for a in range(0xFFF6, 0x10000):
+            rom[a - 0xE000] = 0x01
+        with tempfile.TemporaryDirectory() as td:
+            from pathlib import Path
+            p = Path(td)
+            (p / "dev.map").write_text(dev_map)
+            rom_path = p / "dev-only-not-compatible-syscard3.pce"
+            rom_path.write_bytes(bytes(rom))
+            addr = mod.find_trampoline_address(p, rom_path, 9)
+        self.assertLessEqual(addr + 8, 0xE7FF)
+        self.assertGreaterEqual(addr, 0xE0F3)
