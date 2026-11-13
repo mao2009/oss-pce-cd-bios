@@ -681,14 +681,19 @@ def verify_ipl_phase_matches_sel(phase_lbas, manifest_sel: int, iplblk: int = 2)
     (from read_ipl_sel_from_built_rom, never a test constant) plus the
     measured DATA_IN (sector, count) tuples for one cold/warm cycle, and
     requires INFO (sel+1,1) and BODY (sel+iplblk,1) to each appear at least
-    once. Extra reads are allowed (the loader may re-read); subset, never
-    exact-equality (avoids brittleness from duplicate reads). Missing or
-    unmeasured PHASE, an unparsable SEL, or a measured set lacking either
-    LBA -> BLOCKED. Expected LBAs are derived from manifest_sel+iplblk
-    (build contract), never reconstructed from PHASE alone (passing None as
-    manifest_sel is BLOCKED). Does not confuse follow-up service reads (D
-    link READ at SEL+3) with IPL load reads: callers pass only the IPL
-    variant's measured PHASE (A/B/C halt before any service READ).
+    once, with INFO observed before BODY (first-occurrence order; duplicate
+    re-reads of either sector are allowed). Extra reads are allowed (the
+    loader may re-read); subset + order, never exact-equality (avoids
+    brittleness from duplicate reads). The order is grounded in the loader
+    program (INFO read/validate before BODY read/copy in ipl_loader_rom.s)
+    and in measured PHASE preserving execution order; a reversed
+    BODY-before-INFO sequence, a missing sector, unmeasured PHASE, or an
+    unparsable SEL -> BLOCKED. Expected LBAs are derived from
+    manifest_sel+iplblk (build contract), never reconstructed from PHASE
+    alone (passing None as manifest_sel is BLOCKED). Does not confuse
+    follow-up service reads (D link READ at SEL+3) with IPL load reads:
+    callers pass only the IPL variant's measured PHASE (A/B/C halt before
+    any service READ).
     """
     if type(manifest_sel) is not int or not 0 <= manifest_sel <= 0xFFFF:
         raise ValueError(f"BLOCKED: IPL manifest SEL bad {manifest_sel!r} (need 16-bit int)")
@@ -710,6 +715,19 @@ def verify_ipl_phase_matches_sel(phase_lbas, manifest_sel: int, iplblk: int = 2)
         if want not in seen:
             raise ValueError(f"BLOCKED: IPL {name} read {want!r} missing from measured PHASE "
                              f"(manifest SEL ${manifest_sel:04X} not proven at runtime)")
+    # Order: first INFO DATA_IN must precede first BODY DATA_IN (duplicates
+    # allowed). Loader reads INFO, validates, then reads BODY; measured PHASE
+    # preserves that execution order.
+    order = [(s, c) for (s, c) in phase_lbas
+             if isinstance(s, int) and not isinstance(s, bool)]
+    try:
+        first_info = next(i for i, (s, c) in enumerate(order) if (s, c) == info)
+        first_body = next(i for i, (s, c) in enumerate(order) if (s, c) == body)
+    except StopIteration:
+        raise ValueError("BLOCKED: IPL INFO/BODY order unobservable in measured PHASE")
+    if first_info > first_body:
+        raise ValueError(f"BLOCKED: IPL BODY {body!r} observed before INFO {info!r} "
+                         f"(reversed loader order; manifest SEL ${manifest_sel:04X} unproven)")
 
 
 def verify_matched_selection(*, d_manifest: dict, abc_sels: list,

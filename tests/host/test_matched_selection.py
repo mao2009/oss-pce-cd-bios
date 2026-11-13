@@ -365,6 +365,13 @@ class IplPhaseTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "BLOCKED"):
                     M.verify_ipl_phase_matches_sel(bad, 265, 2)
 
+    def test_order_info_before_body_passes(self):
+        M.verify_ipl_phase_matches_sel([(266, 1), (267, 1)], 265, 2)
+
+    def test_reversed_order_blocked(self):
+        with self.assertRaisesRegex(ValueError, "BLOCKED"):
+            M.verify_ipl_phase_matches_sel([(267, 1), (266, 1)], 265, 2)
+
     def test_valid_passes(self):
         M.verify_ipl_phase_matches_sel([(266, 1), (267, 1), (266, 1), (267, 1)], 265, 2)
 
@@ -393,6 +400,16 @@ class SpMprTests(unittest.TestCase):
         from tests.integration.test_matched_selection_realcore import unified_record
         rec = unified_record(self._buffer_with(order3=0x02))
         self.assertNotEqual(rec["order3"], 0x03)
+
+    def test_run_mpr1_tamper_caught(self):
+        run_mpr = [0xFF, 0x00, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87]
+        self.assertNotEqual(run_mpr[1], 0xF8)
+
+    def test_run_mpr1_match_passes(self):
+        run_mpr = [0xFF, 0xF8, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87]
+        buf = self._buffer_with(mpr1=0xF8)
+        self.assertEqual(run_mpr[1], 0xF8)
+        self.assertEqual(run_mpr[1], buf[0x3F04 - 0x2800])
 
 
 class CommercialOptInTests(unittest.TestCase):

@@ -390,15 +390,17 @@ class MatchedSelectionRealCoreTests(unittest.TestCase):
 
     @classmethod
     def _commercial_status(cls, opt_in: bool = False):
-        # MEDIUM-3 opt-in boundary: without an explicit opt-in this
+        # LOW-1 opt-in boundary: without an explicit opt-in this
         # synthetic-only test never touches ./rom (no resolve_rom_dir,
         # no detect_cue_files, no existence check or listing). Callers pass
         # opt_in=True explicitly to use the existing safe detector
         # (tools/commercial_media reuse); this file never opts in, so evidence
         # is always NOT_RUN without private-dir access. No new env vars.
+        # The reason states non-request (never claims a CUE absence we did
+        # not measure).
         if opt_in is not True:
             return {"status": "NOT_RUN",
-                    "reason": "./rom carries no CUE; synthetic media only"}
+                    "reason": "Commercial media not requested; synthetic-only test"}
         try:
             import commercial_media as CM
         except ImportError as e:
@@ -486,15 +488,28 @@ class MatchedSelectionRealCoreTests(unittest.TestCase):
                 rec = unified_record(buf)
                 # $03 return SP vs pre-state TXS $FF.
                 self.assertEqual(rec["sp3"], 0xFF)
-                # Final halt SP vs pre-state TXS $FF.
+                # Final halt SP vs pre-state TXS $FF (payload MARK + RUN).
                 self.assertEqual(run["sp"], 0xFF)
                 self.assertEqual(buf[0x3F05 - 0x2800], 0xFF)
-                # MPR1 vs pre-state bootloader $F8.
+                # MPR1 vs pre-state bootloader $F8 (payload MARK record).
                 self.assertEqual(buf[0x3F04 - 0x2800], 0xF8)
+                # RUN["mpr"] is the probe's MPR0..MPR7 array at halt
+                # (geargrafx_cdread_probe.cpp regs: GetMpr(0..7)); index 1
+                # is MPR1. Payload MARK and RUN are independent post-state
+                # evidences; both must equal the documented pre-state.
+                run_mpr = run.get("mpr")
+                self.assertIsInstance(run_mpr, list)
+                self.assertEqual(len(run_mpr), 8)
+                for v in run_mpr:
+                    self.assertIsInstance(v, int)
+                self.assertEqual(run_mpr[1], 0xF8)
+                self.assertEqual(run_mpr[1], buf[0x3F04 - 0x2800])
                 # Return positions observed in order.
                 self.assertEqual((rec["order1"], rec["order33"], rec["order3"]),
                                  (0x02, 0x33, 0x03))
-                # MPR0/others: no record field -> UNKNOWN, never claimed.
+                # MPR0/others: no pre/post record pair -> UNKNOWN, never
+                # claimed (RUN array exists but preservation needs an
+                # execution-before comparison, not post-hoc equality alone).
                 self.assertNotIn("mpr0", rec)
 
     def test_variants_reach_expected_apis(self):
@@ -646,7 +661,7 @@ class MatchedSelectionRealCoreTests(unittest.TestCase):
         self.assertNotRegex(blob, r"[A-Za-z]:\\|/home/|/Users/")
         if status == "NOT_RUN":
             self.assertEqual(self.evidence["commercial"]["reason"],
-                             "./rom carries no CUE; synthetic media only")
+                             "Commercial media not requested; synthetic-only test")
 
 
 if __name__ == "__main__":
