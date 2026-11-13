@@ -138,26 +138,33 @@ class ExperimentalSlot33BuildTests(unittest.TestCase):
         self.assertEqual(self.normal[OVERLAY_START:OVERLAY_END], b"\xff" * 0x800)
 
     def test_experimental_table_redirects_only_documented_windows(self):
-        # UNION adaptation (G5 Agent A+B, issue #783): the union image wires
-        # BOTH slot $33 (this test's redirect) and slot $02 (Agent-A 5-byte
-        # JMP-proto patch). The fail-closed invariant is unchanged in spirit:
-        # the API-area diff vs the normal DEV ROM is EXACTLY the two
-        # documented windows, nothing else. Agent B's source and PR are
-        # untouched; only this branch's expectation follows the union image.
+        # TRIPLE adaptation (G5 triple-link, issue #787): the triple image wires
+        # slot $33 (this test's redirect), slot $02 (Agent-A 5-byte JMP-proto
+        # patch) and slot $03 (Agent-B link V1 $E009 table redirect). The
+        # fail-closed invariant is unchanged in spirit: the API-area diff vs
+        # the normal DEV ROM is EXACTLY the three documented windows, nothing
+        # else. Agent B's source and PR are untouched; only this branch's
+        # expectation follows the triple image.
         body = self.labels["experimental_slot_33"]
         self.assertTrue(0xF000 <= body < 0xFFF6, f"body ${body:04X} outside BOOT")
         table = bytes(self.exp[TABLE_AT:TABLE_AT + 3])
         self.assertEqual(table, bytes((0x4C, body & 0xFF, body >> 8)))
         slot02 = self.labels["api_slot_02"]
         proto = self.labels["cd_base_proto_entry"]
+        link = self.labels["cd_read_link_entry"]
+        self.assertTrue(0xF000 <= link < 0xFFF6, f"link ${link:04X} outside BOOT")
         masked = bytearray(self.exp[:0x1000])
         masked[TABLE_AT:TABLE_AT + 3] = self.normal[TABLE_AT:TABLE_AT + 3]
         masked[slot02 - 0xE000:slot02 - 0xE000 + 5] = \
             self.normal[slot02 - 0xE000:slot02 - 0xE000 + 5]
+        masked[3 * 0x03:3 * 0x03 + 3] = self.normal[3 * 0x03:3 * 0x03 + 3]
         self.assertEqual(bytes(masked), self.normal[:0x1000])
         # The second window is the union's documented slot-$02 JMP+NOP pad.
         self.assertEqual(bytes(self.exp[slot02 - 0xE000:slot02 - 0xE000 + 5]),
                          bytes((0x4C, proto & 0xFF, (proto >> 8) & 0xFF, 0xEA, 0xEA)))
+        # The third window is the triple's documented slot-$03 JMP-link redirect.
+        self.assertEqual(bytes(self.exp[3 * 0x03:3 * 0x03 + 3]),
+                         bytes((0x4C, link & 0xFF, (link >> 8) & 0xFF)))
 
     def test_experimental_body_matches_the_fragment_prologue(self):
         body = self.labels["experimental_slot_33"]

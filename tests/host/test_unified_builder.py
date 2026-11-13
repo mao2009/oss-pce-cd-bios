@@ -33,17 +33,23 @@ UNIMPL_ADDR = 0xE245
 PROTO_ADDR = 0xF000
 STUB33_ADDR = 0xE234
 BODY33_ADDR = 0xF187
+STUB03_ADDR = 0xE238
+LINK_ADDR = 0xF1A0
 
 
 def _bank(slot02=SLOT02_ADDR, unimpl=UNIMPL_ADDR, proto=PROTO_ADDR,
-          stub33=STUB33_ADDR, body33=BODY33_ADDR):
-    """Fake 8 KiB bank0: slot-02 fallback, $E099 stub JMP, BOOT prologue."""
+          stub33=STUB33_ADDR, body33=BODY33_ADDR,
+          stub03=STUB03_ADDR, link=LINK_ADDR):
+    """Fake 8 KiB bank0: slot-02 fallback, $E099/$E009 stub JMPs, BOOT prologues."""
     bank = bytearray(b"\xFF" * 8192)
     off = slot02 - 0xE000
     bank[off:off + 5] = bytes((0xA2, 0x02, 0x4C, unimpl & 0xFF, (unimpl >> 8) & 0xFF))
     bank[U._SLOT33_TABLE:U._SLOT33_TABLE + 3] = bytes((0x4C, stub33 & 0xFF, stub33 >> 8))
     body_off = body33 - 0xE000
     bank[body_off:body_off + 2] = bytes((0x08, 0x48))  # PHP, PHA
+    bank[U._SLOT03_TABLE:U._SLOT03_TABLE + 3] = bytes((0x4C, stub03 & 0xFF, stub03 >> 8))
+    link_off = link - 0xE000
+    bank[link_off:link_off + 2] = bytes((0x08, 0x48))  # PHP, PHA (link prologue)
     return bytes(bank)
 
 
@@ -58,11 +64,12 @@ class UnionRequiredTests(unittest.TestCase):
     def test_required_carries_both_callees(self):
         self.assertIn("cd_base_proto_entry", U.REQUIRED)
         self.assertIn("experimental_slot_33", U.REQUIRED)
+        self.assertIn("cd_read_link_entry", U.REQUIRED)
 
     def test_link_units_carry_both_fragments(self):
         names = {path.name for path, _defines in U._experimental_boot_units(_selected())}
         self.assertEqual(names, {"experimental_bios_boot.s", "cd_load_exec_probe.s",
-                                 "cd_base_proto.s"})
+                                 "cd_base_proto.s", "cd_read_link.s"})
 
     def test_slot33_body_comes_from_the_shared_fragment(self):
         source = (ROOT / "src" / "experimental_bios_boot.s").read_text(encoding="utf-8")
@@ -127,25 +134,30 @@ class Slot33RedirectTests(unittest.TestCase):
 class UnifiedWindowsTests(unittest.TestCase):
     def test_ordered_union_diff_is_exactly_both_windows(self):
         original = _bank()
-        # Ordered fail-closed patches: slot-$02 first, then slot-$33.
+        # Ordered fail-closed patches: slot-$02 first, then slot-$33, then slot-$03.
         patched = U._patch_slot02_to_proto(original, SLOT02_ADDR, UNIMPL_ADDR, PROTO_ADDR)
         patched = U._redirect_slot33_to_body(patched, STUB33_ADDR, BODY33_ADDR)
+        patched = U._redirect_slot03_to_link(patched, STUB03_ADDR, LINK_ADDR)
         allowed = U.unified_api_windows(SLOT02_ADDR)
-        self.assertEqual(len(allowed), 5 + 3)
+        self.assertEqual(len(allowed), 5 + 3 + 3)
         api_diff = [i for i in range(0x1000) if patched[i] != original[i]]
-        # Builder semantics: inside the windows, both windows nonempty,
-        # both patches byte-exact.
+        # Builder semantics: inside the windows, all three windows nonempty,
+        # all three patches byte-exact.
         self.assertTrue(set(api_diff) <= allowed)
         slot02_window = set(range(SLOT02_ADDR - 0xE000, SLOT02_ADDR - 0xE000 + 5))
         slot33_window = set(range(U._SLOT33_TABLE, U._SLOT33_TABLE + 3))
+        slot03_window = set(range(U._SLOT03_TABLE, U._SLOT03_TABLE + 3))
         self.assertTrue(set(api_diff) & slot02_window)
         self.assertTrue(set(api_diff) & slot33_window)
+        self.assertTrue(set(api_diff) & slot03_window)
         off = SLOT02_ADDR - 0xE000
         self.assertEqual(bytes(patched[off:off + 5]),
                          bytes((0x4C, PROTO_ADDR & 0xFF, (PROTO_ADDR >> 8) & 0xFF,
                                 0xEA, 0xEA)))
         self.assertEqual(bytes(patched[U._SLOT33_TABLE:U._SLOT33_TABLE + 3]),
                          bytes((0x4C, BODY33_ADDR & 0xFF, (BODY33_ADDR >> 8) & 0xFF)))
+        self.assertEqual(bytes(patched[U._SLOT03_TABLE:U._SLOT03_TABLE + 3]),
+                         bytes((0x4C, LINK_ADDR & 0xFF, (LINK_ADDR >> 8) & 0xFF)))
 
     def test_windows_reject_bad_slot02_address(self):
         with self.assertRaises(ValueError):
@@ -153,13 +165,14 @@ class UnifiedWindowsTests(unittest.TestCase):
 
     def test_coincidental_byte_equality_is_tolerated(self):
         # A window byte may coincidentally match (shared low byte); the
-        # builder must still accept the image when both patches are present
+        # builder must still accept the image when all patches are present
         # and byte-exact. Only unexpected deltas fail.
         bank = bytearray(_bank(body33=0xF134))
         bank[U._SLOT33_TABLE:U._SLOT33_TABLE + 3] = bytes((0x4C, 0x34, 0xE2))
         original = bytes(bank)
         patched = U._patch_slot02_to_proto(original, SLOT02_ADDR, UNIMPL_ADDR, PROTO_ADDR)
         patched = U._redirect_slot33_to_body(patched, STUB33_ADDR, 0xF134)
+        patched = U._redirect_slot03_to_link(patched, STUB03_ADDR, LINK_ADDR)
         allowed = U.unified_api_windows(SLOT02_ADDR)
         api_diff = [i for i in range(0x1000) if patched[i] != original[i]]
         self.assertTrue(set(api_diff) <= allowed)
@@ -169,8 +182,11 @@ class UnifiedWindowsTests(unittest.TestCase):
         windows = U.unified_api_windows(SLOT02_ADDR)
         slot02 = set(range(SLOT02_ADDR - 0xE000, SLOT02_ADDR - 0xE000 + 5))
         slot33 = set(range(U._SLOT33_TABLE, U._SLOT33_TABLE + 3))
+        slot03 = set(range(U._SLOT03_TABLE, U._SLOT03_TABLE + 3))
         self.assertTrue(slot02.isdisjoint(slot33))
-        self.assertEqual(windows, slot02 | slot33)
+        self.assertTrue(slot02.isdisjoint(slot03))
+        self.assertTrue(slot33.isdisjoint(slot03))
+        self.assertEqual(windows, slot02 | slot33 | slot03)
 
 
 class UnifiedProvenanceTests(unittest.TestCase):
@@ -179,8 +195,15 @@ class UnifiedProvenanceTests(unittest.TestCase):
         self.assertTrue(provenance["branch"])
         self.assertRegex(provenance["head"], r"\A[0-9a-f]{40}\Z")
         self.assertEqual(set(provenance["merged_heads"]), set(U._MERGED_REFS))
+        self.assertEqual(set(provenance["merge_commits"]), set(U._MERGED_REFS))
         for sha in provenance["merged_heads"].values():
             self.assertTrue(re.fullmatch(r"[0-9a-f]{40}", sha) or sha.startswith("UNRESOLVED"))
+        for sha in provenance["merge_commits"].values():
+            self.assertTrue(re.fullmatch(r"[0-9a-f]{40}", sha) or sha.startswith("UNRESOLVED"))
+        # Merged HEADs are never hardcoded literals.
+        source = (ROOT / "tools" / "build_experimental_bios_boot.py").read_text(encoding="utf-8")
+        self.assertNotIn("5fe93c4b", source)
+        self.assertNotIn("323562fb", source)
         self.assertEqual(provenance["pinned_cc65"], DEPENDENCIES["cc65"]["revision"])
         self.assertEqual(provenance["pinned_geargrafx"], DEPENDENCIES["geargrafx"]["revision"])
 
@@ -198,10 +221,74 @@ class UnifiedProvenanceTests(unittest.TestCase):
             def fake(*args):
                 if args and args[0] == "rev-parse" and len(args) > 1 and args[1] == U._MERGED_REFS[0]:
                     raise ValueError("BLOCKED: ref absent")
+                if args and args[0] == "log":
+                    return ""  # clone carries no merge history either
                 return orig(*args)
             U._git_output = fake
             provenance = U.unified_repo_provenance()
             self.assertTrue(provenance["merged_heads"][U._MERGED_REFS[0]].startswith("UNRESOLVED"))
+        finally:
+            U._git_output = orig
+
+    def test_deleted_branch_falls_back_to_single_merge_commit(self):
+        # Post-merge branch deletion (refs #782/#780/#785 gone from the
+        # server): the integrating merge commit is discovered from history
+        # and the confirmed integrated HEAD is its second parent (never the
+        # merge commit itself, never a subject-match guess). Other refs use
+        # the real clone state.
+        orig = U._git_output
+        short = U._MERGED_REFS[0].removeprefix("origin/")
+        merge_sha = "e" * 40
+        second_sha = "f" * 40
+        try:
+            def fake(*args):
+                if args and args[0] == "rev-parse" and len(args) > 1 and args[1] == U._MERGED_REFS[0]:
+                    raise ValueError("BLOCKED: ref absent (deleted post-merge)")
+                if args and args[0] == "log":
+                    return f"{merge_sha} Merge pull request #999 from someone/{short}"
+                if args and args[0] == "rev-list":
+                    return f"{merge_sha} {'a' * 40} {second_sha}"
+                if args and args[0] == "merge-base":
+                    return ""
+                return orig(*args)
+            U._git_output = fake
+            provenance = U.unified_repo_provenance()
+            self.assertEqual(provenance["merged_heads"][U._MERGED_REFS[0]], second_sha)
+            self.assertEqual(provenance["merge_commits"][U._MERGED_REFS[0]], merge_sha)
+        finally:
+            U._git_output = orig
+
+    def test_merge_commit_discovery_needs_exactly_one_match(self):
+        orig = U._git_output
+        try:
+            for marker in ("empty", "zero", "multi", "badsha"):
+                def fake_one(*a, marker=marker, **k):
+                    _ = k
+                    if a[:1] == ("log",):
+                        table = {
+                            "empty": "",
+                            "zero": "ab12 Merge pull request #1 from o/other-branch",
+                            "multi": ("aa" + "0" * 38 + " Merge pull request #1 from o/agent-a/cd-base-proto-g5\n" +
+                                      "bb" + "0" * 38 + " Merge remote-tracking branch 'origin/agent-a/cd-base-proto-g5' into x"),
+                            "badsha": "notasha Merge pull request #1 from o/agent-a/cd-base-proto-g5",
+                        }
+                        return table[marker]
+                    raise ValueError("unexpected git call")
+                U._git_output = fake_one
+                self.assertIsNone(U._discover_merge_commit("agent-a/cd-base-proto-g5"),
+                                  f"discovery must not guess ({marker})")
+            U._git_output = lambda *a, **k: (  # noqa: E731
+                "cc" + "0" * 38 + " Merge pull request #782 from mao2009/agent-a/cd-base-proto-g5"
+                if a[:1] == ("log",) else (_ for _ in ()).throw(ValueError("unexpected")))
+            self.assertEqual(U._discover_merge_commit("agent-a/cd-base-proto-g5"), "cc" + "0" * 38)
+            U._git_output = lambda *a, **k: (  # noqa: E731
+                "dd" + "0" * 38 + " Merge remote-tracking branch 'origin/agent-a/cd-base-proto-g5' into y"
+                if a[:1] == ("log",) else (_ for _ in ()).throw(ValueError("unexpected")))
+            self.assertEqual(U._discover_merge_commit("agent-a/cd-base-proto-g5"), "dd" + "0" * 38)
+            def failing(*a, **k):
+                raise ValueError("BLOCKED: git log failed")
+            U._git_output = failing
+            self.assertIsNone(U._discover_merge_commit("agent-a/cd-base-proto-g5"))
         finally:
             U._git_output = orig
 
@@ -238,18 +325,18 @@ class UnifiedProvenanceTests(unittest.TestCase):
         # recorded EXACTLY, never altered or guessed.
         orig = U._git_output
         try:
+            shas = {ref: char * 40 for ref, char in zip(U._MERGED_REFS, "abc")} | \
+                {ref: "f" * 40 for ref in U._MERGED_REFS[3:]}
+
             def fake(*args):
                 if args and args[0] == "rev-parse" and len(args) > 1 and args[1] in U._MERGED_REFS:
-                    return {U._MERGED_REFS[0]: "a" * 40,
-                            U._MERGED_REFS[1]: "b" * 40}[args[1]]
+                    return shas[args[1]]
                 if args and args[0] == "merge-base":
                     return ""
                 return orig(*args)
             U._git_output = fake
             provenance = U.unified_repo_provenance()
-            self.assertEqual(provenance["merged_heads"],
-                             {U._MERGED_REFS[0]: "a" * 40,
-                              U._MERGED_REFS[1]: "b" * 40})
+            self.assertEqual(provenance["merged_heads"], shas)
         finally:
             U._git_output = orig
 
@@ -278,7 +365,7 @@ class UnifiedProvenanceTests(unittest.TestCase):
             def fake(*args):
                 if args and args[0] == "rev-parse" and len(args) > 1 and args[1] == U._MERGED_REFS[0]:
                     return "74739f82" + "0" * 32
-                if args and args[0] == "rev-parse" and len(args) > 1 and args[1] == U._MERGED_REFS[1]:
+                if args and args[0] == "rev-parse" and len(args) > 1 and args[1] in U._MERGED_REFS[1:]:
                     return "d" * 40
                 if args and args[0] == "merge-base":
                     if len(args) > 2 and args[2].startswith("74739f82"):
@@ -300,12 +387,146 @@ class UnifiedProvenanceTests(unittest.TestCase):
             def fake(*args):
                 if args and args[0] == "rev-parse" and len(args) > 1 and args[1] in U._MERGED_REFS:
                     raise ValueError("BLOCKED: ref absent")
+                if args and args[0] == "log":
+                    return ""  # shallow clone carries no merge history either
                 return orig(*args)
             U._git_output = fake
             provenance = U.unified_repo_provenance()
             for ref, value in provenance["merged_heads"].items():
                 self.assertTrue(value.startswith("UNRESOLVED"), ref)
                 self.assertIsNone(re.fullmatch(r"[0-9a-f]{40}", value))
+            for ref, value in provenance["merge_commits"].items():
+                self.assertTrue(value.startswith("UNRESOLVED"), ref)
+        finally:
+            U._git_output = orig
+
+
+class UnifiedProvenanceStrictTests(unittest.TestCase):
+    """MEDIUM (independent review): merge provenance must not guess from subject.
+
+    Subject-only match never yields PROVENANCE VERIFIED: the integrating
+    merge commit's parent relationship (second parent = true branch HEAD)
+    and ancestry into HEAD are verified. Undeterminable cases are UNRESOLVED.
+    No hardcoded SHA, no gate relaxation.
+    """
+
+    def _fake_for_absent(self, log_line, rev_list_out=None, ancestor_second=True):
+        orig = U._git_output
+        short = U._MERGED_REFS[0].removeprefix("origin/")
+        def fake(*args):
+            if args and args[0] == "rev-parse" and len(args) > 1 and args[1] == U._MERGED_REFS[0]:
+                raise ValueError("BLOCKED: ref absent")
+            if args and args[0] == "rev-parse" and len(args) > 1 and args[1] in U._MERGED_REFS[1:]:
+                return "d" * 40
+            if args and args[0] == "log":
+                return log_line
+            if args and args[0] == "rev-list":
+                if isinstance(rev_list_out, Exception):
+                    raise rev_list_out
+                return rev_list_out
+            if args and args[0] == "merge-base":
+                # ancestor_second=False simulates a fake subject match whose
+                # second parent is not integrated (subject alone proves nothing).
+                if len(args) > 2 and args[2] == "b" * 40 and not ancestor_second:
+                    raise ValueError("BLOCKED: not an ancestor (fake subject match)")
+                return ""
+            return orig(*args)
+        return fake, orig
+
+    def test_subject_only_fake_merge_is_unresolved(self):
+        # Subject matches, merge ancestor of HEAD, but the claimed integrated
+        # HEAD (second parent) is not an ancestor -> UNRESOLVED, never VERIFIED.
+        short = U._MERGED_REFS[0].removeprefix("origin/")
+        merge_sha = "e" * 40
+        second_sha = "b" * 40
+        log_line = f"{merge_sha} Merge pull request #999 from someone/{short}"
+        rev_list = f"{merge_sha} {'a' * 40} {second_sha}"
+        fake, orig = self._fake_for_absent(log_line, rev_list, ancestor_second=False)
+        try:
+            U._git_output = fake
+            provenance = U.unified_repo_provenance()
+            self.assertTrue(provenance["merged_heads"][U._MERGED_REFS[0]].startswith("UNRESOLVED"))
+            self.assertEqual(provenance["merge_commits"][U._MERGED_REFS[0]], merge_sha)
+        finally:
+            U._git_output = orig
+
+    def test_bad_parents_are_unresolved(self):
+        # Non-2-parent merge (octopus / non-merge / truncated) cannot yield
+        # a confirmed HEAD -> UNRESOLVED heads, merge still recorded.
+        short = U._MERGED_REFS[0].removeprefix("origin/")
+        merge_sha = "e" * 40
+        log_line = f"{merge_sha} Merge pull request #999 from someone/{short}"
+        for bad in (f"{merge_sha} {'a' * 40}",
+                    f"{merge_sha} {'a' * 40} {'b' * 40} {'c' * 40}",
+                    "not-a-sha-line"):
+            with self.subTest(parents=bad[:20]):
+                fake, orig = self._fake_for_absent(log_line, bad, ancestor_second=True)
+                try:
+                    U._git_output = fake
+                    provenance = U.unified_repo_provenance()
+                    self.assertTrue(provenance["merged_heads"][U._MERGED_REFS[0]].startswith("UNRESOLVED"))
+                    self.assertEqual(provenance["merge_commits"][U._MERGED_REFS[0]], merge_sha)
+                finally:
+                    U._git_output = orig
+
+    def test_multiple_candidates_are_unresolved(self):
+        # Two subject matches -> no single merge -> UNRESOLVED both fields.
+        short = U._MERGED_REFS[0].removeprefix("origin/")
+        log_line = (f"{'aa' + '0' * 38} Merge pull request #1 from o/{short}\n" +
+                    f"{'bb' + '0' * 38} Merge remote-tracking branch 'origin/{short}' into x")
+        fake, orig = self._fake_for_absent(log_line, "unused", ancestor_second=True)
+        try:
+            U._git_output = fake
+            provenance = U.unified_repo_provenance()
+            self.assertTrue(provenance["merged_heads"][U._MERGED_REFS[0]].startswith("UNRESOLVED"))
+            self.assertTrue(provenance["merge_commits"][U._MERGED_REFS[0]].startswith("UNRESOLVED"))
+        finally:
+            U._git_output = orig
+
+    def test_shallow_missing_parents_are_unresolved(self):
+        # Shallow history: merge found but parents unavailable -> UNRESOLVED
+        # heads (safe side), merge still recorded.
+        short = U._MERGED_REFS[0].removeprefix("origin/")
+        merge_sha = "e" * 40
+        log_line = f"{merge_sha} Merge pull request #999 from someone/{short}"
+        fake, orig = self._fake_for_absent(log_line, ValueError("BLOCKED: shallow"), ancestor_second=True)
+        try:
+            U._git_output = fake
+            provenance = U.unified_repo_provenance()
+            self.assertTrue(provenance["merged_heads"][U._MERGED_REFS[0]].startswith("UNRESOLVED"))
+            self.assertEqual(provenance["merge_commits"][U._MERGED_REFS[0]], merge_sha)
+        finally:
+            U._git_output = orig
+
+    def test_legit_merge_records_second_parent(self):
+        short = U._MERGED_REFS[0].removeprefix("origin/")
+        merge_sha = "e" * 40
+        second_sha = "f" * 40
+        log_line = f"{merge_sha} Merge pull request #999 from someone/{short}"
+        rev_list = f"{merge_sha} {'a' * 40} {second_sha}"
+        fake, orig = self._fake_for_absent(log_line, rev_list, ancestor_second=True)
+        try:
+            U._git_output = fake
+            provenance = U.unified_repo_provenance()
+            self.assertEqual(provenance["merged_heads"][U._MERGED_REFS[0]], second_sha)
+            self.assertEqual(provenance["merge_commits"][U._MERGED_REFS[0]], merge_sha)
+        finally:
+            U._git_output = orig
+
+    def test_merge_second_parent_parsing(self):
+        orig = U._git_output
+        try:
+            U._git_output = lambda *a, **k: "m" + "0" * 39 + " " + "a" * 40 + " " + "b" * 40 if a[:1] == ("rev-list",) else (_ for _ in ()).throw(ValueError("unexpected"))
+            # Invalid merge SHA shape -> None (never a guess).
+            self.assertIsNone(U._merge_second_parent("not-a-sha"))
+            # Octopus (3 parents) -> None.
+            U._git_output = lambda *a, **k: "e" * 40 + " " + "a" * 40 + " " + "b" * 40 + " " + "c" * 40
+            self.assertIsNone(U._merge_second_parent("e" * 40))
+            # Git error (shallow) -> None.
+            def failing(*a, **k):
+                raise ValueError("BLOCKED: shallow")
+            U._git_output = failing
+            self.assertIsNone(U._merge_second_parent("e" * 40))
         finally:
             U._git_output = orig
 

@@ -234,6 +234,7 @@ def return_kind_for_variant(key: str, manifest: dict | None = None) -> str:
 # it only reads their builder outputs and derives verifiable info.
 NATIVE_CD_BASE_KEY = "cd_base_proto"
 NATIVE_DSPOFF_KEY = "experimental_slot_33"
+NATIVE_CD_READ_KEY = "cd_read_link"
 
 # Fields a native manifest must additionally carry before G5 can claim a
 # real-CPU measurement. When any are missing the validator reports them
@@ -288,6 +289,7 @@ def derive_native_slots(manifest: dict) -> tuple:
     Reads (never edits) the existing experimental blocks:
       cd_base_proto {slot: "$02", entry: "$E006", proto_entry: ...} (Agent A)
       experimental_slot_33 {table_entry: "0xE099", ...} (Agent B)
+      cd_read_link {slot: "$03", entry: "$E009", link_entry: ...} (triple-link)
     Returns a sorted tuple of slot ints. Raises BLOCKED when neither block
     is present or when addresses do not parse. Notation drift ("02" vs
     "0x02" vs "$02") is normalized; duplicates after normalization are
@@ -338,9 +340,42 @@ def derive_native_slots(manifest: dict) -> tuple:
         if addr is None:
             raise ValueError(f"BLOCKED: native experimental_slot_33.table_entry bad {raw_table!r}")
         slots.append(_native_slot_from_entry(addr))
+    link = manifest.get(NATIVE_CD_READ_KEY)
+    if isinstance(link, dict):
+        raw_slot = link.get("slot")
+        raw_entry = link.get("entry")
+        raw_table = link.get("table_entry")
+        slot = None
+        if raw_slot is not None:
+            try:
+                slot = normalize_slot_key(raw_slot)
+            except ValueError as e:
+                raise ValueError(f"BLOCKED: native cd_read_link.slot bad ({e})") from None
+        for raw in (raw_entry, raw_table):
+            if slot is None and raw is not None:
+                addr = _parse_native_addr(raw)
+                if addr is None:
+                    raise ValueError(f"BLOCKED: native cd_read_link entry bad {raw!r}")
+                slot = _native_slot_from_entry(addr)
+        if slot is None:
+            raise ValueError("BLOCKED: native cd_read_link has neither slot nor entry")
+        # Cross-check every explicit entry address against the slot; any
+        # unparsable or mismatching entry is BLOCKED (fail-closed).
+        for raw in (raw_entry, raw_table):
+            if raw is not None:
+                addr = _parse_native_addr(raw)
+                if addr is None:
+                    raise ValueError(f"BLOCKED: native cd_read_link entry bad {raw!r}")
+                try:
+                    entry_slot = _native_slot_from_entry(addr)
+                except ValueError as e:
+                    raise ValueError(f"BLOCKED: native cd_read_link entry bad ({e})") from None
+                if entry_slot != slot:
+                    raise ValueError("BLOCKED: native cd_read_link slot/entry mismatch")
+        slots.append(slot)
     if not slots:
         raise ValueError("BLOCKED: no native experimental wiring block "
-                         f"({NATIVE_CD_BASE_KEY}/{NATIVE_DSPOFF_KEY})")
+                         f"({NATIVE_CD_BASE_KEY}/{NATIVE_DSPOFF_KEY}/{NATIVE_CD_READ_KEY})")
     if len(set(slots)) != len(slots):
         raise ValueError(f"BLOCKED: duplicate native slot after normalization {slots!r}")
     return tuple(sorted(slots))
@@ -385,9 +420,9 @@ def validate_experimental_manifest(manifest: dict) -> dict:
       (a) legacy G5 D manifest: schema/rom_name/branch/head/slot_wiring/
           pinned_cc65+pinned_geargrafx/release_eligible=false/
           dev_callable=false, optional rom_sha256/labels;
-      (b) native experimental manifests from the existing A/B builders
-          (cd_base_proto and/or experimental_slot_33 blocks, symbols,
-          rom_sha256/rom_bytes/pinned_cc65/...). Slots are derived via
+      (b) native experimental manifests from the existing builders
+          (cd_base_proto and/or experimental_slot_33 and/or cd_read_link
+          blocks, symbols, rom_sha256/rom_bytes/pinned_cc65/...). Slots are derived via
           derive_native_slots(); G5-required fields that are still absent
           (branch/head/pinned_geargrafx/labels/selection) are reported as
           BLOCKED additional-required-fields instead of guessed.
@@ -404,7 +439,8 @@ def validate_experimental_manifest(manifest: dict) -> dict:
         raise ValueError("BLOCKED: experimental manifest is not an object")
     # Native shape takes precedence when a native wiring block is present.
     has_native = isinstance(manifest.get(NATIVE_CD_BASE_KEY), dict) or \
-        isinstance(manifest.get(NATIVE_DSPOFF_KEY), dict)
+        isinstance(manifest.get(NATIVE_DSPOFF_KEY), dict) or \
+        isinstance(manifest.get(NATIVE_CD_READ_KEY), dict)
     if has_native:
         return _validate_native_manifest(manifest)
     # --- Legacy G5 D shape. ---
@@ -480,10 +516,20 @@ def _validate_native_manifest(manifest: dict) -> dict:
                      else f"${slots[0]:02X}=CD_BASE_PROTO_V1")
     dsp = manifest.get(NATIVE_DSPOFF_KEY)
     if isinstance(dsp, dict):
-        # slots[-1] is the DSPOFF slot when both blocks present.
-        idx = -1 if isinstance(base, dict) else 0
-        parts.append(f"${slots[idx]:02X}=EX_DSPOFF project-own fragment "
+        # Resolve the DSPOFF slot from its own table entry (never by position).
+        # derive_native_slots above already fail-closed on a missing/bad entry.
+        dslot = _native_slot_from_entry(_parse_native_addr(dsp.get("table_entry")))
+        parts.append(f"${dslot:02X}=EX_DSPOFF project-own fragment "
                      f"(table {dsp.get('table_entry')})")
+    link = manifest.get(NATIVE_CD_READ_KEY)
+    if isinstance(link, dict):
+        raw = link.get("table_entry") if link.get("table_entry") is not None else link.get("entry")
+        laddr = _parse_native_addr(raw)
+        if laddr is None:
+            raise ValueError(f"BLOCKED: native cd_read_link entry bad {raw!r}")
+        lslot = _native_slot_from_entry(laddr)
+        parts.append(f"${lslot:02X}=CD_READ_LINK_V1 experimental "
+                     f"(table {link.get('table_entry')}, link {link.get('link_entry')})")
     desc = "; ".join(parts) if parts else "; ".join(f"${s:02X}=native" for s in slots)
     missing = missing_g5_native_fields(manifest)
     if missing:
@@ -1315,6 +1361,35 @@ def _native_expected_targets(manifest):
                         target = _parse_native_addr(v)
         if slot is not None:
             out[slot] = target
+    link = manifest.get(NATIVE_CD_READ_KEY)
+    if isinstance(link, dict):
+        slot = None
+        for raw in (link.get("slot"), link.get("entry"), link.get("table_entry")):
+            if slot is None and raw is not None:
+                if isinstance(raw, int) and not isinstance(raw, bool):
+                    try:
+                        slot = normalize_slot_key(raw)
+                    except ValueError:
+                        slot = None
+                else:
+                    addr = _parse_native_addr(raw)
+                    if addr is not None:
+                        try:
+                            slot = _native_slot_from_entry(addr)
+                        except ValueError:
+                            slot = None
+                    elif isinstance(raw, str):
+                        try:
+                            slot = normalize_slot_key(raw)
+                        except ValueError:
+                            slot = None
+        # Target resolution is centralized in _native_link_entry_addr (single
+        # BOOT-gated resolver; no duplicated alias key lists here). A range
+        # violation raises BLOCKED out of the expected-target computation,
+        # which stays fail-closed for every verify_d_rom_slot_targets caller.
+        target = _native_link_entry_addr(manifest)
+        if slot is not None:
+            out[slot] = target
     return out
 
 
@@ -1475,6 +1550,190 @@ def _verify_native_slot02_two_stage(data, manifest):
     return table_target, proto
 
 
+# BOOT-region bounds for the experimental link callee (parity with the
+# builder's _redirect_slot03_to_link: $F000 <= entry < $FFF6, keeping the
+# callee clear of the API table/fallback area and the vectors).
+_LINK_BOOT_START = 0xF000
+_LINK_BOOT_VECTORS = 0xFFF6
+
+
+def _require_link_boot_range(addr) -> int:
+    """Fail-closed BOOT-range gate shared by every link_entry resolver path.
+
+    A self-looping table target (e.g. $E009 -> JMP $E009) or any address
+    outside BOOT is never the real link helper: BLOCKED, never accepted.
+    """
+    if (isinstance(addr, int) and not isinstance(addr, bool)
+            and _LINK_BOOT_START <= addr < _LINK_BOOT_VECTORS):
+        return addr
+    raise ValueError("BLOCKED: native cd_read_link entry %r outside BOOT $F000-$FFF5 "
+                     "(self-loop/fallback addresses are never real processing)" % (addr,))
+
+
+# All manifest sources that may name the $03 link callee. Every present
+# source must agree (unanimity); omission is allowed for backward
+# compatibility (two-block manifests, legitimate alias omission).
+_LINK_ALIAS_KEYS = ("link_entry", "body", "routine", "target",
+                    "entry_target", "callee", "impl_entry", "real_entry",
+                    "proto_entry")
+
+
+def _checked_link_addr(raw):
+    """Parse one link_entry candidate (pure).
+
+    None when absent/unparsable (the caller tries the next alias source);
+    the BOOT address when valid; BLOCKED raise when parsable but outside
+    BOOT (a self-loop or fallback address hiding in an alias is refused).
+
+    Kept for single-source callers; the strict multi-source resolver below
+    (_native_link_entry_addr) requires unanimity across all present aliases
+    and treats a present-but-unparsable alias as BLOCKED (never silent skip).
+    """
+    if raw is None or isinstance(raw, bool):
+        return None
+    addr = raw if isinstance(raw, int) else _parse_native_addr(raw)
+    if addr is None:
+        return None
+    return _require_link_boot_range(addr)
+
+
+def _parse_link_candidate(raw, source: str) -> int | None:
+    """Parse one present link callee candidate (pure, strict).
+
+    None only when the source is absent (raw is None: legitimate omission,
+    the caller skips it). Any present value must parse to a BOOT address:
+    a bool, an unparsable string, or an out-of-BOOT address raises BLOCKED
+    (a contradictory/malformed alias hiding beside the canonical entry is
+    refused, never silently ignored).
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, bool):
+        raise ValueError("BLOCKED: native cd_read_link alias %s is malformed (%r)" % (source, raw))
+    if isinstance(raw, int):
+        addr = raw
+    else:
+        addr = _parse_native_addr(raw)
+        if addr is None:
+            raise ValueError("BLOCKED: native cd_read_link alias %s is malformed (%r)" % (source, raw))
+    return _require_link_boot_range(addr)
+
+
+def _native_link_entry_addr(manifest):
+    """Native $03 callee: cd_read_link.link_entry (pure, read-only).
+
+    Every present alias source must agree on one BOOT address (unanimity):
+    cd_read_link.link_entry/body/routine/target/entry_target/callee/
+    impl_entry/real_entry/proto_entry plus labels.cd_read_link_entry plus
+    symbols.cd_read_link_entry. A present-but-malformed, out-of-BOOT, or
+    disagreeing alias raises BLOCKED (a contradiction hiding beside the
+    canonical entry is refused). None only when no source names a callee
+    (legitimate omission; the two-block manifest stays valid). Every parsed
+    address enforces the BOOT range ($F000 <= entry < $FFF6).
+    """
+    if not isinstance(manifest, dict):
+        return None
+    candidates: list = []
+    link = manifest.get(NATIVE_CD_READ_KEY)
+    if isinstance(link, dict):
+        for key in _LINK_ALIAS_KEYS:
+            if link.get(key) is not None:
+                addr = _parse_link_candidate(link.get(key), f"cd_read_link.{key}")
+                if addr is not None:
+                    candidates.append(addr)
+    labs = manifest.get("labels") if isinstance(manifest.get("labels"), dict) else None
+    if isinstance(labs, dict) and "cd_read_link_entry" in labs:
+        addr = _parse_link_candidate(labs.get("cd_read_link_entry"), "labels.cd_read_link_entry")
+        if addr is not None:
+            candidates.append(addr)
+    syms = manifest.get("symbols") if isinstance(manifest.get("symbols"), dict) else None
+    if isinstance(syms, dict) and "cd_read_link_entry" in syms:
+        addr = _parse_link_candidate(syms.get("cd_read_link_entry"), "symbols.cd_read_link_entry")
+        if addr is not None:
+            candidates.append(addr)
+    if not candidates:
+        return None
+    first = candidates[0]
+    for other in candidates[1:]:
+        if other != first:
+            raise ValueError("BLOCKED: native cd_read_link aliases disagree "
+                             "(%s; refusing contradictory manifest)" % (candidates,))
+    return first
+
+
+def _require_link_entry_prologue(data, link_entry: int) -> None:
+    """Fail-closed callee-entry check for the $03 link helper (pure).
+
+    The builder contract (tools/build_experimental_bios_boot.py
+    _redirect_slot03_to_link) requires the BOOT callee to start with the
+    link prologue PHP,PHA (bytes 08 48, src/cd_read_link.s cd_read_link_entry).
+    A bare JMP at the entry -- a BOOT self-loop (e.g. $F1A0: JMP $F1A0) or a
+    JMP to another BOOT address -- is never real processing and is refused
+    explicitly before the generic prologue comparison. A bare RTS / NOP-slide
+    RTS is refused by the existing fake-RTS gate; anything else without the
+    PHP,PHA prologue is refused as body drift.
+
+    This entry-shape check is necessary but never sufficient: it does not
+    prove the service executed or returned (that proof comes only from
+    measured real-core execution: LINK_RES + $2800 transfer + return gates).
+    """
+    data = bytes(data)
+    off = link_entry - 0xE000
+    if off < 0 or off + 2 > len(data):
+        raise ValueError("BLOCKED: slot $03 link entry %04X outside BIOS window" % link_entry)
+    b0 = data[off]
+    if b0 == 0x4C:
+        if off + 3 > len(data):
+            raise ValueError("BLOCKED: slot $03 link entry %04X truncated JMP" % link_entry)
+        tgt = data[off + 1] | (data[off + 2] << 8)
+        if tgt == link_entry:
+            raise ValueError("BLOCKED: slot $03 link entry %04X is a BOOT self-loop "
+                             "JMP (never real processing)" % link_entry)
+        raise ValueError("BLOCKED: slot $03 link entry %04X is JMP $%04X "
+                         "(not the PHP,PHA prologue; never real processing)" % (link_entry, tgt))
+    if not (data[off] == 0x08 and data[off + 1] == 0x48):
+        raise ValueError("BLOCKED: slot $03 link entry %04X lacks the PHP,PHA prologue "
+                         "(got %02X %02X; refusing body drift)" % (link_entry, data[off], data[off + 1]))
+
+
+def _verify_native_slot03_direct(data, manifest):
+    """Verify native $03 direct table redirect $E009 -> link (pure).
+
+    Triple-link wiring: the slot table entry $E009 holds JMP
+    cd_read_link_entry (the BOOT-region CD_READ_LINK_V1 helper). The wired
+    entry keeps the link's EXPERIMENTAL contract only; genuine $03 ABI
+    stays UNKNOWN/BLOCKED. The callee must resolve inside BOOT
+    ($F000 <= entry < $FFF6) on every resolver path, so a self-loop such
+    as $E009 -> JMP $E009 is refused, and the ROM callee entry must start
+    with the builder's PHP,PHA prologue (08 48 per src/cd_read_link.s); a
+    BOOT self-loop (e.g. $F1A0: JMP $F1A0), a JMP to another BOOT address,
+    a bare RTS, or a bad prologue is BLOCKED. Raises BLOCKED when the manifest
+    declares the slot without identifying the link, outside BOOT, on a
+    wrong table dest, or on a fake RTS / stub / non-prologue body.
+    The entry-shape check alone never proves execution or return; that
+    proof comes only from measured real-core transfer + return gates.
+    Returns (table_target, link_entry).
+    """
+    data = bytes(data)
+    link = _native_link_entry_addr(manifest)
+    if link is None:
+        raise ValueError("BLOCKED: native slot $03 declares no link callee target "
+                         "(missing; refusing self-claimed wiring)")
+    table_target = parse_slot_table_target(data, 0x03)
+    if table_target != link:
+        raise ValueError("BLOCKED: slot $03 ROM table JMP target %04X != "
+                         "manifest-declared link %04X" % (table_target, link))
+    if _slot_body_is_fake_rts(data, 0x03, table_target):
+        raise ValueError("BLOCKED: slot $03 ROM target %04X is a fake RTS / "
+                         "non-returning fallback" % table_target)
+    stub = _manifest_label_addr(manifest, "api_unimplemented")
+    if isinstance(stub, int) and table_target == stub:
+        raise ValueError("BLOCKED: slot $03 ROM target %04X equals the unimplemented stub"
+                         % table_target)
+    _require_link_entry_prologue(data, table_target)
+    return table_target, link
+
+
 def _verify_native_slot33_direct(data, manifest):
     """Verify native $33 direct table redirect $E099 -> body (pure).
 
@@ -1517,6 +1776,7 @@ def verify_d_rom_slot_targets(data, manifest):
     stub = _manifest_label_addr(manifest, "api_unimplemented")
     has_native_base = isinstance(manifest.get(NATIVE_CD_BASE_KEY), dict)
     has_native_dsp = isinstance(manifest.get(NATIVE_DSPOFF_KEY), dict)
+    has_native_link = isinstance(manifest.get(NATIVE_CD_READ_KEY), dict)
     for slot in slots:
         # Native $02 is TWO-stage ($E006 -> api_slot_02 -> proto_entry);
         # a one-stage table->proto comparison would BLOCKED even the correct
@@ -1528,6 +1788,10 @@ def verify_d_rom_slot_targets(data, manifest):
         # Native $33 stays a direct table redirect ($E099 -> body).
         if slot == 0x33 and has_native_dsp:
             _verify_native_slot33_direct(data, manifest)
+            continue
+        # Native $03 stays a direct table redirect ($E009 -> link).
+        if slot == 0x03 and has_native_link:
+            _verify_native_slot03_direct(data, manifest)
             continue
         target = parse_slot_table_target(data, slot)
         if _slot_body_is_fake_rts(data, slot, target):

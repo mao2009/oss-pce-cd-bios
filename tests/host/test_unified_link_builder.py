@@ -1,0 +1,447 @@
+"""Host tests for the triple-link $03 wiring (G5 P0 next step, Issue #787).
+
+Proves, without cc65 or the pinned core, that the unified experimental BIOS
+recipe now carries CD_BASE $02 proto + CD_READ link $03 + EX_DSPOFF $33 as
+REAL processing in one image:
+
+- slot-$03 table redirect ($E009 -> cd_read_link_entry, fail-closed),
+- API-area windows cover all three patches and stay disjoint,
+- manifest carries the cd_read_link native block (slot/entry/link_entry),
+- harness-D model derives (0x02, 0x03, 0x33) and verifies the triple ROM,
+  while the pre-triple two-block manifest still validates (backward compat).
+
+NOT genuine ABI evidence. NOT compatibility. Real arrival/return and the
+$2800 transfer run on the pinned core in
+tests/integration/test_unified_link_realcore.py. No emulator here.
+"""
+import hashlib
+import sys
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tools"))
+
+import build_experimental_bios_boot as U  # noqa: E402
+import g5_progress_model as M  # noqa: E402
+
+SLOT02_ADDR = 0xE10A
+UNIMPL_ADDR = 0xE245
+PROTO_ADDR = 0xF000
+STUB33_ADDR = 0xE234
+BODY33_ADDR = 0xF187
+STUB03_ADDR = 0xE238
+LINK_ADDR = 0xF1A0
+
+
+def _bank(slot02=SLOT02_ADDR, unimpl=UNIMPL_ADDR,
+          stub33=STUB33_ADDR, body33=BODY33_ADDR,
+          stub03=STUB03_ADDR, link=LINK_ADDR):
+    bank = bytearray(b"\xFF" * 8192)
+    off = slot02 - 0xE000
+    bank[off:off + 5] = bytes((0xA2, 0x02, 0x4C, unimpl & 0xFF, (unimpl >> 8) & 0xFF))
+    bank[U._SLOT33_TABLE:U._SLOT33_TABLE + 3] = bytes((0x4C, stub33 & 0xFF, stub33 >> 8))
+    bank[body33 - 0xE000:body33 - 0xE000 + 2] = bytes((0x08, 0x48))
+    bank[U._SLOT03_TABLE:U._SLOT03_TABLE + 3] = bytes((0x4C, stub03 & 0xFF, stub03 >> 8))
+    bank[link - 0xE000:link - 0xE000 + 2] = bytes((0x08, 0x48))
+    return bytes(bank)
+
+
+def _triple_manifest(rom_sha, **overrides):
+    man = {
+        "rom_name": "experimental-dev-only-not-compatible-syscard-sized.pce",
+        "rom_sha256": rom_sha, "rom_bytes": M.ROM_BYTES,
+        "pinned_cc65": M.PINNED_CC65, "pinned_geargrafx": M.PINNED_GEARGRAFX,
+        "release_eligible": False, "dev_callable": False,
+        "branch": "agent-d/triple-link-g5", "head": "d" * 40,
+        "labels": {"api_slot_02": SLOT02_ADDR, "api_slot_03": STUB03_ADDR,
+                   "api_slot_33": STUB33_ADDR, "api_unimplemented": UNIMPL_ADDR,
+                   "cd_base_proto_entry": PROTO_ADDR, "experimental_slot_33": BODY33_ADDR,
+                   "cd_read_link_entry": LINK_ADDR,
+                   "slot_02_table_entry": 0xE006, "slot_03_table_entry": 0xE009,
+                   "slot_33_table_entry": 0xE099},
+        "symbols": {"api_unimplemented": UNIMPL_ADDR},
+        "selection_contract": {"lba": 7, "media_identity": "executed-id"},
+        "cd_base_proto": {"slot": "$02", "entry": "$E006", "proto_entry": "$F000",
+                          "patch": {"target": "api_slot_02", "length_bytes": 5}},
+        "experimental_slot_33": {"table_entry": "0xE099", "body": "$F187"},
+        "cd_read_link": {"slot": "$03", "entry": "$E009", "table_entry": "0xE009",
+                         "link_entry": "$F1A0"},
+    }
+    man.update(overrides)
+    return man
+
+
+def _triple_rom_bytes_with_table(link_target):
+    """Full 256 KiB ROM whose $E009 table entry JMPs to link_target."""
+    data = bytearray(_triple_rom())
+    data[0x03 * 3:0x03 * 3 + 3] = bytes((0x4C, link_target & 0xFF, (link_target >> 8) & 0xFF))
+    return bytes(data)
+
+
+def _triple_manifest_with_link(rom_sha, link_entry):
+    """Triple manifest whose every link_entry source agrees on link_entry."""
+    man = _triple_manifest(rom_sha)
+    man["cd_read_link"] = dict(man["cd_read_link"], link_entry=link_entry)
+    man["labels"] = dict(man["labels"], cd_read_link_entry=link_entry)
+    man["symbols"] = dict(man["symbols"], cd_read_link_entry=link_entry)
+    return man
+
+
+def _triple_rom(api_slot_02=SLOT02_ADDR, proto=PROTO_ADDR,
+                body33=BODY33_ADDR, link=LINK_ADDR):
+    data = bytearray(M.ROM_BYTES)
+    data[0x02 * 3:0x02 * 3 + 3] = bytes((0x4C, api_slot_02 & 0xFF, (api_slot_02 >> 8) & 0xFF))
+    data[api_slot_02 - 0xE000:api_slot_02 - 0xE000 + 5] = bytes(
+        (0x4C, proto & 0xFF, (proto >> 8) & 0xFF, 0xEA, 0xEA))
+    data[proto - 0xE000] = 0x08  # PHP: real proto body start
+    data[0x33 * 3:0x33 * 3 + 3] = bytes((0x4C, body33 & 0xFF, (body33 >> 8) & 0xFF))
+    data[body33 - 0xE000:body33 - 0xE000 + 2] = bytes((0x08, 0x48))
+    data[0x03 * 3:0x03 * 3 + 3] = bytes((0x4C, link & 0xFF, (link >> 8) & 0xFF))
+    data[link - 0xE000:link - 0xE000 + 2] = bytes((0x08, 0x48))  # PHP, PHA: link prologue
+    return bytes(data)
+
+
+class Slot03RedirectTests(unittest.TestCase):
+    def test_table_constant_is_e009(self):
+        self.assertEqual(U._SLOT03_TABLE, 3 * 0x03)
+        self.assertEqual(0xE000 + U._SLOT03_TABLE, 0xE009)
+
+    def test_patch_labels_cover_stub_and_link(self):
+        self.assertEqual(U._SLOT03_PATCH_LABELS, ("api_slot_03", "cd_read_link_entry"))
+
+    def test_required_carries_link_entry(self):
+        self.assertIn("cd_read_link_entry", U.REQUIRED)
+
+    def test_redirect_points_table_at_link(self):
+        bank = _bank()
+        out = U._redirect_slot03_to_link(bank, STUB03_ADDR, LINK_ADDR)
+        self.assertEqual(bytes(out[U._SLOT03_TABLE:U._SLOT03_TABLE + 3]),
+                         bytes((0x4C, LINK_ADDR & 0xFF, LINK_ADDR >> 8)))
+        diffs = [i for i in range(len(bank)) if bank[i] != out[i]]
+        self.assertEqual(diffs, [U._SLOT03_TABLE + 1, U._SLOT03_TABLE + 2])
+        self.assertTrue(set(diffs) <= U.unified_api_windows(SLOT02_ADDR))
+
+    def test_redirect_refuses_unexpected_table(self):
+        bank = bytearray(_bank())
+        bank[U._SLOT03_TABLE + 1] = 0x00
+        with self.assertRaises(ValueError):
+            U._redirect_slot03_to_link(bytes(bank), STUB03_ADDR, LINK_ADDR)
+
+    def test_redirect_refuses_stub_outside_fallback(self):
+        with self.assertRaises(ValueError):
+            U._redirect_slot03_to_link(_bank(), 0xD000, LINK_ADDR)
+
+    def test_redirect_refuses_link_outside_boot(self):
+        with self.assertRaises(ValueError):
+            U._redirect_slot03_to_link(_bank(), STUB03_ADDR, 0xE500)
+
+    def test_redirect_refuses_link_without_prologue(self):
+        bank = bytearray(_bank())
+        bank[LINK_ADDR - 0xE000] = 0xEA
+        with self.assertRaises(ValueError):
+            U._redirect_slot03_to_link(bytes(bank), STUB03_ADDR, LINK_ADDR)
+
+    def test_patch_order_is_documented(self):
+        source = (ROOT / "tools" / "build_experimental_bios_boot.py").read_text(encoding="utf-8")
+        self.assertIn("slot-$02 first, then slot-$33, then slot-$03", source)
+        self.assertIn("_redirect_slot03_to_link", source)
+        self.assertIn("src/cd_read_link.s", source)
+
+
+class TripleWindowsTests(unittest.TestCase):
+    def test_windows_cover_all_three(self):
+        windows = U.unified_api_windows(SLOT02_ADDR)
+        self.assertEqual(len(windows), 5 + 3 + 3)
+        self.assertTrue(set(range(U._SLOT03_TABLE, U._SLOT03_TABLE + 3)) <= windows)
+        self.assertTrue(set(range(U._SLOT33_TABLE, U._SLOT33_TABLE + 3)) <= windows)
+
+    def test_full_ordered_union(self):
+        original = _bank()
+        patched = U._patch_slot02_to_proto(original, SLOT02_ADDR, UNIMPL_ADDR, PROTO_ADDR)
+        patched = U._redirect_slot33_to_body(patched, STUB33_ADDR, BODY33_ADDR)
+        patched = U._redirect_slot03_to_link(patched, STUB03_ADDR, LINK_ADDR)
+        allowed = U.unified_api_windows(SLOT02_ADDR)
+        api_diff = [i for i in range(0x1000) if patched[i] != original[i]]
+        self.assertTrue(set(api_diff) <= allowed)
+        for window in (set(range(SLOT02_ADDR - 0xE000, SLOT02_ADDR - 0xE000 + 5)),
+                       set(range(U._SLOT33_TABLE, U._SLOT33_TABLE + 3)),
+                       set(range(U._SLOT03_TABLE, U._SLOT03_TABLE + 3))):
+            self.assertTrue(set(api_diff) & window)
+
+
+class TripleModelTests(unittest.TestCase):
+    def test_derive_native_slots_triple(self):
+        man = _triple_manifest("0" * 64)
+        self.assertEqual(M.derive_native_slots(man), (0x02, 0x03, 0x33))
+
+    def test_validate_triple_manifest(self):
+        man = _triple_manifest("a" * 64)
+        checked = M.validate_experimental_manifest(man)
+        self.assertEqual(checked["slots"], (0x02, 0x03, 0x33))
+        self.assertTrue(checked["native"])
+
+    def test_two_block_manifest_still_validates(self):
+        man = _triple_manifest("b" * 64)
+        del man["cd_read_link"]
+        checked = M.validate_experimental_manifest(man)
+        self.assertEqual(checked["slots"], (0x02, 0x33))
+
+    def test_slot_entry_mismatch_blocked(self):
+        man = _triple_manifest("c" * 64)
+        man["cd_read_link"] = {"slot": "$03", "entry": "$E099", "table_entry": "0xE009",
+                               "link_entry": "$F1A0"}
+        with self.assertRaises(ValueError) as cm:
+            M.derive_native_slots(man)
+        self.assertIn("BLOCKED", str(cm.exception))
+
+    def test_verify_triple_positive(self):
+        rom = _triple_rom()
+        man = _triple_manifest(hashlib.sha256(rom).hexdigest())
+        M.verify_d_rom_bytes(rom, man)
+        M.verify_d_rom_slot_targets(rom, man)  # no raise
+
+    def test_wrong_link_dest_rejected(self):
+        rom = bytearray(_triple_rom())
+        rom[0x03 * 3:0x03 * 3 + 3] = bytes((0x4C, 0x00, 0xE2))
+        rom = bytes(rom)
+        man = _triple_manifest(hashlib.sha256(rom).hexdigest())
+        with self.assertRaises(ValueError) as cm:
+            M.verify_d_rom_slot_targets(rom, man)
+        self.assertIn("$03", str(cm.exception))
+
+    def test_link_fake_rts_rejected(self):
+        rom = bytearray(_triple_rom())
+        rom[LINK_ADDR - 0xE000] = 0x60  # link body is RTS: not real processing
+        rom = bytes(rom)
+        man = _triple_manifest(hashlib.sha256(rom).hexdigest())
+        with self.assertRaises(ValueError) as cm:
+            M.verify_d_rom_slot_targets(rom, man)
+        self.assertIn("fake RTS", str(cm.exception))
+
+    def test_link_equals_stub_rejected(self):
+        # Table and manifest agree on the stub itself: the wiring claims the
+        # unimplemented halt as real processing -> BLOCKED. The stub lives
+        # in the fallback area, so the BOOT-range gate refuses first (the
+        # stub-equality check behind it stays as defense-in-depth).
+        rom = bytearray(_triple_rom())
+        rom[0x03 * 3:0x03 * 3 + 3] = bytes((0x4C, UNIMPL_ADDR & 0xFF, UNIMPL_ADDR >> 8))
+        rom = bytes(rom)
+        man = _triple_manifest(hashlib.sha256(rom).hexdigest(),
+                               cd_read_link={"slot": "$03", "entry": "$E009",
+                                             "table_entry": "0xE009",
+                                             "link_entry": "$%04X" % UNIMPL_ADDR})
+        man["labels"]["cd_read_link_entry"] = UNIMPL_ADDR
+        with self.assertRaises(ValueError) as cm:
+            M.verify_d_rom_slot_targets(rom, man)
+        self.assertIn("BLOCKED", str(cm.exception))
+
+    def test_missing_link_entry_blocked(self):
+        rom = _triple_rom()
+        man = _triple_manifest(hashlib.sha256(rom).hexdigest())
+        del man["cd_read_link"]["link_entry"]
+        del man["labels"]["cd_read_link_entry"]
+        with self.assertRaises(ValueError) as cm:
+            M.verify_d_rom_slot_targets(rom, man)
+        self.assertIn("BLOCKED", str(cm.exception))
+
+    def test_manifest_self_claim_alone_never_passes(self):
+        # Declared wiring + matching SHA but a one-stage-wrong ROM (table
+        # straight past the two-stage $02 stub) must NOT verify.
+        rom = bytearray(_triple_rom())
+        rom[0x02 * 3:0x02 * 3 + 3] = bytes((0x4C, 0x00, 0xF0))  # table -> proto directly
+        rom = bytes(rom)
+        man = _triple_manifest(hashlib.sha256(rom).hexdigest())
+        with self.assertRaises(ValueError):
+            M.verify_d_rom_slot_targets(rom, man)
+
+
+class LinkBootRangeTests(unittest.TestCase):
+    """MAJOR-2: link_entry must resolve inside BOOT ($F000 <= entry < $FFF6).
+
+    Every resolver path (manifest block, labels alias, symbols alias) is
+    gated; a self-looping or out-of-region table target is BLOCKED even when
+    the manifest and the ROM agree on it. Existing fake-RTS / stub-equality /
+    wiring checks are unaffected (covered by TripleModelTests).
+    """
+
+    def test_self_loop_rejected(self):
+        # $E009 -> JMP $E009 agrees everywhere yet loops forever instead of
+        # running the link helper.
+        rom = _triple_rom_bytes_with_table(0xE009)
+        man = _triple_manifest_with_link(hashlib.sha256(rom).hexdigest(), 0xE009)
+        with self.assertRaisesRegex(ValueError, "BLOCKED"):
+            M.verify_d_rom_slot_targets(rom, man)
+
+    def test_below_boot_rejected(self):
+        rom = _triple_rom_bytes_with_table(0xE500)
+        man = _triple_manifest_with_link(hashlib.sha256(rom).hexdigest(), 0xE500)
+        with self.assertRaisesRegex(ValueError, "BLOCKED"):
+            M.verify_d_rom_slot_targets(rom, man)
+
+    def test_vectors_and_above_rejected(self):
+        for addr in (0xFFF6, 0xFFFF):
+            with self.subTest(addr=hex(addr)):
+                rom = _triple_rom_bytes_with_table(addr)
+                man = _triple_manifest_with_link(hashlib.sha256(rom).hexdigest(), addr)
+                with self.assertRaisesRegex(ValueError, "BLOCKED"):
+                    M.verify_d_rom_slot_targets(rom, man)
+
+    def test_labels_alias_cannot_evade_range(self):
+        # Block declares the slot without a target; only the labels alias
+        # names an out-of-BOOT address -> still BLOCKED.
+        rom = _triple_rom_bytes_with_table(0xE500)
+        man = _triple_manifest(hashlib.sha256(rom).hexdigest())
+        del man["cd_read_link"]["link_entry"]
+        man["labels"]["cd_read_link_entry"] = 0xE500
+        man["symbols"].pop("cd_read_link_entry", None)
+        with self.assertRaisesRegex(ValueError, "BLOCKED"):
+            M.verify_d_rom_slot_targets(rom, man)
+
+    def test_symbols_alias_cannot_evade_range(self):
+        rom = _triple_rom_bytes_with_table(0xE500)
+        man = _triple_manifest(hashlib.sha256(rom).hexdigest())
+        del man["cd_read_link"]["link_entry"]
+        man["labels"].pop("cd_read_link_entry", None)
+        man["symbols"]["cd_read_link_entry"] = 0xE500
+        with self.assertRaisesRegex(ValueError, "BLOCKED"):
+            M.verify_d_rom_slot_targets(rom, man)
+
+    def test_boot_bounds_still_accepted(self):
+        for addr in (0xF000, 0xF1A0, 0xFFF5):
+            with self.subTest(addr=hex(addr)):
+                rom = bytearray(_triple_rom_bytes_with_table(addr))
+                rom[addr - 0xE000:addr - 0xE000 + 2] = bytes((0x08, 0x48))
+                rom = bytes(rom)
+                man = _triple_manifest_with_link(hashlib.sha256(rom).hexdigest(), addr)
+                M.verify_d_rom_bytes(rom, man)
+                M.verify_d_rom_slot_targets(rom, man)  # no raise
+
+
+class LinkEntryPrologueTests(unittest.TestCase):
+    """MAJOR (independent review): BOOT callee entry must be real processing.
+
+    The builder contract requires PHP,PHA (08 48) at the BOOT link entry
+    (src/cd_read_link.s). A BOOT self-loop ($F1A0: JMP $F1A0), a JMP to
+    another BOOT address, a bare RTS, or a bad prologue is BLOCKED even when
+    the manifest and the ROM table agree. A valid PHP,PHA entry passes.
+    The entry-shape check alone never proves execution/return (real-core
+    transfer + return gates prove that); it only refuses obvious fakes.
+    """
+
+    def _rom_with_entry_bytes(self, entry_bytes: bytes):
+        rom = bytearray(_triple_rom())
+        rom[LINK_ADDR - 0xE000:LINK_ADDR - 0xE000 + len(entry_bytes)] = entry_bytes
+        return bytes(rom)
+
+    def _unanimous_manifest(self, rom: bytes):
+        return _triple_manifest_with_link(hashlib.sha256(rom).hexdigest(), LINK_ADDR)
+
+    def test_boot_self_loop_rejected(self):
+        # $F1A0: JMP $F1A0 agrees everywhere yet loops forever.
+        rom = self._rom_with_entry_bytes(bytes((0x4C, LINK_ADDR & 0xFF, (LINK_ADDR >> 8) & 0xFF)))
+        man = self._unanimous_manifest(rom)
+        with self.assertRaisesRegex(ValueError, "BLOCKED"):
+            M.verify_d_rom_slot_targets(rom, man)
+
+    def test_boot_jmp_elsewhere_rejected(self):
+        # $F1A0: JMP $F100 is inside BOOT but not the link prologue.
+        rom = self._rom_with_entry_bytes(bytes((0x4C, 0x00, 0xF1)))
+        man = self._unanimous_manifest(rom)
+        with self.assertRaisesRegex(ValueError, "BLOCKED"):
+            M.verify_d_rom_slot_targets(rom, man)
+
+    def test_rts_only_rejected(self):
+        rom = self._rom_with_entry_bytes(bytes((0x60,)))
+        man = self._unanimous_manifest(rom)
+        with self.assertRaisesRegex(ValueError, "BLOCKED"):
+            M.verify_d_rom_slot_targets(rom, man)
+
+    def test_bad_prologue_rejected(self):
+        for bad in (bytes((0xEA, 0xEA)), bytes((0x00, 0x00)), bytes((0x08, 0xEA))):
+            with self.subTest(bad=bad.hex()):
+                rom = self._rom_with_entry_bytes(bad)
+                man = self._unanimous_manifest(rom)
+                with self.assertRaisesRegex(ValueError, "BLOCKED"):
+                    M.verify_d_rom_slot_targets(rom, man)
+
+    def test_valid_php_pha_accepted(self):
+        rom = self._rom_with_entry_bytes(bytes((0x08, 0x48)))
+        man = self._unanimous_manifest(rom)
+        M.verify_d_rom_bytes(rom, man)
+        M.verify_d_rom_slot_targets(rom, man)  # no raise
+
+
+class LinkAliasConsistencyTests(unittest.TestCase):
+    """MEDIUM (independent review): manifest aliases must be unanimous.
+
+    Every present cd_read_link alias source (link_entry/body/routine/...
+    plus labels/symbols cd_read_link_entry) must name the same BOOT address.
+    A present-but-malformed, out-of-BOOT, or disagreeing alias is BLOCKED.
+    Omission stays allowed (two-block manifests, legitimate alias omission).
+    """
+
+    def _valid_rom(self):
+        rom = bytearray(_triple_rom())
+        # Second legal BOOT slot for mismatch cases carries the prologue so
+        # the test isolates the manifest contradiction, not ROM bytes.
+        rom[0xF1B0 - 0xE000:0xF1B0 - 0xE000 + 2] = bytes((0x08, 0x48))
+        return bytes(rom)
+
+    def test_canonical_plus_bad_label_rejected(self):
+        rom = self._valid_rom()
+        man = _triple_manifest_with_link(hashlib.sha256(rom).hexdigest(), LINK_ADDR)
+        man["labels"]["cd_read_link_entry"] = 0xF1B0
+        with self.assertRaisesRegex(ValueError, "BLOCKED"):
+            M.verify_d_rom_slot_targets(rom, man)
+
+    def test_canonical_plus_bad_symbol_rejected(self):
+        rom = self._valid_rom()
+        man = _triple_manifest_with_link(hashlib.sha256(rom).hexdigest(), LINK_ADDR)
+        man["symbols"]["cd_read_link_entry"] = 0xF1B0
+        with self.assertRaisesRegex(ValueError, "BLOCKED"):
+            M.verify_d_rom_slot_targets(rom, man)
+
+    def test_labels_symbols_disagree_rejected(self):
+        rom = self._valid_rom()
+        man = _triple_manifest_with_link(hashlib.sha256(rom).hexdigest(), LINK_ADDR)
+        man["labels"]["cd_read_link_entry"] = LINK_ADDR
+        man["symbols"]["cd_read_link_entry"] = 0xF1B0
+        with self.assertRaisesRegex(ValueError, "BLOCKED"):
+            M.verify_d_rom_slot_targets(rom, man)
+
+    def test_different_legal_boot_addresses_rejected(self):
+        # Both $F1A0 and $F1B0 are legal BOOT, but they disagree.
+        rom = self._valid_rom()
+        man = _triple_manifest_with_link(hashlib.sha256(rom).hexdigest(), LINK_ADDR)
+        man["cd_read_link"]["body"] = "$F1B0"
+        with self.assertRaisesRegex(ValueError, "BLOCKED"):
+            M.verify_d_rom_slot_targets(rom, man)
+
+    def test_malformed_alias_rejected(self):
+        for bad in ("not-an-addr", "", True):
+            with self.subTest(bad=repr(bad)):
+                rom = self._valid_rom()
+                man = _triple_manifest_with_link(hashlib.sha256(rom).hexdigest(), LINK_ADDR)
+                man["labels"]["cd_read_link_entry"] = bad
+                with self.assertRaisesRegex(ValueError, "BLOCKED"):
+                    M.verify_d_rom_slot_targets(rom, man)
+
+    def test_all_aliases_agree_accepted(self):
+        rom = self._valid_rom()
+        man = _triple_manifest_with_link(hashlib.sha256(rom).hexdigest(), LINK_ADDR)
+        M.verify_d_rom_bytes(rom, man)
+        M.verify_d_rom_slot_targets(rom, man)  # no raise
+
+    def test_alias_omission_still_accepted(self):
+        # Legitimate omission: only the canonical entry names the callee.
+        rom = self._valid_rom()
+        man = _triple_manifest(hashlib.sha256(rom).hexdigest())
+        man["symbols"].pop("cd_read_link_entry", None)
+        # _triple_manifest labels has the canonical address; drop symbols only.
+        M.verify_d_rom_bytes(rom, man)
+        M.verify_d_rom_slot_targets(rom, man)  # no raise
+
+
+if __name__ == "__main__":
+    unittest.main()
