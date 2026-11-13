@@ -22,7 +22,7 @@ Derived from `spec/dev_implementations.json`, `src/overrides/slot_*.s` and `spec
 | Commercial BIOS-mediated boots | **0 demonstrated** | No retail-title compatibility established |
 | Firmware release | **`release_eligible: false`** | Release gates intentionally refuse publication |
 
-The 16 installed development routines are `EX_GETVER` ($1E), `EX_JOYREP` ($22), `EX_BGON` ($2E), `EX_SETWRT` ($3A), `EX_BINBCD` ($3C), `EX_BCDBIN` ($3D), `EX_RND` ($3E), `MA_MUL8U` ($3F), `MA_MUL8S` ($40), `MA_MUL16U` ($41), `MA_DIV16S` ($42), `MA_DIV16U` ($43), `MA_SQRT` ($44), `MA_SIN` ($45), `MA_COS` ($46) and `MA_MUL16S` ($4F). Every routine has **DEV-only** evidence and no promotion to reference ABI VERIFIED.
+The 17 installed development routines are `EX_GETVER` ($1E), `EX_JOYSNS` ($21), `EX_JOYREP` ($22), `EX_BGON` ($2E), `EX_SETWRT` ($3A), `EX_BINBCD` ($3C), `EX_BCDBIN` ($3D), `EX_RND` ($3E), `MA_MUL8U` ($3F), `MA_MUL8S` ($40), `MA_MUL16U` ($41), `MA_DIV16S` ($42), `MA_DIV16U` ($43), `MA_SQRT` ($44), `MA_SIN` ($45), `MA_COS` ($46) and `MA_MUL16S` ($4F). Every routine has **DEV-only** evidence and no promotion to reference ABI VERIFIED.
 
 ## Boot and media paths
 

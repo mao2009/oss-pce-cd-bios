@@ -25,7 +25,7 @@ Current DEV implementation count: 17/81; current stubs: 64/81; owner-approved DE
 - [x] Merge the **9th DEV-only API**: MA_MUL16S at $4F ([#495](https://github.com/mao2009/oss-pce-cd-bios/pull/495), Issue #494); DEV-only and not approved/ABI VERIFIED
 - [x] Merge the **DEV-only internal boot path** ([#502](https://github.com/mao2009/oss-pce-cd-bios/pull/502)) and its CI wiring ([#506](https://github.com/mao2009/oss-pce-cd-bios/pull/506)); synthetic CD → RAM → jump is not BIOS CD_BOOT
 - [x] Record **synthetic caller-stack safety experiment** ([#481](https://github.com/mao2009/oss-pce-cd-bios/pull/481)); MPR1=$FF violates the stack contract and causes VDC side effects before the guard can refuse; production gate remains BLOCKED (#473/#459/#367)
-- [x] Extend project-defined DEV code to 14 slots (EX_RND, MA_SQRT, MA_SIN, MA_COS, EX_SETWRT included); still no independent reference ABI verification.
+- [x] Extend project-defined DEV code to 17 slots (EX_RND, MA_SQRT, MA_SIN, MA_COS, EX_SETWRT, EX_JOYSNS included); still no independent reference ABI verification.
 - [ ] Independently validate the **full reference-BIOS `EX_GETVER` ABI** (including relevant flags/interrupts/conditions, provenance and cross-emulator evidence); [Issue #40](https://github.com/mao2009/oss-pce-cd-bios/issues/40) remains open; `abi: UNVERIFIED`
 - [ ] Implement actual System Card initialization instead of the development reset checkpoint (#4)
 - [ ] Implement callable `CD_RESET`, `CD_BASE`, `CD_READ` only as contracts permit, with inputs/outputs, flags, RAM/MPR/stack/IRQ, errors and negative tests. Current bus/host models are **not** callable BIOS services
