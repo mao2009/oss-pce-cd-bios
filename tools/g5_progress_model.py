@@ -234,6 +234,7 @@ def return_kind_for_variant(key: str, manifest: dict | None = None) -> str:
 # it only reads their builder outputs and derives verifiable info.
 NATIVE_CD_BASE_KEY = "cd_base_proto"
 NATIVE_DSPOFF_KEY = "experimental_slot_33"
+NATIVE_CD_READ_KEY = "cd_read_link"
 
 # Fields a native manifest must additionally carry before G5 can claim a
 # real-CPU measurement. When any are missing the validator reports them
@@ -288,6 +289,7 @@ def derive_native_slots(manifest: dict) -> tuple:
     Reads (never edits) the existing experimental blocks:
       cd_base_proto {slot: "$02", entry: "$E006", proto_entry: ...} (Agent A)
       experimental_slot_33 {table_entry: "0xE099", ...} (Agent B)
+      cd_read_link {slot: "$03", entry: "$E009", link_entry: ...} (triple-link)
     Returns a sorted tuple of slot ints. Raises BLOCKED when neither block
     is present or when addresses do not parse. Notation drift ("02" vs
     "0x02" vs "$02") is normalized; duplicates after normalization are
@@ -338,9 +340,42 @@ def derive_native_slots(manifest: dict) -> tuple:
         if addr is None:
             raise ValueError(f"BLOCKED: native experimental_slot_33.table_entry bad {raw_table!r}")
         slots.append(_native_slot_from_entry(addr))
+    link = manifest.get(NATIVE_CD_READ_KEY)
+    if isinstance(link, dict):
+        raw_slot = link.get("slot")
+        raw_entry = link.get("entry")
+        raw_table = link.get("table_entry")
+        slot = None
+        if raw_slot is not None:
+            try:
+                slot = normalize_slot_key(raw_slot)
+            except ValueError as e:
+                raise ValueError(f"BLOCKED: native cd_read_link.slot bad ({e})") from None
+        for raw in (raw_entry, raw_table):
+            if slot is None and raw is not None:
+                addr = _parse_native_addr(raw)
+                if addr is None:
+                    raise ValueError(f"BLOCKED: native cd_read_link entry bad {raw!r}")
+                slot = _native_slot_from_entry(addr)
+        if slot is None:
+            raise ValueError("BLOCKED: native cd_read_link has neither slot nor entry")
+        # Cross-check every explicit entry address against the slot; any
+        # unparsable or mismatching entry is BLOCKED (fail-closed).
+        for raw in (raw_entry, raw_table):
+            if raw is not None:
+                addr = _parse_native_addr(raw)
+                if addr is None:
+                    raise ValueError(f"BLOCKED: native cd_read_link entry bad {raw!r}")
+                try:
+                    entry_slot = _native_slot_from_entry(addr)
+                except ValueError as e:
+                    raise ValueError(f"BLOCKED: native cd_read_link entry bad ({e})") from None
+                if entry_slot != slot:
+                    raise ValueError("BLOCKED: native cd_read_link slot/entry mismatch")
+        slots.append(slot)
     if not slots:
         raise ValueError("BLOCKED: no native experimental wiring block "
-                         f"({NATIVE_CD_BASE_KEY}/{NATIVE_DSPOFF_KEY})")
+                         f"({NATIVE_CD_BASE_KEY}/{NATIVE_DSPOFF_KEY}/{NATIVE_CD_READ_KEY})")
     if len(set(slots)) != len(slots):
         raise ValueError(f"BLOCKED: duplicate native slot after normalization {slots!r}")
     return tuple(sorted(slots))
@@ -385,9 +420,9 @@ def validate_experimental_manifest(manifest: dict) -> dict:
       (a) legacy G5 D manifest: schema/rom_name/branch/head/slot_wiring/
           pinned_cc65+pinned_geargrafx/release_eligible=false/
           dev_callable=false, optional rom_sha256/labels;
-      (b) native experimental manifests from the existing A/B builders
-          (cd_base_proto and/or experimental_slot_33 blocks, symbols,
-          rom_sha256/rom_bytes/pinned_cc65/...). Slots are derived via
+      (b) native experimental manifests from the existing builders
+          (cd_base_proto and/or experimental_slot_33 and/or cd_read_link
+          blocks, symbols, rom_sha256/rom_bytes/pinned_cc65/...). Slots are derived via
           derive_native_slots(); G5-required fields that are still absent
           (branch/head/pinned_geargrafx/labels/selection) are reported as
           BLOCKED additional-required-fields instead of guessed.
@@ -404,7 +439,8 @@ def validate_experimental_manifest(manifest: dict) -> dict:
         raise ValueError("BLOCKED: experimental manifest is not an object")
     # Native shape takes precedence when a native wiring block is present.
     has_native = isinstance(manifest.get(NATIVE_CD_BASE_KEY), dict) or \
-        isinstance(manifest.get(NATIVE_DSPOFF_KEY), dict)
+        isinstance(manifest.get(NATIVE_DSPOFF_KEY), dict) or \
+        isinstance(manifest.get(NATIVE_CD_READ_KEY), dict)
     if has_native:
         return _validate_native_manifest(manifest)
     # --- Legacy G5 D shape. ---
@@ -480,10 +516,20 @@ def _validate_native_manifest(manifest: dict) -> dict:
                      else f"${slots[0]:02X}=CD_BASE_PROTO_V1")
     dsp = manifest.get(NATIVE_DSPOFF_KEY)
     if isinstance(dsp, dict):
-        # slots[-1] is the DSPOFF slot when both blocks present.
-        idx = -1 if isinstance(base, dict) else 0
-        parts.append(f"${slots[idx]:02X}=EX_DSPOFF project-own fragment "
+        # Resolve the DSPOFF slot from its own table entry (never by position).
+        # derive_native_slots above already fail-closed on a missing/bad entry.
+        dslot = _native_slot_from_entry(_parse_native_addr(dsp.get("table_entry")))
+        parts.append(f"${dslot:02X}=EX_DSPOFF project-own fragment "
                      f"(table {dsp.get('table_entry')})")
+    link = manifest.get(NATIVE_CD_READ_KEY)
+    if isinstance(link, dict):
+        raw = link.get("table_entry") if link.get("table_entry") is not None else link.get("entry")
+        laddr = _parse_native_addr(raw)
+        if laddr is None:
+            raise ValueError(f"BLOCKED: native cd_read_link entry bad {raw!r}")
+        lslot = _native_slot_from_entry(laddr)
+        parts.append(f"${lslot:02X}=CD_READ_LINK_V1 experimental "
+                     f"(table {link.get('table_entry')}, link {link.get('link_entry')})")
     desc = "; ".join(parts) if parts else "; ".join(f"${s:02X}=native" for s in slots)
     missing = missing_g5_native_fields(manifest)
     if missing:
@@ -1315,6 +1361,47 @@ def _native_expected_targets(manifest):
                         target = _parse_native_addr(v)
         if slot is not None:
             out[slot] = target
+    link = manifest.get(NATIVE_CD_READ_KEY)
+    if isinstance(link, dict):
+        slot = None
+        for raw in (link.get("slot"), link.get("entry"), link.get("table_entry")):
+            if slot is None and raw is not None:
+                if isinstance(raw, int) and not isinstance(raw, bool):
+                    try:
+                        slot = normalize_slot_key(raw)
+                    except ValueError:
+                        slot = None
+                else:
+                    addr = _parse_native_addr(raw)
+                    if addr is not None:
+                        try:
+                            slot = _native_slot_from_entry(addr)
+                        except ValueError:
+                            slot = None
+                    elif isinstance(raw, str):
+                        try:
+                            slot = normalize_slot_key(raw)
+                        except ValueError:
+                            slot = None
+        target = None
+        for key in ("link_entry", "body", "routine", "target", "entry_target",
+                    "callee", "impl_entry", "real_entry", "proto_entry"):
+            if target is None and link.get(key) is not None:
+                target = _parse_native_addr(link.get(key))
+        syms = manifest.get("symbols") if isinstance(manifest.get("symbols"), dict) else None
+        if target is None and isinstance(syms, dict):
+            for name in ("cd_read_link_entry", "link_entry", "slot_03_body"):
+                if target is None and syms.get(name) is not None:
+                    v = syms.get(name)
+                    if isinstance(v, int) and not isinstance(v, bool):
+                        target = v
+                    else:
+                        target = _parse_native_addr(v)
+        labs = manifest.get("labels") if isinstance(manifest.get("labels"), dict) else None
+        if target is None and isinstance(labs, dict) and labs.get("cd_read_link_entry") is not None:
+            target = _parse_native_addr(labs.get("cd_read_link_entry"))
+        if slot is not None:
+            out[slot] = target
     return out
 
 
@@ -1475,6 +1562,63 @@ def _verify_native_slot02_two_stage(data, manifest):
     return table_target, proto
 
 
+def _native_link_entry_addr(manifest):
+    """Native $03 callee: cd_read_link.link_entry (pure, read-only).
+
+    Canonical source is cd_read_link.link_entry; labels/symbols
+    cd_read_link_entry is accepted as the link-derived alias. None when
+    the manifest declares the slot without identifying its callee.
+    """
+    if not isinstance(manifest, dict):
+        return None
+    link = manifest.get(NATIVE_CD_READ_KEY)
+    if isinstance(link, dict) and link.get("link_entry") is not None:
+        addr = _parse_native_addr(link.get("link_entry"))
+        if addr is not None and 0xE000 <= addr <= 0xFFFF:
+            return addr
+        return None
+    lab = _manifest_label_addr(manifest, "cd_read_link_entry")
+    if lab is not None:
+        return lab
+    if isinstance(link, dict):
+        for key in ("body", "routine", "target", "entry_target", "callee",
+                    "impl_entry", "real_entry", "proto_entry"):
+            if link.get(key) is not None:
+                addr = _parse_native_addr(link.get(key))
+                if addr is not None and 0xE000 <= addr <= 0xFFFF:
+                    return addr
+    return None
+
+
+def _verify_native_slot03_direct(data, manifest):
+    """Verify native $03 direct table redirect $E009 -> link (pure).
+
+    Triple-link wiring: the slot table entry $E009 holds JMP
+    cd_read_link_entry (the BOOT-region CD_READ_LINK_V1 helper). The wired
+    entry keeps the link's EXPERIMENTAL contract only; genuine $03 ABI
+    stays UNKNOWN/BLOCKED. Raises BLOCKED when the manifest declares the
+    slot without identifying the link, on a wrong table dest, or on a fake
+    RTS / stub body. Returns (table_target, link_entry).
+    """
+    data = bytes(data)
+    link = _native_link_entry_addr(manifest)
+    if link is None:
+        raise ValueError("BLOCKED: native slot $03 declares no link callee target "
+                         "(missing; refusing self-claimed wiring)")
+    table_target = parse_slot_table_target(data, 0x03)
+    if table_target != link:
+        raise ValueError("BLOCKED: slot $03 ROM table JMP target %04X != "
+                         "manifest-declared link %04X" % (table_target, link))
+    if _slot_body_is_fake_rts(data, 0x03, table_target):
+        raise ValueError("BLOCKED: slot $03 ROM target %04X is a fake RTS / "
+                         "non-returning fallback" % table_target)
+    stub = _manifest_label_addr(manifest, "api_unimplemented")
+    if isinstance(stub, int) and table_target == stub:
+        raise ValueError("BLOCKED: slot $03 ROM target %04X equals the unimplemented stub"
+                         % table_target)
+    return table_target, link
+
+
 def _verify_native_slot33_direct(data, manifest):
     """Verify native $33 direct table redirect $E099 -> body (pure).
 
@@ -1517,6 +1661,7 @@ def verify_d_rom_slot_targets(data, manifest):
     stub = _manifest_label_addr(manifest, "api_unimplemented")
     has_native_base = isinstance(manifest.get(NATIVE_CD_BASE_KEY), dict)
     has_native_dsp = isinstance(manifest.get(NATIVE_DSPOFF_KEY), dict)
+    has_native_link = isinstance(manifest.get(NATIVE_CD_READ_KEY), dict)
     for slot in slots:
         # Native $02 is TWO-stage ($E006 -> api_slot_02 -> proto_entry);
         # a one-stage table->proto comparison would BLOCKED even the correct
@@ -1528,6 +1673,10 @@ def verify_d_rom_slot_targets(data, manifest):
         # Native $33 stays a direct table redirect ($E099 -> body).
         if slot == 0x33 and has_native_dsp:
             _verify_native_slot33_direct(data, manifest)
+            continue
+        # Native $03 stays a direct table redirect ($E009 -> link).
+        if slot == 0x03 and has_native_link:
+            _verify_native_slot03_direct(data, manifest)
             continue
         target = parse_slot_table_target(data, slot)
         if _slot_body_is_fake_rts(data, slot, target):

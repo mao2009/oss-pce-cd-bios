@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the UNIFIED opt-in experimental 256 KiB System-Card-sized DEV image (G5 Agent A+B).
+"""Build the UNIFIED opt-in experimental 256 KiB System-Card-sized DEV image (G5 triple-link).
 
 NOT a compatible System Card BIOS. NOT a BIOS ABI implementation. NOT release eligible.
 The image has original reset code that validates a host-built selection record (derived from an
@@ -12,9 +12,15 @@ Unified REAL processing (experimental image only; normal DEV ROM untouched):
   slot $33: the $E099 table entry is redirected from the linked nonreturning $33
     fallback stub to the BOOT-region experimental_slot_33 body
     (src/experimental_bios_boot.s includes src/ex_dspoff.s, Agent B).
+  slot $03: the $E009 table entry is redirected from the linked $03 fallback
+    stub to the BOOT-region cd_read_link_entry body (src/cd_read_link.s,
+    Agent B link V1). The $03 entry uses the link's own EXPERIMENTAL input
+    discipline (proto base $2400-$2402 + block $20F2-$20F4 + window
+    $20F5-$20F7, MPR1=$F8, work-RAM stack, IRQs masked) and never claims the
+    genuine CD_READ ABI (cd_read_api_slot_03 stays NOT_IMPLEMENTED).
 
-Patches apply in fail-closed order (slot-$02 first, then slot-$33). The API-area
-diff vs the normal DEV ROM must be EXACTLY the union of the two documented
+Patches apply in fail-closed order (slot-$02 first, then slot-$33, then slot-$03).
+The API-area diff vs the normal DEV ROM must be EXACTLY the union of the three documented
 windows; any other delta fails. Both callees are linked into the experimental
 BOOT region (>= $F000, file offsets >= 0x1000). NOT a genuine ABI, NOT
 compatible, release_eligible=False, dev_callable=False.
@@ -46,7 +52,7 @@ ROM_NAME = "experimental-dev-only-not-compatible-syscard-sized.pce"
 REQUIRED = ("experimental_bios_reset", "experimental_bios_init", "experimental_bios_selection_halt", "experimental_selection", "cd_entry",
             "cd_buffer_ready", "cd_data_done", "cd_halt_ok", "cd_halt_fail", "cd_unexpected_interrupt", "cd_cdb",
              "cd_payload_return", "cd_set_read_lba", "cd_entry_selected",
-             "cd_base_proto_entry", "experimental_slot_33")
+             "cd_base_proto_entry", "experimental_slot_33", "cd_read_link_entry")
 # Experimental slot-$02 wiring (Agent A, this image only; normal ROM untouched).
 # api_slot_02 fallback (5 bytes: LDX #$02; JMP api_unimplemented) is replaced by
 # JMP cd_base_proto_entry + NOP pad. NOT a genuine ABI, NOT compatible,
@@ -60,8 +66,20 @@ _PROTO_PATCH_LABELS = ("api_slot_02", "api_unimplemented", "cd_base_proto_entry"
 # body. NOT the reference ABI, release_eligible=False.
 _SLOT33_TABLE = 3 * 0x33
 _SLOT33_PATCH_LABELS = ("api_slot_33", "experimental_slot_33")
+# Experimental slot-$03 wiring (triple-link; this image only; normal ROM keeps
+# its nonreturning $03 fallback stub). The $E009 table entry (file offset
+# 3*$03, table starts at $E000) is redirected from the linked $03 fallback stub
+# to the BOOT-region cd_read_link_entry body (src/cd_read_link.s, Agent-B link
+# V1). The wired entry keeps the link's EXPERIMENTAL input discipline (proto
+# base state $2400-$2402 + block $20F2-$20F4 + window $20F5-$20F7, MPR1=$F8,
+# work-RAM stack, IRQs masked by the caller); it is NOT the genuine CD_READ ABI
+# (genuine slot/entry/return semantics stay UNKNOWN/BLOCKED, release_eligible
+# stays False, and cd_read_api_slot_03 stays NOT_IMPLEMENTED).
+_SLOT03_TABLE = 3 * 0x03
+_SLOT03_PATCH_LABELS = ("api_slot_03", "cd_read_link_entry")
 # Merged input branches whose heads are recorded (never hardcoded) in the manifest.
-_MERGED_REFS = ("origin/agent-a/cd-base-proto-g5", "origin/agent-b/ex-dspoff-real-cpu-g5")
+_MERGED_REFS = ("origin/agent-a/cd-base-proto-g5", "origin/agent-b/ex-dspoff-real-cpu-g5",
+                "origin/agent-b/cd-read-link-g5")
 PAYLOAD_LABELS = ("payload_entry", "payload_done")
 
 
@@ -81,6 +99,7 @@ def _experimental_boot_units(selected):
         (ROOT / "src/experimental_bios_boot.s", assembler_defines(selected)),
         (ROOT / "src/cd_load_exec_probe.s", ["-D", EXPERIMENTAL_BOOT_FLAG]),
         (ROOT / "src/cd_base_proto.s", []),
+        (ROOT / "src/cd_read_link.s", []),
     ]
 
 
@@ -132,18 +151,47 @@ def _redirect_slot33_to_body(bank: bytes, slot33_stub: int, slot33_body: int) ->
     return bytes(out)
 
 
+def _redirect_slot03_to_link(bank: bytes, slot03_stub: int, link_entry: int) -> bytes:
+    """Return bank with the $E009 table entry redirected from stub to link. Fail-closed.
+
+    The table must still hold the linked fallback stub (nothing else may be
+    redirected), and the link body must sit in BOOT and start with the link's
+    PHP/PHA prologue (guards against silent body drift). The wired entry keeps
+    the link's EXPERIMENTAL contract only; it never claims the genuine $03 ABI.
+    """
+    for name, addr in (("api_slot_03", slot03_stub), ("cd_read_link_entry", link_entry)):
+        if type(addr) is not int or not 0xE000 <= addr <= 0xFFFF:
+            raise ValueError(f"{name} address {addr!r} outside BIOS window $E000-$FFFF")
+    if not 0xE100 <= slot03_stub < 0xFFF6:
+        raise ValueError(f"slot $03 fallback stub ${slot03_stub:04X} outside bank0 body")
+    if not 0xF000 <= link_entry < 0xFFF6:
+        raise ValueError(f"experimental slot $03 link ${link_entry:04X} outside the BOOT region")
+    out = bytearray(bank)
+    want_stub = bytes((0x4C, slot03_stub & 0xFF, slot03_stub >> 8))
+    if bytes(out[_SLOT03_TABLE:_SLOT03_TABLE + 3]) != want_stub:
+        raise ValueError("slot $03 table entry is not the linked fallback stub; "
+                         "refusing to redirect an unexpected table")
+    out[_SLOT03_TABLE:_SLOT03_TABLE + 3] = bytes((0x4C, link_entry & 0xFF, link_entry >> 8))
+    body_off = link_entry - 0xE000
+    if bytes(out[body_off:body_off + 2]) != bytes((0x08, 0x48)):  # PHP, PHA
+        raise ValueError("experimental slot $03 link does not start with the link prologue")
+    return bytes(out)
+
+
 def unified_api_windows(slot02_addr: int) -> set:
     """File offsets in the first 4 KiB allowed to differ from the normal DEV ROM.
 
     Exactly the slot-$02 5-byte fallback window plus the slot-$33 3-byte table
-    redirect. Pure and fail-closed: bad addresses or overlapping windows fail.
+    redirect plus the slot-$03 3-byte table redirect. Pure and fail-closed:
+    bad addresses or overlapping windows fail.
     """
     if type(slot02_addr) is not int or not 0xE100 <= slot02_addr <= 0xFFF6 - SLOT02_PATCH_LEN:
         raise ValueError(f"api_slot_02 at {slot02_addr!r} outside FALLBACK/code area")
     windows = set(range(slot02_addr - 0xE000, slot02_addr - 0xE000 + SLOT02_PATCH_LEN))
     windows |= set(range(_SLOT33_TABLE, _SLOT33_TABLE + 3))
-    if len(windows) != SLOT02_PATCH_LEN + 3:
-        raise ValueError("slot-$02/slot-$33 patch windows overlap; refusing ambiguous wiring")
+    windows |= set(range(_SLOT03_TABLE, _SLOT03_TABLE + 3))
+    if len(windows) != SLOT02_PATCH_LEN + 3 + 3:
+        raise ValueError("slot-$02/slot-$33/slot-$03 patch windows overlap; refusing ambiguous wiring")
     return windows
 
 
@@ -274,7 +322,7 @@ def build_experimental_bios_boot(original_path: Path, output: Path, mode="debug"
     bank_bytes = bank.read_bytes()
     if len(bank_bytes) != BANK_BYTES:
         raise ValueError("experimental boot bank is not 8 KiB")
-    # Unified wiring: BOTH callees are linked into the experimental BOOT region,
+    # Unified wiring: ALL THREE callees are linked into the experimental BOOT region,
     # so the pre-patch bank must still match the normal DEV ROM across the whole
     # API table/override area. Only this experimental image diverges.
     if bank_bytes[:0x1000] != original[:0x1000]:
@@ -285,35 +333,44 @@ def build_experimental_bios_boot(original_path: Path, output: Path, mode="debug"
     slot33_addrs = parse_needed_labels(labels, _SLOT33_PATCH_LABELS)
     if any(n not in slot33_addrs for n in _SLOT33_PATCH_LABELS):
         raise ValueError(f"experimental slot-33 patch symbols missing: {_SLOT33_PATCH_LABELS}")
-    # Ordered fail-closed patches: slot-$02 first, then slot-$33.
+    slot03_addrs = parse_needed_labels(labels, _SLOT03_PATCH_LABELS)
+    if any(n not in slot03_addrs for n in _SLOT03_PATCH_LABELS):
+        raise ValueError(f"experimental slot-03 patch symbols missing: {_SLOT03_PATCH_LABELS}")
+    # Ordered fail-closed patches: slot-$02 first, then slot-$33, then slot-$03.
     patched = _patch_slot02_to_proto(bank_bytes, patch_addrs["api_slot_02"],
                                      patch_addrs["api_unimplemented"],
                                      patch_addrs["cd_base_proto_entry"])
     patched = _redirect_slot33_to_body(patched, slot33_addrs["api_slot_33"],
                                        slot33_addrs["experimental_slot_33"])
+    patched = _redirect_slot03_to_link(patched, slot03_addrs["api_slot_03"],
+                                       slot03_addrs["cd_read_link_entry"])
     slot02_addr = patch_addrs["api_slot_02"]
     slot33_stub, slot33_body = slot33_addrs["api_slot_33"], slot33_addrs["experimental_slot_33"]
+    slot03_stub, link_entry = slot03_addrs["api_slot_03"], slot03_addrs["cd_read_link_entry"]
     rom = output / ROM_NAME
     rom.write_bytes(bytes(patched) + b"\xff" * (IMAGE_BYTES - BANK_BYTES))
     data = rom.read_bytes()
     if len(data) != IMAGE_BYTES or data[BANK_BYTES:] != b"\xff" * (IMAGE_BYTES - BANK_BYTES):
         raise ValueError("experimental image changed size or unused banks")
     # Whole-image API-area diff vs the normal DEV ROM must lie ENTIRELY inside
-    # the union of the slot-$02 window and the slot-$33 window, and BOTH windows
-    # must take effect: any other delta (including the probe-overlay window)
-    # fails, as does a silent no-op patch. A window byte that coincidentally
-    # matches (same low byte on both jump targets) is allowed; unexpected bytes
-    # are not, so both patches are additionally verified byte-exact below.
+    # the union of the slot-$02, slot-$33 and slot-$03 windows, and ALL THREE
+    # windows must take effect: any other delta (including the probe-overlay
+    # window) fails, as does a silent no-op patch. A window byte that
+    # coincidentally matches (same low byte on jump targets) is allowed;
+    # unexpected bytes are not, so all three patches are additionally verified
+    # byte-exact below.
     # BOOT divergence (>= $F000, offset >= 0x1000) is expected (experimental
-    # reset/loader/proto/dspoff) and covered by the vector/SEI checks that follow.
+    # reset/loader/proto/dspoff/link) and covered by the vector/SEI checks that follow.
     allowed = unified_api_windows(slot02_addr)
     api_diff = [i for i in range(0x1000) if data[i] != original[i]]
     if not set(api_diff) <= allowed:
         raise ValueError("experimental image changed the API area outside the "
-                         "slot-$02/slot-$33 patch windows")
+                         "slot-$02/slot-$33/slot-$03 patch windows")
     slot02_window = set(range(slot02_addr - 0xE000, slot02_addr - 0xE000 + SLOT02_PATCH_LEN))
     slot33_window = set(range(_SLOT33_TABLE, _SLOT33_TABLE + 3))
-    if not (set(api_diff) & slot02_window) or not (set(api_diff) & slot33_window):
+    slot03_window = set(range(_SLOT03_TABLE, _SLOT03_TABLE + 3))
+    if (not (set(api_diff) & slot02_window) or not (set(api_diff) & slot33_window)
+            or not (set(api_diff) & slot03_window)):
         raise ValueError("experimental image is missing a unified patch window; "
                          "refusing a silent no-op")
     if bytes(data[slot02_addr - 0xE000:slot02_addr - 0xE000 + SLOT02_PATCH_LEN]) != \
@@ -323,6 +380,9 @@ def build_experimental_bios_boot(original_path: Path, output: Path, mode="debug"
     if bytes(data[_SLOT33_TABLE:_SLOT33_TABLE + 3]) != \
             bytes((0x4C, slot33_body & 0xFF, (slot33_body >> 8) & 0xFF)):
         raise ValueError("slot-$33 window is not the expected JMP body")
+    if bytes(data[_SLOT03_TABLE:_SLOT03_TABLE + 3]) != \
+            bytes((0x4C, link_entry & 0xFF, (link_entry >> 8) & 0xFF)):
+        raise ValueError("slot-$03 window is not the expected JMP link")
     reset_vector = int.from_bytes(data[0x1FFE:0x2000], "little")
     if reset_vector != rom_symbols["experimental_bios_reset"] or rom_symbols["experimental_bios_init"] != reset_vector + 1:
         raise ValueError("reset vector is not the experimental one-byte SEI followed by init")
@@ -350,17 +410,20 @@ def build_experimental_bios_boot(original_path: Path, output: Path, mode="debug"
     symbols.update({name: pay_symbols[name] for name in PAYLOAD_LABELS})
     # Verified halt-classification addresses from the link (harness-D native
     # requirement); every address below is link-derived, never hardcoded.
-    slot_symbols = parse_needed_labels(labels, ("api_slot_02", "api_slot_33", "api_unimplemented"))
-    for name in ("api_slot_02", "api_slot_33", "api_unimplemented"):
+    slot_symbols = parse_needed_labels(labels, ("api_slot_02", "api_slot_03", "api_slot_33", "api_unimplemented"))
+    for name in ("api_slot_02", "api_slot_03", "api_slot_33", "api_unimplemented"):
         if name not in slot_symbols:
             raise ValueError(f"experimental slot wiring symbol missing from the link: {name}")
         symbols[name] = slot_symbols[name]
     link_labels = {"api_slot_02": slot_symbols["api_slot_02"],
+                   "api_slot_03": slot_symbols["api_slot_03"],
                    "api_slot_33": slot_symbols["api_slot_33"],
                    "api_unimplemented": slot_symbols["api_unimplemented"],
                    "cd_base_proto_entry": rom_symbols["cd_base_proto_entry"],
                    "experimental_slot_33": rom_symbols["experimental_slot_33"],
+                   "cd_read_link_entry": rom_symbols["cd_read_link_entry"],
                    "slot_02_table_entry": 0xE000 + 3 * 0x02,
+                   "slot_03_table_entry": 0xE000 + 3 * 0x03,
                    "slot_33_table_entry": 0xE000 + 3 * 0x33}
     # The shared integration judge uses semantic trace names; these aliases point to this image's new reset labels.
     trace_symbols = dict(symbols)
@@ -406,11 +469,34 @@ def build_experimental_bios_boot(original_path: Path, output: Path, mode="debug"
                            "immediate write, C=0 ok / C=1 unseeded reject); NOT the reference ABI"),
             "normal_rom_table_entry": "unchanged nonreturning stub",
         },
-        "unified_bios": {"agents": ["agent-a/cd-base-proto-g5", "agent-b/ex-dspoff-real-cpu-g5"],
-                         "slots": ["$02", "$33"], "patch_order": ["slot-02", "slot-33"],
-                         "contract": ("UNIFIED experimental-only image: $02 CD_BASE proto + $33 "
-                                      "EX_DSPOFF fragment as REAL processing; NOT genuine ABI, "
-                                      "NOT compatibility evidence."),
+        "cd_read_link": {
+            "slot": "$03", "entry": "$E009",
+            "table_entry": "0xE009",
+            "table_bytes": "4C %02x %02x" % (link_entry & 0xFF, link_entry >> 8),
+            "fallback_stub": f"{slot03_stub:#06x}",
+            "link_entry": f"${link_entry:04X}",
+            "contract": ("CD_READ_LINK_V1-experimental-only-not-genuine-abi: 24-bit "
+                           "base+block WITH carry, refuse BEFORE any READ(6) on invalid "
+                           "state/window/cap/range, else READ(6) 1 sector to $2800; "
+                           "state $2400-$2407 preserved, LINK_RES $2320-$2329; "
+                           "wired via the $E009 table entry as an EXPERIMENTAL "
+                           "contract only (inputs $2400-$2402 base + $20F2-$20F4 "
+                           "block + $20F5-$20F7 window, MPR1=$F8, work-RAM stack, "
+                           "IRQs masked); NOT the genuine CD_READ ABI"),
+            "reference_jsr": "0/81", "abi_verified": "0/81",
+            "normal_rom_table_entry": "unchanged nonreturning stub",
+        },
+        "unified_bios": {"agents": ["agent-a/cd-base-proto-g5", "agent-b/ex-dspoff-real-cpu-g5",
+                                      "agent-b/cd-read-link-g5"],
+                         "slots": ["$02", "$03", "$33"],
+                         "patch_order": ["slot-02", "slot-33", "slot-03"],
+                         "linkage": ("CD_BASE $02 proto computes base state $2400-$2402; "
+                                     "CD_READ link $03 consumes that state with block/window "
+                                     "inputs (no test pre-seeding of $2400 needed); EX_DSPOFF "
+                                     "$33 keeps its real processing"),
+                         "contract": ("UNIFIED experimental-only image: $02 CD_BASE proto + $03 "
+                                      "CD_READ link + $33 EX_DSPOFF fragment as REAL processing; "
+                                      "NOT genuine ABI, NOT compatibility evidence."),
                          "reference_jsr": "0/81", "abi_verified": "0/81",
                          "dev_callable": False, "release_eligible": False},
     }

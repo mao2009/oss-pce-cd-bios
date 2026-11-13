@@ -33,17 +33,23 @@ UNIMPL_ADDR = 0xE245
 PROTO_ADDR = 0xF000
 STUB33_ADDR = 0xE234
 BODY33_ADDR = 0xF187
+STUB03_ADDR = 0xE238
+LINK_ADDR = 0xF1A0
 
 
 def _bank(slot02=SLOT02_ADDR, unimpl=UNIMPL_ADDR, proto=PROTO_ADDR,
-          stub33=STUB33_ADDR, body33=BODY33_ADDR):
-    """Fake 8 KiB bank0: slot-02 fallback, $E099 stub JMP, BOOT prologue."""
+          stub33=STUB33_ADDR, body33=BODY33_ADDR,
+          stub03=STUB03_ADDR, link=LINK_ADDR):
+    """Fake 8 KiB bank0: slot-02 fallback, $E099/$E009 stub JMPs, BOOT prologues."""
     bank = bytearray(b"\xFF" * 8192)
     off = slot02 - 0xE000
     bank[off:off + 5] = bytes((0xA2, 0x02, 0x4C, unimpl & 0xFF, (unimpl >> 8) & 0xFF))
     bank[U._SLOT33_TABLE:U._SLOT33_TABLE + 3] = bytes((0x4C, stub33 & 0xFF, stub33 >> 8))
     body_off = body33 - 0xE000
     bank[body_off:body_off + 2] = bytes((0x08, 0x48))  # PHP, PHA
+    bank[U._SLOT03_TABLE:U._SLOT03_TABLE + 3] = bytes((0x4C, stub03 & 0xFF, stub03 >> 8))
+    link_off = link - 0xE000
+    bank[link_off:link_off + 2] = bytes((0x08, 0x48))  # PHP, PHA (link prologue)
     return bytes(bank)
 
 
@@ -58,11 +64,12 @@ class UnionRequiredTests(unittest.TestCase):
     def test_required_carries_both_callees(self):
         self.assertIn("cd_base_proto_entry", U.REQUIRED)
         self.assertIn("experimental_slot_33", U.REQUIRED)
+        self.assertIn("cd_read_link_entry", U.REQUIRED)
 
     def test_link_units_carry_both_fragments(self):
         names = {path.name for path, _defines in U._experimental_boot_units(_selected())}
         self.assertEqual(names, {"experimental_bios_boot.s", "cd_load_exec_probe.s",
-                                 "cd_base_proto.s"})
+                                 "cd_base_proto.s", "cd_read_link.s"})
 
     def test_slot33_body_comes_from_the_shared_fragment(self):
         source = (ROOT / "src" / "experimental_bios_boot.s").read_text(encoding="utf-8")
@@ -127,25 +134,30 @@ class Slot33RedirectTests(unittest.TestCase):
 class UnifiedWindowsTests(unittest.TestCase):
     def test_ordered_union_diff_is_exactly_both_windows(self):
         original = _bank()
-        # Ordered fail-closed patches: slot-$02 first, then slot-$33.
+        # Ordered fail-closed patches: slot-$02 first, then slot-$33, then slot-$03.
         patched = U._patch_slot02_to_proto(original, SLOT02_ADDR, UNIMPL_ADDR, PROTO_ADDR)
         patched = U._redirect_slot33_to_body(patched, STUB33_ADDR, BODY33_ADDR)
+        patched = U._redirect_slot03_to_link(patched, STUB03_ADDR, LINK_ADDR)
         allowed = U.unified_api_windows(SLOT02_ADDR)
-        self.assertEqual(len(allowed), 5 + 3)
+        self.assertEqual(len(allowed), 5 + 3 + 3)
         api_diff = [i for i in range(0x1000) if patched[i] != original[i]]
-        # Builder semantics: inside the windows, both windows nonempty,
-        # both patches byte-exact.
+        # Builder semantics: inside the windows, all three windows nonempty,
+        # all three patches byte-exact.
         self.assertTrue(set(api_diff) <= allowed)
         slot02_window = set(range(SLOT02_ADDR - 0xE000, SLOT02_ADDR - 0xE000 + 5))
         slot33_window = set(range(U._SLOT33_TABLE, U._SLOT33_TABLE + 3))
+        slot03_window = set(range(U._SLOT03_TABLE, U._SLOT03_TABLE + 3))
         self.assertTrue(set(api_diff) & slot02_window)
         self.assertTrue(set(api_diff) & slot33_window)
+        self.assertTrue(set(api_diff) & slot03_window)
         off = SLOT02_ADDR - 0xE000
         self.assertEqual(bytes(patched[off:off + 5]),
                          bytes((0x4C, PROTO_ADDR & 0xFF, (PROTO_ADDR >> 8) & 0xFF,
                                 0xEA, 0xEA)))
         self.assertEqual(bytes(patched[U._SLOT33_TABLE:U._SLOT33_TABLE + 3]),
                          bytes((0x4C, BODY33_ADDR & 0xFF, (BODY33_ADDR >> 8) & 0xFF)))
+        self.assertEqual(bytes(patched[U._SLOT03_TABLE:U._SLOT03_TABLE + 3]),
+                         bytes((0x4C, LINK_ADDR & 0xFF, (LINK_ADDR >> 8) & 0xFF)))
 
     def test_windows_reject_bad_slot02_address(self):
         with self.assertRaises(ValueError):
@@ -153,13 +165,14 @@ class UnifiedWindowsTests(unittest.TestCase):
 
     def test_coincidental_byte_equality_is_tolerated(self):
         # A window byte may coincidentally match (shared low byte); the
-        # builder must still accept the image when both patches are present
+        # builder must still accept the image when all patches are present
         # and byte-exact. Only unexpected deltas fail.
         bank = bytearray(_bank(body33=0xF134))
         bank[U._SLOT33_TABLE:U._SLOT33_TABLE + 3] = bytes((0x4C, 0x34, 0xE2))
         original = bytes(bank)
         patched = U._patch_slot02_to_proto(original, SLOT02_ADDR, UNIMPL_ADDR, PROTO_ADDR)
         patched = U._redirect_slot33_to_body(patched, STUB33_ADDR, 0xF134)
+        patched = U._redirect_slot03_to_link(patched, STUB03_ADDR, LINK_ADDR)
         allowed = U.unified_api_windows(SLOT02_ADDR)
         api_diff = [i for i in range(0x1000) if patched[i] != original[i]]
         self.assertTrue(set(api_diff) <= allowed)
@@ -169,8 +182,11 @@ class UnifiedWindowsTests(unittest.TestCase):
         windows = U.unified_api_windows(SLOT02_ADDR)
         slot02 = set(range(SLOT02_ADDR - 0xE000, SLOT02_ADDR - 0xE000 + 5))
         slot33 = set(range(U._SLOT33_TABLE, U._SLOT33_TABLE + 3))
+        slot03 = set(range(U._SLOT03_TABLE, U._SLOT03_TABLE + 3))
         self.assertTrue(slot02.isdisjoint(slot33))
-        self.assertEqual(windows, slot02 | slot33)
+        self.assertTrue(slot02.isdisjoint(slot03))
+        self.assertTrue(slot33.isdisjoint(slot03))
+        self.assertEqual(windows, slot02 | slot33 | slot03)
 
 
 class UnifiedProvenanceTests(unittest.TestCase):
@@ -238,18 +254,18 @@ class UnifiedProvenanceTests(unittest.TestCase):
         # recorded EXACTLY, never altered or guessed.
         orig = U._git_output
         try:
+            shas = {ref: char * 40 for ref, char in zip(U._MERGED_REFS, "abc")} | \
+                {ref: "f" * 40 for ref in U._MERGED_REFS[3:]}
+
             def fake(*args):
                 if args and args[0] == "rev-parse" and len(args) > 1 and args[1] in U._MERGED_REFS:
-                    return {U._MERGED_REFS[0]: "a" * 40,
-                            U._MERGED_REFS[1]: "b" * 40}[args[1]]
+                    return shas[args[1]]
                 if args and args[0] == "merge-base":
                     return ""
                 return orig(*args)
             U._git_output = fake
             provenance = U.unified_repo_provenance()
-            self.assertEqual(provenance["merged_heads"],
-                             {U._MERGED_REFS[0]: "a" * 40,
-                              U._MERGED_REFS[1]: "b" * 40})
+            self.assertEqual(provenance["merged_heads"], shas)
         finally:
             U._git_output = orig
 
@@ -278,7 +294,7 @@ class UnifiedProvenanceTests(unittest.TestCase):
             def fake(*args):
                 if args and args[0] == "rev-parse" and len(args) > 1 and args[1] == U._MERGED_REFS[0]:
                     return "74739f82" + "0" * 32
-                if args and args[0] == "rev-parse" and len(args) > 1 and args[1] == U._MERGED_REFS[1]:
+                if args and args[0] == "rev-parse" and len(args) > 1 and args[1] in U._MERGED_REFS[1:]:
                     return "d" * 40
                 if args and args[0] == "merge-base":
                     if len(args) > 2 and args[2].startswith("74739f82"):
