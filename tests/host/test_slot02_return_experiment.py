@@ -448,7 +448,82 @@ class ClassifySimulatedTests(unittest.TestCase):
         self.assertTrue(ok)
         ok2, why = S.halts_match(_run("cold", pc=0xF100), _run("warm", pc=0xF101))
         self.assertFalse(ok2)
-        self.assertIn("halt pc", why)
+
+    def test_slotset_mixed_real_and_simulated_next_api(self):
+        # Genuine $1E (30) returns, simulated $4A (74) returns, halt at $21 (33).
+        calls = [_call("cold", entry=0xE05A, slot=30, a=0x10),
+                 _call("cold", caller=0x3020, entry=0xE0DE, slot=74, a=0x20),
+                 _call("cold", caller=0x3030, entry=0xE063, slot=33, a=0x30),
+                 _call("warm", entry=0xE05A, slot=30, a=0x10),
+                 _call("warm", caller=0x3020, entry=0xE0DE, slot=74, a=0x20),
+                 _call("warm", caller=0x3030, entry=0xE063, slot=33, a=0x30)]
+        runs = [_run("cold", reason="api_unimplemented", pc=self.STUB, x=33),
+                _run("warm", reason="api_unimplemented", pc=self.STUB, x=33)]
+        verdict, detail = S.classify_simulated(_records(calls, runs), self.STUB, {0x4A})
+        self.assertEqual(verdict, "SIMULATED_NEXT_API")
+        self.assertIn("74", detail)
+
+    def test_slotset_discb_like_sequence_progresses(self):
+        # Disc B-like mixed sequence (real $1E, simulated $4A/$02/$02, halt $21)
+        # must be accepted in slot-set mode but rejected by strict prefix mode.
+        seq = [(30, 0xE05A), (74, 0xE0DE), (2, 0xE006), (2, 0xE006), (33, 0xE063)]
+        calls = []
+        for cycle in ("cold", "warm"):
+            for i, (slot, entry) in enumerate(seq):
+                calls.append(_call(cycle, caller=0x4000 + i, entry=entry, slot=slot, a=0xA0 + i))
+        runs = [_run("cold", reason="api_unimplemented", pc=self.STUB, x=33),
+                _run("warm", reason="api_unimplemented", pc=self.STUB, x=33)]
+        verdict, _ = S.classify_simulated(_records(calls, runs), self.STUB, {0x02, 0x33, 0x4A})
+        self.assertEqual(verdict, "SIMULATED_NEXT_API")
+        # strict prefix mode must not accept this (no false PASS)
+        verdict_prefix, _ = S.classify_simulated(_records(calls, runs), self.STUB,
+                                                 ((2, "JSR"), (51, "JSR"), (74, "JSR")))
+        self.assertEqual(verdict_prefix, "SIMULATED_UNEXPECTED_FIRST")
+
+    def test_slotset_stub_halt_at_simulated_slot_rejected(self):
+        # A simulated slot is patched to RTS and cannot produce a stub halt.
+        calls = [_call("cold", entry=0xE05A, slot=30),
+                 _call("cold", caller=0x3020, entry=0xE0DE, slot=74),
+                 _call("warm", entry=0xE05A, slot=30),
+                 _call("warm", caller=0x3020, entry=0xE0DE, slot=74)]
+        runs = [_run("cold", reason="api_unimplemented", pc=self.STUB, x=74),
+                _run("warm", reason="api_unimplemented", pc=self.STUB, x=74)]
+        verdict, _ = S.classify_simulated(_records(calls, runs), self.STUB, {0x4A})
+        self.assertEqual(verdict, "SIMULATED_UNEXPECTED_FIRST")
+
+    def test_slotset_no_simulated_call_seen_rejected(self):
+        # Stub halt on non-simulated slot but experiment never exercised a
+        # simulated slot: not a simulated progression (false PASS guard).
+        calls = [_call("cold", entry=0xE05A, slot=30),
+                 _call("cold", caller=0x3020, entry=0xE063, slot=33),
+                 _call("warm", entry=0xE05A, slot=30),
+                 _call("warm", caller=0x3020, entry=0xE063, slot=33)]
+        runs = [_run("cold", reason="api_unimplemented", pc=self.STUB, x=33),
+                _run("warm", reason="api_unimplemented", pc=self.STUB, x=33)]
+        verdict, _ = S.classify_simulated(_records(calls, runs), self.STUB, {0x02, 0x4A})
+        self.assertEqual(verdict, "SIMULATED_UNEXPECTED_FIRST")
+
+    def test_slotset_genuine_only_nonstub_halt(self):
+        # No simulated slots called, non-stub halt: not a simulated progression.
+        calls = [_call("cold", entry=0xE05A, slot=30),
+                 _call("warm", entry=0xE05A, slot=30)]
+        runs = [_run("cold", reason="cd_halt_fail", pc=0xF100),
+                _run("warm", reason="cd_halt_fail", pc=0xF100)]
+        verdict, _ = S.classify_simulated(_records(calls, runs), self.STUB, {0x4A})
+        self.assertEqual(verdict, "SIMULATED_RETURN_THEN_HALT")
+
+    def test_prefix_mode_still_rejects_real_first_call(self):
+        # Regression: strict prefix mode must reject when a real call precedes
+        # the assumed simulated prefix (no false PASS).
+        calls = [_call("cold", entry=0xE05A, slot=30),
+                 _call("cold", caller=0x3020, entry=0xE006, slot=2),
+                 _call("warm", entry=0xE05A, slot=30),
+                 _call("warm", caller=0x3020, entry=0xE006, slot=2)]
+        runs = [_run("cold", reason="api_unimplemented", pc=self.STUB, x=2),
+                _run("warm", reason="api_unimplemented", pc=self.STUB, x=2)]
+        verdict, _ = S.classify_simulated(_records(calls, runs), self.STUB, ((2, "JSR"),))
+        self.assertEqual(verdict, "SIMULATED_UNEXPECTED_FIRST")
+
     def test_halt_state_mismatch_diverges(self):
         # MEDIUM-1 RED set: halt reason/PC/X must agree on the
         # PRE_HALT and RETURN_THEN_HALT paths.

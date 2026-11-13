@@ -475,8 +475,41 @@ def call_sequence(calls: list, stub_addr):
     return seq
 
 
-def classify_simulated(records, stub_addr, expect_prefix=((2, "JSR"),)):
+def _normalize_simulated(simulated):
+    """Return (mode, simulated_slots_set_or_none, required_prefix_or_none).
+
+    mode "prefix": strict contiguous prefix match (legacy, for synthetic tests
+    and fixed-sequence assumptions). mode "slots": simulated slots may appear
+    anywhere; genuine implemented calls to other slots may interleave and
+    return. Default None -> prefix ((2,'JSR'),).
+    """
+    if simulated is None:
+        simulated = ((2, "JSR"),)
+    seq = list(simulated)
+    if not seq:
+        # empty slot-set mode is not useful but be explicit
+        return "slots", frozenset(), None
+    first = seq[0]
+    if isinstance(first, tuple):
+        # legacy prefix: list of (slot, method)
+        return "prefix", frozenset(s for s, _m in seq), list(seq)
+    # slot-set mode: ints (or slot ids)
+    return "slots", frozenset(int(s) for s in seq), None
+
+
+def classify_simulated(records, stub_addr, simulated=None):
     """SIMULATED verdict for an experiment-ROM run (pure; never CONFIRMED).
+
+    `simulated` selects which slots are patched to RTS in the experiment ROM:
+      - tuple/list of (slot, method) pairs: legacy strict-prefix mode (the
+        first calls must be exactly this sequence). Backward compatible.
+      - set/tuple/list of slot ints: slot-set mode. Simulated slots may appear
+        anywhere in the observed call sequence and are expected to return
+        (proven by resumption/next call). Genuine implemented DEV calls to
+        other slots may interleave and return; the final halt may be at any
+        non-simulated unimplemented slot (stub). This supports mixed
+        real+simulated sequences (e.g. Disc B: real $1E then simulated $4A).
+      - None: default ((2,'JSR'),) prefix.
 
     Return-evidence discipline (A-2): ``stack_check == MATCH`` / ``jsr_confirmed``
     prove only INTERNAL stack consistency (a JSR pushed caller+2 while MPR1 is
@@ -486,22 +519,15 @@ def classify_simulated(records, stub_addr, expect_prefix=((2, "JSR"),)):
     NON-RETURNING by construction; no verdict may claim it returned.
 
     Returns (verdict, detail); verdicts: SIMULATED_NEXT_API (a post-return
-    call sequence ending at the VERIFIED stub halt, with halt PC and halt X
-    matching the stub address and the last call slot in BOTH cycles),
-    SIMULATED_RETURN_THEN_HALT (returned, then a non-stub halt with no
-    further API, with cold/warm halt reason/PC/X identical),
-    SIMULATED_PRE_HALT (halted before any API with identical halt state;
-    the experiment changed nothing on that path), SIMULATED_UNEXPECTED_FIRST (the first call
-    is not the assumed slot-2 JSR, or the halt is inconsistent with the
-    recorded sequence), SIMULATED_DIVERGENT (cold/warm disagree, in calls,
-    in per-call fields, or in halt outcome), SIMULATED_INCOMPLETE,
-    SIMULATED_BUDGET, or FAIL.
-
-    Cold/warm call fields (caller/entry PCs, entry regs, MPR, SP, internal
-    return flags) must match exactly, and so must the halt states
-    (reason/PC/X) on the PRE_HALT and RETURN_THEN_HALT paths; step counts
-    are never compared.
+    call sequence ending at the VERIFIED stub halt on a non-simulated slot,
+    with halt PC and halt X matching in BOTH cycles; all earlier calls in the
+    sequence, including simulated and genuine-returning ones, are proven to
+    have returned by subsequent observed calls), SIMULATED_RETURN_THEN_HALT,
+    SIMULATED_PRE_HALT, SIMULATED_UNEXPECTED_FIRST (sequence inconsistent with
+    simulated-slot assumptions or halt unexplainable), SIMULATED_DIVERGENT,
+    SIMULATED_INCOMPLETE, SIMULATED_BUDGET, or FAIL.
     """
+    mode, sim_slots, required_prefix = _normalize_simulated(simulated)
     runs = records.get("RUN", [])
     apis = records.get("APICALL", [])
     if len(runs) != 2:
@@ -533,38 +559,72 @@ def classify_simulated(records, stub_addr, expect_prefix=((2, "JSR"),)):
     warm_seq = call_sequence(warm_calls, stub_addr)
     if cold_seq is None or warm_seq is None:
         return "SIMULATED_UNEXPECTED_FIRST", "entry present without JSR/JMP evidence"
-    prefix = list(expect_prefix)
-    npre = len(prefix)
-    cold_pre = list(cold_seq[:npre]) if len(cold_seq) >= npre else None
-    warm_pre = list(warm_seq[:npre]) if len(warm_seq) >= npre else None
-    if cold_pre != prefix or warm_pre != prefix:
-        return ("SIMULATED_UNEXPECTED_FIRST",
-                f"first calls are not the assumed {prefix}: {cold_pre} / {warm_pre}")
     if cold_seq != warm_seq:
         return "SIMULATED_DIVERGENT", f"cold/warm sequences differ: {cold_seq} vs {warm_seq}"
     fields_ok, fields_why = calls_match(cold_calls, warm_calls)
     if not fields_ok:
         return "SIMULATED_DIVERGENT", f"cold/warm call fields differ: {fields_why}"
     stub_halts = [r.get("reason") == "api_unimplemented" for r in (cold_run, warm_run)]
-    if len(cold_seq) == npre:
-        if any(stub_halts):
-            # Every assumed slot returns on the experiment ROM, so a stub
-            # halt with no further recorded call implies an UNRECORDED table
-            # entry (out-of-window caller or hidden jump): the trace cannot
-            # explain the halt, so this is never a clean return.
+
+    if mode == "prefix":
+        prefix = list(required_prefix or [])
+        npre = len(prefix)
+        cold_pre = list(cold_seq[:npre]) if len(cold_seq) >= npre else None
+        warm_pre = list(warm_seq[:npre]) if len(warm_seq) >= npre else None
+        if cold_pre != prefix or warm_pre != prefix:
             return ("SIMULATED_UNEXPECTED_FIRST",
-                    "recorded calls cannot reach the stub halt; "
-                    f"possible unobserved entry (halts {[cold_run.get('reason'), warm_run.get('reason')]})")
+                    f"first calls are not the assumed {prefix}: {cold_pre} / {warm_pre}")
+        # A simulated slot (patched to RTS) can never be the non-returning
+        # stub-halt target; halting at a simulated slot means the trace is
+        # inconsistent with the experiment ROM.
+        last_slot = cold_seq[-1][0]
+        if len(cold_seq) == npre:
+            if any(stub_halts):
+                return ("SIMULATED_UNEXPECTED_FIRST",
+                        "recorded calls cannot reach the stub halt; "
+                        f"possible unobserved entry (halts {[cold_run.get('reason'), warm_run.get('reason')]})")
+            halt_ok, halt_why = halts_match(cold_run, warm_run)
+            if not halt_ok:
+                return "SIMULATED_DIVERGENT", f"cold/warm halt states differ: {halt_why}"
+            return ("SIMULATED_RETURN_THEN_HALT",
+                    f"experiment slots returned, no further API; halts {[cold_run['reason'], warm_run['reason']]}")
+        if all(stub_halts):
+            if stub_addr is None:
+                return ("SIMULATED_UNEXPECTED_FIRST",
+                        "stub address unverified; halt consistency unprovable")
+            if last_slot in sim_slots:
+                return ("SIMULATED_UNEXPECTED_FIRST",
+                        f"stub halt at simulated slot {last_slot} is inconsistent with RTS patch")
+            pcs_ok = cold_run.get("pc") == stub_addr and warm_run.get("pc") == stub_addr
+            xs_ok = cold_run.get("x") == last_slot and warm_run.get("x") == last_slot
+            if not pcs_ok or not xs_ok:
+                return ("SIMULATED_UNEXPECTED_FIRST",
+                        f"stub halt inconsistent with last call slot {last_slot}: "
+                        f"pcs {[cold_run.get('pc'), warm_run.get('pc')]} "
+                        f"xs {[cold_run.get('x'), warm_run.get('x')]}")
+            return ("SIMULATED_NEXT_API",
+                    f"post-return sequence {list(cold_seq)} in both cycles, stub halt on last call "
+                    f"(last call is non-returning; only the assumed returns are proven by resumption)")
+        if any(stub_halts):
+            return ("SIMULATED_DIVERGENT",
+                    f"halt outcomes differ: {[cold_run['reason'], warm_run['reason']]}")
         halt_ok, halt_why = halts_match(cold_run, warm_run)
         if not halt_ok:
             return "SIMULATED_DIVERGENT", f"cold/warm halt states differ: {halt_why}"
         return ("SIMULATED_RETURN_THEN_HALT",
-                f"experiment slots returned, no further API; halts {[cold_run['reason'], warm_run['reason']]}")
+                f"post-return sequence {list(cold_seq)} in both cycles, "
+                f"halts {[cold_run['reason'], warm_run['reason']]}")
+
+    # slot-set mode: simulated slots may appear anywhere; genuine calls may interleave.
+    last_slot = cold_seq[-1][0]
+    seen_sim = [s for s, _m in cold_seq if s in sim_slots]
     if all(stub_halts):
         if stub_addr is None:
             return ("SIMULATED_UNEXPECTED_FIRST",
                     "stub address unverified; halt consistency unprovable")
-        last_slot = cold_seq[-1][0]
+        if last_slot in sim_slots:
+            return ("SIMULATED_UNEXPECTED_FIRST",
+                    f"stub halt at simulated slot {last_slot} is inconsistent with RTS patch")
         pcs_ok = cold_run.get("pc") == stub_addr and warm_run.get("pc") == stub_addr
         xs_ok = cold_run.get("x") == last_slot and warm_run.get("x") == last_slot
         if not pcs_ok or not xs_ok:
@@ -572,18 +632,26 @@ def classify_simulated(records, stub_addr, expect_prefix=((2, "JSR"),)):
                     f"stub halt inconsistent with last call slot {last_slot}: "
                     f"pcs {[cold_run.get('pc'), warm_run.get('pc')]} "
                     f"xs {[cold_run.get('x'), warm_run.get('x')]}")
+        if not seen_sim:
+            return ("SIMULATED_UNEXPECTED_FIRST",
+                    "stub halt without any simulated-slot call in sequence")
         return ("SIMULATED_NEXT_API",
-                f"post-return sequence {list(cold_seq)} in both cycles, stub halt on last call "
-                f"(last call is non-returning; only the assumed returns are proven by resumption)")
+                f"mixed sequence {list(cold_seq)} in both cycles, simulated slots "
+                f"{sorted(set(seen_sim))} returned (proven by resumption), stub halt on last "
+                f"non-simulated call {last_slot} (non-returning)")
     if any(stub_halts):
         return ("SIMULATED_DIVERGENT",
                 f"halt outcomes differ: {[cold_run['reason'], warm_run['reason']]}")
     halt_ok, halt_why = halts_match(cold_run, warm_run)
     if not halt_ok:
         return "SIMULATED_DIVERGENT", f"cold/warm halt states differ: {halt_why}"
+    if not seen_sim:
+        return ("SIMULATED_RETURN_THEN_HALT",
+                f"no simulated-slot calls in sequence {list(cold_seq)}; "
+                f"halts {[cold_run['reason'], warm_run['reason']]}")
     return ("SIMULATED_RETURN_THEN_HALT",
-            f"post-return sequence {list(cold_seq)} in both cycles, "
-            f"halts {[cold_run['reason'], warm_run['reason']]}")
+            f"mixed sequence {list(cold_seq)} in both cycles with simulated returns, "
+            f"non-stub halts {[cold_run['reason'], warm_run['reason']]}")
 
 
 def judge_seq(tmp, probe, rom, base_addrs, stub_addr, name, defines, budget, on_base: bool,
@@ -855,7 +923,7 @@ def main():
             E.verify_media_unchanged(snap)
         except ValueError as error:
             raise SystemExit(str(error))
-        verdict, detail = classify_simulated(records, exp_stub, prefix)
+        verdict, detail = classify_simulated(records, exp_stub, set(slots))
         for cycle in ("cold", "warm"):
             calls = [c for c in records["APICALL"] if c["cycle"] == cycle]
             runs = [r for r in records["RUN"] if r["cycle"] == cycle]
