@@ -260,11 +260,11 @@ class MutantTupleStructureTests(unittest.TestCase):
         if not rom_path.exists() or not map_path.exists():
             subprocess.run([sys.executable, "tools/build_rom.py", "--mode", "debug"], cwd=ROOT, check=True, capture_output=True)
         data = rom_path.read_bytes()
-        window = mod.api_window(data)
-        trampoline_addr = mod.find_trampoline_address(rom_dir, rom_path, mod.TRAMPOLINE_PAYLOADS_MAX)
+        window = mod.routine_window(data, rom_dir)
+        trampoline_addr = mod.find_trampoline_address(rom_dir, rom_path, mod.MAX_TRAMPOLINE_PAYLOAD)
         segments = mod.parse_dev_map_segments(map_path.read_text())
-        mod.check_trampoline_region(segments, trampoline_addr, mod.TRAMPOLINE_PAYLOADS_MAX, data)
-        muts = mod.mutants(data, trampoline_addr, window)
+        mod.check_trampoline_region(segments, trampoline_addr, mod.MAX_TRAMPOLINE_PAYLOAD, data)
+        muts = mod.mutants(data, window, trampoline_addr)
         expected = {
             "M1_multiplicand_correction_NOP", "M2_multiplier_correction_NOP", "M3_product_top_byte_not_stored",
             "M4_Y_not_restored", "M5_stack_restore_broken", "M6_PLP_as_PLA", "M7_PHP_as_PHA",
