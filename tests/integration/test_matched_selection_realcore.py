@@ -463,6 +463,7 @@ class MatchedSelectionRealCoreTests(unittest.TestCase):
                 self.assertEqual(rec["magic"], 0xAA)
                 self.assertEqual(rec["order1"], 0x02)
                 self.assertEqual(rec["order33"], 0x33)
+                self.assertEqual(rec["shadow"], [0x42 & 0x3F, 0xA5])
                 self.assertEqual(rec["order3"], 0x03)
                 self.assertEqual(rec["state"], [0, 1, 9, 1, 0, 0, 0, 0])
                 self.assertEqual(rec["link_res"], [0, 8, 0, 8, 0, 0, 0, 0, 1, 12])
@@ -504,6 +505,49 @@ class MatchedSelectionRealCoreTests(unittest.TestCase):
                 rec = unified_record(buf)
                 self.assertEqual(buf[:2048], expected)
                 self.assertEqual(rec["head"], expected[:8])
+
+    def test_mutant_rts_proves_dspoff(self):
+        """EX_DSPOFF RTS-mutant control: a bare RTS is not real processing.
+
+        Neutralizing the $33 body to an immediate RTS simulates 'dspoff never
+        processes': the run still halts clean and proceeds past $33 to $03
+        and the halt (so the RED below is the missing shadow update, never a
+        crash/timeout artifact). Real processing masks seeded $2502 $42 to
+        $02 and keeps $2503 $A5; the mutant leaves $2502 at $42. The shadow
+        assertion must RED on the mutant while the real ROM is GREEN
+        cold/warm (asserted in test_d_transfers_2048b).
+        """
+        from geargrafx_cdread import execute
+        _, manifest = self.cases["D"]
+        body = manifest["labels"]["experimental_slot_33"]
+        off = body - 0xE000
+        mutant = bytearray(self.exp_d)
+        self.assertEqual(bytes(mutant[off:off + 2]), bytes((0x08, 0x48)))
+        mutant[off] = 0x60
+        mutant_path = self.work / "mutant-unified-dspoff-rts.pce"
+        mutant_path.write_bytes(bytes(mutant))
+        records = execute(self.probe, mutant_path, self.cue,
+                          self.work / "exp-unified" / "trace-labels.txt", STEP_BUDGET)
+        # 1+2. Clean halt and return past $33 to $03 and the halt (no
+        # exception/timeout artifact): the run proves the RED below comes
+        # from the missing shadow update, not from a crash.
+        for run in records["RUN"]:
+            with self.subTest(cycle=run["cycle"]):
+                self.assertEqual(run["reason"], "cd_halt_ok")
+                self.assertTrue(run["halt_confirmed"])
+                self.assertEqual(run["sp"], 0xFF)
+                buf = bytes.fromhex(run["buffer_hex"])
+                rec = unified_record(buf)
+                self.assertEqual(rec["order33"], 0x33)
+                self.assertEqual(rec["order3"], 0x03)
+                # 3. $2502 stays unprocessed $42 (vs $02 when real).
+                self.assertEqual(rec["shadow"], [0x42, 0xA5])
+        # 5. The real-processing shadow assertion REDs on the mutant.
+        with self.assertRaises(AssertionError):
+            for run in records["RUN"]:
+                rec = unified_record(bytes.fromhex(run["buffer_hex"]))
+                # 4. Real processing would be $02 here, not $42.
+                self.assertEqual(rec["shadow"], [0x42 & 0x3F, 0xA5])
 
     def test_next_stopper(self):
         # Comparison table inputs: last return position, stop cause, next API.

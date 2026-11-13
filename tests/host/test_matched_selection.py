@@ -94,6 +94,45 @@ class MatchedSelectionTests(unittest.TestCase):
                                        abc_sels=_abc(), unified_code=code,
                                        executed=None)
 
+
+class DTrackTests(unittest.TestCase):
+    """MINOR #790: D embedded track must equal the executed track."""
+
+    def test_mismatch_blocked(self):
+        code = b"\x01\x02\x03"
+        with self.assertRaisesRegex(ValueError, "BLOCKED"):
+            M.verify_matched_selection(d_manifest=_d_manifest(track=2, code=code),
+                                       abc_sels=_abc(), unified_code=code,
+                                       executed=_executed())
+
+    def test_missing_blocked(self):
+        code = b"\x01\x02\x03"
+        man = _d_manifest(code=code)
+        del man["selection_contract"]["track"]
+        with self.assertRaisesRegex(ValueError, "BLOCKED"):
+            M.verify_matched_selection(d_manifest=man, abc_sels=_abc(),
+                                       unified_code=code, executed=_executed())
+
+    def test_string_blocked(self):
+        code = b"\x01\x02\x03"
+        with self.assertRaisesRegex(ValueError, "BLOCKED"):
+            M.verify_matched_selection(d_manifest=_d_manifest(track="1", code=code),
+                                       abc_sels=_abc(), unified_code=code,
+                                       executed=_executed())
+
+    def test_bool_blocked(self):
+        code = b"\x01\x02\x03"
+        with self.assertRaisesRegex(ValueError, "BLOCKED"):
+            M.verify_matched_selection(d_manifest=_d_manifest(track=True, code=code),
+                                       abc_sels=_abc(), unified_code=code,
+                                       executed=_executed())
+
+    def test_match_passes(self):
+        code = b"\x01\x02\x03"
+        M.verify_matched_selection(d_manifest=_d_manifest(track=1, code=code),
+                                   abc_sels=_abc(track=1), unified_code=code,
+                                   executed=_executed(track=1))
+
     def test_fake_rts_misclassification_is_not_a_pass(self):
         # A/B/C fake RTS must never be classified as real: the model gates
         # already refuse manifest-alone real claims; matched-selection only

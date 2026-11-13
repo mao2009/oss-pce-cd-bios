@@ -702,6 +702,12 @@ def verify_matched_selection(*, d_manifest: dict, abc_sels: list,
         raise ValueError("BLOCKED: executed matched-selection track is not an int")
     # D embedded vs executed (LBA + identity, never LBA alone).
     check_embedded_selection_vs_executed(d_manifest, {"lba": ex_lba, "identity": executed.get("identity")})
+    # D embedded track vs executed track (strict int equality; bool counts
+    # as malformed, never as 0/1).
+    d_sel = d_manifest.get("selection_contract") if isinstance(d_manifest, dict) else None
+    d_track = d_sel.get("track") if isinstance(d_sel, dict) else None
+    if type(d_track) is not int or d_track != ex_track:
+        raise ValueError(f"BLOCKED: embedded D track {d_track!r} != executed track {ex_track!r}")
     # A/B/C built SEL/track vs executed.
     if not isinstance(abc_sels, list) or not abc_sels:
         raise ValueError("BLOCKED: matched-selection needs A/B/C built inputs")
