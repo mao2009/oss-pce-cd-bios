@@ -3,7 +3,7 @@
 DEV_EXPERIMENTAL, project-own contract — NOT the reference System Card EX_SCRSIZ ABI.
 Genuine ABI is UNKNOWN/UNVERIFIED. release_eligible: false.
 
-DEV contract (real VDC I/O): programs VDC MWR (R09) = X:A via MPR0 I/O window.
+DEV contract (real VDC I/O): programs VDC MWR (R09) low byte from A and high byte $00 via MPR0 I/O window (X preserved/unused).
 Returns with A,X,Y,MPR0 preserved, stack balanced, VDC AR left at $09.
 This proves real VDC register processing on pinned Geargrafx, not ABI compatibility.
 """

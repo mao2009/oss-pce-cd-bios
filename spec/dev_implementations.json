@@ -587,7 +587,7 @@
       "state": "NOT_READY",
       "abi_contract": {
         "status": "PROJECT_SPEC_ONLY",
-        "note": "reference System Card EX_SCRSIZ ABI not verified; DEV-only project contract (Issue #45, programs VDC MWR R09 = X:A, DEV_EXPERIMENTAL)"
+        "note": "reference System Card EX_SCRSIZ ABI not verified; DEV-only project contract (Issue #45, programs VDC MWR R09 low byte from A with high byte $00; X preserved/unused, DEV_EXPERIMENTAL)"
       },
       "implementation": {
         "source": "src/overrides/slot_23.s",
