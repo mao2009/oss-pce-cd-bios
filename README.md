@@ -2,13 +2,13 @@
 
 An open-source project to create a **PC Engine / TurboGrafx-CD Super System Card 3.0-compatible BIOS replacement**, using original and appropriately licensed reusable OSS code.
 
-> **Status: historical main `5a8dc5a` (2026-11-06) plus this revision — development diagnostics only.** The repository does **not** yet contain a releasable or commercial-game-compatible System Card BIOS. Historical main `5a8dc5a` has **14/81** DEV implementations and **67 stubs**. This revision (EX_BGON $2E, Issue #56) has **16/81** DEV implementations and **65 stubs**. Owner-approved DEV_CALLABLE: **0**; reference ABI VERIFIED: **0/81**; reference JSR permitted: **0/81**; `release_eligible: false`. See [status](docs/status.md).
+> **Status: historical main `5a8dc5a` (2026-11-06) plus this revision — development diagnostics only.** The repository does **not** yet contain a releasable or commercial-game-compatible System Card BIOS. Historical main `5a8dc5a` has **14/81** DEV implementations and **67 stubs**. This revision (EX_SCRSIZ $23, Issue #45) has **17/81** DEV implementations and **64 stubs**. Owner-approved DEV_CALLABLE: **0**; reference ABI VERIFIED: **0/81**; reference JSR permitted: **0/81**; `release_eligible: false`. See [status](docs/status.md).
 
-Current DEV implementation count: 16/81; current stubs: 65/81; owner-approved DEV_CALLABLE: 0; reference ABI VERIFIED: 0/81; reference JSR permitted: 0/81.
+Current DEV implementation count: 17/81; current stubs: 64/81; owner-approved DEV_CALLABLE: 0; reference ABI VERIFIED: 0/81; reference JSR permitted: 0/81.
 
 ## Current development-only capabilities
 
-The 81 candidate slots in `spec/dev_implementations.json` contain 16 project-defined implementations: `EX_GETVER` ($1E), `EX_JOYREP` ($22), `EX_BGON` ($2E), `EX_SETWRT` ($3A), `EX_BINBCD` ($3C), `EX_BCDBIN` ($3D), `EX_RND` ($3E), `MA_MUL8U` ($3F), `MA_MUL8S` ($40), `MA_MUL16U` ($41), `MA_DIV16S` ($42), `MA_DIV16U` ($43), `MA_SQRT` ($44), `MA_SIN` ($45), `MA_COS` ($46) and `MA_MUL16S` ($4F). The other **65** entries are nonreturning stubs. An installed DEV routine is **not** a reference-BIOS-verified ABI.
+The 81 candidate slots in `spec/dev_implementations.json` contain 17 project-defined implementations: `EX_GETVER` ($1E), `EX_JOYREP` ($22), `EX_SCRSIZ` ($23), `EX_BGON` ($2E), `EX_SETWRT` ($3A), `EX_BINBCD` ($3C), `EX_BCDBIN` ($3D), `EX_RND` ($3E), `MA_MUL8U` ($3F), `MA_MUL8S` ($40), `MA_MUL16U` ($41), `MA_DIV16S` ($42), `MA_DIV16U` ($43), `MA_SQRT` ($44), `MA_SIN` ($45), `MA_COS` ($46) and `MA_MUL16S` ($4F). The other **64** entries are nonreturning stubs. An installed DEV routine is **not** a reference-BIOS-verified ABI.
 
 The pinned Geargrafx core executes original HuCARD and development firmware diagnostics: reset/stack/MPR/IRQ probes, synthetic CD READ(6), RAM payload execution, and experimental IPL loading. These do **not** implement callable, independently verified `CD_BOOT`, `CD_RESET`, `CD_BASE` or `CD_READ` services.
 

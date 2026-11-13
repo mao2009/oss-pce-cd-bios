@@ -4,9 +4,9 @@ This is an **evidence-scoped, dated** snapshot of [main at 5a8dc5a](https://gith
 
 **Verdict:** development-only diagnostic firmware; no release-eligible System Card BIOS, reference-ABI-verified APIs, independently established commercial-CD boot or game playability.
 
-Historical main `5a8dc5a` (2026-11-06) has 14/81 DEV implementations and 67 stubs. This revision (EX_BGON $2E, Issue #56) has 16/81 DEV implementations and 65 stubs.
+Historical main `5a8dc5a` (2026-11-06) has 14/81 DEV implementations and 67 stubs. This revision (EX_SCRSIZ $23, Issue #45) has 17/81 DEV implementations and 64 stubs.
 
-Current DEV implementation count: 16/81; current stubs: 65/81; owner-approved DEV_CALLABLE: 0; reference ABI VERIFIED: 0/81; reference JSR permitted: 0/81.
+Current DEV implementation count: 17/81; current stubs: 64/81; owner-approved DEV_CALLABLE: 0; reference ABI VERIFIED: 0/81; reference JSR permitted: 0/81.
 
 ## Distinct status metrics
 
@@ -14,8 +14,8 @@ Derived from `spec/dev_implementations.json`, `src/overrides/slot_*.s` and `spec
 
 | Metric | Status | What it proves |
 | --- | ---: | --- |
-| DEV implementation count | **16/81** | Project-defined diagnostic routines, **not** verified commercial ABI |
-| Nonreturning stubs | **65/81** | Remaining candidate entries do not provide callable services |
+| DEV implementation count | **17/81** | Project-defined diagnostic routines, **not** verified commercial ABI |
+| Nonreturning stubs | **64/81** | Remaining candidate entries do not provide callable services |
 | Owner-approved DEV_CALLABLE | **0** | No implementation has owner approval for general callable use |
 | Reference ABI VERIFIED | **0/81** | No independently verified reference-BIOS ABI contract |
 | Reference JSR permitted | **0/81** | Gate is closed; synthetic evidence does not grant permission |
@@ -40,7 +40,7 @@ The two multi-sector paths are **not** a replacement for the existing single-sec
 
 ## Changes reflected through 2026-11-06
 
-- [PR #524](https://github.com/mao2009/oss-pce-cd-bios/pull/524) merged EX_SETWRT on 2026-10-28; historical main `5a8dc5a` (2026-11-06) has 14 DEV implementations and 67 stubs. PR #748 added EX_JOYREP ($22, Issue #44). This wave adds EX_BGON ($2E, Issue #56): 16 DEV implementations and 65 stubs. EX_BGOFF-EX_DSPOFF ($2F-$33) are queued behind the ROM-layout ceiling (see wave report).
+- [PR #524](https://github.com/mao2009/oss-pce-cd-bios/pull/524) merged EX_SETWRT on 2026-10-28; historical main `5a8dc5a` (2026-11-06) has 14 DEV implementations and 67 stubs. PR #748 added EX_JOYREP ($22, Issue #44). This revision adds EX_SCRSIZ ($23, Issue #45): 17 DEV implementations and 64 stubs. EX_BGOFF-EX_DSPOFF ($2F-$33) are queued behind the ROM-layout ceiling (see wave report).
 - [PR #610](https://github.com/mao2009/oss-pce-cd-bios/pull/610) and [PR #614](https://github.com/mao2009/oss-pce-cd-bios/pull/614) added pinned ST/MPR and 51-case multi-byte block-transfer safety diagnostics. These do not establish a safe production calling convention.
 - [PR #620](https://github.com/mao2009/oss-pce-cd-bios/pull/620) added frame-tracer measurement accounting. Capacity reported by the core differs from measured loss; missing/discontinuous entries must not be reported as exact per-frame maxima. See [frame-tracer measurements](frame-tracer-measurements.md).
 - [PR #621](https://github.com/mao2009/oss-pce-cd-bios/pull/621) and [PR #590](https://github.com/mao2009/oss-pce-cd-bios/pull/590) improved the destructive-command guard and trusted-main CI separation. Neither constitutes an OS sandbox; [limitations](claude-destructive-guard.md) remain.
