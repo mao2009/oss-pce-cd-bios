@@ -633,6 +633,7 @@ class TripleLinkRealCoreTests(unittest.TestCase):
         manifest2 = copy.deepcopy(manifest)
         manifest2["cd_read_link"].pop("link_entry", None)
         manifest2.get("labels", {}).pop("cd_read_link_entry", None)
+        manifest2.get("symbols", {}).pop("cd_read_link_entry", None)
         with self.assertRaisesRegex(ValueError, "BLOCKED"):
             M.verify_d_rom_slot_targets(exp, manifest2)
 
