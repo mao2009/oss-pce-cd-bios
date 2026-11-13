@@ -613,11 +613,17 @@ def mutants(data, window, trampoline_addr):
     f = lambda pat, name: find_unique(data, bytes.fromhex(pat), window, name)
     nop_block = lambda head, name: (lambda at: [(at + 5, b"\xEA" * data[at + 4])])(f(head, name))  # BPL n -> n NOPs
     body_end = window[0] - 0xE000 + 3
-    tr = lambda code: (
-        [(body_end, bytes([0x4C, trampoline_addr & 0xFF, trampoline_addr >> 8])),
-         (trampoline_addr - 0xE000, code)],
-        (trampoline_addr, trampoline_addr + len(code)),
-    )
+
+    def tr(code, required, extra, c):
+        return (
+            [(body_end, bytes([0x4C, trampoline_addr & 0xFF, trampoline_addr >> 8])),
+             (trampoline_addr - 0xE000, code)],
+            required,
+            extra,
+            c,
+            (trampoline_addr, trampoline_addr + len(code)),
+        )
+
     return {
         "M1_multiplicand_correction_NOP": (nop_block("BD0B2110", "M1"), {"product"}, 0, 0xFF, None),
         "M2_multiplier_correction_NOP": (nop_block("BD042110", "M2"), {"product"}, 0, 0xFF, None),
@@ -630,17 +636,17 @@ def mutants(data, window, trampoline_addr):
         "M9_correction_SBC_as_ADC": ([(f("FD0321", "M9"), b"\x7D")], {"product"}, 0, 0xFF, None),
         "M10_ROR_as_ROL": ([(f("7E0A21", "M10"), b"\x3E")], {"product"}, 0, 0xFF, None),
         # Value-neutral side effects the final RAM diff cannot see: the product, Y, P (PHP/PLP around the probe) and S stay correct.
-        "T1_same_value_zero_page_write": (*tr(TRAMPOLINE_PAYLOADS[0]), {"trace"}, 0x100, 0x40),
-        "T2_write_and_restore_bss": (*tr(TRAMPOLINE_PAYLOADS[1]), {"trace"}, 0x100, 0x40),
-        "T3_io_read": (*tr(TRAMPOLINE_PAYLOADS[2]), {"trace"}, 0x100, 0x40),
-        "T4_same_value_stack_below_frame": (*tr(TRAMPOLINE_PAYLOADS[3]), {"trace"}, 0x100, 0x40),
+        "T1_same_value_zero_page_write": tr(TRAMPOLINE_PAYLOADS[0], {"trace"}, 0x100, 0x40),
+        "T2_write_and_restore_bss": tr(TRAMPOLINE_PAYLOADS[1], {"trace"}, 0x100, 0x40),
+        "T3_io_read": tr(TRAMPOLINE_PAYLOADS[2], {"trace"}, 0x100, 0x40),
+        "T4_same_value_stack_below_frame": tr(TRAMPOLINE_PAYLOADS[3], {"trace"}, 0x100, 0x40),
         # c = $40: $2134 is the byte just below the routine's lowest push, $213C a JSR return byte, $2141 the first byte above the frame.
-        "T6_same_value_below_lowest_push": (*tr(TRAMPOLINE_PAYLOADS[5]), {"trace"}, 0x100, 0x40),
-        "T7_same_value_jsr_return_byte": (*tr(TRAMPOLINE_PAYLOADS[6]), {"trace"}, 0x100, 0x40),
-        "T8_same_value_above_frame": (*tr(TRAMPOLINE_PAYLOADS[7]), {"trace"}, 0x100, 0x40),
-        "T9_same_value_jsr_return_low_byte": (*tr(TRAMPOLINE_PAYLOADS[8]), {"trace"}, 0x100, 0x40),
-        "T10_bss_read": (*tr(TRAMPOLINE_PAYLOADS[9]), {"trace"}, 0x100, 0x40),
-        "T5_mpr_change": (*tr(TRAMPOLINE_PAYLOADS[4]), {"mpr"}, 0x100, 0x40),
+        "T6_same_value_below_lowest_push": tr(TRAMPOLINE_PAYLOADS[5], {"trace"}, 0x100, 0x40),
+        "T7_same_value_jsr_return_byte": tr(TRAMPOLINE_PAYLOADS[6], {"trace"}, 0x100, 0x40),
+        "T8_same_value_above_frame": tr(TRAMPOLINE_PAYLOADS[7], {"trace"}, 0x100, 0x40),
+        "T9_same_value_jsr_return_low_byte": tr(TRAMPOLINE_PAYLOADS[8], {"trace"}, 0x100, 0x40),
+        "T10_bss_read": tr(TRAMPOLINE_PAYLOADS[9], {"trace"}, 0x100, 0x40),
+        "T5_mpr_change": tr(TRAMPOLINE_PAYLOADS[4], {"mpr"}, 0x100, 0x40),
     }
 
 
