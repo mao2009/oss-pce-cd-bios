@@ -503,6 +503,24 @@ class TripleLinkRealCoreTests(unittest.TestCase):
                 self.assertEqual(rec["order1"], 0x02)
                 self.assertEqual(rec["state"], [0, 0, 0, 1, 0, 0, 0, 0])
 
+    def check_link_transfer_run(self, buf, rec, expected, boot, want_lba):
+        """One run's transfer-discriminating assertions (no subTest inside).
+
+        Kept subTest-free so the mutant control can invoke it under
+        assertRaises: a failed subTest would mark the caller failed even
+        when the exception itself is the expected RED outcome.
+        """
+        # Valid request: LINK_RES code 0 / stage 8 / 2048 bytes,
+        # LBA == INDEX01 + 1 (proto base + block 1, no pre-seeding).
+        self.assertEqual(rec["link_res"],
+                         [0, 8, 0, 8, 0, 0, 0, 0, 0, want_lba])
+        # Post-transfer RAM changed: head differs from the boot sector
+        # the bootloader left behind, and matches the requested sector.
+        self.assertEqual(rec["head"], expected[:8])
+        self.assertNotEqual(rec["head"], boot[:8])
+        # Exactly 2048 requested sector bytes in RAM.
+        self.assertEqual(buf[:2048], expected)
+
     def check_link_transfer(self, records, manifest, selected, code):
         """Transfer-discriminating assertions: fail when the link copies nothing.
 
@@ -523,16 +541,7 @@ class TripleLinkRealCoreTests(unittest.TestCase):
             buf = bytes.fromhex(run["buffer_hex"])
             rec = chain_record(buf)
             with self.subTest(cycle=run["cycle"]):
-                # Valid request: LINK_RES code 0 / stage 8 / 2048 bytes,
-                # LBA == INDEX01 + 1 (proto base + block 1, no pre-seeding).
-                self.assertEqual(rec["link_res"],
-                                 [0, 8, 0, 8, 0, 0, 0, 0, 0, want_lba])
-                # Post-transfer RAM changed: head differs from the boot sector
-                # the bootloader left behind, and matches the requested sector.
-                self.assertEqual(rec["head"], expected[:8])
-                self.assertNotEqual(rec["head"], boot[:8])
-                # Exactly 2048 requested sector bytes in RAM.
-                self.assertEqual(buf[:2048], expected)
+                self.check_link_transfer_run(buf, rec, expected, boot, want_lba)
         for cycle in ("cold", "warm"):
             phases = sorted((r["load_sector"], r["load_count"]) for r in records["PHASE"]
                               if r["cycle"] == cycle and r["scsi_phase"] == 4)
@@ -588,9 +597,19 @@ class TripleLinkRealCoreTests(unittest.TestCase):
             phases = [(r["load_sector"], r["load_count"]) for r in records["PHASE"]
                         if r["cycle"] == cycle and r["scsi_phase"] == 4]
             self.assertEqual(phases, [(selected["lba"], 1)])
-        # RED: the transfer proof must fail on the mutant.
+        # RED: the transfer proof must fail on the mutant. The run-level
+        # helper is invoked without subTest so the expected AssertionError
+        # does not linger as a subTest failure.
+        from build_cdload_exec import encode_sector
+        from make_cd_image import sector_payload
+        expected = sector_payload(selected["lba"] + 1)
+        boot = encode_sector(0, code)
+        want_lba = (selected["lba"] + 1) & 0xFF
         with self.assertRaises(AssertionError):
-            self.check_link_transfer(records, manifest, selected, code)
+            for run in records["RUN"]:
+                buf = bytes.fromhex(run["buffer_hex"])
+                rec = chain_record(buf)
+                self.check_link_transfer_run(buf, rec, expected, boot, want_lba)
 
     def test_chain_dspoff_returns_and_next_stop(self):
         records, manifest, _, _, _ = self.cases["chain"]
