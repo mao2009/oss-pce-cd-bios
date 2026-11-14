@@ -595,16 +595,25 @@
       "candidate_name": "EX_SCRSIZ",
       "state": "NOT_READY",
       "abi_contract": {
-        "status": "UNKNOWN",
-        "note": "reference System Card contract not verified; DEV-only project spec"
+        "status": "PROJECT_SPEC_ONLY",
+        "note": "reference System Card EX_SCRSIZ ABI not verified; DEV-only project contract (Issue #45, programs VDC MWR R09 low byte from A with high byte $00; X preserved/unused, DEV_EXPERIMENTAL)"
       },
-      "implementation": null,
-      "host_evidence": [],
-      "real_core_evidence": [],
+      "implementation": {
+        "source": "src/overrides/slot_23.s",
+        "license": "MIT (repository LICENSE)",
+        "provenance": "project-own DEV_EXPERIMENTAL contract, Issue #45 (real VDC MWR I/O write; no reference code, no ABI claim)"
+      },
+      "host_evidence": [
+        "tests/host/test_api_scrsiz_dev.py"
+      ],
+      "real_core_evidence": [
+        "tests/integration/geargrafx_dev_scrsiz.py"
+      ],
       "approval": {
         "approved_by": null,
         "review_ref": null
-      }
+      },
+      "note": "DEV_EXPERIMENTAL: programs VDC MWR (R09) low byte from A; high byte written $00 (0x00FF writable mask), X/Y preserved/unused. No VBlank wait. NOT the reference System Card EX_SCRSIZ ABI; genuine ABI unknown (0/81). No ref-BIOS JSR; release_eligible false."
     },
     {
       "id": 36,

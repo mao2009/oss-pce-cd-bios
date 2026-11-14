@@ -153,7 +153,7 @@
     ]
   },
   "summary": {
-    "dev_rom_implemented_apis": 17,
+    "dev_rom_implemented_apis": 18,
     "owner_approved_dev_callable": 0,
     "reference_abi_verified": 0,
     "reproducible_real_core_observations": 0

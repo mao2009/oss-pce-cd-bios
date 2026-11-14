@@ -77,8 +77,8 @@ class ExperimentalSlot33SourceTests(unittest.TestCase):
         self.assertEqual(entry["state"], "NOT_READY")
         self.assertIsNone(entry["approval"]["approved_by"])
         implemented = [s for s in data["slots"] if s.get("implementation")]
-        self.assertEqual(len(implemented), 17)
-        self.assertEqual(len(data["slots"]) - len(implemented), 64)
+        self.assertEqual(len(implemented), 18)
+        self.assertEqual(len(data["slots"]) - len(implemented), 63)
 
     def test_api_slot_mapping_is_unchanged(self):
         slots = json.loads((ROOT / "spec" / "api_slots.json").read_text(encoding="utf-8"))["slots"]
