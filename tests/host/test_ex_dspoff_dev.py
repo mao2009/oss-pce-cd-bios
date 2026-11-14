@@ -250,8 +250,8 @@ class SpecContractConsistencyTests(unittest.TestCase):
     def test_implementation_counts_match_spec(self):
         data = json.loads(SPEC.read_text(encoding="utf-8"))
         implemented = [s for s in data["slots"] if s.get("implementation")]
-        self.assertEqual(len(implemented), 17)
-        self.assertEqual(len(data["slots"]) - len(implemented), 64)
+        self.assertEqual(len(implemented), 18)
+        self.assertEqual(len(data["slots"]) - len(implemented), 63)
 
 
 if __name__ == "__main__":
