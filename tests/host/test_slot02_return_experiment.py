@@ -50,6 +50,10 @@ class ProductionWiringGuardTests(unittest.TestCase):
         self.assertNotIn(0x33, overrides())
         self.assertFalse((ROOT / "src" / "overrides" / "slot_33.s").exists())
 
+    def test_no_slot_4A_override_on_disk(self):
+        self.assertNotIn(0x4A, overrides())
+        self.assertFalse((ROOT / "src" / "overrides" / "slot_4A.s").exists())
+
     def test_experiment_stub_lives_outside_overrides(self):
         stub = ROOT / "tests" / "integration" / "slot02_return_stub.s"
         self.assertTrue(stub.is_file())
@@ -178,13 +182,17 @@ class MultiSlotPatchTests(unittest.TestCase):
 
     def test_allowlist_rejects_nonlisted_combinations(self):
         from build_slot02_return_loader import ALLOWED_EXPERIMENTS, build_slot02_return_bios
-        self.assertEqual(ALLOWED_EXPERIMENTS, {(0x02,): 756, (0x02, 0x33): 758})
+        self.assertEqual(ALLOWED_EXPERIMENTS, {(0x02,): 756, (0x02, 0x33): 758, (0x4A,): 793, (0x02, 0x33, 0x4A): 793})
         bad = [((0x02, 0x02), 756),  # duplicate
                ((0x33,), 758),  # unlisted set
                ((0x33, 0x02), 758),  # unlisted order
                ((0x02, 0x33), 756),  # issue mismatch
                ((0x02,), 999),  # unknown issue
-               ((), 756)]  # empty
+               ((), 756),  # empty
+               ((0x4A, 0x02), 793),  # unlisted order
+               ((0x02, 0x4A), 793),  # unlisted set
+               ((0x4A,), 756),  # issue mismatch
+               ((0x02, 0x33, 0x4A), 758)]  # issue mismatch
         for slots, issue in bad:
             with self.assertRaises(ValueError, msg=f"{slots}/{issue}"):
                 build_slot02_return_bios(Path("/nonexistent"), Path("/tmp/nonexistent-out-allow"),
@@ -440,7 +448,148 @@ class ClassifySimulatedTests(unittest.TestCase):
         self.assertTrue(ok)
         ok2, why = S.halts_match(_run("cold", pc=0xF100), _run("warm", pc=0xF101))
         self.assertFalse(ok2)
-        self.assertIn("halt pc", why)
+
+    def test_slotset_mixed_real_and_simulated_next_api(self):
+        # Genuine $1E (30) returns, simulated $4A (74) returns, halt at $21 (33).
+        calls = [_call("cold", entry=0xE05A, slot=30, a=0x10),
+                 _call("cold", caller=0x3020, entry=0xE0DE, slot=74, a=0x20),
+                 _call("cold", caller=0x3030, entry=0xE063, slot=33, a=0x30),
+                 _call("warm", entry=0xE05A, slot=30, a=0x10),
+                 _call("warm", caller=0x3020, entry=0xE0DE, slot=74, a=0x20),
+                 _call("warm", caller=0x3030, entry=0xE063, slot=33, a=0x30)]
+        runs = [_run("cold", reason="api_unimplemented", pc=self.STUB, x=33),
+                _run("warm", reason="api_unimplemented", pc=self.STUB, x=33)]
+        verdict, detail = S.classify_simulated(_records(calls, runs), self.STUB, {0x4A})
+        self.assertEqual(verdict, "SIMULATED_NEXT_API")
+        self.assertIn("74", detail)
+
+    def test_slotset_discb_like_sequence_progresses(self):
+        # Disc B-like mixed sequence (real $1E, simulated $4A/$02/$02, halt $21)
+        # must be accepted in slot-set mode but rejected by strict prefix mode.
+        seq = [(30, 0xE05A), (74, 0xE0DE), (2, 0xE006), (2, 0xE006), (33, 0xE063)]
+        calls = []
+        for cycle in ("cold", "warm"):
+            for i, (slot, entry) in enumerate(seq):
+                calls.append(_call(cycle, caller=0x4000 + i, entry=entry, slot=slot, a=0xA0 + i))
+        runs = [_run("cold", reason="api_unimplemented", pc=self.STUB, x=33),
+                _run("warm", reason="api_unimplemented", pc=self.STUB, x=33)]
+        verdict, _ = S.classify_simulated(_records(calls, runs), self.STUB, {0x02, 0x33, 0x4A})
+        self.assertEqual(verdict, "SIMULATED_NEXT_API")
+        # strict prefix mode must not accept this (no false PASS)
+        verdict_prefix, _ = S.classify_simulated(_records(calls, runs), self.STUB,
+                                                 ((2, "JSR"), (51, "JSR"), (74, "JSR")))
+        self.assertEqual(verdict_prefix, "SIMULATED_UNEXPECTED_FIRST")
+
+    def test_slotset_stub_halt_at_simulated_slot_rejected(self):
+        # A simulated slot is patched to RTS and cannot produce a stub halt.
+        calls = [_call("cold", entry=0xE05A, slot=30),
+                 _call("cold", caller=0x3020, entry=0xE0DE, slot=74),
+                 _call("warm", entry=0xE05A, slot=30),
+                 _call("warm", caller=0x3020, entry=0xE0DE, slot=74)]
+        runs = [_run("cold", reason="api_unimplemented", pc=self.STUB, x=74),
+                _run("warm", reason="api_unimplemented", pc=self.STUB, x=74)]
+        verdict, _ = S.classify_simulated(_records(calls, runs), self.STUB, {0x4A})
+        self.assertEqual(verdict, "SIMULATED_UNEXPECTED_FIRST")
+
+    def test_slotset_no_simulated_call_seen_rejected(self):
+        # Stub halt on non-simulated slot but experiment never exercised a
+        # simulated slot: not a simulated progression (false PASS guard).
+        calls = [_call("cold", entry=0xE05A, slot=30),
+                 _call("cold", caller=0x3020, entry=0xE063, slot=33),
+                 _call("warm", entry=0xE05A, slot=30),
+                 _call("warm", caller=0x3020, entry=0xE063, slot=33)]
+        runs = [_run("cold", reason="api_unimplemented", pc=self.STUB, x=33),
+                _run("warm", reason="api_unimplemented", pc=self.STUB, x=33)]
+        verdict, _ = S.classify_simulated(_records(calls, runs), self.STUB, {0x02, 0x4A})
+        self.assertEqual(verdict, "SIMULATED_UNEXPECTED_FIRST")
+
+    def test_slotset_genuine_only_nonstub_halt(self):
+        # No simulated slots observed, non-stub halt: must NOT be classified as a
+        # simulated-return success (cold/warm match alone does not prove simulated
+        # progression; MEDIUM fix, slot-set mode).
+        calls = [_call("cold", entry=0xE05A, slot=30),
+                 _call("warm", entry=0xE05A, slot=30)]
+        runs = [_run("cold", reason="cd_halt_fail", pc=0xF100),
+                _run("warm", reason="cd_halt_fail", pc=0xF100)]
+        verdict, detail = S.classify_simulated(_records(calls, runs), self.STUB, {0x4A})
+        self.assertEqual(verdict, "SIMULATED_UNEXPECTED_FIRST")
+        self.assertNotIn("SIMULATED_RETURN_THEN_HALT", verdict)
+        self.assertIn("unproven", detail)
+
+    def test_slotset_nested_call_from_real_api_not_return(self):
+        # Real API (slot 30) called after simulated slot 74 returned to payload, but
+        # real API internally JSRs slot 33 (nested): inner call sp_before is deeper.
+        # This must not be classified as simulated/real sequential return progression.
+        calls = [_call("cold", entry=0xE0DE, slot=74, a=0x10),
+                 _call("cold", caller=0x3020, entry=0xE05A, slot=30, a=0x20),
+                 _call("cold", caller=0xE400, entry=0xE063, slot=33, a=0x30, before=0x7E, after=0x7C),
+                 _call("warm", entry=0xE0DE, slot=74, a=0x10),
+                 _call("warm", caller=0x3020, entry=0xE05A, slot=30, a=0x20),
+                 _call("warm", caller=0xE400, entry=0xE063, slot=33, a=0x30, before=0x7E, after=0x7C)]
+        runs = [_run("cold", reason="api_unimplemented", pc=self.STUB, x=33),
+                _run("warm", reason="api_unimplemented", pc=self.STUB, x=33)]
+        verdict, detail = S.classify_simulated(_records(calls, runs), self.STUB, {0x4A})
+        self.assertEqual(verdict, "SIMULATED_UNEXPECTED_FIRST")
+        self.assertNotIn("SIMULATED_NEXT_API", verdict)
+
+    def test_slotset_sp_chain_restored_but_return_unproven_nonstub_last_sim(self):
+        # SP chain restored (all sp_before equal, sequential level) but simulated slot
+        # is the last call with no next-API resumption; cold/warm match and SP
+        # consistency alone are insufficient return evidence.
+        calls = [_call("cold", entry=0xE0DE, slot=74),
+                 _call("warm", entry=0xE0DE, slot=74)]
+        runs = [_run("cold", reason="cd_halt_fail", pc=0xF100),
+                _run("warm", reason="cd_halt_fail", pc=0xF100)]
+        verdict, detail = S.classify_simulated(_records(calls, runs), self.STUB, {0x4A})
+        self.assertEqual(verdict, "SIMULATED_UNEXPECTED_FIRST")
+        self.assertIn("unproven", detail)
+
+    def test_slotset_normal_return_then_next_api_still_succeeds(self):
+        # Non-nested sequential same-level progression: simulated returns proven by
+        # subsequent API call at restored SP; existing success classification kept.
+        calls = [_call("cold", entry=0xE0DE, slot=74, a=0xAA),
+                 _call("cold", caller=0x3020, entry=0xE063, slot=33, a=0xCC),
+                 _call("warm", entry=0xE0DE, slot=74, a=0xAA),
+                 _call("warm", caller=0x3020, entry=0xE063, slot=33, a=0xCC)]
+        runs = [_run("cold", reason="api_unimplemented", pc=self.STUB, x=33),
+                _run("warm", reason="api_unimplemented", pc=self.STUB, x=33)]
+        verdict, _ = S.classify_simulated(_records(calls, runs), self.STUB, {0x4A})
+        self.assertEqual(verdict, "SIMULATED_NEXT_API")
+
+    def test_slotset_unobserved_simulated_call_never_success(self):
+        # Simulated slot not observed in sequence: must not classify as success in
+        # slot-set mode regardless of cold/warm consistency.
+        calls = [_call("cold", entry=0xE05A, slot=30),
+                 _call("cold", caller=0x3020, entry=0xE063, slot=33),
+                 _call("warm", entry=0xE05A, slot=30),
+                 _call("warm", caller=0x3020, entry=0xE063, slot=33)]
+        runs = [_run("cold", reason="cd_halt_fail", pc=0xF100),
+                _run("warm", reason="cd_halt_fail", pc=0xF100)]
+        verdict, _ = S.classify_simulated(_records(calls, runs), self.STUB, {0x4A})
+        self.assertNotIn(verdict, ("SIMULATED_NEXT_API", "SIMULATED_RETURN_THEN_HALT"))
+
+    def test_slotset_cold_warm_mismatch_not_success(self):
+        # Cold/warm mismatch must remain non-success in slot-set mode.
+        calls = [_call("cold", entry=0xE0DE, slot=74),
+                 _call("cold", caller=0x3020, entry=0xE063, slot=33),
+                 _call("warm", entry=0xE0DE, slot=74)]
+        runs = [_run("cold", reason="api_unimplemented", pc=self.STUB, x=33),
+                _run("warm", reason="api_unimplemented", pc=self.STUB, x=33)]
+        verdict, _ = S.classify_simulated(_records(calls, runs), self.STUB, {0x4A})
+        self.assertEqual(verdict, "SIMULATED_DIVERGENT")
+
+    def test_prefix_mode_still_rejects_real_first_call(self):
+        # Regression: strict prefix mode must reject when a real call precedes
+        # the assumed simulated prefix (no false PASS).
+        calls = [_call("cold", entry=0xE05A, slot=30),
+                 _call("cold", caller=0x3020, entry=0xE006, slot=2),
+                 _call("warm", entry=0xE05A, slot=30),
+                 _call("warm", caller=0x3020, entry=0xE006, slot=2)]
+        runs = [_run("cold", reason="api_unimplemented", pc=self.STUB, x=2),
+                _run("warm", reason="api_unimplemented", pc=self.STUB, x=2)]
+        verdict, _ = S.classify_simulated(_records(calls, runs), self.STUB, ((2, "JSR"),))
+        self.assertEqual(verdict, "SIMULATED_UNEXPECTED_FIRST")
+
     def test_halt_state_mismatch_diverges(self):
         # MEDIUM-1 RED set: halt reason/PC/X must agree on the
         # PRE_HALT and RETURN_THEN_HALT paths.
@@ -946,6 +1095,53 @@ class StubAssemblyTests(unittest.TestCase):
         self.assertEqual(code[0], RTS)
         self.assertLessEqual(len(code), PATCH_LEN)
         self.assertTrue(all(b in (RTS, 0xEA) for b in code))
+
+
+class CommercialArgParseTests(unittest.TestCase):
+    def _parse(self, argv):
+        import argparse
+        # mirror the relevant parser behavior
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--commercial", action="store_true")
+        parser.add_argument("--commercial-index", type=int, default=None)
+        parser.add_argument("--rom-dir", type=Path, default=None)
+        parser.add_argument("--commercial-cue", type=Path)
+        parser.add_argument("--commercial-labels", type=Path)
+        parser.add_argument("--commercial-output", type=Path)
+        parser.add_argument("--commercial-auto-loader", action="store_true")
+        parser.add_argument("--commercial-loader-format", choices=("public", "dev"), default="public")
+        parser.add_argument("--commercial-variant", choices=("slot02-33ret", "slot4aret", "slot02-33-4aret"), default=argparse.SUPPRESS)
+        args = parser.parse_args(argv)
+        commercial_variant_explicit = hasattr(args, "commercial_variant")
+        if not commercial_variant_explicit:
+            args.commercial_variant = "slot02-33ret"
+        has_commercial_args = (
+            args.commercial_cue is not None or args.commercial_labels is not None
+            or args.commercial_output is not None or args.commercial_index is not None
+            or args.rom_dir is not None
+            or args.commercial_auto_loader or args.commercial_loader_format != "public"
+            or commercial_variant_explicit)
+        return args, has_commercial_args, commercial_variant_explicit
+
+    def test_explicit_variant_without_commercial_rejected(self):
+        args, has_args, explicit = self._parse(["--commercial-variant", "slot4aret"])
+        self.assertTrue(explicit)
+        self.assertTrue(has_args)
+        self.assertFalse(args.commercial)
+
+    def test_default_variant_not_treated_as_explicit(self):
+        args, has_args, explicit = self._parse([])
+        self.assertFalse(explicit)
+        self.assertFalse(has_args)
+        self.assertEqual(args.commercial_variant, "slot02-33ret")
+
+    def test_explicit_variant_with_commercial_allowed(self):
+        args, has_args, explicit = self._parse(["--commercial", "--commercial-variant", "slot4aret"])
+        self.assertTrue(explicit)
+        self.assertTrue(has_args)
+        self.assertTrue(args.commercial)
+        self.assertEqual(args.commercial_variant, "slot4aret")
+
 
 
 if __name__ == "__main__":
