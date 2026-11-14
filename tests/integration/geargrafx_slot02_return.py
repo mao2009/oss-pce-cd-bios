@@ -616,8 +616,14 @@ def classify_simulated(records, stub_addr, simulated=None):
                 f"halts {[cold_run['reason'], warm_run['reason']]}")
 
     # slot-set mode: simulated slots may appear anywhere; genuine calls may interleave.
+    # Return evidence: a next observed call proves a prior call returned only when the
+    # whole observed progression is a sequential same-level chain (sp_chain_restored).
+    # This rejects nested internal JSRs (real API calling another API) which break the
+    # caller stack level, and any case where progression/return is not fully proven.
+    # Cold/warm agreement alone never proves simulated return progression (fail-closed).
     last_slot = cold_seq[-1][0]
     seen_sim = [s for s, _m in cold_seq if s in sim_slots]
+    chain_ok, chain_why = sp_chain_restored(cold_calls)
     if all(stub_halts):
         if stub_addr is None:
             return ("SIMULATED_UNEXPECTED_FIRST",
@@ -635,10 +641,18 @@ def classify_simulated(records, stub_addr, simulated=None):
         if not seen_sim:
             return ("SIMULATED_UNEXPECTED_FIRST",
                     "stub halt without any simulated-slot call in sequence")
+        if not chain_ok:
+            return ("SIMULATED_UNEXPECTED_FIRST",
+                    f"simulated/real return progression unproven (not a sequential same-level "
+                    f"chain; nested or insufficient return evidence): {chain_why}")
+        # Every simulated slot must be proven to have returned: in a stub-halt
+        # sequence the last call is the non-returning halt target and is not
+        # simulated, so each simulated slot has a subsequent observed call and the
+        # restored chain proves same-level resumption (not a nested internal call).
         return ("SIMULATED_NEXT_API",
                 f"mixed sequence {list(cold_seq)} in both cycles, simulated slots "
-                f"{sorted(set(seen_sim))} returned (proven by resumption), stub halt on last "
-                f"non-simulated call {last_slot} (non-returning)")
+                f"{sorted(set(seen_sim))} returned (proven by sequential same-level resumption), "
+                f"stub halt on last non-simulated call {last_slot} (non-returning)")
     if any(stub_halts):
         return ("SIMULATED_DIVERGENT",
                 f"halt outcomes differ: {[cold_run['reason'], warm_run['reason']]}")
@@ -649,6 +663,16 @@ def classify_simulated(records, stub_addr, simulated=None):
         return ("SIMULATED_UNEXPECTED_FIRST",
                 f"no simulated-slot calls observed in sequence {list(cold_seq)}; "
                 f"simulated-return progression unproven (halts {[cold_run['reason'], warm_run['reason']]})")
+    if not chain_ok:
+        return ("SIMULATED_UNEXPECTED_FIRST",
+                f"simulated return progression unproven (not a sequential same-level chain; "
+                f"nested or insufficient return evidence): {chain_why}")
+    if last_slot in sim_slots:
+        # Last call is simulated with no subsequent API call: cold/warm halt agreement
+        # and SP consistency alone are not sufficient return/resumption evidence.
+        return ("SIMULATED_UNEXPECTED_FIRST",
+                f"simulated slot {last_slot} return unproven: no next API call resumption "
+                f"(cold/warm match and SP consistency alone are insufficient)")
     return ("SIMULATED_RETURN_THEN_HALT",
             f"mixed sequence {list(cold_seq)} in both cycles with simulated returns, "
             f"non-stub halts {[cold_run['reason'], warm_run['reason']]}")
@@ -794,14 +818,18 @@ def main():
     parser.add_argument("--commercial-output", type=Path)
     parser.add_argument("--commercial-auto-loader", action="store_true")
     parser.add_argument("--commercial-loader-format", choices=("public", "dev"), default="public")
-    parser.add_argument("--commercial-variant", choices=("slot02-33ret", "slot4aret", "slot02-33-4aret"), default="slot02-33ret")
+    parser.add_argument("--commercial-variant", choices=("slot02-33ret", "slot4aret", "slot02-33-4aret"), default=argparse.SUPPRESS)
     args = parser.parse_args()
+    commercial_variant_explicit = hasattr(args, "commercial_variant")
+    if not commercial_variant_explicit:
+        args.commercial_variant = "slot02-33ret"
 
     has_commercial_args = (
         args.commercial_cue is not None or args.commercial_labels is not None
         or args.commercial_output is not None or args.commercial_index is not None
         or args.rom_dir is not None
-        or args.commercial_auto_loader or args.commercial_loader_format != "public")
+        or args.commercial_auto_loader or args.commercial_loader_format != "public"
+        or commercial_variant_explicit)
     if has_commercial_args and not args.commercial:
         raise SystemExit("FAIL: commercial options require --commercial")
 
