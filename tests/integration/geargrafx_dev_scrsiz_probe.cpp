@@ -29,11 +29,13 @@ int main(int argc, char** argv) {
     const u16 reset = (u16)rom[0x1FFE] | ((u16)rom[0x1FFF] << 8);
     const u16 entry = 0xE000 + 3 * 0x23;
     const u16 store = 0x2200;
+    // MPR0 initial $F8 (non-I/O), not $FF, so a missing restore is detectable;
+    // I/O during call requires MPR0=$FF, and MPR0 must be restored to $F8 after.
     std::vector<u8> code = {
         0x78, 0xD8,
         0xA9, 0xF8, 0x53, 0x02,
         0xA2, 0xFF, 0x9A,
-        0xA9, 0xFF, 0x53, 0x01,
+        0xA9, 0xF8, 0x53, 0x01,       // MPR0 = $F8 (known non-I/O initial)
         0xA0, 0xA5,
         0xA2, (u8)(reg_hi & 0xFF),
         0xA9, (u8)(reg_lo & 0xFF),
