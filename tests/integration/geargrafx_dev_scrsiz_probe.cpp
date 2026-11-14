@@ -10,21 +10,37 @@
 #include <cstdlib>
 #include <fstream>
 #include <iterator>
+#include <cerrno>
 #include <vector>
 
 static void dummy_clock(void*, u32) {}
 
+static bool parse_u8_arg(const char* s, long* out) {
+    if (!s || *s == '\0') return false;
+    errno = 0;
+    char* end = nullptr;
+    long v = std::strtol(s, &end, 0);
+    if (errno != 0 || end == s || !end || *end != '\0') return false;
+    if (v < 0 || v > 255) return false;
+    *out = v;
+    return true;
+}
+
 int main(int argc, char** argv) {
-    if (argc != 6) return 2;
+    if (argc != 6) { fprintf(stderr, "argc\n"); return 2; }
+    errno = 0;
     char* end = nullptr;
     long steps = std::strtol(argv[3], &end, 10);
-    if (!end || *end || steps < 1 || steps > 4096) return 2;
-    long reg_lo = std::strtol(argv[4], &end, 0);
-    long reg_hi = std::strtol(argv[5], &end, 0);
+    if (errno != 0 || end == argv[3] || !end || *end != '\0' || steps < 1 || steps > 4096) {
+        fprintf(stderr, "steps\n"); return 2;
+    }
+    long reg_lo = 0, reg_hi = 0;
+    if (!parse_u8_arg(argv[4], &reg_lo)) { fprintf(stderr, "reg_lo\n"); return 2; }
+    if (!parse_u8_arg(argv[5], &reg_hi)) { fprintf(stderr, "reg_hi\n"); return 2; }
 
     std::ifstream input(argv[1], std::ios::binary);
     std::vector<u8> rom((std::istreambuf_iterator<char>(input)), {});
-    if (rom.size() != 0x40000) return 3;
+    if (rom.size() != 0x40000) { fprintf(stderr, "size %zu\n", rom.size()); return 3; }
 
     const u16 reset = (u16)rom[0x1FFE] | ((u16)rom[0x1FFF] << 8);
     const u16 entry = 0xE000 + 3 * 0x23;
@@ -48,15 +64,16 @@ int main(int argc, char** argv) {
         0xBA, 0x8E, (u8)((store + 4) & 0xFF), (u8)((store + 4) >> 8),
         0x43, 0x01, 0x8D, (u8)((store + 5) & 0xFF), (u8)((store + 5) >> 8),
     };
-    const u16 halt = reset + (u16)code.size();
+    const u16 halt = (u16)(reset + (u32)code.size());
     code.push_back(0x80); code.push_back(0xFE);
-    for (size_t i = 0; i < code.size(); ++i) rom[reset - 0xE000 + i] = code[i];
+    if (reset < 0xE000 || (u32)reset + (u32)code.size() > 0xFFF6u) { fprintf(stderr, "reset\n"); return 3; }
+    for (size_t i = 0; i < code.size(); ++i) rom[(size_t)(reset - 0xE000) + i] = code[i];
 
     GeargrafxCore core;
     core.Init(nullptr);
     core.GetMedia()->SetCDROMType(GG_CDROM_STANDARD);
-    if (!core.LoadBiosFromBuffer(rom.data(), (int)rom.size(), true)) return 3;
-    if (!core.LoadMedia(argv[2])) return 3;
+    if (!core.LoadBiosFromBuffer(rom.data(), (int)rom.size(), true)) { fprintf(stderr, "loadbios\n"); return 3; }
+    if (!core.LoadMedia(argv[2])) { fprintf(stderr, "loadmedia\n"); return 3; }
     core.GetHuC6280()->SetHardwareClock(dummy_clock, nullptr);
 
     HuC6280* cpu = core.GetHuC6280();
