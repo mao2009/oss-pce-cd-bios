@@ -247,11 +247,11 @@ class SpecContractConsistencyTests(unittest.TestCase):
         self.assertEqual(entry["state"], "NOT_READY")
         self.assertIsNone(entry["approval"]["approved_by"])
 
-    def test_display_family_counts_are_unchanged(self):
+    def test_implementation_counts_match_spec(self):
         data = json.loads(SPEC.read_text(encoding="utf-8"))
         implemented = [s for s in data["slots"] if s.get("implementation")]
-        self.assertEqual(len(implemented), 16)
-        self.assertEqual(len(data["slots"]) - len(implemented), 65)
+        self.assertEqual(len(implemented), 17)
+        self.assertEqual(len(data["slots"]) - len(implemented), 64)
 
 
 if __name__ == "__main__":

@@ -1,10 +1,10 @@
 # Roadmap — evidence-graded milestones (no date promises)
 
-**Historical main snapshot (2026-11-06, `5a8dc5a`):** DEV implementation count **14/81**, **67 stubs**; owner-approved DEV_CALLABLE **0**, reference ABI VERIFIED **0/81**, reference JSR permitted **0/81**. This revision (EX_BGON $2E, Issue #56) has **16/81** DEV implementations and **65 stubs**. These are not compatible BIOS API counts and release remains blocked. See [status](status.md).
+**Historical main snapshot (2026-11-06, `5a8dc5a`):** DEV implementation count **14/81**, **67 stubs**; owner-approved DEV_CALLABLE **0**, reference ABI VERIFIED **0/81**, reference JSR permitted **0/81**. This revision (EX_JOYSNS $21, Issue #43) has **17/81** DEV implementations and **64 stubs**. These are not compatible BIOS API counts and release remains blocked. See [status](status.md).
 
 Historical main `f90c16b` had 9 DEV implementations and 72 stubs; historical main `2954e90` had 13 DEV implementations and 68 stubs. [PR #524](https://github.com/mao2009/oss-pce-cd-bios/pull/524) is **merged**, not an outstanding Draft. Synthetic disc and ABI experiments do not prove System Card or retail compatibility.
 
-Current DEV implementation count: 16/81; current stubs: 65/81; owner-approved DEV_CALLABLE: 0; reference ABI VERIFIED: 0/81; reference JSR permitted: 0/81.
+Current DEV implementation count: 17/81; current stubs: 64/81; owner-approved DEV_CALLABLE: 0; reference ABI VERIFIED: 0/81; reference JSR permitted: 0/81.
 
 ## M0 — Foundation and diagnostics
 
@@ -25,7 +25,7 @@ Current DEV implementation count: 16/81; current stubs: 65/81; owner-approved DE
 - [x] Merge the **9th DEV-only API**: MA_MUL16S at $4F ([#495](https://github.com/mao2009/oss-pce-cd-bios/pull/495), Issue #494); DEV-only and not approved/ABI VERIFIED
 - [x] Merge the **DEV-only internal boot path** ([#502](https://github.com/mao2009/oss-pce-cd-bios/pull/502)) and its CI wiring ([#506](https://github.com/mao2009/oss-pce-cd-bios/pull/506)); synthetic CD → RAM → jump is not BIOS CD_BOOT
 - [x] Record **synthetic caller-stack safety experiment** ([#481](https://github.com/mao2009/oss-pce-cd-bios/pull/481)); MPR1=$FF violates the stack contract and causes VDC side effects before the guard can refuse; production gate remains BLOCKED (#473/#459/#367)
-- [x] Extend project-defined DEV code to 14 slots (EX_RND, MA_SQRT, MA_SIN, MA_COS, EX_SETWRT included); still no independent reference ABI verification.
+- [x] Extend project-defined DEV code to 17 slots (EX_RND, MA_SQRT, MA_SIN, MA_COS, EX_SETWRT, EX_JOYSNS included); still no independent reference ABI verification.
 - [ ] Independently validate the **full reference-BIOS `EX_GETVER` ABI** (including relevant flags/interrupts/conditions, provenance and cross-emulator evidence); [Issue #40](https://github.com/mao2009/oss-pce-cd-bios/issues/40) remains open; `abi: UNVERIFIED`
 - [ ] Implement actual System Card initialization instead of the development reset checkpoint (#4)
 - [ ] Implement callable `CD_RESET`, `CD_BASE`, `CD_READ` only as contracts permit, with inputs/outputs, flags, RAM/MPR/stack/IRQ, errors and negative tests. Current bus/host models are **not** callable BIOS services

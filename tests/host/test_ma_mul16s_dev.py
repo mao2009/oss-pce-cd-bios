@@ -179,5 +179,127 @@ def frame_violations(body):
     return violations, touched
 
 
+import tempfile
+
+
+class TrampolinePlacementSafetyTests(unittest.TestCase):
+    def _mod(self):
+        import importlib.util
+        path = ROOT / "tests" / "integration" / "geargrafx_dev_mul16s.py"
+        spec = importlib.util.spec_from_file_location("geargrafx_dev_mul16s_probe_mod", path)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = mod
+        spec.loader.exec_module(mod)
+        return mod
+
+    def test_probe_overlay_intrusion_rejected(self):
+        mod = self._mod()
+        dev_map = "OVERRIDES              00E23D  00E7FD  0005C1  00001\n"
+        segments = mod.parse_dev_map_segments(dev_map)
+        rom = bytearray(b"\xFF" * 0x2000)
+        with self.assertRaises(ValueError) as ctx:
+            mod.check_trampoline_region(segments, 0xE7FE, 9, rom)
+        self.assertIn("probe overlay", str(ctx.exception).lower())
+
+    def test_safe_fallback_below_e800_when_preferred_intrudes(self):
+        mod = self._mod()
+        dev_map = (
+            "Name                   Start     End    Size  Align\n"
+            "----------------------------------------------------\n"
+            "APITABLE               00E000  00E0F2  0000F3  00001\n"
+            "FALLBACK               00E100  00E23C  00013D  00001\n"
+            "OVERRIDES              00E23D  00E7FD  0005C1  00001\n"
+            "BOOT                   00F000  00F004  000005  00001\n"
+            "VECTORS                00FFF6  00FFFF  00000A  00001\n"
+        )
+        rom = bytearray(b"\x00" * 0x2000)
+        for a in range(0xE000, 0xE0F3):
+            rom[a - 0xE000] = 0x01
+        for a in range(0xE0F3, 0xE100):
+            rom[a - 0xE000] = 0xFF
+        for a in range(0xE100, 0xE23D):
+            rom[a - 0xE000] = 0x01
+        for a in range(0xE23D, 0xE7FE):
+            rom[a - 0xE000] = 0x01
+        for a in range(0xE7FE, 0xE800):
+            rom[a - 0xE000] = 0xFF
+        for a in range(0xE800, 0xF000):
+            rom[a - 0xE000] = 0xFF
+        for a in range(0xF000, 0xF005):
+            rom[a - 0xE000] = 0x01
+        for a in range(0xF005, 0xFFF6):
+            rom[a - 0xE000] = 0xFF
+        for a in range(0xFFF6, 0x10000):
+            rom[a - 0xE000] = 0x01
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td)
+            (p / "dev.map").write_text(dev_map)
+            rom_path = p / "dev-only-not-compatible-syscard3.pce"
+            rom_path.write_bytes(bytes(rom))
+            addr = mod.find_trampoline_address(p, rom_path, 9)
+        self.assertLessEqual(addr + 8, 0xE7FF)
+        self.assertGreaterEqual(addr, 0xE0F3)
+
+
+class MutantTupleStructureTests(unittest.TestCase):
+    def test_all_mutant_definitions_have_valid_tuple_structure(self):
+        import importlib.util
+        import subprocess
+
+        probe = ROOT / "tests" / "integration" / "geargrafx_dev_mul16s.py"
+        spec = importlib.util.spec_from_file_location("geargrafx_dev_mul16s_probe_struct", probe)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = mod
+        spec.loader.exec_module(mod)
+        rom_dir = ROOT / "build" / "debug" / "bios-dev"
+        rom_path = rom_dir / "dev-only-not-compatible-syscard3.pce"
+        map_path = rom_dir / "dev.map"
+        if not rom_path.exists() or not map_path.exists():
+            subprocess.run([sys.executable, "tools/build_rom.py", "--mode", "debug"], cwd=ROOT, check=True, capture_output=True)
+        data = rom_path.read_bytes()
+        window = mod.routine_window(data, rom_dir)
+        trampoline_addr = mod.find_trampoline_address(rom_dir, rom_path, mod.MAX_TRAMPOLINE_PAYLOAD)
+        segments = mod.parse_dev_map_segments(map_path.read_text())
+        mod.check_trampoline_region(segments, trampoline_addr, mod.MAX_TRAMPOLINE_PAYLOAD, data)
+        muts = mod.mutants(data, window, trampoline_addr)
+        expected = {
+            "M1_multiplicand_correction_NOP", "M2_multiplier_correction_NOP", "M3_product_top_byte_not_stored",
+            "M4_Y_not_restored", "M5_stack_restore_broken", "M6_PLP_as_PLA", "M7_PHP_as_PHA",
+            "M8_CLD_as_NOP", "M9_correction_SBC_as_ADC", "M10_ROR_as_ROL",
+            "T1_same_value_zero_page_write", "T2_write_and_restore_bss", "T3_io_read",
+            "T4_same_value_stack_below_frame", "T6_same_value_below_lowest_push",
+            "T7_same_value_jsr_return_byte", "T8_same_value_above_frame",
+            "T9_same_value_jsr_return_low_byte", "T10_bss_read", "T5_mpr_change",
+        }
+        self.assertEqual(expected, set(muts.keys()))
+        allowed_required = {"product", "Y", "halt", "S", "P", "trace", "mpr"}
+        for name, defn in muts.items():
+            self.assertIsInstance(defn, tuple, name)
+            self.assertEqual(5, len(defn), name)
+            patches, required, extra, c, trampoline_range = defn
+            self.assertIsInstance(patches, list, name)
+            self.assertTrue(patches, name)
+            for item in patches:
+                self.assertIsInstance(item, (tuple, list), name)
+                self.assertEqual(2, len(item), name)
+                self.assertIsInstance(item[0], int, name)
+                self.assertIsInstance(item[1], (bytes, bytearray), name)
+            self.assertIsInstance(required, set, name)
+            self.assertTrue(required, name)
+            self.assertTrue(required <= allowed_required, (name, required))
+            self.assertIsInstance(extra, int, name)
+            self.assertIn(extra, (0, 0x100), (name, extra))
+            self.assertIsInstance(c, int, name)
+            self.assertTrue(0 <= c <= 0xFF, (name, c))
+            if name.startswith("T"):
+                self.assertIsNotNone(trampoline_range, name)
+                self.assertIsInstance(trampoline_range, tuple, name)
+                self.assertEqual(2, len(trampoline_range), name)
+                self.assertLess(trampoline_range[0], trampoline_range[1], name)
+                self.assertLessEqual(trampoline_range[1], 0xE800, name)
+                self.assertNotIn("product", required, name)
+            else:
+                self.assertIsNone(trampoline_range, name)
+
 if __name__ == "__main__":
     unittest.main()
