@@ -29,13 +29,15 @@ int main(int argc, char** argv) {
     const u16 reset = (u16)rom[0x1FFE] | ((u16)rom[0x1FFF] << 8);
     const u16 entry = 0xE000 + 3 * 0x21;
     const u16 store = 0x2200;
-    // Guest: SEI,CLD, MPR1=$F8, SP=$FF, MPR0=$FF (known), preset X=$5A Y=$A5 A=$C3,
-    // JSR entry, PHP, store A/P/X/Y, TSX store SP, TMA#1 store MPR0-after, BRA -2
+    // Guest: SEI,CLD, MPR1=$F8, SP=$FF, MPR0=$F8 (non-I/O initial, restoration check),
+    // preset X=$5A Y=$A5 A=$C3, JSR entry, PHP, store A/P/X/Y, TSX store SP,
+    // TMA#1 store MPR0-after, BRA -2. Initial MPR0 differs from I/O-page $FF so a
+    // missing restore cannot be masked (MPR0 must equal initial after call).
     std::vector<u8> code = {
         0x78, 0xD8,
         0xA9, 0xF8, 0x53, 0x02,       // MPR1 = work RAM
         0xA2, 0xFF, 0x9A,             // SP = $FF
-        0xA9, 0xFF, 0x53, 0x01,       // MPR0 = $FF (known initial)
+        0xA9, 0xF8, 0x53, 0x01,       // MPR0 = $F8 (known non-I/O initial)
         0xA2, 0x5A, 0xA0, 0xA5,       // X,Y presets
         0xA9, 0xC3,                   // A preset
         0x20, (u8)(entry & 0xFF), (u8)(entry >> 8),

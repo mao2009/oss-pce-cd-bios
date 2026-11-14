@@ -179,9 +179,6 @@ def frame_violations(body):
     return violations, touched
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 import tempfile
 
 
@@ -303,3 +300,6 @@ class MutantTupleStructureTests(unittest.TestCase):
                 self.assertNotIn("product", required, name)
             else:
                 self.assertIsNone(trampoline_range, name)
+
+if __name__ == "__main__":
+    unittest.main()

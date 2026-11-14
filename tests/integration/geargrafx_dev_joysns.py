@@ -95,7 +95,8 @@ def main():
                 failures.append(f"{name}: X/Y not preserved {res['x']},{res['y']}")
             if res["sp_stored"] != 0xFF or res["sp"] != 0xFF:
                 failures.append(f"{name}: SP not balanced {res['sp_stored']},{res['sp']}")
-            if res["mpr"][1] != 0xF8 or res["mpr"][7] != 0 or res["mpr"][0] != 0xFF or res["mpr0_stored"] != 0xFF:
+            # MPR0 initial is $F8 (not $FF) so a missing restore is detectable.
+            if res["mpr"][1] != 0xF8 or res["mpr"][7] != 0 or res["mpr"][0] != 0xF8 or res["mpr0_stored"] != 0xF8:
                 failures.append(f"{name}: MPR not preserved {res['mpr']} mpr0_stored={res['mpr0_stored']}")
         if failures:
             for f in failures: print("FAIL", f, file=sys.stderr)
