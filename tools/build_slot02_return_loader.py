@@ -59,6 +59,8 @@ def resolve_defines(defines) -> list:
 ALLOWED_EXPERIMENTS = {
     (0x02,): 756,
     (0x02, 0x33): 758,
+    (0x4A,): 793,
+    (0x02, 0x33, 0x4A): 793,
 }
 
 

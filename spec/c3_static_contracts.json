@@ -54,6 +54,7 @@
       "src/math/ma_mul8s.s",
       "src/math/ma_mul8u.s",
       "src/overrides/slot_1E.s",
+      "src/overrides/slot_21.s",
       "src/overrides/slot_22.s",
       "src/overrides/slot_23.s",
       "src/overrides/slot_2E.s",
@@ -414,14 +415,13 @@
         "reset": "reset_entry"
       }
     },
-    "src/overrides/slot_23.s": {
-      "role": "api",
+    "src/overrides/slot_21.s": {,
+    "src/overrides/slot_23.s": {      "role": "api",
       "tam": [
         {
           "mask": "0x01",
           "value": "0xFF",
-          "purpose": "MPR0 = hardware page for the VDC window (IRQ masked by SEI)"
-        },
+          "purpose": "MPR0 = I/O page for joypad port $1000 (IRQ masked by SEI)"        },
         {
           "mask": "0x01",
           "value": "restore",
@@ -430,12 +430,9 @@
       ],
       "transfers": [],
       "mmio": {
-        "device": "VDC address / data ports",
+        "device": "joypad port",
         "addresses": [
-          "0x0000",
-          "0x0002",
-          "0x0003"
-        ],
+          "0x1000"        ],
         "mapping": "window"
       }
     }

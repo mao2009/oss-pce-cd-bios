@@ -545,16 +545,25 @@
       "candidate_name": "EX_JOYSNS",
       "state": "NOT_READY",
       "abi_contract": {
-        "status": "UNKNOWN",
-        "note": "reference System Card contract not verified; DEV-only project spec"
+        "status": "PROJECT_SPEC_ONLY",
+        "note": "reference System Card EX_JOYSNS ABI not verified; DEV-only project contract (Issue #43, real pad-1 I/O read via $1000, DEV_EXPERIMENTAL)"
       },
-      "implementation": null,
-      "host_evidence": [],
-      "real_core_evidence": [],
+      "implementation": {
+        "source": "src/overrides/slot_21.s",
+        "license": "MIT (repository LICENSE)",
+        "provenance": "project-own DEV_EXPERIMENTAL contract, Issue #43 (real joypad I/O read; no reference code, no ABI claim)"
+      },
+      "host_evidence": [
+        "tests/host/test_api_joysns_dev.py"
+      ],
+      "real_core_evidence": [
+        "tests/integration/geargrafx_dev_joysns.py"
+      ],
       "approval": {
         "approved_by": null,
         "review_ref": null
-      }
+      },
+      "note": "DEV ROM implemented (real $1000 joypad I/O) and real-core tested on pinned Geargrafx. NOT_READY until owner approval. NOT reference ABI/compatibility."
     },
     {
       "id": 34,

@@ -629,8 +629,7 @@ class SnapshotShaBindingTests(unittest.TestCase):
         # (c)
         self.assertEqual(stale_hits("Main 2954e90 has 13 DEV implementations."), [])
         json_ld = ('      "description": "Development-only open-source replacement for the PC Engine. '
-                   'Seventeen DEV-only implemented slots in this revision (EX_GETVER, EX_JOYREP, EX_SCRSIZ, EX_BGON, EX_SETWRT; '
-                   'none approved or ABI-verified). 64 nonreturning stub slots in this revision. '
+                   'Seventeen DEV-only implemented slots in this revision (EX_GETVER, EX_JOYSNS, EX_JOYREP, EX_BGON, EX_SETWRT; '                   'none approved or ABI-verified). 64 nonreturning stub slots in this revision. '
                    'On main 5a8dc5a, 14 DEV-only slots and 67 nonreturning stubs (no EX_BGON); full ABI.",')
         self.assertEqual(stale_hits(json_ld), [])
 
