@@ -415,13 +415,14 @@
         "reset": "reset_entry"
       }
     },
-    "src/overrides/slot_21.s": {,
-    "src/overrides/slot_23.s": {      "role": "api",
+    "src/overrides/slot_21.s": {
+      "role": "api",
       "tam": [
         {
           "mask": "0x01",
           "value": "0xFF",
-          "purpose": "MPR0 = I/O page for joypad port $1000 (IRQ masked by SEI)"        },
+          "purpose": "MPR0 = I/O page for joypad port $1000 (IRQ masked by SEI)"
+        },
         {
           "mask": "0x01",
           "value": "restore",
@@ -432,7 +433,33 @@
       "mmio": {
         "device": "joypad port",
         "addresses": [
-          "0x1000"        ],
+          "0x1000"
+        ],
+        "mapping": "window"
+      }
+    },
+    "src/overrides/slot_23.s": {
+      "role": "api",
+      "tam": [
+        {
+          "mask": "0x01",
+          "value": "0xFF",
+          "purpose": "MPR0 = hardware page for the VDC window (IRQ masked by SEI)"
+        },
+        {
+          "mask": "0x01",
+          "value": "restore",
+          "reason": "caller MPR0 saved by TMA #$01 and restored before return"
+        }
+      ],
+      "transfers": [],
+      "mmio": {
+        "device": "VDC address / data ports",
+        "addresses": [
+          "0x0000",
+          "0x0002",
+          "0x0003"
+        ],
         "mapping": "window"
       }
     }

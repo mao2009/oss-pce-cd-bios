@@ -55,7 +55,7 @@ class CommittedLedgerTests(unittest.TestCase):
         self.assertNotIn("static_review_apis", metrics)
         self.assertEqual(metrics["reproducible_real_core_observations"], 0)
         self.assertEqual(metrics["reference_abi_verified"], 0)
-        self.assertEqual(metrics["dev_rom_implemented_apis"], 17)
+        self.assertEqual(metrics["dev_rom_implemented_apis"], 18)
         self.assertEqual(metrics["owner_approved_dev_callable"], 0)
 
     def test_the_two_axes_are_counted_apart(self):
