@@ -122,16 +122,31 @@ def _exp_defines(sel: int, track: int) -> list:
             "-D", f"EXP_SELECTED_LBA_LO=${sel & 0xFF:02X}"]
 
 
+def _is_public_defines(defines: list) -> bool:
+    """True when the assembler will select the PUBLIC IPL path. Pure.
+
+    ca65 `-D NAME=VALUE` still defines NAME (PUBLIC behavior), so exact
+    `"IPL_PUBLIC" in defines` misclassifies `-D IPL_PUBLIC=1` as DEV.
+    Normalize the accepted `-D` forms; anything else is DEV."""
+    for item in defines:
+        if not isinstance(item, str):
+            continue
+        if item == "IPL_PUBLIC" or item.startswith("IPL_PUBLIC="):
+            return True
+    return False
+
+
 def g5_manifest(sel: int, track: int, mode: str, variant: str, defines: list,
                 data: bytes, symbols: dict, link_labels: dict, rom_name: str,
                 private_input: bool = False) -> dict:
+    is_public = _is_public_defines(defines)
     manifest = {
         "status": ("PUBLIC-IPL-FORMAT-LOADER-G5-EXPERIMENTAL-synthetic-"
                    "not-compatible-not-a-bios-abi"
-                   if "IPL_PUBLIC" in defines else
+                   if is_public else
                    "DEV-IPL-FORMAT-LOADER-G5-EXPERIMENTAL-synthetic-"
                    "not-compatible-not-a-bios-abi"),
-        "ipl_format": "public" if "IPL_PUBLIC" in defines else "dev",
+        "ipl_format": "public" if is_public else "dev",
         "mode": mode, "variant": variant, "rom_name": rom_name,
         "rom_sha256": hashlib.sha256(data).hexdigest(), "rom_bytes": IMAGE_BYTES,
         "loader_source": "tests/integration/ipl_loader_rom.s (unchanged, Issue #670)",
@@ -197,18 +212,26 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
             raise ValueError("G5 IPL loader toolchain is not the pinned cc65 build")
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
-    debug_flags = ["-g"] if mode == "debug" else []
+    # Labels for the loader/proto/link/glue objects must survive in release
+    # mode too: `reset`/`irq_stub`/etc. are local labels, and the pinned
+    # linker only emits them to the -Ln file with debug info. `-g` never
+    # changes ROM bytes (host tests assert debug/release byte-identity for
+    # the normal DEV ROM; the same holds here because only -g/-l differ).
+    # assemble_api_objects() keeps its own mode discipline (overrides always
+    # get -g for verification); the G5 objects below always get -g so the
+    # release image still carries the required symbols (Major review fix).
+    g5_debug_flags = ["-g"]
     objects = assemble_api_objects(output, mode)
     exp_defs = _exp_defines(sel, track)
     for src, extra in ((PROTO_SOURCE, exp_defs), (LINK_SOURCE, []),
                        (GLUE_SOURCE, exp_defs)):
         obj = output / f"{src.stem}_{variant}.o"
-        subprocess.run([ca65, str(src), *extra, "-o", str(obj), *debug_flags],
+        subprocess.run([ca65, str(src), *extra, "-o", str(obj), *g5_debug_flags],
                        check=True)
         objects.append(obj)
     loader_obj = output / f"ipl_loader_{variant}.o"
     subprocess.run([ca65, str(LOADER_SOURCE), "-D", f"IPL_SEL=${sel:04X}",
-                    *defines, "-o", str(loader_obj), *debug_flags], check=True)
+                    *defines, "-o", str(loader_obj), *g5_debug_flags], check=True)
     objects.append(loader_obj)
     bank, labels = output / f"bank0-{variant}-g5.bin", output / f"ipl-loader-g5-{variant}.lbl"
     cfg = bank0_cfg_text_g5(output)

@@ -155,10 +155,7 @@ class IplLoaderG5BuilderTest(unittest.TestCase):
     def setUpClass(cls):
         if not ORIGINAL.is_file():
             raise unittest.SkipTest("needs make dev-rom output (CI build step)")
-        try:
-            from build_ipl_loader_g5 import build_ipl_loader_g5_rom  # noqa: E402
-        except ImportError as error:
-            raise unittest.SkipTest(f"RED: new builder missing: {error}")
+        from build_ipl_loader_g5 import build_ipl_loader_g5_rom  # noqa: E402
         tmp = tempfile.TemporaryDirectory(prefix="pce-800-g5-")
         cls.addClassCleanup(tmp.cleanup)
         cls.out = Path(tmp.name)
@@ -254,6 +251,33 @@ class IplLoaderG5BuilderTest(unittest.TestCase):
             with self.subTest(bad=repr(bad)):
                 with self.assertRaisesRegex(ValueError, "IPL_SEL"):
                     build_g5(ORIGINAL, self.out / "bad", bad, "debug", "bad")
+
+    def test_release_mode_keeps_loader_labels(self):
+        # Major review fix: the loader/proto/link/glue objects always carry
+        # -g so `reset`/`irq_stub`/etc. survive in the -Ln file in release
+        # mode too (ROM bytes unchanged, only labels). Without this the
+        # release build raises missing-symbol errors.
+        from build_ipl_loader_g5 import build_ipl_loader_g5_rom as build_g5  # noqa: E402
+        rom, syms = build_g5(ORIGINAL, self.out / "g5rel", SEL, "release", "t800rel")
+        data = rom.read_bytes()
+        self.assertEqual(len(data), IMAGE_BYTES)
+        for name in ("reset", "irq_stub", "cd_halt_fail",
+                     "cd_unexpected_interrupt", "api_unimplemented",
+                     "cd_base_proto_entry", "cd_read_link_entry",
+                     "experimental_slot_33"):
+            self.assertIn(name, syms, f"release symbols missing {name}")
+        # Release image still wires the three windows (no silent no-op).
+        self.assertEqual(data[3 * 0x03], 0x4C)
+        self.assertEqual(data[3 * 0x33], 0x4C)
+
+    def test_public_defines_forms_classified(self):
+        # Minor review fix: `-D IPL_PUBLIC=1` still selects PUBLIC behavior
+        # in ca65, so the manifest must classify it as public too.
+        from build_ipl_loader_g5 import _is_public_defines  # noqa: E402
+        self.assertTrue(_is_public_defines(["-D", "IPL_PUBLIC"]))
+        self.assertTrue(_is_public_defines(["-D", "IPL_PUBLIC=1"]))
+        self.assertFalse(_is_public_defines([]))
+        self.assertFalse(_is_public_defines(["-D", "IPL_DEV"]))
 
     def test_rejects_tampered_base(self):
         from build_ipl_loader_g5 import build_ipl_loader_g5_rom as build_g5  # noqa: E402

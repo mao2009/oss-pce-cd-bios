@@ -152,6 +152,16 @@ payload_entry:
     sta RESBASE+40
     tma #$02
     sta RESBASE+41
+    tma #$04
+    sta RESBASE+42
+    tma #$08
+    sta RESBASE+43
+    tma #$10
+    sta RESBASE+44
+    tma #$20
+    sta RESBASE+45
+    tma #$40
+    sta RESBASE+46
     lda #$AA
     sta RESBASE
 payload_done:
@@ -310,7 +320,7 @@ def build_custom_payload(source_text, out_dir, name, defines):
 def chain_record(buffer):
     if len(buffer) != 6144:
         raise ValueError(f"RAM dump {len(buffer)} bytes, expected 6144")
-    res = buffer[RES_OFF:RES_OFF + 42]
+    res = buffer[RES_OFF:RES_OFF + 47]
     return {
         "magic": res[0],
         "a1": res[1], "p1": res[2], "order1": res[3],
@@ -321,6 +331,7 @@ def chain_record(buffer):
         "a3": res[34], "p3": res[35], "sp3": res[36], "order3": res[37],
         "shadow": list(res[38:40]),
         "mpr01": list(res[40:42]),
+        "mpr26": list(res[42:47]),
     }
 
 
@@ -367,13 +378,11 @@ class IplLoaderG5RealCoreTests(unittest.TestCase):
         normal_path = build(cls.work / "normal", root=ROOT)
         cls.normal = normal_path.read_bytes()
         out = cls.work / "g5rom"
+        # Always use the freshly built normal ROM (never a potentially stale
+        # build-tree artifact): the builder verifies byte-identity anyway.
         rom_path, syms = build_ipl_loader_g5_rom(
-            ROOT / "build" / MODE / "bios-dev" / "dev-only-not-compatible-syscard3.pce"
-            if (ROOT / "build" / MODE / "bios-dev" / "dev-only-not-compatible-syscard3.pce").is_file()
-            else normal_path,
+            normal_path,
             out, SEL, MODE, "t800", ["-D", "IPL_PUBLIC"], track=1)
-        # If the checked-in build tree was stale, fall back to the fresh normal
-        # ROM built above (byte-identical by verify_dev_rom, never a mismatch).
         cls.rom_path = rom_path
         cls.rom = rom_path.read_bytes()
         cls.syms = syms
@@ -518,6 +527,7 @@ class IplLoaderG5RealCoreTests(unittest.TestCase):
                 self.assertEqual(rec["order3"], 0x33)
                 self.assertEqual(rec["shadow"], [0xF2 & 0x3F, 0xA5])
                 self.assertEqual(rec["mpr01"], [0xFF, 0xF8])
+                self.assertEqual(rec["mpr26"], [0x80, 0x81, 0x82, 0x83, 0x84])
         recs = [chain_record(bytes.fromhex(r["buffer_hex"]))
                 for r in case["records"]["RUN"]]
         self.assertEqual(recs[0], recs[1])
@@ -525,12 +535,15 @@ class IplLoaderG5RealCoreTests(unittest.TestCase):
             "arrived_at_callee": all(
                 r["state"] == [0, 1, 9, 1, 0, 0, 0, 0]
                 and r["link_res"][:4] == [0, 8, 0, 8]
-                and r["shadow"] == [0xF2 & 0x3F, 0xA5] for r in recs),
+                and r["shadow"] == [0xF2 & 0x3F, 0xA5]
+                and r["mpr26"] == [0x80, 0x81, 0x82, 0x83, 0x84] for r in recs),
             "post_return_position_observed": all(
                 [r["order1"], r["order2"], r["order3"]] == [0x02, 0x03, 0x33]
                 for r in recs),
             "sp_restored": all(r["sp2"] == 0xFF and r["sp3"] == 0xFF for r in recs),
-            "mpr_consistent": all(r["mpr01"] == [0xFF, 0xF8] for r in recs),
+            "mpr_consistent": all(r["mpr01"] == [0xFF, 0xF8]
+                                and r["mpr26"] == [0x80, 0x81, 0x82, 0x83, 0x84]
+                                for r in recs),
             "order_matches_expected": all(
                 [r["order1"], r["order2"], r["order3"]] == [0x02, 0x03, 0x33]
                 for r in recs),

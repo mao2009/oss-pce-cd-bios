@@ -29,7 +29,7 @@ G5 DEVプロファイル（合成PCEX IPLで動作確認済み）を、市販CD�
 - 実験EX_DSPOFF `$33`（`src/ex_dspoff.s`を`src/ipl_loader_g5_glue.s`から`.include`、single source）。
 - パッチ共通部品（`_patch_slot02_to_proto`、`_redirect_slot33_to_body`、`_redirect_slot03_to_link`、`unified_api_windows`）を`tools/build_experimental_bios_boot.py`からimport再利用。
 - ローダー共通部品（`LOADER_SOURCE`、`REQUIRED`、`parse_labels`、reset/SEI+vector検査、16-bit `IPL_SEL`契約）を`tools/build_dev_ipl_loader_bios.py`から再利用。
-- 選択・媒体検証（`verify_dev_rom`、`verify_media_identity`相当のsel/track束縛）を再利用・緩和なし。
+- 選択・媒体検証（`verify_dev_rom`、およびsel/track束縛による選択整合性）を再利用・緩和なし。CUE/BIN媒体identity検証（`verify_media_identity`）は再利用せず、主張しない。
 - `$4A`はstubのまま（`build_slot02_return_loader`の即時RTSは独立SIMULATEDコントロールとして区別、配線しない）。
 
 未解決契約（合成成功を真正互換としない、UNKNOWN/BLOCKED維持）：
