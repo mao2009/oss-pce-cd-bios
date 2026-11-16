@@ -44,6 +44,7 @@ import hashlib
 import json
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 if __package__:
@@ -327,11 +328,9 @@ def main() -> int:
         print(f"PASS G5 IPL loader (NOT compatible, NOT a BIOS ABI): {rom}")
         return 0
     except (ValueError, RuntimeError, OSError, subprocess.CalledProcessError) as error:
-        print(f"FAIL/BLOCKED: {error}", file=sys.stderr) if False else print(
-            f"G5 IPL loader FAIL/BLOCKED: {error}", file=sys.stderr)
+        print(f"G5 IPL loader FAIL/BLOCKED: {error}", file=sys.stderr)
         return 2
 
 
 if __name__ == "__main__":
-    import sys
     raise SystemExit(main())
