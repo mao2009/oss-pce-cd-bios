@@ -334,6 +334,61 @@ class DevG5ProfileHostTests(unittest.TestCase):
             self.assertEqual(real_bin.read_bytes(), bytes(raw))
 
     @unittest.skipUnless(hasattr(os, "symlink"), "OS symlink not supported")
+    def test_symlinked_output_refused_before_generation(self):
+        # R4: a symlinked output directory is refused before any write, in
+        # both entry points. RED on code that only guards generated leaves.
+        from tools.make_cd_image import BIN_NAME
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            external = folder / "external"
+            external.mkdir()
+            sentinel = external / BIN_NAME
+            sentinel.write_bytes(b"SENTINEL" * 512)
+            ext_before = {p.name: p.read_bytes() for p in sorted(external.iterdir())}
+            link = folder / "linked-out"
+            link.symlink_to(external, target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, "is a symlink"):
+                build_dev_g5.run_profile(link, "debug")
+            with self.assertRaisesRegex(ValueError, "is a symlink"):
+                build_dev_g5.build_g5_dev_rom(self.normal_path, link, "debug",
+                                              self.cue, self.code, self.syms)
+            self.assertTrue(link.is_symlink())
+            self.assertEqual({p.name: p.read_bytes() for p in sorted(external.iterdir())},
+                             ext_before)
+            # A genuine directory still builds the identical ROM.
+            out = folder / "bios-dev-g5"
+            self.assertEqual(build_dev_g5.run_profile(out, "debug").read_bytes(),
+                             self.g5)
+
+    def test_rom_name_traversal_refused(self):
+        # R5: rom_name is constrained to a safe single .pce filename.
+        # Directory traversal, absolute/UNC/drive paths, dot names, empty
+        # names, NUL bytes, and collisions with generated leaves are all
+        # refused before mkdir/build/writes. RED on unvalidated rom_name.
+        bad_names = ["../outside.pce", "/tmp/outside.pce", "C:\\outside.pce",
+                     "..\\outside.pce", "manifest.json", "trace-labels.txt",
+                     ".", "..", "", "bad\x00.pce", "sub/dir.pce"]
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            sentinel = folder / "sentinel.txt"
+            sentinel.write_bytes(b"sentinel")
+            for name in bad_names:
+                out = folder / "bios-dev-g5"
+                with self.assertRaises(ValueError, msg=f"rom_name {name!r} must be refused"):
+                    build_dev_g5.build_g5_dev_rom(self.normal_path, out, "debug",
+                                                  self.cue, self.code, self.syms,
+                                                  rom_name=name)
+            self.assertEqual(sentinel.read_bytes(), b"sentinel")
+            self.assertEqual(sorted(p.name for p in folder.iterdir()), ["sentinel.txt"])
+            # Valid names still build the identical ROM.
+            good = folder / "good"
+            path = build_dev_g5.build_g5_dev_rom(self.normal_path, good, "debug",
+                                                  self.cue, self.code, self.syms,
+                                                  rom_name="valid.pce")
+            self.assertEqual(path.name, "valid.pce")
+            self.assertEqual(path.read_bytes(), self.g5)
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "OS symlink not supported")
     def test_media_symlink_refused_before_writes(self):
         # R2: a symlinked media directory is refused before build_image
         # writes through it. RED against the old code, which builds first.
@@ -389,32 +444,37 @@ class DevG5ProfileHostTests(unittest.TestCase):
 
     @unittest.skipUnless(hasattr(os, "symlink"), "OS symlink not supported")
     def test_run_profile_refuses_symlinked_normal_dev_dir(self):
-        # R3: a symlink pointing at the normal DEV ROM directory is the
+        # R3/R6: a symlink pointing at the normal DEV ROM directory is the
         # same conflict after resolution, and is refused before any writes.
+        # Fully contained in tmp (ROOT is pointed at an isolated fake
+        # tree): the real build tree is never touched. A pre-existing
+        # marker must survive the refused run byte-identical (never
+        # overwritten or deleted, even on test failure since nothing in the
+        # guarded directory is ever written).
         from unittest.mock import patch
         with tempfile.TemporaryDirectory() as tmp:
-            # The canonical directory must exist so the link resolves to it.
-            normal = build_rom.ROOT / "build" / "debug" / "bios-dev"
-            normal.mkdir(parents=True, exist_ok=True)
+            folder = Path(tmp)
+            fake_root = folder / "root"
+            normal = fake_root / "build" / "debug" / "bios-dev"
+            normal.mkdir(parents=True)
             marker = normal / ".r3-probe"
-            marker.write_bytes(b"probe")
-            try:
-                before = (sorted(p.name for p in normal.iterdir()),
-                          {p.name: p.read_bytes() for p in normal.iterdir() if p.is_file()})
-                link = Path(tmp) / "dev-link"
-                link.symlink_to(normal, target_is_directory=True)
-                with patch.object(build_dev_g5, "build") as mock_build, \
-                        patch.object(build_dev_g5, "build_image") as mock_image:
-                    with self.assertRaisesRegex(ValueError,
-                                                 "must not be the normal DEV ROM directory"):
-                        build_dev_g5.run_profile(link, "debug")
-                mock_build.assert_not_called()
-                mock_image.assert_not_called()
-                self.assertEqual((sorted(p.name for p in normal.iterdir()),
-                                  {p.name: p.read_bytes() for p in normal.iterdir()
-                                   if p.is_file()}), before)
-            finally:
-                marker.unlink(missing_ok=True)
+            marker.write_bytes(b"pre-existing")
+            before = (sorted(p.name for p in normal.iterdir()),
+                      {p.name: p.read_bytes() for p in normal.iterdir() if p.is_file()})
+            link = folder / "dev-link"
+            link.symlink_to(normal, target_is_directory=True)
+            with patch.object(build_dev_g5, "ROOT", fake_root), \
+                    patch.object(build_dev_g5, "build") as mock_build, \
+                    patch.object(build_dev_g5, "build_image") as mock_image:
+                with self.assertRaisesRegex(ValueError,
+                                             "must not be the normal DEV ROM directory"):
+                    build_dev_g5.run_profile(link, "debug")
+            mock_build.assert_not_called()
+            mock_image.assert_not_called()
+            self.assertEqual(marker.read_bytes(), b"pre-existing")
+            self.assertEqual((sorted(p.name for p in normal.iterdir()),
+                              {p.name: p.read_bytes() for p in normal.iterdir()
+                               if p.is_file()}), before)
 
     @unittest.skipUnless(hasattr(os, "symlink"), "OS symlink not supported")
     def test_media_leaf_symlink_refused_before_generation(self):

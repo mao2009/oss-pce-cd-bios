@@ -20,6 +20,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -92,6 +93,36 @@ def _refuse_symlink_children(directory):
             _refuse_symlink(child)
 
 
+# Generated leaves that a rom_name must never collide with.
+_RESERVED_ROM_NAMES = ("manifest.json", "trace-labels.txt")
+
+
+def _refuse_unsafe_rom_name(rom_name):
+    """Constrain rom_name to a safe single .pce filename, checked before any write.
+
+    The target is always output/rom_name, so anything but a plain filename
+    could escape the output directory (absolute/traversal paths) or clobber
+    a generated leaf. Refuses empty/non-string names, path separators,
+    absolute/drive/UNC paths, dot names, NUL bytes, non-.pce suffixes, and
+    collisions with generated leaves. The argument itself is kept for public
+    API compatibility.
+    """
+    if type(rom_name) is not str or not rom_name:
+        raise ValueError(f"rom_name must be a non-empty filename, got {rom_name!r}")
+    if "/" in rom_name or "\\" in rom_name:
+        raise ValueError(f"rom_name must be a single filename without directories: {rom_name!r}")
+    if rom_name in (".", ".."):
+        raise ValueError(f"rom_name must not be {rom_name!r}")
+    if "\x00" in rom_name:
+        raise ValueError("rom_name must not contain NUL bytes")
+    if os.path.isabs(rom_name) or re.match(r"[A-Za-z]:", rom_name) or rom_name.startswith("\\\\"):
+        raise ValueError(f"rom_name must not be an absolute or drive path: {rom_name!r}")
+    if not rom_name.endswith(".pce"):
+        raise ValueError(f"rom_name must have a .pce extension: {rom_name!r}")
+    if rom_name in _RESERVED_ROM_NAMES:
+        raise ValueError(f"rom_name collides with a generated leaf: {rom_name!r}")
+
+
 def _same_directory(first, second):
     """True when both paths name the same directory.
 
@@ -120,6 +151,8 @@ def build_g5_dev_rom(base_path: Path, output: Path, mode: str = "debug", cue: Pa
         raise ValueError("G5 profile boot requires the exact synthetic CUE to mount")
     if payload_code is None:
         raise ValueError("G5 profile boot requires the finalized payload bytes")
+    # R5: constrain rom_name before any directory or file is touched.
+    _refuse_unsafe_rom_name(rom_name)
     base_path, output, cue = Path(base_path), Path(output), Path(cue)
     if not cue.is_file():
         raise ValueError(f"G5 profile CUE is not a file: {cue}")
@@ -130,6 +163,8 @@ def build_g5_dev_rom(base_path: Path, output: Path, mode: str = "debug", cue: Pa
                          "(it would replace the normal DEV manifest)")
     base_bytes = base_path.read_bytes()
     verify_dev_rom(base_bytes, manifest=base_path.parent / "manifest.json")
+    # R4: refuse a symlinked output before generation writes through it.
+    _refuse_symlink(output)
     output.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="pce-g5-profile-") as tmp:
         tmpdir = Path(tmp)
@@ -187,6 +222,9 @@ def run_profile(output: Path, mode: str = "debug", cue: Path | None = None) -> P
     if _same_directory(output, ROOT / "build" / mode / "bios-dev"):
         raise ValueError("G5 profile output must not be the normal DEV ROM directory "
                          "(it would replace the normal DEV manifest)")
+    # R4: refuse a symlinked output before generation writes through it.
+    # Ancestor components are intentionally not checked (e.g. macOS /tmp).
+    _refuse_symlink(output)
     output.mkdir(parents=True, exist_ok=True)
     base = build(ROOT / "build" / mode / "bios-dev", mode, root=ROOT)
     if cue is None:
