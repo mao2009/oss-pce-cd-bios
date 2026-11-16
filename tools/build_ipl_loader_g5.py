@@ -222,24 +222,47 @@ def _exp_defines(sel: int, track: int) -> list:
             "-D", f"EXP_SELECTED_LBA_LO=${sel & 0xFF:02X}"]
 
 
-def _is_public_defines(defines: list) -> bool:
-    """True when the assembler will select the PUBLIC IPL path. Pure.
+def _normalize_defines(defines) -> tuple:
+    """Validate caller defines against an explicit whitelist; return (canonical_argv, is_public). Pure.
 
-    ca65 `-D NAME=VALUE` still defines NAME (PUBLIC behavior), so exact
-    `"IPL_PUBLIC" in defines` misclassifies `-D IPL_PUBLIC=1` as DEV.
-    Normalize the accepted `-D` forms; anything else is DEV."""
-    for item in defines:
-        if not isinstance(item, str):
-            continue
-        if item == "IPL_PUBLIC" or item.startswith("IPL_PUBLIC="):
-            return True
-    return False
+    ca65 splices unknown argv items straight into its command line, so an
+    open-ended defines list is an option-injection vector (`-l`/`-o`/
+    `--create-dep`/`-I` would write outside the verified output tree, and a
+    caller `-D IPL_SEL=...` could shadow the builder's own symbols). Only
+    these exact inputs are accepted; everything else is refused before any
+    mkdir/assemble/write:
+      None                       -> (["-D", "IPL_PUBLIC"], True)   PUBLIC default
+      []                         -> ([], False)                      DEV (existing contract)
+      ["-D", "IPL_PUBLIC"]     -> (["-D", "IPL_PUBLIC"], True)   PUBLIC
+      ["-D", "IPL_PUBLIC=1"]   -> (["-D", "IPL_PUBLIC"], True)   PUBLIC (value form normalized;
+                                                                     the source only tests .ifdef,
+                                                                     so the ROM bytes are unchanged)
+    Tuples are accepted as lists; non-string items and any other shape or
+    value (including `-D IPL_SEL=`/`EXP_SELECTED_*=` shadows) are refused.
+    The returned canonical argv is the only thing ever passed to ca65, and
+    the manifest records exactly that argv.
+    """
+    if defines is None:
+        return ["-D", "IPL_PUBLIC"], True
+    if isinstance(defines, tuple):
+        defines = list(defines)
+    if type(defines) is not list or any(type(item) is not str for item in defines):
+        raise ValueError(f"defines must be None or a list of strings, got {defines!r}")
+    if defines == []:
+        return [], False
+    if defines == ["-D", "IPL_PUBLIC"] or defines == ["-D", "IPL_PUBLIC=1"]:
+        return ["-D", "IPL_PUBLIC"], True
+    raise ValueError("defines must be None, [], [\"-D\", \"IPL_PUBLIC\"] or "
+                     f"[\"-D\", \"IPL_PUBLIC=1\"]: {defines!r}")
 
 
 def g5_manifest(sel: int, track: int, mode: str, variant: str, defines: list,
                 data: bytes, symbols: dict, link_labels: dict, rom_name: str,
                 private_input: bool = False) -> dict:
-    is_public = _is_public_defines(defines)
+    # `defines` must be the canonical argv from _normalize_defines, so this
+    # strict equality classifies exactly the build ca65 performed (MEDIUM-1:
+    # no guessing from substrings like ["-I", "IPL_PUBLIC"]).
+    is_public = list(defines) == ["-D", "IPL_PUBLIC"]
     manifest = {
         "status": ("PUBLIC-IPL-FORMAT-LOADER-G5-EXPERIMENTAL-synthetic-"
                    "not-compatible-not-a-bios-abi"
@@ -283,8 +306,12 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
                             private_input: bool = False):
     """Return (rom_path, symbols). `sel` is the 16-bit INDEX 01 LBA.
 
-    `defines` selects the loader format (None/default = PUBLIC, [] = DEV,
-    non-empty = as-is; same coercion discipline as build_slot02_return_loader).
+    `defines` selects the loader format through an explicit whitelist
+    (see _normalize_defines): None/default = PUBLIC, [] = DEV,
+    ["-D", "IPL_PUBLIC"] or ["-D", "IPL_PUBLIC=1"] = PUBLIC (normalized).
+    Anything else is refused before any mkdir/assemble/write, so no ca65
+    option injection (`-l`/`-o`/`--create-dep`/`-I`) and no shadowing of the
+    builder-owned `-D IPL_SEL=`/`EXP_SELECTED_*=` symbols is possible.
     `track` is the synthetic data-track number for the XSEL record (1..99).
     Only the (sel, track) pair with kind MODE1/2352 is embedded; commercial
     LBA above 16 bits is BLOCKED (no truncation).
@@ -296,10 +323,7 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
     if type(track) is not int or not 1 <= track <= 99:
         raise ValueError("EXP_SELECTED_TRACK must be 1..99")
     _refuse_unsafe_variant(variant)
-    if defines is None:
-        defines = ["-D", "IPL_PUBLIC"]
-    else:
-        defines = list(defines)
+    canon_defines, _ = _normalize_defines(defines)  # is_public unused: manifest derives it
     for src in (PROTO_SOURCE, LINK_SOURCE, GLUE_SOURCE):
         if not src.is_file():
             raise ValueError(f"experimental source missing: {src}")
@@ -345,7 +369,7 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
         objects.append(obj)
     loader_obj = output / f"ipl_loader_{variant}.o"
     subprocess.run([ca65, str(LOADER_SOURCE), "-D", f"IPL_SEL=${sel:04X}",
-                    *defines, "-o", str(loader_obj), *g5_debug_flags], check=True)
+                    *canon_defines, "-o", str(loader_obj), *g5_debug_flags], check=True)
     objects.append(loader_obj)
     bank, labels = output / f"bank0-{variant}-g5.bin", output / f"ipl-loader-g5-{variant}.lbl"
     cfg = bank0_cfg_text_g5(output)
@@ -402,20 +426,15 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
     at_4a = 3 * 0x4A
     if bytes(patched[at_4a:at_4a + 3]) != bytes(original[at_4a:at_4a + 3]):
         raise ValueError("$4A table entry changed; SIMULATED control must stay separate")
-    # Final write targets are recreated on every build; re-check them here
-    # in case an earlier stage planted a link (defense in depth; the R2
-    # pre-check above is the gate, this is a backstop).
-    rom_name = f"{ROM_STEM}-{variant}.pce"
-    manifest_name = f"manifest-{variant}-g5.json"
-    trace_name = f"trace-labels-{variant}-g5.txt"
-    for leaf in (rom_name, manifest_name, trace_name):
-        _refuse_symlink(output / leaf)
-    rom = output / rom_name
-    rom.write_bytes(bytes(patched) + b"\xff" * (IMAGE_BYTES - BANK_BYTES))
-    data = rom.read_bytes()
+    # MEDIUM-2: build the final image in memory and verify it BEFORE any
+    # disk write. A failed verification leaves no .pce behind and never
+    # touches a previous good ROM/manifest/trace. Writes are sequential, so
+    # multi-file atomicity is NOT guaranteed (a crash between files can leave
+    # a mixed set); each file is complete-or-absent, never partial, because
+    # write_bytes/write_text either succeed or raise before publishing.
+    data = bytes(patched) + b"\xff" * (IMAGE_BYTES - BANK_BYTES)
     if len(data) != IMAGE_BYTES or data[BANK_BYTES:] != b"\xff" * (IMAGE_BYTES - BANK_BYTES):
         raise ValueError("G5 image changed size or unused banks")
-    # Loader vectors + SEI contract (same as build_dev_ipl_loader_bios).
     for name in LOADER_REQUIRED:
         if name != "sig" and not 0xF000 <= symbols[name] < 0xFFF6:
             raise ValueError(f"loader symbol {name} at {symbols[name]:04x} outside $F000-$FFF5")
@@ -430,6 +449,16 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
         raise ValueError(f"reset vector {reset_vector:04x} is not the loader reset")
     if data[reset_vector & 0x1FFF] != 0x78:
         raise ValueError("loader reset must start with SEI (the probe contract)")
+    # Final write targets are recreated on every build; re-check them here
+    # in case an earlier stage planted a link (defense in depth; the R2
+    # pre-check above is the gate, this is a backstop).
+    rom_name = f"{ROM_STEM}-{variant}.pce"
+    manifest_name = f"manifest-{variant}-g5.json"
+    trace_name = f"trace-labels-{variant}-g5.txt"
+    for leaf in (rom_name, manifest_name, trace_name):
+        _refuse_symlink(output / leaf)
+    rom = output / rom_name
+    rom.write_bytes(data)
     link_labels = {
         "api_slot_02": symbols["api_slot_02"],
         "api_slot_03": symbols["api_slot_03"],
@@ -443,7 +472,7 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
         "slot_03_table_entry": 0xE000 + 3 * 0x03,
         "slot_33_table_entry": 0xE000 + 3 * 0x33,
     }
-    manifest = g5_manifest(sel, track, mode, variant, defines, data, symbols,
+    manifest = g5_manifest(sel, track, mode, variant, canon_defines, data, symbols,
                            link_labels, rom.name, private_input=private_input)
     (output / manifest_name).write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n")

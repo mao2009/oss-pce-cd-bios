@@ -272,13 +272,84 @@ class IplLoaderG5BuilderTest(unittest.TestCase):
         self.assertEqual(data[3 * 0x33], 0x4C)
 
     def test_public_defines_forms_classified(self):
-        # Minor review fix: `-D IPL_PUBLIC=1` still selects PUBLIC behavior
-        # in ca65, so the manifest must classify it as public too.
-        from build_ipl_loader_g5 import _is_public_defines  # noqa: E402
-        self.assertTrue(_is_public_defines(["-D", "IPL_PUBLIC"]))
-        self.assertTrue(_is_public_defines(["-D", "IPL_PUBLIC=1"]))
-        self.assertFalse(_is_public_defines([]))
-        self.assertFalse(_is_public_defines(["-D", "IPL_DEV"]))
+        # `-D IPL_PUBLIC=1` still selects PUBLIC behavior in ca65, so the
+        # whitelist normalizes it to the canonical PUBLIC argv; the manifest
+        # classifies exactly the normalized argv (MEDIUM-1: no substring
+        # guessing, so ["-I", "IPL_PUBLIC"] can never read as PUBLIC).
+        from build_ipl_loader_g5 import _normalize_defines  # noqa: E402
+        self.assertEqual(_normalize_defines(None), (["-D", "IPL_PUBLIC"], True))
+        self.assertEqual(_normalize_defines([]), ([], False))
+        self.assertEqual(_normalize_defines(["-D", "IPL_PUBLIC"]),
+                         (["-D", "IPL_PUBLIC"], True))
+        self.assertEqual(_normalize_defines(["-D", "IPL_PUBLIC=1"]),
+                         (["-D", "IPL_PUBLIC"], True))
+        self.assertEqual(_normalize_defines(("-D", "IPL_PUBLIC")),
+                         (["-D", "IPL_PUBLIC"], True))
+        for bad in (["-I", "IPL_PUBLIC"], ["-D", "IPL_PUBLIC", "-l", "/tmp/x.lst"],
+                    ["-o", "/tmp/evil.o"], ["--create-dep", "/tmp/x.d"],
+                    ["-I", "/tmp/inc"], ["-D", "IPL_SEL=1234"],
+                    ["-D", "EXP_SELECTED_TRACK=02"], ["-D", "FOO"],
+                    ["-D"], "IPL_PUBLIC", 0, True, [b"-D"], [["-D"]]):
+            with self.subTest(defines=repr(bad)):
+                with self.assertRaises(ValueError):
+                    _normalize_defines(bad)
+
+    def test_defines_injection_refused_before_any_write(self):
+        # MAJOR-1: extra ca65 options must never reach the assembler. Each
+        # refused input leaves no output directory and no sentinel behind.
+        # Everything lives in disposable temp dirs (never the real tree).
+        from build_ipl_loader_g5 import build_ipl_loader_g5_rom as build_g5  # noqa: E402
+        import shutil as _shutil
+        bad_list = [["-D", "IPL_PUBLIC", "-l", "/tmp/x.lst"],
+                    ["-o", "/tmp/evil.o"],
+                    ["--create-dep", "/tmp/x.d"],
+                    ["-I", "IPL_PUBLIC"],
+                    ["-I", "/tmp/inc"],
+                    ["-D", "IPL_SEL=1234"],
+                    ["-D", "EXP_SELECTED_TRACK=02"],
+                    ["-D", "EXP_SELECTED_LBA_LO=09"],
+                    ["-D", "FOO"],
+                    ["-D", "IPL_PUBLIC", "-D", "IPL_PUBLIC"]]
+        for i, bad in enumerate(bad_list):
+            with self.subTest(defines=repr(bad)):
+                scratch = Path(tempfile.mkdtemp(prefix="pce-800-defrej-"))
+                self.addCleanup(_shutil.rmtree, str(scratch), ignore_errors=True)
+                out = scratch / "out"
+                sentinel = scratch / "sentinel.bin"
+                sentinel.write_bytes(b"SENTINEL-800-defines")
+                with self.assertRaises(ValueError):
+                    build_g5(ORIGINAL, out, SEL, "debug", f"defrej{i:02d}", bad)
+                self.assertFalse(out.exists(),
+                                 f"refused defines {bad!r} must not create output")
+                self.assertEqual(sentinel.read_bytes(), b"SENTINEL-800-defines")
+
+    def test_normalized_public_rom_bytes_identical_and_manifest_public(self):
+        # The value form must assemble exactly the canonical PUBLIC image
+        # and classify as PUBLIC (MEDIUM-1: manifest matches the real build).
+        from build_ipl_loader_g5 import build_ipl_loader_g5_rom as build_g5  # noqa: E402
+        out1 = self.out / "norm-a"
+        out2 = self.out / "norm-b"
+        rom1, _ = build_g5(ORIGINAL, out1, SEL, "debug", "normpub",
+                           ["-D", "IPL_PUBLIC"])
+        rom2, _ = build_g5(ORIGINAL, out2, SEL, "debug", "normpub",
+                           ["-D", "IPL_PUBLIC=1"])
+        self.assertEqual(rom1.read_bytes(), rom2.read_bytes())
+        for out in (out1, out2):
+            manifest = json.loads((out / "manifest-normpub-g5.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["ipl_format"], "public")
+            self.assertIn("PUBLIC-IPL-FORMAT", manifest["status"])
+            self.assertEqual(manifest["defines"], ["-D", "IPL_PUBLIC"])
+
+    def test_dev_build_manifest_matches_real_build(self):
+        # defines=[] keeps the existing DEV contract and classifies as DEV.
+        from build_ipl_loader_g5 import build_ipl_loader_g5_rom as build_g5  # noqa: E402
+        out = self.out / "norm-dev"
+        rom, _ = build_g5(ORIGINAL, out, SEL, "debug", "normdev", [])
+        self.assertEqual(len(rom.read_bytes()), IMAGE_BYTES)
+        manifest = json.loads((out / "manifest-normdev-g5.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["ipl_format"], "dev")
+        self.assertIn("DEV-IPL-FORMAT", manifest["status"])
+        self.assertEqual(manifest["defines"], [])
 
     def test_rejects_tampered_base(self):
         from build_ipl_loader_g5 import build_ipl_loader_g5_rom as build_g5  # noqa: E402
@@ -456,6 +527,40 @@ class IplLoaderG5OutputSafetyTest(unittest.TestCase):
         rom2, _ = self.build(self.fake_base, out, SEL, "debug", self.VARIANT)
         self.assertEqual(rom2.read_bytes(), rom1.read_bytes())
         self.assertEqual(hashlib.sha256(rom2.read_bytes()).hexdigest(), sha1)
+
+    def test_failed_verification_leaves_no_rom(self):
+        # MEDIUM-2: the final image is verified in memory before any disk
+        # write. Force the API-area check to fail and prove that no .pce,
+        # manifest or trace labels are published (RED on code that writes
+        # the ROM first and verifies afterwards).
+        from unittest import mock
+        out = self.work / "romfail-fresh"
+        with mock.patch("build_ipl_loader_g5.unified_api_windows", return_value=set()):
+            with self.assertRaises(ValueError):
+                self.build(self.fake_base, out, SEL, "debug", self.VARIANT)
+        for leaf in (f"dev-ipl-loader-g5-not-compatible-{self.VARIANT}.pce",
+                     f"manifest-{self.VARIANT}-g5.json",
+                     f"trace-labels-{self.VARIANT}-g5.txt"):
+            self.assertFalse((out / leaf).exists(),
+                             f"{leaf} must not be published when verification fails")
+
+    def test_failed_verification_preserves_existing_rom(self):
+        # MEDIUM-2: a failed rebuild must not destroy the previous good
+        # ROM/manifest/trace labels.
+        from unittest import mock
+        out = self.work / "romfail-keep"
+        rom1, _ = self.build(self.fake_base, out, SEL, "debug", self.VARIANT)
+        self.assertTrue(rom1.is_file())
+        finals = (f"dev-ipl-loader-g5-not-compatible-{self.VARIANT}.pce",
+                  f"manifest-{self.VARIANT}-g5.json",
+                  f"trace-labels-{self.VARIANT}-g5.txt")
+        before = {name: (out / name).read_bytes() for name in finals}
+        with mock.patch("build_ipl_loader_g5.unified_api_windows", return_value=set()):
+            with self.assertRaises(ValueError):
+                self.build(self.fake_base, out, SEL, "debug", self.VARIANT)
+        for name in finals:
+            self.assertEqual((out / name).read_bytes(), before[name],
+                             f"{name} must survive a failed rebuild")
 
 
 if __name__ == "__main__":
