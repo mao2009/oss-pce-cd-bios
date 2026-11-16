@@ -32,10 +32,10 @@ geargrafx_experimental_track_contract judges (imported, not duplicated).
 
 NOT a compatible System Card BIOS. NOT an ABI claim. Genuine ABI stays
 UNKNOWN/BLOCKED. release_eligible=False, DEV_CALLABLE 0, reference JSR 0/81,
-ABI VERIFIED 0/81. Commercial media: ./rom/*.cue auto-detect only; zero cues
--> NOT_RUN. Any cue present -> BLOCKED (no commercial boot path exists; media
-never opened, read, or published: status and count only, never bytes/hashes/
-paths/traces).
+ABI VERIFIED 0/81. Commercial media: never probed. This test is
+synthetic-only with no commercial opt-in, so ./rom is never checked, listed,
+or opened; the commercial evidence entry is always a fixed NOT_RUN record
+(no names, paths, hashes, or counts).
 """
 import copy
 import json
@@ -344,29 +344,13 @@ class DevG5ProfileRealCoreTests(unittest.TestCase):
 
     @classmethod
     def _commercial_status(cls):
-        try:
-            import commercial_media as CM
-        except ImportError as error:
-            return {"status": "BLOCKED", "reason": f"BLOCKED: commercial detector unavailable ({error})"}
-        try:
-            rom_dir = CM.resolve_rom_dir(ROOT)
-        except ValueError as error:
-            return {"status": "BLOCKED", "reason": str(error)[:200]}
-        try:
-            cues = CM.detect_cue_files(rom_dir)
-        except ValueError as error:
-            message = str(error)
-            if message.startswith("NOT_RUN"):
-                return {"status": "NOT_RUN",
-                        "reason": "./rom carries no CUE; synthetic media only"}
-            return {"status": "BLOCKED", "reason": message[:200]}
-        if not cues:
-            return {"status": "NOT_RUN",
-                    "reason": "./rom carries no CUE; synthetic media only"}
-        return {"status": "BLOCKED",
-                "reason": ("commercial medium present but the G5 image has no "
-                           "commercial boot path; synthetic-only runs"),
-                "cue_count": len(cues)}
+        # Synthetic-only test with no commercial opt-in: ./rom is never
+        # checked, listed, or opened. resolve_rom_dir / detect_cue_files
+        # must not be called; the record carries no names, paths, or hashes.
+        return {
+            "status": "NOT_RUN",
+            "reason": "Commercial media not requested; synthetic-only test",
+        }
 
     def check_boot_path(self, case_name):
         """Scenario 1: RESET executes the IPL (never an instant stop loop)."""
@@ -640,16 +624,53 @@ class DevG5ProfileRealCoreTests(unittest.TestCase):
             M.verify_d_rom_slot_targets(exp, manifest2)
 
     def test_commercial_media_is_not_run(self):
-        status = self.evidence["commercial"]["status"]
-        self.assertIn(status, ("NOT_RUN", "BLOCKED"))
+        self.assertEqual(self.evidence["commercial"],
+                         {"status": "NOT_RUN",
+                          "reason": "Commercial media not requested; synthetic-only test"})
         blob = json.dumps(self.evidence["commercial"])
         self.assertNotIn(".cue", blob)
         self.assertNotIn(".CUE", blob)
         self.assertNotRegex(blob, r"[0-9a-f]{64}")
         self.assertNotRegex(blob, r"[A-Za-z]:\\|/home/|/Users/")
-        if status == "NOT_RUN":
-            self.assertEqual(self.evidence["commercial"]["reason"],
-                             "./rom carries no CUE; synthetic media only")
+
+
+class CommercialProbeRefusalTests(unittest.TestCase):
+    """R1: the G5 profile test never probes commercial media (no opt-in exists).
+
+    Runs without the real core: it calls the pure `_commercial_status`
+    classmethod with a tripwire `commercial_media` module and asserts zero
+    detector calls. RED against any implementation that resolves or
+    enumerates ./rom; the real ./rom is never touched here.
+    """
+
+    FIXED_REASON = "Commercial media not requested; synthetic-only test"
+
+    def test_commercial_status_never_probes(self):
+        import sys
+        from unittest.mock import Mock
+        tripwire = Mock(name="commercial_media")
+        tripwire.resolve_rom_dir.side_effect = AssertionError(
+            "R1: resolve_rom_dir must not be called")
+        tripwire.detect_cue_files.side_effect = AssertionError(
+            "R1: detect_cue_files must not be called")
+        saved = sys.modules.get("commercial_media")
+        sys.modules["commercial_media"] = tripwire
+        try:
+            status = DevG5ProfileRealCoreTests._commercial_status()
+        finally:
+            if saved is None:
+                sys.modules.pop("commercial_media", None)
+            else:
+                sys.modules["commercial_media"] = saved
+        self.assertEqual(tripwire.resolve_rom_dir.call_count, 0)
+        self.assertEqual(tripwire.detect_cue_files.call_count, 0)
+        self.assertEqual(status, {"status": "NOT_RUN", "reason": self.FIXED_REASON})
+        blob = json.dumps(status)
+        self.assertNotIn(".cue", blob)
+        self.assertNotIn(".CUE", blob)
+        self.assertNotIn("./rom", blob)
+        self.assertNotRegex(blob, r"[0-9a-f]{64}")
+        self.assertNotRegex(blob, r"[A-Za-z]:\\|/home/|/Users/")
 
 
 if __name__ == "__main__":

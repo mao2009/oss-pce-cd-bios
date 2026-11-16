@@ -7,6 +7,7 @@ claims genuine ABI compatibility.
 """
 import hashlib
 import json
+import os
 import re
 import sys
 import tempfile
@@ -251,6 +252,169 @@ class DevG5ProfileHostTests(unittest.TestCase):
                 build_dev_g5.run_profile(out, "debug")
             self.assertEqual((out / "media" / "mounted" / "user-placed.txt").read_text(),
                              "do not touch")
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "OS symlink not supported")
+    def test_snapshot_symlinks_refused_fail_closed(self):
+        # R2: snapshot reuse must not follow symlinks. RED against the old
+        # is_dir()/is_file() check, which tracks links and reuses them.
+        import shutil
+        from tools.make_cd_image import BIN_NAME, CUE_NAME
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            out = folder / "bios-dev-g5"
+            first = build_dev_g5.run_profile(out, "debug")
+            first_bytes = first.read_bytes()
+            # Baseline: a second consecutive build succeeds with identical ROM SHA.
+            self.assertEqual(build_dev_g5.run_profile(out, "debug").read_bytes(),
+                             first_bytes)
+            media = out / "media"
+            mounted = media / "mounted"
+            rom_name = build_dev_g5.G5_ROM_NAME
+
+            def rebuild_refused():
+                with self.assertRaisesRegex(ValueError, "refusing to replace unknown content"):
+                    build_dev_g5.run_profile(out, "debug")
+                # Fail-closed: the G5 ROM is untouched by the refused rebuild.
+                self.assertEqual((out / rom_name).read_bytes(), first_bytes)
+
+            # (a) mounted itself is a symlink to an external identical copy.
+            external = folder / "external"
+            external.mkdir()
+            shutil.copy2(media / CUE_NAME, external / CUE_NAME)
+            shutil.copy2(media / BIN_NAME, external / BIN_NAME)
+            (external / "do-not-touch.txt").write_text("external")
+            ext_snapshot = {p.name: p.read_bytes() for p in sorted(external.iterdir())}
+            shutil.rmtree(mounted)
+            mounted.symlink_to(external, target_is_directory=True)
+            rebuild_refused()
+            # The symlink is left in place and the link target is unchanged.
+            self.assertTrue(mounted.is_symlink())
+            self.assertEqual({p.name: p.read_bytes() for p in sorted(external.iterdir())},
+                             ext_snapshot)
+            # Restoring the genuine snapshot rebuilds to identical bytes.
+            mounted.unlink()
+            self.assertEqual(build_dev_g5.run_profile(out, "debug").read_bytes(),
+                             first_bytes)
+
+            # (b) the CUE entry is a symlink (identical content).
+            real_cue = mounted / CUE_NAME
+            cue_bytes = real_cue.read_bytes()
+            cue_copy = folder / "cue-copy"
+            cue_copy.write_bytes(cue_bytes)
+            real_cue.unlink()
+            real_cue.symlink_to(cue_copy)
+            rebuild_refused()
+            self.assertTrue(real_cue.is_symlink())
+            self.assertEqual(cue_copy.read_bytes(), cue_bytes)
+            real_cue.unlink()
+            real_cue.write_bytes(cue_bytes)
+            self.assertEqual(build_dev_g5.run_profile(out, "debug").read_bytes(),
+                             first_bytes)
+
+            # (c) the BIN entry is a symlink (identical content).
+            real_bin = mounted / BIN_NAME
+            bin_bytes = real_bin.read_bytes()
+            bin_copy = folder / "bin-copy"
+            bin_copy.write_bytes(bin_bytes)
+            real_bin.unlink()
+            real_bin.symlink_to(bin_copy)
+            rebuild_refused()
+            self.assertTrue(real_bin.is_symlink())
+            self.assertEqual(bin_copy.read_bytes(), bin_bytes)
+            real_bin.unlink()
+            real_bin.write_bytes(bin_bytes)
+            self.assertEqual(build_dev_g5.run_profile(out, "debug").read_bytes(),
+                             first_bytes)
+
+            # (d) corrupt content is refused and never repaired or deleted.
+            raw = bytearray(real_bin.read_bytes())
+            raw[100] ^= 0xFF
+            real_bin.write_bytes(bytes(raw))
+            rebuild_refused()
+            self.assertEqual(real_bin.read_bytes(), bytes(raw))
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "OS symlink not supported")
+    def test_media_symlink_refused_before_writes(self):
+        # R2: a symlinked media directory is refused before build_image
+        # writes through it. RED against the old code, which builds first.
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            out = folder / "bios-dev-g5"
+            out.mkdir()
+            ext_media = folder / "ext-media"
+            ext_media.mkdir()
+            (ext_media / "do-not-touch.txt").write_text("external")
+            (out / "media").symlink_to(ext_media, target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, "plain directory"):
+                build_dev_g5.run_profile(out, "debug")
+            self.assertEqual(sorted(p.name for p in ext_media.iterdir()),
+                             ["do-not-touch.txt"])
+            self.assertEqual((ext_media / "do-not-touch.txt").read_text(), "external")
+
+    def test_run_profile_refuses_normal_dev_dir_before_writes(self):
+        # R3: an output equal to the normal DEV ROM directory is refused
+        # before mkdir/build/build_image cause any side effect. RED against
+        # the old run_profile(), which wrote first and refused later.
+        import os
+        from unittest.mock import patch
+        normal = (build_rom.ROOT / "build" / "debug" / "bios-dev").resolve()
+
+        def snapshot(directory):
+            if not directory.is_dir():
+                return None
+            return (sorted(p.name for p in directory.iterdir()),
+                    {p.name: p.read_bytes() for p in directory.iterdir() if p.is_file()})
+
+        before = snapshot(normal)
+        variants = [
+            normal,
+            normal / "." / ".." / "bios-dev",
+            Path(os.path.join(str(normal), ".", "..", "bios-dev")),
+        ]
+        for variant in variants:
+            with patch.object(build_dev_g5, "build") as mock_build, \
+                    patch.object(build_dev_g5, "build_image") as mock_image:
+                with self.assertRaisesRegex(ValueError,
+                                             "must not be the normal DEV ROM directory"):
+                    build_dev_g5.run_profile(variant, "debug")
+            # Refused before build()/build_image() were ever reached.
+            mock_build.assert_not_called()
+            mock_image.assert_not_called()
+        if before is None:
+            self.assertFalse(normal.exists(),
+                             "refused run must not create the normal DEV directory")
+        else:
+            # Existing entries byte-identical, no new files/dirs added.
+            self.assertEqual(snapshot(normal), before)
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "OS symlink not supported")
+    def test_run_profile_refuses_symlinked_normal_dev_dir(self):
+        # R3: a symlink pointing at the normal DEV ROM directory is the
+        # same conflict after resolution, and is refused before any writes.
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as tmp:
+            # The canonical directory must exist so the link resolves to it.
+            normal = build_rom.ROOT / "build" / "debug" / "bios-dev"
+            normal.mkdir(parents=True, exist_ok=True)
+            marker = normal / ".r3-probe"
+            marker.write_bytes(b"probe")
+            try:
+                before = (sorted(p.name for p in normal.iterdir()),
+                          {p.name: p.read_bytes() for p in normal.iterdir() if p.is_file()})
+                link = Path(tmp) / "dev-link"
+                link.symlink_to(normal, target_is_directory=True)
+                with patch.object(build_dev_g5, "build") as mock_build, \
+                        patch.object(build_dev_g5, "build_image") as mock_image:
+                    with self.assertRaisesRegex(ValueError,
+                                                 "must not be the normal DEV ROM directory"):
+                        build_dev_g5.run_profile(link, "debug")
+                mock_build.assert_not_called()
+                mock_image.assert_not_called()
+                self.assertEqual((sorted(p.name for p in normal.iterdir()),
+                                  {p.name: p.read_bytes() for p in normal.iterdir()
+                                   if p.is_file()}), before)
+            finally:
+                marker.unlink(missing_ok=True)
 
     def test_rejects_tampered_base(self):
         tampered = self.folder / "tampered-base"

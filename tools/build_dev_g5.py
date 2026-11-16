@@ -20,6 +20,7 @@ import argparse
 import hashlib
 import json
 import os
+import stat
 import subprocess
 import sys
 import tempfile
@@ -41,6 +42,38 @@ else:
 G5_PROFILE_ID = "g5-experimental"
 G5_ROM_NAME = "dev-g5-experimental-not-compatible.pce"
 EXIT_OK, EXIT_ERROR = 0, 2
+
+
+def _lstat_kind(path):
+    """Classify `path` without following symlinks.
+
+    Returns "dir"/"file" for genuine directories/files, "symlink" for any
+    link (even one pointing at a dir/file), "other" for special nodes, and
+    None when the path is missing or cannot be stated. `Path.is_dir()` and
+    `Path.is_file()` follow symlinks, so they must not be used to approve a
+    reusable snapshot.
+    """
+    try:
+        mode = os.lstat(path).st_mode
+    except OSError:
+        return None
+    if stat.S_ISLNK(mode):
+        return "symlink"
+    if stat.S_ISDIR(mode):
+        return "dir"
+    if stat.S_ISREG(mode):
+        return "file"
+    return "other"
+
+
+def _same_directory(first, second):
+    """True when both paths name the same directory.
+
+    Symlinks are resolved and "."/".." segments normalized, so a relative
+    spelling or a link pointing at the guarded directory still matches.
+    """
+    return (os.path.normcase(os.path.realpath(first))
+            == os.path.normcase(os.path.realpath(second)))
 
 
 def build_g5_dev_rom(base_path: Path, output: Path, mode: str = "debug", cue: Path | None = None,
@@ -116,10 +149,20 @@ def run_profile(output: Path, mode: str = "debug", cue: Path | None = None) -> P
     payloads) should call build_g5_dev_rom directly instead.
     """
     output = Path(output)
+    # R3: refuse a conflicting output before any filesystem writes, so the
+    # normal DEV ROM directory can never gain side effects from a refused
+    # run. build_g5_dev_rom() keeps its own identical guard (double safety).
+    if _same_directory(output, ROOT / "build" / mode / "bios-dev"):
+        raise ValueError("G5 profile output must not be the normal DEV ROM directory "
+                         "(it would replace the normal DEV manifest)")
     output.mkdir(parents=True, exist_ok=True)
     base = build(ROOT / "build" / mode / "bios-dev", mode, root=ROOT)
     if cue is None:
         media = output / "media"
+        # R2: never generate media through a symlinked directory.
+        if os.path.lexists(media) and _lstat_kind(media) != "dir":
+            raise ValueError(f"G5 media directory {media} is not a plain directory; "
+                             "refusing to write through it")
         build_image(media)
         pay_dir = output / "payload-build"
         payload_code, _ = build_experimental_payload(pay_dir, mode)
@@ -140,23 +183,32 @@ def run_profile(output: Path, mode: str = "debug", cue: Path | None = None) -> P
         disc_manifest["user_data_sha256"] = users
         disc_manifest_path.write_text(json.dumps(disc_manifest, indent=2, sort_keys=True) + "\n")
         # Idempotent rebuilds: reuse the previous snapshot only when it is
-        # byte-identical to the freshly prepared source. Anything else (user
-        # content, partial/corrupt snapshot) is refused, never deleted.
+        # byte-identical to the freshly prepared source. Anything else
+        # (symlinks, user content, partial/corrupt snapshot) is refused
+        # fail-closed, never deleted or overwritten. lstat (never follows
+        # links) decides reusability; is_dir()/is_file() would track a
+        # symlink into a foreign directory and must not be used here.
         mounted = media / "mounted"
-        if mounted.exists():
+        if os.path.lexists(mounted):
             try:
-                same = (mounted.is_dir()
-                        and (mounted / CUE_NAME).is_file()
-                        and (mounted / BIN_NAME).is_file()
-                        and (mounted / CUE_NAME).read_bytes() == (media / CUE_NAME).read_bytes()
-                        and (mounted / BIN_NAME).read_bytes() == (media / BIN_NAME).read_bytes()
-                        and sorted(p.name for p in mounted.iterdir()) == sorted([BIN_NAME, CUE_NAME]))
+                reason = None
+                if _lstat_kind(mounted) != "dir":
+                    reason = f"{mounted} is not a plain directory (symlinks refused)"
+                elif _lstat_kind(mounted / CUE_NAME) != "file":
+                    reason = f"{mounted / CUE_NAME} is not a plain file (symlinks refused)"
+                elif _lstat_kind(mounted / BIN_NAME) != "file":
+                    reason = f"{mounted / BIN_NAME} is not a plain file (symlinks refused)"
+                elif sorted(p.name for p in mounted.iterdir()) != sorted([BIN_NAME, CUE_NAME]):
+                    reason = f"{mounted} does not contain exactly the generated snapshot"
+                elif ((mounted / CUE_NAME).read_bytes() != (media / CUE_NAME).read_bytes()
+                        or (mounted / BIN_NAME).read_bytes() != (media / BIN_NAME).read_bytes()):
+                    reason = f"{mounted} is not the generated identical snapshot"
+                if reason is not None:
+                    raise ValueError(f"media snapshot {mounted} is not the generated identical "
+                                     f"snapshot ({reason}); refusing to replace unknown content")
+                cue = mounted / CUE_NAME
             except OSError as error:
                 raise ValueError(f"cannot verify the existing media snapshot: {error}") from error
-            if not same:
-                raise ValueError(f"media snapshot {mounted} is not the generated identical "
-                                 "snapshot; refusing to replace unknown content")
-            cue = mounted / CUE_NAME
         else:
             cue = snapshot_media(media / CUE_NAME, mounted)
         selected = selection_from_cue(cue, cue)
