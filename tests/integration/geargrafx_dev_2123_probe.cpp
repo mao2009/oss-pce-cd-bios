@@ -4,12 +4,15 @@
 //   order 0 = 21->23, 1 = 23->21. Both calls go through the API table
 //   (0xE000+3*N). MPR0/SP/X/Y are seeded once; the second call runs
 //   without re-seeding so a missing restore in the first call is visible.
+// X/Y are recorded immediately after EACH call (x1/y1, x2/y2) so a
+// first-call clobber that the second call accidentally repairs is RED.
 #include "geargrafx_core.h"
 #include "input.h"
 #include "media.h"
 #include "memory.h"
 #include "huc6280.h"
 #include "huc6270.h"
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -18,17 +21,26 @@
 
 static void dummy_clock(void*, u32) {}
 
+// Strict numeric parsing: empty input, no digits, trailing characters,
+// out-of-range values and ERANGE are all rejected, never silently clamped.
+static bool parse_arg(const char* s, long* out, int base, long lo, long hi) {
+    if (s == nullptr || *s == '\0') return false;
+    errno = 0;
+    char* end = nullptr;
+    long v = std::strtol(s, &end, base);
+    if (errno == ERANGE || end == s || end == nullptr || *end != '\0') return false;
+    if (v < lo || v > hi) return false;
+    *out = v;
+    return true;
+}
+
 int main(int argc, char** argv) {
     if (argc != 7) { fprintf(stderr, "argc want 7 got %d\n", argc); return 2; }
-    char* end = nullptr;
-    long steps = std::strtol(argv[3], &end, 10);
-    if (!end || *end || steps < 1 || steps > 8192) { fprintf(stderr, "steps\n"); return 2; }
-    long keymask = std::strtol(argv[4], &end, 0);
-    if (!end || *end || keymask < 0 || keymask > 255) { fprintf(stderr, "keymask\n"); return 2; }
-    long lo = std::strtol(argv[5], &end, 0);
-    if (!end || *end || lo < 0 || lo > 255) { fprintf(stderr, "lo\n"); return 2; }
-    long order = std::strtol(argv[6], &end, 10);
-    if (!end || *end || (order != 0 && order != 1)) { fprintf(stderr, "order\n"); return 2; }
+    long steps = 0, keymask = 0, lo = 0, order = 0;
+    if (!parse_arg(argv[3], &steps, 10, 1, 8192)) { fprintf(stderr, "steps\n"); return 2; }
+    if (!parse_arg(argv[4], &keymask, 0, 0, 255)) { fprintf(stderr, "keymask\n"); return 2; }
+    if (!parse_arg(argv[5], &lo, 0, 0, 255)) { fprintf(stderr, "lo\n"); return 2; }
+    if (!parse_arg(argv[6], &order, 10, 0, 1)) { fprintf(stderr, "order\n"); return 2; }
     std::ifstream input(argv[1], std::ios::binary);
     std::vector<u8> rom((std::istreambuf_iterator<char>(input)), {});
     if (rom.size() != 0x40000) { fprintf(stderr, "size %zu\n", rom.size()); return 3; }
@@ -36,6 +48,8 @@ int main(int argc, char** argv) {
     const u16 e21 = 0xE000 + 3 * 0x21;
     const u16 e23 = 0xE000 + 3 * 0x23;
     const u16 store = 0x2200;
+    // Per-call record: A,P,SP,MPR0,X,Y (6 bytes). Call 1 at store+0,
+    // call 2 at store+6, final X/Y/SP/MPR0 at store+12..15, tmpX at +16.
     std::vector<u8> code;
     auto emit8 = [&](u8 b){ code.push_back(b); };
     auto emit16 = [&](u16 w){ code.push_back((u8)(w & 0xFF)); code.push_back((u8)(w >> 8)); };
@@ -44,7 +58,7 @@ int main(int argc, char** argv) {
     emit8(0xA2); emit8(0xFF); emit8(0x9A);
     emit8(0xA9); emit8(0xF8); emit8(0x53); emit8(0x01);
     emit8(0xA2); emit8(0x5A); emit8(0xA0); emit8(0xA5);
-    const u16 tmpX = store + 12;
+    const u16 tmpX = store + 16;
     auto emit_call = [&](u16 entry, u8 aset, u16 base) {
         emit8(0xA9); emit8(aset);
         emit8(0x20); emit16(entry);
@@ -52,6 +66,10 @@ int main(int argc, char** argv) {
         emit8(0x8D); emit16(base);
         emit8(0x68);
         emit8(0x8D); emit16(base+1);
+        // X/Y are intact here (only A/P touched above), so record them
+        // before the TSX-based SP capture below clobbers X.
+        emit8(0x8E); emit16(base+4);
+        emit8(0x8C); emit16(base+5);
         // preserve X across TSX-based SP capture via tmpX
         emit8(0x8E); emit16(tmpX);
         emit8(0xBA);
@@ -62,15 +80,15 @@ int main(int argc, char** argv) {
     };
     if (order == 0) {
         emit_call(e21, 0xC3, store);
-        emit_call(e23, (u8)lo, store+4);
+        emit_call(e23, (u8)lo, store+6);
     } else {
         emit_call(e23, (u8)lo, store);
-        emit_call(e21, 0xC3, store+4);
+        emit_call(e21, 0xC3, store+6);
     }
-    emit8(0x8E); emit16(store+8);
-    emit8(0x8C); emit16(store+9);
-    emit8(0xBA); emit8(0x8E); emit16(store+10);
-    emit8(0x43); emit8(0x01); emit8(0x8D); emit16(store+11);
+    emit8(0x8E); emit16(store+12);
+    emit8(0x8C); emit16(store+13);
+    emit8(0xBA); emit8(0x8E); emit16(store+14);
+    emit8(0x43); emit8(0x01); emit8(0x8D); emit16(store+15);
     const u16 halt = (u16)(reset + (u32)code.size());
     code.push_back(0x80); code.push_back(0xFE);
     if (reset < 0xE000 || (u32)reset + (u32)code.size() > 0xFFF6u) { fprintf(stderr, "reset\n"); return 3; }
@@ -108,9 +126,11 @@ int main(int argc, char** argv) {
     HuC6270::HuC6270_State* vs = core.GetHuC6270_1()->GetState();
     unsigned vdc_ar = *vs->AR;
     unsigned vdc_r9 = vs->R[9];
-    std::printf("RESULT {\"pc\":%u,\"sp\":%u,\"mpr\":[%u,%u,%u,%u,%u,%u,%u,%u],\"a1\":%u,\"p1\":%u,\"sp1\":%u,\"mpr1\":%u,\"a2\":%u,\"p2\":%u,\"sp2\":%u,\"mpr2\":%u,\"x\":%u,\"y\":%u,\"sp_f\":%u,\"mpr_f\":%u,\"halt\":%u,\"vdc_ar\":%u,\"vdc_r9\":%u,\"order\":%ld}\n",
+    std::printf("RESULT {\"pc\":%u,\"sp\":%u,\"mpr\":[%u,%u,%u,%u,%u,%u,%u,%u],\"a1\":%u,\"p1\":%u,\"sp1\":%u,\"mpr1\":%u,\"x1\":%u,\"y1\":%u,\"a2\":%u,\"p2\":%u,\"sp2\":%u,\"mpr2\":%u,\"x2\":%u,\"y2\":%u,\"x\":%u,\"y\":%u,\"sp_f\":%u,\"mpr_f\":%u,\"halt\":%u,\"vdc_ar\":%u,\"vdc_r9\":%u,\"order\":%ld}\n",
         st->PC->GetValue(), st->S->GetValue(),
         mem->GetMpr(0),mem->GetMpr(1),mem->GetMpr(2),mem->GetMpr(3),mem->GetMpr(4),mem->GetMpr(5),mem->GetMpr(6),mem->GetMpr(7),
-        wram[0], wram[1], wram[2], wram[3], wram[4], wram[5], wram[6], wram[7], wram[8], wram[9], wram[10], wram[11], halt, vdc_ar, vdc_r9, order);
+        wram[0], wram[1], wram[2], wram[3], wram[4], wram[5],
+        wram[6], wram[7], wram[8], wram[9], wram[10], wram[11],
+        wram[12], wram[13], wram[14], wram[15], halt, vdc_ar, vdc_r9, order);
     return 0;
 }

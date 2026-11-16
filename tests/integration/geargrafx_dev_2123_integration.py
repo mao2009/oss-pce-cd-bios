@@ -6,14 +6,19 @@ Genuine ABI UNKNOWN/UNVERIFIED. release_eligible: false.
 Proves on the SAME DEV ROM via the real API table (E063/E069):
 - both overrides present, callable in either order (21->23 and 23->21)
 - MPR0 restored to F8 after each call (no reseed between calls)
-- X/Y/SP preserved across both calls
+- X/Y/SP preserved after EACH call (x1/y1, x2/y2), not just at the end,
+  so a first-call clobber repaired by the second call is still RED
 - JOYSNS real I/O result correct regardless of order
 - SCRSIZ real VDC MWR write correct regardless of order
 - no cross-API state carry that breaks either contract
+- all 8 runs execute the same verified snapshot bytes: the input ROM is
+  read once, verified, frozen into a read-only temp snapshot, re-verified
+  on read-back, and only the snapshot path reaches the probes
 Synthetic only. Pinned cc65/Geargrafx.
 """
 import argparse
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -28,8 +33,40 @@ import geargrafx_api as api  # noqa: E402
 GG_KEY_I, GG_KEY_II, GG_KEY_SELECT, GG_KEY_RUN = 0x01, 0x02, 0x04, 0x08
 GG_KEY_UP, GG_KEY_RIGHT, GG_KEY_DOWN, GG_KEY_LEFT = 0x10, 0x20, 0x40, 0x80
 
+SNAPSHOT_NAME = "verified-dev-rom.pce"
+
+
 def compile_probe(folder):
     return api.compile_probe(folder, source_name="geargrafx_dev_2123_probe.cpp", target_name="geargrafx-dev-2123-probe")
+
+
+def write_verified_snapshot(data: bytes, folder: Path, name: str = SNAPSHOT_NAME) -> Path:
+    """Freeze verified ROM bytes into the temp dir. Best-effort read-only.
+
+    The read-back comparison in load_verified_snapshot is the real gate;
+    read-only is defense in depth so a stray writer fails loudly.
+    """
+    snap = folder / name
+    snap.write_bytes(data)
+    try:
+        os.chmod(snap, 0o444)
+    except OSError:
+        pass
+    return snap
+
+
+def load_verified_snapshot(snap: Path, expected: bytes) -> bytes:
+    """Fail closed unless the snapshot is byte-identical to the verified input.
+
+    Every read-back passes verify_dev_rom (independent rebuild comparison)
+    before any probe may consume it. Returns the snapshot bytes.
+    """
+    actual = snap.read_bytes()
+    if actual != expected:
+        raise ValueError("BLOCKED: snapshot bytes differ from the verified input")
+    verify_dev_rom(actual)
+    return actual
+
 
 def run_case(probe, rom, cue, keymask, lo, order, steps=4096):
     r = subprocess.run([str(probe), str(rom), str(cue), str(steps), str(keymask), str(lo), str(order)],
@@ -38,6 +75,7 @@ def run_case(probe, rom, cue, keymask, lo, order, steps=4096):
         if line.startswith("RESULT "):
             return json.loads(line[7:])
     raise ValueError("no RESULT line: " + r.stderr[-2000:])
+
 
 def expected_a(keymask):
     dir_bits = 0x0F
@@ -52,12 +90,14 @@ def expected_a(keymask):
     if keymask & GG_KEY_RUN: btn_bits &= ~0x08
     return (dir_bits << 4) | btn_bits
 
+
 CASES = [
     ("no-input-11", 0, 0x11),
     ("run-31", GG_KEY_RUN, 0x31),
     ("up-left-run-5a", GG_KEY_UP | GG_KEY_LEFT | GG_KEY_RUN, 0x5A),
     ("all-dirs-ff", GG_KEY_UP | GG_KEY_RIGHT | GG_KEY_DOWN | GG_KEY_LEFT, 0xFF),
 ]
+
 
 def check_one(res, keymask, lo, order, label):
     errs = []
@@ -78,10 +118,16 @@ def check_one(res, keymask, lo, order, label):
         errs.append(label + ": VDC R9=0x%04X want=0x%04X" % (vdc_r9 & 0xFFFF, lo & 0xFF))
     if vdc_ar != 9:
         errs.append(label + ": VDC AR=%d want=9" % vdc_ar)
+    # Per-call X/Y: each call must preserve the presets on its own. A
+    # first-call clobber that the second call repairs is still a failure.
+    for tag in ("x1", "y1", "x2", "y2"):
+        want = 0x5A if tag.startswith("x") else 0xA5
+        if res[tag] != want:
+            errs.append(label + ": %s=%d want=%d after its call" % (tag, res[tag], want))
     xv = res["x"]
     yv = res["y"]
     if xv != 0x5A or yv != 0xA5:
-        errs.append(label + ": X/Y not preserved %d/%d" % (xv, yv))
+        errs.append(label + ": final X/Y not preserved %d/%d" % (xv, yv))
     for k in ("sp1", "sp2", "sp_f", "sp"):
         if res[k] != 0xFF:
             errs.append(label + ": %s=%d want=255" % (k, res[k]))
@@ -92,6 +138,7 @@ def check_one(res, keymask, lo, order, label):
     if mpr[0] != 0xF8 or mpr[1] != 0xF8:
         errs.append(label + ": MPR=%s want F8/F8" % (mpr,))
     return errs
+
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
@@ -104,13 +151,19 @@ def main():
         (folder / "d.bin").write_bytes(bytes(2352 * 32))
         cue = folder / "d.cue"
         cue.write_text("FILE \"d.bin\" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n")
+        # Freeze the verified bytes: every probe below runs the snapshot,
+        # never the original path (which could change after verification).
+        snap = write_verified_snapshot(data, folder)
+        snapshot_bytes = load_verified_snapshot(snap, data)
+        if snapshot_bytes != data:
+            raise ValueError("BLOCKED: snapshot mismatch after re-verification")
         probe = compile_probe(folder)
         failures = []
         for name, mask, lo in CASES:
             for order in (0, 1):
                 label = "%s-o%d" % (name, order)
                 try:
-                    res = run_case(probe, args.rom.resolve(), cue.resolve(), mask, lo, order)
+                    res = run_case(probe, snap.resolve(), cue.resolve(), mask, lo, order)
                 except Exception as e:
                     failures.append(label + ": probe error %s" % e)
                     continue
@@ -119,7 +172,8 @@ def main():
             for f in failures:
                 print("FAIL " + f, file=sys.stderr)
             raise SystemExit(1)
-        print("PASS EX_JOYSNS+EX_SCRSIZ DEV sequential: %d cases x 2 orders, same-ROM table calls, MPR0/X/Y/SP preserved, real I/O + VDC verified (DEV_EXPERIMENTAL, not ABI)" % len(CASES))
+        print("PASS EX_JOYSNS+EX_SCRSIZ DEV sequential: %d cases x 2 orders on one verified snapshot, table calls, MPR0/X/Y/SP preserved per call, real I/O + VDC verified (DEV_EXPERIMENTAL, not ABI)" % len(CASES))
+
 
 if __name__ == "__main__":
     main()
