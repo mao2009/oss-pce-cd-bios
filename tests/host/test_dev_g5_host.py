@@ -188,6 +188,21 @@ class DevG5ProfileHostTests(unittest.TestCase):
             self.assertEqual(disc_manifest["user_data_sha256"][0],
                              hashlib.sha256(sector0).hexdigest())
 
+    def test_rebuild_refuses_foreign_snapshot_content(self):
+        import hashlib
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "bios-dev-g5"
+            first = build_dev_g5.run_profile(out, "debug")
+            first_bytes = first.read_bytes()
+            # A rebuild reuses the identical snapshot (same ROM bytes).
+            self.assertEqual(build_dev_g5.run_profile(out, "debug").read_bytes(), first_bytes)
+            # Unknown content in the snapshot directory is refused, never deleted.
+            (out / "media" / "mounted" / "user-placed.txt").write_text("do not touch")
+            with self.assertRaisesRegex(ValueError, "refusing to replace unknown content"):
+                build_dev_g5.run_profile(out, "debug")
+            self.assertEqual((out / "media" / "mounted" / "user-placed.txt").read_text(),
+                             "do not touch")
+
     def test_rejects_tampered_base(self):
         tampered = self.folder / "tampered-base"
         tampered.mkdir(exist_ok=True)

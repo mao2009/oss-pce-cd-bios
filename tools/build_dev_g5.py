@@ -20,7 +20,6 @@ import argparse
 import hashlib
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -140,12 +139,26 @@ def run_profile(output: Path, mode: str = "debug", cue: Path | None = None) -> P
             final_bin[0 * RAW_BYTES + USER_OFFSET:0 * RAW_BYTES + USER_OFFSET + 2048]).hexdigest()
         disc_manifest["user_data_sha256"] = users
         disc_manifest_path.write_text(json.dumps(disc_manifest, indent=2, sort_keys=True) + "\n")
-        # Idempotent rebuilds: the previous generated snapshot is our own
-        # deterministic artifact, so replace it instead of failing.
+        # Idempotent rebuilds: reuse the previous snapshot only when it is
+        # byte-identical to the freshly prepared source. Anything else (user
+        # content, partial/corrupt snapshot) is refused, never deleted.
         mounted = media / "mounted"
         if mounted.exists():
-            shutil.rmtree(mounted)
-        cue = snapshot_media(media / CUE_NAME, mounted)
+            try:
+                same = (mounted.is_dir()
+                        and (mounted / CUE_NAME).is_file()
+                        and (mounted / BIN_NAME).is_file()
+                        and (mounted / CUE_NAME).read_bytes() == (media / CUE_NAME).read_bytes()
+                        and (mounted / BIN_NAME).read_bytes() == (media / BIN_NAME).read_bytes()
+                        and sorted(p.name for p in mounted.iterdir()) == sorted([BIN_NAME, CUE_NAME]))
+            except OSError as error:
+                raise ValueError(f"cannot verify the existing media snapshot: {error}") from error
+            if not same:
+                raise ValueError(f"media snapshot {mounted} is not the generated identical "
+                                 "snapshot; refusing to replace unknown content")
+            cue = mounted / CUE_NAME
+        else:
+            cue = snapshot_media(media / CUE_NAME, mounted)
         selected = selection_from_cue(cue, cue)
         if selected["lba"] != 0 or selected["track"] != 1:
             raise ValueError(f"generated G5 media has unexpected selection: {selected}")
