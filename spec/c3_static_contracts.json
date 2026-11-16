@@ -83,6 +83,7 @@
       "src/cd_read_probe.s",
       "src/cd_reset_probe.s",
       "src/cdda_probe.s",
+      "src/ipl_loader_g5_glue.s",
       "src/startup_probe.s"
     ],
     "fixture_reasons": {
@@ -95,7 +96,8 @@
       "src/cd_read_probe.s": "development-only CD-ROM2 sector-read diagnostic (#5)",
       "src/cd_reset_probe.s": "development-only CD-ROM2 bus-reset diagnostic (#10)",
       "src/cdda_probe.s": "development-only CD-DA observation diagnostic (#15)",
-      "src/startup_probe.s": "development-only System Card startup checkpoint (#4)"
+      "src/startup_probe.s": "development-only System Card startup checkpoint (#4)",
+      "src/ipl_loader_g5_glue.s": "experimental-only XSEL selection + EX_DSPOFF slot33 wrapper for the PUBLIC IPL loader G5 image (Issue #800); never linked into the normal/production BIOS, not firmware code"
     }
   },
   "files": {
