@@ -487,8 +487,25 @@ def main() -> int:
     parser.add_argument('--mode', default=os.environ.get('MODE', 'debug'))
     parser.add_argument('--release-gate', action='store_true')
     parser.add_argument('--check-source', action='store_true')
+    parser.add_argument('--profile', default='dev', choices=('dev', 'g5-experimental'),
+                        help='dev: normal DEV ROM (default, byte-identical); '
+                             'g5-experimental: G5 DEV profile (Issue #798, thin wrapper over '
+                             'tools/build_dev_g5.py; normal DEV ROM rebuilt untouched)')
+    parser.add_argument('--cue', type=Path, default=None,
+                        help='g5-experimental only: the exact synthetic CUE to mount '
+                             '(must embed the default payload); omitted: deterministic '
+                             'media is generated under <output>/media')
     args = parser.parse_args()
     try:
+        if args.profile == 'g5-experimental':
+            if args.release_gate or args.check_source:
+                raise ValueError('--release-gate/--check-source apply to the dev profile only')
+            if __package__:
+                from .build_dev_g5 import run_profile
+            else:
+                from build_dev_g5 import run_profile
+            run_profile(args.output or ROOT / 'build' / args.mode / 'bios-dev-g5', args.mode, args.cue)
+            return EXIT_OK
         slots = load_slots()
         overridden = overrides()
         if args.release_gate:

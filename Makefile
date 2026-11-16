@@ -358,10 +358,19 @@ dev-bios-ipl-loader-integration: dev-rom
 .PHONY: api-unimplemented-integration
 api-unimplemented-integration: dev-rom
 	$(PYTHON) tests/integration/geargrafx_api_unimplemented.py --mode "$(MODE)"
+
+# Issue #798: G5 DEV profile (normal DEV 18 APIs + experimental $02/$03/$33 in one
+# image, RESET -> synthetic IPL -> API calls). Thin wrapper over
+# tools/build_experimental_bios_boot.py; NOT compatible, NOT a BIOS ABI.
+.PHONY: dev-g5 dev-g5-integration
+dev-g5: dev-rom
+	$(PYTHON) tools/build_rom.py --mode "$(MODE)" --profile g5-experimental
+dev-g5-integration: dev-rom
+	OSS_PCE_REQUIRE_CC65=1 $(PYTHON) -m unittest discover -s tests/integration -p test_dev_g5_profile.py -v
+.PHONY: api-entry-integration
 # Issue #635: direct API-entry observation (WRAM->BIOS JSR/JMP, slot, entry regs). Synthetic controls only.
 # Commercial runs are opt-in via --commercial in the same script (./rom/ auto-detection, 0 -> NOT_RUN) and are NOT in this target.
 # NOT in CI: workflow run steps are pinned by the trusted guard allowlist (needs a main-only change).
-.PHONY: api-entry-integration
 api-entry-integration: dev-rom
 	$(PYTHON) tests/integration/geargrafx_api_entry.py --mode "$(MODE)"
 # Issues #756/#758: DEV slot RETURNING experiments (SIMULATED conditional observation). Synthetic only.
