@@ -66,6 +66,32 @@ def _lstat_kind(path):
     return "other"
 
 
+def _refuse_symlink(path):
+    """Refuse a pre-planted symlink before generation writes through it.
+
+    Build outputs are regenerated deterministically, so a genuine rebuild
+    always finds plain files/dirs here; only a symlink is rejected. Call
+    before writing `path`, never after.
+    """
+    if os.path.lexists(path) and _lstat_kind(path) == "symlink":
+        raise ValueError(f"{path} is a symlink; refusing to write through it")
+
+
+def _refuse_symlink_children(directory):
+    """Refuse any symlink among the direct children of `directory`.
+
+    Used for staging directories whose generation leaves are recreated on
+    every run (no fixed leaf list to name); genuine rebuilds contain only
+    plain files/dirs.
+    """
+    if os.path.lexists(directory):
+        if _lstat_kind(directory) != "dir":
+            raise ValueError(f"{directory} is not a plain directory; "
+                             "refusing to write through it")
+        for child in sorted(directory.iterdir()):
+            _refuse_symlink(child)
+
+
 def _same_directory(first, second):
     """True when both paths name the same directory.
 
@@ -114,6 +140,12 @@ def build_g5_dev_rom(base_path: Path, output: Path, mode: str = "debug", cue: Pa
         trace_labels = (tmpdir / "trace-labels.txt").read_bytes()
     if len(rom_bytes) != IMAGE_BYTES:
         raise ValueError("G5 profile image is not 256 KiB")
+    # Final write targets are recreated on every build; a pre-planted
+    # symlink here would redirect the write into an external file, so
+    # refuse symlinks before writing any of them (genuine rebuilds hold
+    # plain files and are unaffected).
+    for leaf in (rom_name, "manifest.json", "trace-labels.txt"):
+        _refuse_symlink(output / leaf)
     target = output / rom_name
     target.write_bytes(rom_bytes)
     manifest["rom_name"] = rom_name
@@ -163,8 +195,16 @@ def run_profile(output: Path, mode: str = "debug", cue: Path | None = None) -> P
         if os.path.lexists(media) and _lstat_kind(media) != "dir":
             raise ValueError(f"G5 media directory {media} is not a plain directory; "
                              "refusing to write through it")
+        # CodeRabbit Major (r4584335925): build_image rewrites the CUE/BIN
+        # leaves and the disc manifest in place, so a pre-planted symlink
+        # there would redirect the write into an external file before any
+        # snapshot validation runs. Refuse symlinked leaves up front;
+        # genuine rebuilds hold plain files and are unaffected.
+        for leaf in (CUE_NAME, BIN_NAME, "disc-manifest.json"):
+            _refuse_symlink(media / leaf)
         build_image(media)
         pay_dir = output / "payload-build"
+        _refuse_symlink_children(pay_dir)
         payload_code, _ = build_experimental_payload(pay_dir, mode)
         raw = bytearray((media / BIN_NAME).read_bytes())
         raw[0 * RAW_BYTES + USER_OFFSET:0 * RAW_BYTES + USER_OFFSET + 2048] = encode_sector(0, payload_code)
@@ -217,6 +257,7 @@ def run_profile(output: Path, mode: str = "debug", cue: Path | None = None) -> P
     else:
         cue = Path(cue)
         pay_dir = output / "payload-build"
+        _refuse_symlink_children(pay_dir)
         payload_code, _ = build_experimental_payload(pay_dir, mode)
     return build_g5_dev_rom(base, output, mode, cue, payload_code)
 

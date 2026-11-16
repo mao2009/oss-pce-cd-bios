@@ -416,6 +416,61 @@ class DevG5ProfileHostTests(unittest.TestCase):
             finally:
                 marker.unlink(missing_ok=True)
 
+    @unittest.skipUnless(hasattr(os, "symlink"), "OS symlink not supported")
+    def test_media_leaf_symlink_refused_before_generation(self):
+        # CodeRabbit Major (r4584335925): a pre-planted symlink at a
+        # generated media leaf must be refused before build_image writes
+        # through it into an external file. RED on code that only checks
+        # the media directory itself.
+        from tools.make_cd_image import BIN_NAME
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            out = folder / "bios-dev-g5"
+            media = out / "media"
+            media.mkdir(parents=True)
+            sentinel = folder / "sentinel.bin"
+            sentinel.write_bytes(b"SENTINEL" * 256)
+            (media / BIN_NAME).symlink_to(sentinel)
+            with self.assertRaisesRegex(ValueError, "is a symlink"):
+                build_dev_g5.run_profile(out, "debug")
+            self.assertTrue((media / BIN_NAME).is_symlink())
+            self.assertEqual(sentinel.read_bytes(), b"SENTINEL" * 256)
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "OS symlink not supported")
+    def test_payload_leaf_symlink_refused_before_generation(self):
+        # Same class: a symlinked assembler output inside payload-build
+        # must be refused before ca65/ld65 write through it.
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            out = folder / "bios-dev-g5"
+            pay = out / "payload-build"
+            pay.mkdir(parents=True)
+            sentinel = folder / "sentinel.o"
+            sentinel.write_bytes(b"SENTINEL" * 128)
+            (pay / "cd_load_exec_payload.o").symlink_to(sentinel)
+            with self.assertRaisesRegex(ValueError, "is a symlink"):
+                build_dev_g5.run_profile(out, "debug")
+            self.assertTrue((pay / "cd_load_exec_payload.o").is_symlink())
+            self.assertEqual(sentinel.read_bytes(), b"SENTINEL" * 128)
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "OS symlink not supported")
+    def test_final_manifest_symlink_refused_before_writes(self):
+        # The G5 manifest / trace / ROM targets are recreated on every
+        # build; a pre-planted symlink there must be refused before any of
+        # them is written.
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            out = folder / "bios-dev-g5"
+            out.mkdir()
+            sentinel = folder / "sentinel.json"
+            sentinel.write_bytes(b'{"sentinel": true}')
+            (out / "manifest.json").symlink_to(sentinel)
+            with self.assertRaisesRegex(ValueError, "is a symlink"):
+                build_dev_g5.run_profile(out, "debug")
+            self.assertTrue((out / "manifest.json").is_symlink())
+            self.assertEqual(sentinel.read_bytes(), b'{"sentinel": true}')
+            self.assertFalse((out / build_dev_g5.G5_ROM_NAME).exists())
+
     def test_rejects_tampered_base(self):
         tampered = self.folder / "tampered-base"
         tampered.mkdir(exist_ok=True)
