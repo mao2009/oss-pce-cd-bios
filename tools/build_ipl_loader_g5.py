@@ -42,13 +42,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import stat
 import subprocess
 import sys
 from pathlib import Path
 
 if __package__:
-    from .build_rom import BANK_BYTES, IMAGE_BYTES, ROOT, assemble_api_objects, verify_dev_rom
+    from .build_rom import BANK_BYTES, IMAGE_BYTES, ROOT, assemble_api_objects, overrides, verify_dev_rom
     from .build_dev_ipl_loader_bios import LOADER_SOURCE, REQUIRED as LOADER_REQUIRED, parse_labels
     from .build_experimental_bios_boot import (
         SLOT02_PATCH_LEN,
@@ -59,7 +61,7 @@ if __package__:
     )
     from .environment import DEPENDENCIES, executable
 else:
-    from build_rom import BANK_BYTES, IMAGE_BYTES, ROOT, assemble_api_objects, verify_dev_rom
+    from build_rom import BANK_BYTES, IMAGE_BYTES, ROOT, assemble_api_objects, overrides, verify_dev_rom
     from build_dev_ipl_loader_bios import LOADER_SOURCE, REQUIRED as LOADER_REQUIRED, parse_labels
     from build_experimental_bios_boot import (
         SLOT02_PATCH_LEN,
@@ -86,6 +88,104 @@ ALL_LABELS = tuple(dict.fromkeys(list(LOADER_REQUIRED) + list(EXP_LABELS)))
 def api_windows_for(slot02_addr: int) -> set:
     """API-area file offsets allowed to differ (three patch windows). Pure."""
     return unified_api_windows(slot02_addr)
+
+
+# ---- Output safety (Issue #800 follow-up, PR #801 independent review) ----
+# Mirrors the PR #799 output-safety policy: lstat without following links,
+# refuse before any write, realpath same-directory comparison, no ancestor
+# checks (policy parity). Check-then-use cannot fully exclude a concurrent
+# writer swapping entries between the check and the write; callers must not
+# run concurrent builds into one output directory (same residual TOCTOU
+# limit as the documented ./rom handling).
+
+_VARIANT_RE = re.compile(r"[A-Za-z0-9_-]+")
+_VARIANT_MAX_LEN = 64
+
+
+def _lstat_kind(path):
+    """Classify `path` without following symlinks (copy of the PR #799 helper)."""
+    try:
+        mode = os.lstat(path).st_mode
+    except OSError:
+        return None
+    if stat.S_ISLNK(mode):
+        return "symlink"
+    if stat.S_ISDIR(mode):
+        return "dir"
+    if stat.S_ISREG(mode):
+        return "file"
+    return "other"
+
+
+def _refuse_symlink(path):
+    """Refuse a pre-planted symlink before generation writes through it."""
+    if os.path.lexists(path) and _lstat_kind(path) == "symlink":
+        raise ValueError(f"{path} is a symlink; refusing to write through it")
+
+
+def _same_directory(first, second):
+    """True when both paths name the same directory (symlinks resolved)."""
+    return (os.path.normcase(os.path.realpath(first))
+            == os.path.normcase(os.path.realpath(second)))
+
+
+def _refuse_unsafe_output_dir(output):
+    """Refuse a symlinked or non-directory output before mkdir (R1)."""
+    if os.path.lexists(output):
+        if _lstat_kind(output) == "symlink":
+            raise ValueError(f"{output} is a symlink; refusing to write through it")
+        if _lstat_kind(output) != "dir":
+            raise ValueError(f"{output} is not a plain directory; refusing to write into it")
+
+
+def _refuse_unsafe_variant(variant):
+    """Constrain variant to a safe single path component, checked before any write.
+
+    The variant is embedded in every generated filename, so anything but a
+    plain component could escape the output directory (absolute/traversal
+    paths) or collide with a generated leaf. Refuses empty/non-string names,
+    path separators, absolute/drive/UNC paths, dot names, NUL bytes, names
+    outside [A-Za-z0-9_-]+, and overlong names. "main", "t800" and
+    "t800rel" stay usable.
+    """
+    if type(variant) is not str or not variant:
+        raise ValueError(f"variant must be a non-empty string, got {variant!r}")
+    if "/" in variant or "\\" in variant:
+        raise ValueError(f"variant must be a single path component without directories: {variant!r}")
+    if variant in (".", ".."):
+        raise ValueError(f"variant must not be {variant!r}")
+    if "\x00" in variant:
+        raise ValueError("variant must not contain NUL bytes")
+    if os.path.isabs(variant) or re.match(r"[A-Za-z]:", variant) or variant.startswith("\\\\"):
+        raise ValueError(f"variant must not be an absolute or drive path: {variant!r}")
+    if len(variant) > _VARIANT_MAX_LEN:
+        raise ValueError(f"variant must be at most {_VARIANT_MAX_LEN} characters: {variant!r}")
+    if _VARIANT_RE.fullmatch(variant) is None:
+        raise ValueError(f"variant must match [A-Za-z0-9_-]+: {variant!r}")
+
+
+def _g5_leaf_names(variant: str) -> list:
+    """Every file build_ipl_loader_g5_rom may write into the output dir. Pure.
+
+    Covers assemble_api_objects() leaves (api_table.s, api_table.o,
+    per-override objects), the G5 objects, the linker bank/labels/map, the
+    rewritten bank0 cfg, the ROM image, the manifest and the trace labels.
+    A duplicate name fails closed (naming-scheme regression can never
+    silently alias two outputs).
+    """
+    ov = overrides(ROOT)
+    names = ["api_table.s", "api_table.o"]
+    names += [f"{ov[slot].stem}.o" for slot in sorted(ov)]
+    names += [f"cd_base_proto_{variant}.o", f"cd_read_link_{variant}.o",
+              f"ipl_loader_g5_glue_{variant}.o", f"ipl_loader_{variant}.o",
+              "bank0-ipl-loader-g5.cfg",
+              f"bank0-{variant}-g5.bin", f"ipl-loader-g5-{variant}.lbl",
+              f"ipl-loader-g5-{variant}.map",
+              f"{ROM_STEM}-{variant}.pce",
+              f"manifest-{variant}-g5.json", f"trace-labels-{variant}-g5.txt"]
+    if len(set(names)) != len(names):
+        raise ValueError(f"G5 leaf names collide for variant {variant!r}")
+    return names
 
 
 def bank0_cfg_text_g5(out: Path) -> Path:
@@ -195,6 +295,7 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
         raise ValueError("IPL_SEL must be a 16-bit INDEX 01 LBA (0x0000..0xFFFF)")
     if type(track) is not int or not 1 <= track <= 99:
         raise ValueError("EXP_SELECTED_TRACK must be 1..99")
+    _refuse_unsafe_variant(variant)
     if defines is None:
         defines = ["-D", "IPL_PUBLIC"]
     else:
@@ -211,6 +312,19 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
         if DEPENDENCIES["cc65"]["revision"][:9] not in version.stdout + version.stderr:
             raise ValueError("G5 IPL loader toolchain is not the pinned cc65 build")
     output = Path(output)
+    # R3: refuse the normal DEV ROM directory before any output write.
+    # Realpath comparison covers spelling variants, "..", relative paths
+    # and symlink aliases; the input ROM and its manifest are left untouched.
+    if _same_directory(output, Path(original_path).parent):
+        raise ValueError("G5 IPL loader output must not be the normal DEV ROM directory "
+                         "(it would replace the normal DEV manifest)")
+    # R1: refuse a symlinked or non-directory output before mkdir.
+    _refuse_unsafe_output_dir(output)
+    # R2: refuse symlinked generation leaves before the first write, so a
+    # refused rebuild never partially overwrites and genuine rebuilds (plain
+    # files) proceed. Covers assemble_api_objects() leaves too.
+    for leaf in _g5_leaf_names(variant):
+        _refuse_symlink(output / leaf)
     output.mkdir(parents=True, exist_ok=True)
     # Labels for the loader/proto/link/glue objects must survive in release
     # mode too: `reset`/`irq_stub`/etc. are local labels, and the pinned
@@ -288,12 +402,20 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
     at_4a = 3 * 0x4A
     if bytes(patched[at_4a:at_4a + 3]) != bytes(original[at_4a:at_4a + 3]):
         raise ValueError("$4A table entry changed; SIMULATED control must stay separate")
-    # Loader vectors + SEI contract (same as build_dev_ipl_loader_bios).
-    rom = output / f"{ROM_STEM}-{variant}.pce"
+    # Final write targets are recreated on every build; re-check them here
+    # in case an earlier stage planted a link (defense in depth; the R2
+    # pre-check above is the gate, this is a backstop).
+    rom_name = f"{ROM_STEM}-{variant}.pce"
+    manifest_name = f"manifest-{variant}-g5.json"
+    trace_name = f"trace-labels-{variant}-g5.txt"
+    for leaf in (rom_name, manifest_name, trace_name):
+        _refuse_symlink(output / leaf)
+    rom = output / rom_name
     rom.write_bytes(bytes(patched) + b"\xff" * (IMAGE_BYTES - BANK_BYTES))
     data = rom.read_bytes()
     if len(data) != IMAGE_BYTES or data[BANK_BYTES:] != b"\xff" * (IMAGE_BYTES - BANK_BYTES):
         raise ValueError("G5 image changed size or unused banks")
+    # Loader vectors + SEI contract (same as build_dev_ipl_loader_bios).
     for name in LOADER_REQUIRED:
         if name != "sig" and not 0xF000 <= symbols[name] < 0xFFF6:
             raise ValueError(f"loader symbol {name} at {symbols[name]:04x} outside $F000-$FFF5")
@@ -323,9 +445,9 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
     }
     manifest = g5_manifest(sel, track, mode, variant, defines, data, symbols,
                            link_labels, rom.name, private_input=private_input)
-    (output / f"manifest-{variant}-g5.json").write_text(
+    (output / manifest_name).write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n")
-    (output / f"trace-labels-{variant}-g5.txt").write_text(
+    (output / trace_name).write_text(
         "".join(f"{name} {value:04x}\n" for name, value in symbols.items()),
         encoding="ascii")
     return rom, symbols

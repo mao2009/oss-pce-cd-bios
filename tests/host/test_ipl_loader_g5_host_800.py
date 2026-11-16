@@ -23,6 +23,7 @@ Part B (new builder, RED before tools/build_ipl_loader_g5.py exists):
 """
 import hashlib
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -293,6 +294,168 @@ class IplLoaderG5BuilderTest(unittest.TestCase):
             else json.dumps({"rom_sha256": hashlib.sha256(self.normal).hexdigest()}))
         with self.assertRaises(ValueError):
             build_g5(bad, self.out / "bad2", SEL, "debug", "bad2")
+
+
+@requires_cc65
+class IplLoaderG5OutputSafetyTest(unittest.TestCase):
+    """R1-R3 + MEDIUM variant: output-symlink / leaf-symlink / normal-dir / variant guards.
+
+    Follow-up to Issue #800 (PR #801 review): mirrors the PR #799 output-safety
+    policy (lstat without following, refuse before any write, realpath
+    same-directory, no ancestor checks, documented TOCTOU limit). Every test
+    uses an isolated fake normal DEV ROM in a temp dir; the real build tree
+    and ./rom are never touched (commercial media: NOT_RUN, no probing).
+    """
+
+    VARIANT = "t800"
+
+    @classmethod
+    def setUpClass(cls):
+        from build_ipl_loader_g5 import build_ipl_loader_g5_rom  # noqa: E402
+        # staticmethod: a plain function stored as a class attribute would
+        # become a bound method via self.build (shifting every argument).
+        cls.build = staticmethod(build_ipl_loader_g5_rom)
+        tmp = tempfile.TemporaryDirectory(prefix="pce-800-g5safe-")
+        cls.addClassCleanup(tmp.cleanup)
+        cls.work = Path(tmp.name)
+        cls.fake_normal_dir = cls.work / "fakenormal"
+        cls.fake_base = build(cls.fake_normal_dir, root=ROOT)
+        cls.fake_normal = cls.fake_base.read_bytes()
+
+    def _sentinel_dir(self, name):
+        ext = self.work / name
+        ext.mkdir(exist_ok=True)
+        sentinel = ext / "sentinel.bin"
+        sentinel.write_bytes(b"SENTINEL-800:" + name.encode() + b":" + b"x" * 64)
+        return ext, sentinel
+
+    def _assert_untouched(self, ext, sentinel):
+        self.assertTrue(sentinel.is_file())
+        self.assertEqual(sentinel.read_bytes(),
+                         b"SENTINEL-800:" + ext.name.encode() + b":" + b"x" * 64)
+
+    def test_output_symlink_refused(self):
+        ext, sentinel = self._sentinel_dir("ext-out")
+        before_children = sorted(p.name for p in ext.iterdir())
+        link = self.work / "outlink"
+        link.symlink_to(ext, target_is_directory=True)
+        with self.assertRaises(ValueError):
+            self.build(self.fake_base, link, SEL, "debug", self.VARIANT)
+        self._assert_untouched(ext, sentinel)
+        self.assertEqual(sorted(p.name for p in ext.iterdir()), before_children)
+
+    def test_output_dangling_symlink_refused(self):
+        ext, sentinel = self._sentinel_dir("ext-dangle")
+        before_children = sorted(p.name for p in ext.iterdir())
+        link = self.work / "outdangle"
+        link.symlink_to(ext / "missing-target", target_is_directory=True)
+        self.assertFalse(link.exists())
+        self.assertTrue(os.path.lexists(link))
+        with self.assertRaises(ValueError):
+            self.build(self.fake_base, link, SEL, "debug", self.VARIANT)
+        self._assert_untouched(ext, sentinel)
+        self.assertEqual(sorted(p.name for p in ext.iterdir()), before_children)
+
+    def test_output_plain_file_refused(self):
+        blocker = self.work / "planfile"
+        blocker.write_bytes(b"BLOCKER")
+        with self.assertRaises((ValueError, OSError)):
+            self.build(self.fake_base, blocker, SEL, "debug", self.VARIANT)
+        self.assertEqual(blocker.read_bytes(), b"BLOCKER")
+
+    def test_pce_leaf_symlink_refused(self):
+        ext, sentinel = self._sentinel_dir("ext-pce")
+        out = self.work / "leaf-pce"
+        out.mkdir()
+        (out / f"dev-ipl-loader-g5-not-compatible-{self.VARIANT}.pce").symlink_to(sentinel)
+        with self.assertRaises(ValueError):
+            self.build(self.fake_base, out, SEL, "debug", self.VARIANT)
+        self._assert_untouched(ext, sentinel)
+
+    def test_manifest_and_trace_leaf_symlinks_refused(self):
+        for leaf in (f"manifest-{self.VARIANT}-g5.json",
+                     f"trace-labels-{self.VARIANT}-g5.txt"):
+            with self.subTest(leaf=leaf):
+                ext, sentinel = self._sentinel_dir(f"ext-{leaf[:12]}")
+                out = self.work / f"leaf-{leaf[:12]}"
+                out.mkdir()
+                (out / leaf).symlink_to(sentinel)
+                with self.assertRaises(ValueError):
+                    self.build(self.fake_base, out, SEL, "debug", self.VARIANT)
+                self._assert_untouched(ext, sentinel)
+
+    def test_intermediate_leaf_symlinks_refused(self):
+        leaves = (f"ipl_loader_{self.VARIANT}.o",
+                  f"bank0-{self.VARIANT}-g5.bin",
+                  f"ipl-loader-g5-{self.VARIANT}.lbl",
+                  f"cd_base_proto_{self.VARIANT}.o",
+                  "api_table.s",
+                  "api_table.o")
+        for i, leaf in enumerate(leaves):
+            with self.subTest(leaf=leaf):
+                ext, sentinel = self._sentinel_dir(f"ext-leafi-{i:02d}")
+                out = self.work / f"leaf-i-{i:02d}"
+                out.mkdir()
+                (out / leaf).symlink_to(sentinel)
+                with self.assertRaises(ValueError):
+                    self.build(self.fake_base, out, SEL, "debug", self.VARIANT)
+                self._assert_untouched(ext, sentinel)
+
+    def _snapshot_dir_files(self, directory):
+        return {p.name: p.read_bytes() for p in sorted(directory.iterdir())
+                if p.is_file()}
+
+    def test_normal_dev_dir_output_refused(self):
+        before = self._snapshot_dir_files(self.fake_normal_dir)
+        self.assertIn(self.fake_base.name, before)
+        with self.assertRaises(ValueError):
+            self.build(self.fake_base, self.fake_normal_dir, SEL, "debug", self.VARIANT)
+        self.assertEqual(self._snapshot_dir_files(self.fake_normal_dir), before)
+
+    def test_normal_dev_dir_spellings_refused(self):
+        before = self._snapshot_dir_files(self.fake_normal_dir)
+        spellings = [
+            self.fake_normal_dir / "." / ".." / self.fake_normal_dir.name,
+            self.fake_normal_dir / "sub" / "..",
+        ]
+        alias = self.work / "normalias"
+        alias.symlink_to(self.fake_normal_dir, target_is_directory=True)
+        spellings.append(alias)
+        for spelling in spellings:
+            with self.subTest(spelling=str(spelling)):
+                with self.assertRaises(ValueError):
+                    self.build(self.fake_base, spelling, SEL, "debug", self.VARIANT)
+        self.assertEqual(self._snapshot_dir_files(self.fake_normal_dir), before)
+        self.assertTrue(alias.is_symlink())
+
+    def test_unsafe_variants_refused_before_any_write(self):
+        bad = ["../outside", "a/b", "a\\b", "/tmp/outside.pce",
+               "C:\\outside", "C:/outside", "\\\\server\\share",
+               "", ".", "..", "bad\x00name", "manifest.json",
+               "trace-labels.txt", "x" * 65, "a b", ".hidden"]
+        for i, variant in enumerate(bad):
+            with self.subTest(variant=repr(variant)):
+                out = self.work / f"variant-{i:02d}"
+                with self.assertRaises(ValueError):
+                    self.build(self.fake_base, out, SEL, "debug", variant)
+                self.assertFalse(out.exists(),
+                                 f"refused variant {variant!r} must not create output")
+
+    def test_safe_variants_still_usable(self):
+        for variant in ("main", "t800", "t800rel"):
+            with self.subTest(variant=variant):
+                out = self.work / f"ok-{variant}"
+                rom, _syms = self.build(self.fake_base, out, SEL, "debug", variant)
+                self.assertTrue(rom.is_file())
+                self.assertEqual(len(rom.read_bytes()), IMAGE_BYTES)
+
+    def test_rebuild_in_place_is_stable(self):
+        out = self.work / "stable"
+        rom1, _ = self.build(self.fake_base, out, SEL, "debug", self.VARIANT)
+        sha1 = hashlib.sha256(rom1.read_bytes()).hexdigest()
+        rom2, _ = self.build(self.fake_base, out, SEL, "debug", self.VARIANT)
+        self.assertEqual(rom2.read_bytes(), rom1.read_bytes())
+        self.assertEqual(hashlib.sha256(rom2.read_bytes()).hexdigest(), sha1)
 
 
 if __name__ == "__main__":
