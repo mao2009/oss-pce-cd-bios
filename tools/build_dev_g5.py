@@ -86,7 +86,7 @@ def build_g5_dev_rom(base_path: Path, output: Path, mode: str = "debug", cue: Pa
     manifest["rom_name"] = rom_name
     manifest["g5_profile"] = {
         "profile": G5_PROFILE_ID,
-        "normal_dev_rom": str(base_path),
+        "normal_dev_rom": base_path.name,
         "normal_dev_rom_sha256": hashlib.sha256(base_bytes).hexdigest(),
         "normal_dev_overrides": len(overrides(ROOT)),
         "experimental_slots": ["$02", "$03", "$33"],

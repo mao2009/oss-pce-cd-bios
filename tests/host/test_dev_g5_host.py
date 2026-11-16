@@ -7,6 +7,7 @@ claims genuine ABI compatibility.
 """
 import hashlib
 import json
+import re
 import sys
 import tempfile
 import unittest
@@ -150,6 +151,54 @@ class DevG5ProfileHostTests(unittest.TestCase):
         self.assertEqual(profile["reference_jsr"], "0/81")
         self.assertEqual(profile["abi_verified"], "0/81")
         self.assertFalse(profile["release_eligible"])
+
+    def test_g5_manifest_normal_dev_rom_has_no_local_path(self):
+        # Regression for CodeRabbit Minor (discussion_r4583010764): the G5
+        # manifest must not leak the local checkout path via normal_dev_rom.
+        # RED on the old `str(base_path)` implementation, GREEN on `base_path.name`.
+        profile = self.manifest["g5_profile"]
+        expected = self.normal_path.name
+        self.assertEqual(profile["normal_dev_rom"], expected)
+        value = profile["normal_dev_rom"]
+        self.assertFalse(Path(value).is_absolute(),
+                         f"normal_dev_rom must not be absolute: {value!r}")
+        self.assertNotIn("/", value, "normal_dev_rom must be a basename, not a path")
+        self.assertNotIn("\\", value, "normal_dev_rom must be a basename, not a path")
+        self.assertNotIn("/home/", value)
+        self.assertNotIn("/Users/", value)
+        self.assertIsNone(re.search(r"[A-Za-z]:[\\/]", value),
+                           f"normal_dev_rom must not contain a Windows drive path: {value!r}")
+        # G5-added metadata as a whole must not embed the local work directory.
+        blob = json.dumps(profile, sort_keys=True)
+        for leaked in (str(self.folder), str(self.base_dir), str(self.out)):
+            self.assertNotIn(leaked, blob,
+                             f"G5 metadata leaks local directory {leaked!r}")
+        self.assertNotIn("/home/", blob)
+        self.assertNotIn("/Users/", blob)
+        self.assertIsNone(re.search(r"[A-Za-z]:[\\/]", blob),
+                           "G5 metadata must not contain a Windows drive path")
+
+    def test_g5_manifest_sha_and_gates_preserved(self):
+        # normal_dev_rom_sha256 unchanged, ROM bytes unchanged, gates kept.
+        profile = self.manifest["g5_profile"]
+        self.assertEqual(profile["normal_dev_rom_sha256"],
+                         hashlib.sha256(self.normal).hexdigest())
+        self.assertEqual(self.manifest["rom_sha256"], hashlib.sha256(self.g5).hexdigest())
+        self.assertEqual(len(self.normal), build_rom.IMAGE_BYTES)
+        self.assertEqual(len(self.g5), build_rom.IMAGE_BYTES)
+        self.assertEqual(profile["normal_dev_overrides"], 18)
+        self.assertEqual(profile["normal_dev_overrides"], len(build_rom.overrides(ROOT)))
+        self.assertEqual(profile["experimental_slots"], ["$02", "$03", "$33"])
+        self.assertFalse(profile["release_eligible"])
+        self.assertFalse(profile["dev_callable"])
+        self.assertFalse(self.manifest["release_eligible"])
+        self.assertFalse(self.manifest["dev_callable"])
+        # Existing g5_profile key structure is preserved.
+        for key in ("profile", "normal_dev_rom", "normal_dev_rom_sha256",
+                    "normal_dev_overrides", "experimental_slots", "entry",
+                    "synthetic_only", "reference_jsr", "abi_verified",
+                    "dev_callable", "release_eligible", "genuine_abi"):
+            self.assertIn(key, profile, f"g5_profile lost key {key!r}")
 
     def test_rejects_cue_without_payload(self):
         from tools import make_cd_image
