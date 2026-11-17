@@ -71,9 +71,32 @@ DIAG_SUFFIX = "-4a-sim"
 SLOT_4A = 0x4A
 TABLE_ENTRY_4A = 0xE000 + 3 * SLOT_4A  # $E0DE (issue statement)
 
+# MAJOR-1: every file assemble_stub_bytes() may write into the output dir.
+# Checked with lstat (no symlink following) BEFORE stub generation starts;
+# a single bad leaf refuses the whole build. Plain files stay usable (the
+# assembler overwrites them on rebuild). Check-then-use cannot exclude a
+# concurrent writer swapping entries between the check and the assembler
+# run; callers must not share one output directory between concurrent builds
+# (same residual TOCTOU limit as the documented ./rom handling and the
+# existing G5 leaf pre-checks).
+_STUB_LEAVES = ("slot02_return_stub.o", "slot02_return_stub.cfg",
+                 "slot02_return_stub.bin")
+
 
 def _g5_trace_path(output: Path, variant: str) -> Path:
     return output / f"ipl-loader-g5-{variant}.lbl"
+
+
+def _refuse_stub_leaves(output: Path) -> None:
+    """Refuse symlinked stub-generation leaves before the assembler runs.
+
+    MAJOR-1: lstat-based, no symlink following (dangling symlinks refuse
+    the same way: os.path.lexists is true and lstat reports symlink).
+    Raises before any ca65/ld65/file write when any of the three leaves is
+    a symlink. Plain files and absent paths pass (normal rebuild contract).
+    """
+    for leaf in _STUB_LEAVES:
+        _refuse_symlink(output / leaf)
 
 
 def build_ipl_loader_g5_4a_simulated(
@@ -121,6 +144,9 @@ def build_ipl_loader_g5_4a_simulated(
     want_table = bytes((0x4C, slot_addr & 0xFF, (slot_addr >> 8) & 0xFF))
     if bytes(std_data[tab_off:tab_off + 3]) != want_table:
         raise ValueError("BLOCKED: $4A table entry is not JMP api_slot_4A (unexpected G5 layout)")
+    # MAJOR-1: refuse symlinked stub-generation leaves BEFORE the assembler
+    # runs (lstat-based; plain-file rebuilds still pass).
+    _refuse_stub_leaves(output)
     # Assemble the SIMULATED stub (RTS-first, side-effect-free, fits 5 bytes).
     stub = assemble_stub_bytes(output, mode)
     off, before, after = patch_preview(std_data, SLOT_4A, slot_addr, unimpl_addr, stub)
@@ -138,15 +164,22 @@ def build_ipl_loader_g5_4a_simulated(
         raise ValueError("BLOCKED: diagnostic moved the vectors")
     if len(patched) != IMAGE_BYTES or patched[BANK_BYTES:] != b"\xff" * (IMAGE_BYTES - BANK_BYTES):
         raise ValueError("BLOCKED: diagnostic changed image size/unused banks")
-    # Separate file; never overwrite the standard ROM.
+    # Separate files; never overwrite the standard ROM. MEDIUM-1: inspect
+    # BOTH final outputs BEFORE the first publish, so a bad manifest path
+    # can never leave an orphan diagnostic ROM behind. The manifest content
+    # is built and validated in memory before the ROM is published.
     diag_name = f"{ROM_STEM}-{diag_variant}.pce"
     diag_rom = output / diag_name
     if diag_rom == std_rom:
         raise ValueError("BLOCKED: diagnostic name collides with standard ROM")
+    man_name = f"manifest-{diag_variant}.json"
+    man_path = output / man_name
     _refuse_symlink(diag_rom)
+    _refuse_symlink(man_path)
     if diag_rom.exists():
         raise ValueError("BLOCKED: diagnostic ROM already exists (no overwrite)")
-    _atomic_write(diag_rom, patched)
+    if man_path.exists():
+        raise ValueError("BLOCKED: diagnostic manifest already exists (no overwrite)")
     diag_info = {
         "status": "DIAGNOSTIC-SIMULATED-$4A-ONLY-not-compatible-not-a-bios-abi",
         "standard_rom": std_rom.name,
@@ -168,10 +201,22 @@ def build_ipl_loader_g5_4a_simulated(
         "abi_verified": "0/81",
         "private_media_used": bool(private_input),
     }
-    man_name = f"manifest-{diag_variant}-4a-sim.json"
-    _refuse_symlink(output / man_name)
-    _atomic_write(output / man_name,
-                  (json.dumps(diag_info, indent=2, sort_keys=True) + "\n").encode("utf-8"))
+    man_bytes = (json.dumps(diag_info, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    # Publish via temp + os.replace (no truncation of previous files). Each
+    # file is complete-or-absent; multi-file atomicity across the ROM +
+    # manifest pair is NOT guaranteed (a crash between the two writes can
+    # leave a mixed set). If the manifest publish fails, remove the orphan
+    # diagnostic ROM published just above so a manifest-less image is never
+    # left behind; the pre-existing standard ROM is never touched.
+    _atomic_write(diag_rom, patched)
+    try:
+        _atomic_write(man_path, man_bytes)
+    except BaseException:
+        try:
+            diag_rom.unlink()
+        except OSError:
+            pass
+        raise
     return std_rom, diag_rom, std_syms, diag_info
 
 
