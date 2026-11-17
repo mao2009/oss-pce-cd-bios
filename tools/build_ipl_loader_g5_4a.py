@@ -42,6 +42,7 @@ if __package__:
     from .build_ipl_loader_g5 import (
         ROM_STEM,
         _atomic_write,
+        _g5_leaf_names,
         _refuse_symlink,
         _refuse_unsafe_variant,
         build_ipl_loader_g5_rom,
@@ -57,6 +58,7 @@ else:
     from build_ipl_loader_g5 import (
         ROM_STEM,
         _atomic_write,
+        _g5_leaf_names,
         _refuse_symlink,
         _refuse_unsafe_variant,
         build_ipl_loader_g5_rom,
@@ -120,6 +122,18 @@ def build_ipl_loader_g5_4a_simulated(
     if mode not in ("debug", "release"):
         raise ValueError("MODE must be debug or release")
     _refuse_unsafe_variant(variant)
+    # MAJOR: the diagnostic namespace owns the reserved suffix. An input
+    # variant already ending with it (e.g. variant="probe-4a-sim" after a
+    # variant="probe" diagnostic) would make this run's STANDARD outputs
+    # collide with a previous run's DIAGNOSTIC outputs
+    # ("{ROM_STEM}-probe-4a-sim.pce"), letting the standard builder
+    # overwrite an existing diagnostic ROM/manifest pair. Refuse before any
+    # build output is written. This also covers nested names such as
+    # "probe-4a-sim-4a-sim". Safe variants ("main", "probe", "t4a") pass.
+    if variant.endswith(DIAG_SUFFIX):
+        raise ValueError(
+            f"BLOCKED: variant {variant!r} uses the reserved diagnostic suffix"
+            f" {DIAG_SUFFIX!r}")
     diag_variant = f"{variant}{DIAG_SUFFIX}"
     _refuse_unsafe_variant(diag_variant)
     output = Path(output)
@@ -133,12 +147,23 @@ def build_ipl_loader_g5_4a_simulated(
     # "manifest-{variant}-4a-sim.json".
     _pre_diag_rom = output / f"{ROM_STEM}-{diag_variant}.pce"
     _pre_man_path = output / f"manifest-{diag_variant}.json"
+    # The diagnostic outputs must not coincide with any standard G5 leaf
+    # for this variant (naming contract; pure check, no I/O).
+    _std_leaves = set(_g5_leaf_names(variant))
+    if _pre_diag_rom.name in _std_leaves or _pre_man_path.name in _std_leaves:
+        raise ValueError("BLOCKED: diagnostic output collides with a standard G5 leaf")
     _refuse_symlink(_pre_diag_rom)
     _refuse_symlink(_pre_man_path)
     if _pre_diag_rom.exists():
         raise ValueError("BLOCKED: diagnostic ROM already exists (no overwrite)")
     if _pre_man_path.exists():
         raise ValueError("BLOCKED: diagnostic manifest already exists (no overwrite)")
+    # MEDIUM: pre-check the stub-generation leaves BEFORE the standard
+    # builder runs, so a symlinked stub refuses without replacing the
+    # control ROM/manifest/trace. The identical check is repeated just
+    # before assembly as defense in depth (same non-parallel-build TOCTOU
+    # note as above).
+    _refuse_stub_leaves(output)
     # Build + verify the STANDARD G5 image first (no diagnostic without it).
     std_rom, std_syms = build_ipl_loader_g5_rom(
         original_path, output, sel, mode, variant, defines, track,
@@ -162,8 +187,8 @@ def build_ipl_loader_g5_4a_simulated(
     want_table = bytes((0x4C, slot_addr & 0xFF, (slot_addr >> 8) & 0xFF))
     if bytes(std_data[tab_off:tab_off + 3]) != want_table:
         raise ValueError("BLOCKED: $4A table entry is not JMP api_slot_4A (unexpected G5 layout)")
-    # MAJOR-1: refuse symlinked stub-generation leaves BEFORE the assembler
-    # runs (lstat-based; plain-file rebuilds still pass).
+    # Re-check the stub-generation leaves just before assembly (defense in
+    # depth; lstat-based; plain-file rebuilds still pass).
     _refuse_stub_leaves(output)
     # Assemble the SIMULATED stub (RTS-first, side-effect-free, fits 5 bytes).
     stub = assemble_stub_bytes(output, mode)
