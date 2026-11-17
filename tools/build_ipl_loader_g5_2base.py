@@ -11,7 +11,7 @@ experimental real-processing bodies:
 
   slot $02: api_slot_02 fallback (5 bytes) -> JMP cd_base_2base_entry + NOPs
   slot $33: $E099 table entry -> JMP experimental_slot_33 (EX_DSPOFF fragment)
-  slot $03: $E009 table entry -> JMP cd_read_link_entry (CD_READ link V1)
+  slot $03: $E009 table entry -> JMP cd_read_commercial_entry (CD_READ commercial V1, FIRST mode)
 
 Reuses (no large new builder, no logic duplication):
   - tools/build_dev_ipl_loader_bios.py: loader source, bank0 CODE/VECT layout,
@@ -21,7 +21,7 @@ Reuses (no large new builder, no logic duplication):
     and unified_api_windows (API-area diff must be exactly the three windows).
   - tools/build_rom.py: assemble_api_objects (normal DEV 18 overrides,
     byte-identical) + verify_dev_rom (tamper refusal).
-  - src/cd_base_2base.s, src/cd_read_link.s (BOOT segment). Separate variant from proto.
+  - src/cd_base_2base.s, src/cd_read_commercial.s (BOOT segment). Separate variant from proto/link V1.
   - src/ipl_loader_g5_glue.s (new, tiny): XSEL selection record (same layout
     as experimental_bios_boot.s, for the proto's INDEX01 comparison) +
     experimental_slot_33 wrapper (.include ex_dspoff.s, single source).
@@ -75,12 +75,12 @@ else:
 
 GLUE_SOURCE = ROOT / "src" / "ipl_loader_g5_glue.s"
 PROTO_SOURCE = ROOT / "src" / "cd_base_2base.s"
-LINK_SOURCE = ROOT / "src" / "cd_read_link.s"
+LINK_SOURCE = ROOT / "src" / "cd_read_commercial.s"
 BANK0_CFG = ROOT / "src" / "bank0.cfg"
 
 ROM_STEM = "dev-ipl-loader-g5-not-compatible"
 EXP_LABELS = ("api_slot_02", "api_unimplemented", "cd_base_2base_entry",
-              "api_slot_03", "cd_read_link_entry",
+              "api_slot_03", "cd_read_commercial_entry",
               "api_slot_33", "experimental_slot_33",
               "experimental_selection")
 ALL_LABELS = tuple(dict.fromkeys(list(LOADER_REQUIRED) + list(EXP_LABELS)))
@@ -213,7 +213,7 @@ def _g5_leaf_names(variant: str) -> list:
     ov = overrides(ROOT)
     names = ["api_table.s", "api_table.o"]
     names += [f"{ov[slot].stem}.o" for slot in sorted(ov)]
-    names += [f"cd_base_2base_{variant}.o", f"cd_read_link_{variant}.o",
+    names += [f"cd_base_2base_{variant}.o", f"cd_read_commercial_{variant}.o",
               f"ipl_loader_g5_glue_{variant}.o", f"ipl_loader_{variant}.o",
               "bank0-ipl-loader-g5.cfg",
               f"bank0-{variant}-g5.bin", f"ipl-loader-g5-{variant}.lbl",
@@ -311,7 +311,7 @@ def g5_manifest(sel: int, track: int, mode: str, variant: str, defines: list,
         "rom_sha256": hashlib.sha256(data).hexdigest(), "rom_bytes": IMAGE_BYTES,
         "loader_source": "tests/integration/ipl_loader_rom.s (unchanged, Issue #670)",
         "glue_source": "src/ipl_loader_g5_glue.s (Issue #800, XSEL + slot33 wrapper)",
-        "experimental_sources": ["src/cd_base_2base.s", "src/cd_read_link.s",
+        "experimental_sources": ["src/cd_base_2base.s", "src/cd_read_commercial.s",
                                  "src/ex_dspoff.s (via glue, single source)"],
         "defines": list(defines), "symbols": dict(symbols), "labels": dict(link_labels),
         "pinned_cc65": DEPENDENCIES["cc65"]["revision"],
@@ -438,7 +438,7 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
     patched = _redirect_slot33_to_body(
         patched, symbols["api_slot_33"], symbols["experimental_slot_33"])
     patched = _redirect_slot03_to_link(
-        patched, symbols["api_slot_03"], symbols["cd_read_link_entry"])
+        patched, symbols["api_slot_03"], symbols["cd_read_commercial_entry"])
     slot02_addr = symbols["api_slot_02"]
     allowed = unified_api_windows(slot02_addr)
     api_diff = [i for i in range(0x1000) if bytes(patched)[i] != original[i]]
@@ -461,7 +461,7 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
     if bytes(patched[3 * 0x33:3 * 0x33 + 3]) != \
             bytes((0x4C, slot33_body & 0xFF, (slot33_body >> 8) & 0xFF)):
         raise ValueError("slot-$33 window is not the expected JMP body")
-    link_entry = symbols["cd_read_link_entry"]
+    link_entry = symbols["cd_read_commercial_entry"]
     if bytes(patched[3 * 0x03:3 * 0x03 + 3]) != \
             bytes((0x4C, link_entry & 0xFF, (link_entry >> 8) & 0xFF)):
         raise ValueError("slot-$03 window is not the expected JMP link")
@@ -510,7 +510,7 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
         "api_unimplemented": symbols["api_unimplemented"],
         "cd_base_2base_entry": symbols["cd_base_2base_entry"],
         "experimental_slot_33": symbols["experimental_slot_33"],
-        "cd_read_link_entry": symbols["cd_read_link_entry"],
+        "cd_read_commercial_entry": symbols["cd_read_commercial_entry"],
         "experimental_selection": symbols["experimental_selection"],
         "slot_02_table_entry": 0xE000 + 3 * 0x02,
         "slot_03_table_entry": 0xE000 + 3 * 0x03,

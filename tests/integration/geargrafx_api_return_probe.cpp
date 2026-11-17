@@ -260,7 +260,28 @@ int main(int argc, char** argv) {
                     if (w[0xFE] < 0x20) base_hi_ok = "true";
                     else base_hi_ok = "false";
                 }
-                std::printf("APICALL {\"cycle\":\"%s\",\"step\":%ld,\"caller_pc\":%u,\"entry_pc\":%u,"
+
+                if (slot == 3 && memory->GetMpr(1) == 0xF8) {
+                    const u8* w3 = memory->GetWorkingRAM();
+                    unsigned dh = w3[0xFF];
+                    if (dh == 0x01) addr_mode = "LOCAL";
+                    else if (dh >= 0x02 && dh <= 0x06) addr_mode = "BANK";
+                    else if (dh == 0xFE || dh == 0xFF) addr_mode = "VRAM";
+                    else if (dh == 0x00) addr_mode = "ZERO";
+                    else addr_mode = "OTHER";
+                    unsigned sz_lo = w3[0xF8], sz_hi = w3[0xF9];
+                    unsigned sz = (sz_hi << 8) | sz_lo;
+                    if (sz == 0) cl_mode = "ZERO";
+                    else if (sz == 2048) cl_mode = "SINGLE";
+                    else cl_mode = "MULTI";
+                    unsigned da_lo = w3[0xFA], da_hi = w3[0xFB];
+                    unsigned da = (da_hi << 8) | da_lo;
+                    ch_mode = (da >= 0x2000 && da < 0x4000) ? "WRAM" : "OTHER";
+                    track_bcd = (sz > 0 && da >= 0x2000 && da + sz <= 0x4000) ? "true" : "false";
+                    reserved_z = (sz > 0 && ((da & 0x1FFF) + sz <= 0x2000)) ? "true" : "false";
+                    base_hi_ok = (sz > 0 && da >= 0x2000 && da + sz <= 0x4000 && !(da < 0x2410 && da + sz > 0x2400)) ? "true" : "false";
+                }
+                                std::printf("APICALL {\"cycle\":\"%s\",\"step\":%ld,\"caller_pc\":%u,\"entry_pc\":%u,"
                             "\"in_table\":%s,\"slot\":%u,\"sp_before\":%u,\"sp_after\":%u,\"sp_delta\":%u,"
                             "\"caller_a\":%u,\"caller_x\":%u,\"caller_y\":%u,\"caller_p\":%u,"
                             "\"stack_check\":\"%s\",\"return_matches_caller\":%s,\"st_last\":\"%s\",\"addr_mode\":\"%s\",\"cl_mode\":\"%s\",\"ch_mode\":\"%s\",\"track_bcd\":\"%s\",\"reserved_z\":\"%s\",\"base_hi_ok\":\"%s\",\"idr\":%u,\"irr\":%u,\"mpr\":[",
