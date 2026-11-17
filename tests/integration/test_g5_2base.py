@@ -2,7 +2,8 @@
 
 Covers: recbase0/1/BOTH/NONE + seed bootstrap, LBA/MSF/Track, BCD boundary,
 MSF oracle vectors (A-2), frame vectors (A-3), input preservation incl. _cl
-and legacy $20F2-$20F4 (A-1), NONE-first/SECOND-first seed negatives (A-6),
+and legacy $20F0-$20F7 plus full-window net-zero and the harness ZP alias
+contract (A-1/B-2), NONE-first/SECOND-first seed negatives (A-6),
 INDEX01 boundary, 21-bit range, cold/warm, MPR/SP, fail-closed invalids.
 """
 import re
@@ -22,13 +23,24 @@ class CdBase2BaseSynthetic(unittest.TestCase):
     def setUpClass(cls):
         from build_ipl_loader_g5_2base import build_ipl_loader_g5_rom, parse_labels
         from geargrafx_api import compile_probe
+        from unittest.mock import patch
+        import build_rom
         cls._tmp = tempfile.TemporaryDirectory(prefix="pce-2base-")
         cls.out = Path(cls._tmp.name)
         cls.sel = 0x109
         cls.track_sel = 2
+        # A-4: self-contained DEV ROM built from current sources into the
+        # private temp dir; never depend on a repo build/ tree (stale ROM
+        # could mask a source change; CI runs without `make dev-rom`).
+        dev_out = Path(cls._tmp.name) / "dev"
+        with patch("sys.argv", ["build_rom.py", "--mode", "debug",
+                                  "--output", str(dev_out)]):
+            assert build_rom.main() == 0
+        cls.dev_orig = dev_out / "dev-only-not-compatible-syscard3.pce"
+        assert cls.dev_orig.is_file()
         # Rebuild from current sources every fixture; never reuse a stale ROM.
         rom, _ = build_ipl_loader_g5_rom(
-            ROOT / "build" / "debug" / "bios-dev" / "dev-only-not-compatible-syscard3.pce",
+            cls.dev_orig,
             cls.out, cls.sel, "debug", "v2t", ["-D", "IPL_PUBLIC"],
             track=cls.track_sel, private_input=False)
         cls.rom = rom
@@ -68,6 +80,17 @@ class CdBase2BaseSynthetic(unittest.TestCase):
                " lda $20FA\n sta $2F8E\n lda $20FB\n sta $2F8F\n"
                " lda $20FC\n sta $2F90\n lda $20FD\n sta $2F91\n"
                " lda $20FE\n sta $2F92\n lda $20FF\n sta $2F93\n"
+               " lda $00F0\n sta $2F94\n lda $00F1\n sta $2F95\n"
+               " lda $00F2\n sta $2F96\n lda $00F3\n sta $2F97\n"
+               " lda $00F4\n sta $2F98\n lda $00F5\n sta $2F99\n"
+               " lda $00F6\n sta $2F9A\n lda $00F7\n sta $2F9B\n"
+               " lda $00F8\n sta $2F9C\n lda $00F9\n sta $2F9D\n"
+               " lda $00FA\n sta $2F9E\n lda $00FB\n sta $2F9F\n"
+               " lda $00FC\n sta $2FA0\n lda $00FD\n sta $2FA1\n"
+               " lda $20F0\n sta $2FA2\n lda $20F1\n sta $2FA3\n"
+               " lda $20F2\n sta $2FA4\n lda $20F3\n sta $2FA5\n"
+               " lda $20F4\n sta $2FA6\n lda $20F5\n sta $2FA7\n"
+               " lda $20F6\n sta $2FA8\n lda $20F7\n sta $2FA9\n"
                "payload_halt:\n bra payload_halt\n")
         o = self.out / name
         o.mkdir(exist_ok=True)
@@ -98,6 +121,20 @@ class CdBase2BaseSynthetic(unittest.TestCase):
         buf = bytes.fromhex(run["buffer_hex"])
         base = 0x780
         return list(buf[base:base + 20])
+
+    def _buf_zp(self, rec):
+        # Post-call zero-page window $00F0-$00FD (A-1 canary region).
+        run = [r for r in rec["RUN"] if r["cycle"] == "cold"][0]
+        buf = bytes.fromhex(run["buffer_hex"])
+        base = 0x780
+        return list(buf[base + 20:base + 34])
+
+    def _buf_lo(self, rec):
+        # Post-call $20F0-$20F7 (low half of the input window).
+        run = [r for r in rec["RUN"] if r["cycle"] == "cold"][0]
+        buf = bytes.fromhex(run["buffer_hex"])
+        base = 0x780
+        return list(buf[base + 34:base + 42])
 
     def test_recbase0_track_first(self):
         rec = self._run("v2t01", {0x20F8: 0x02, 0x20F9: 0, 0x20FA: 0, 0x20FB: 0x80,
@@ -251,6 +288,38 @@ class CdBase2BaseSynthetic(unittest.TestCase):
         self.assertEqual(len(rets), 1)
         self.assertEqual(calls[0]["mpr"], rets[0]["mpr"])
         self.assertEqual(rets[0]["sp_before"], rets[0]["sp_at_return"])
+
+    def test_full_window_preserved_msf(self):
+        # A-1/B-2: full 16-byte input window $20F0-$20FF is net-zero.
+        # TRACK/MSF math writes scratch that aliases $20F0-$20F4 in-harness,
+        # so legacy bytes are poked to 5A/conflicting values: without
+        # SAVE/RESTORE they come back as conversion residue (RED, proven by
+        # mutant); with the fix they come back intact (GREEN).
+        regs = {0x20F0: 0x50, 0x20F1: 0x51, 0x20F2: 0x5A, 0x20F3: 0x5A,
+                0x20F4: 0x5A, 0x20F5: 0x55, 0x20F6: 0x56, 0x20F7: 0x57,
+                0x20F8: 0x00, 0x20F9: 0x03, 0x20FA: 0x00, 0x20FB: 0x40,
+                0x20FC: 1, 0x20FD: 0, 0x20FE: 0, 0x20FF: 0}
+        rec = self._run("v2tfull", regs)
+        v = self._buf_vals(rec)
+        self.assertEqual(v[0], 0x00)
+        self.assertEqual((v[2], v[3], v[4]), (0x00, 0x00, 0x4B))  # recbase0 = 75
+        self.assertEqual(self._buf_lo(rec),
+                         [0x50, 0x51, 0x5A, 0x5A, 0x5A, 0x55, 0x56, 0x57])
+        self.assertEqual((v[12], v[13], v[14], v[15]), (0x00, 0x03, 0x00, 0x40))
+        self.assertEqual((v[16], v[17], v[18], v[19]), (0x01, 0x00, 0x00, 0x00))
+
+    def test_alias_contract_zp_mirrors_inputs(self):
+        # Harness aliasing contract (MPR0=$FF/MPR1=$F8): $00F8-$00FD are
+        # cell-identical with $20F8-$20FD, so post-call they read back the
+        # (restored) input bytes, not conversion residue. Documents the
+        # environment; guards against future mapping changes.
+        regs = {0x20F8: 0x00, 0x20F9: 0x03, 0x20FA: 0x00, 0x20FB: 0x40,
+                0x20FC: 1, 0x20FD: 0, 0x20FE: 0, 0x20FF: 0}
+        rec = self._run("v2talias", regs)
+        v = self._buf_vals(rec)
+        self.assertEqual(v[0], 0x00)
+        zp = self._buf_zp(rec)
+        self.assertEqual(zp[8:14], [0x00, 0x03, 0x00, 0x40, 0x01, 0x00])
 
     def test_second_first_seeds_rb0(self):
         rec = self._run("v2t02s", {0x20F8: 0x00, 0x20F9: 0x02, 0x20FA: 0x00, 0x20FB: 0x00,
