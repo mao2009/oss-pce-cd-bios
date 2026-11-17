@@ -121,6 +121,22 @@ def build_ipl_loader_g5_4a_simulated(
     diag_variant = f"{variant}{DIAG_SUFFIX}"
     _refuse_unsafe_variant(diag_variant)
     output = Path(output)
+    # MAJOR (CodeRabbit): refuse existing/symlinked diagnostic outputs
+    # BEFORE the standard builder writes anything. Otherwise a refused rerun
+    # (same output, same variant, different sel) would replace the control
+    # ROM/manifest/trace while the retained diagnostic manifest still records
+    # the old standard_sha256. The pre-publish re-check below is kept as
+    # defense in depth (TOCTOU/residual policy unchanged). Naming contract:
+    # diagnostic ROM "{ROM_STEM}-{variant}-4a-sim.pce", diagnostic manifest
+    # "manifest-{variant}-4a-sim.json".
+    _pre_diag_rom = output / f"{ROM_STEM}-{diag_variant}.pce"
+    _pre_man_path = output / f"manifest-{diag_variant}.json"
+    _refuse_symlink(_pre_diag_rom)
+    _refuse_symlink(_pre_man_path)
+    if _pre_diag_rom.exists():
+        raise ValueError("BLOCKED: diagnostic ROM already exists (no overwrite)")
+    if _pre_man_path.exists():
+        raise ValueError("BLOCKED: diagnostic manifest already exists (no overwrite)")
     # Build + verify the STANDARD G5 image first (no diagnostic without it).
     std_rom, std_syms = build_ipl_loader_g5_rom(
         original_path, output, sel, mode, variant, defines, track,

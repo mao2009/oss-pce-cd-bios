@@ -41,6 +41,17 @@ class G5FourASimHostTests(unittest.TestCase):
             out1, 0x109, "debug", "stdcheck", ["-D", "IPL_PUBLIC"], 1)
         h1 = hashlib.sha256(rom1.read_bytes()).hexdigest()
         std_rom, diag_rom, _, _ = self._build("stdcheck2")
+        # NITPICK: compare the diagnostic builder's OWN standard ROM against
+        # the standalone control (same sel/track => same bytes; variant only
+        # names files). The old standalone-vs-standalone check is kept as a
+        # separate reproducibility check below.
+        self.assertEqual(hashlib.sha256(std_rom.read_bytes()).hexdigest(), h1)
+        # Diagnostic generation must not change the standard content: the two
+        # images differ by exactly the $4A window (5 bytes).
+        std = std_rom.read_bytes()
+        diag = diag_rom.read_bytes()
+        self.assertEqual(
+            sum(1 for a, b in zip(std, diag) if a != b), 5)
         # Diagnostic must not overwrite the standard file of the same variant build;
         # standard SHA must be stable across rebuilds.
         out2 = self.work / "std-only2"
@@ -75,15 +86,8 @@ class G5FourASimHostTests(unittest.TestCase):
             self._build("badsel", sel=0x1FFFF)
 
 
-@requires_cc65
-class G5FourAStubSymlinkTests(unittest.TestCase):
-    """MAJOR-1: stub-generation leaves refuse symlinks before the assembler runs.
-
-    Isolated temp dirs only. Each of the three stub leaves is planted as a
-    symlink to an external sentinel and as a dangling symlink. Refusal must
-    leave the sentinel byte-identical and must not run the stub assembler.
-    Plain-file rebuilds keep working.
-    """
+class G5FourAStubLeavesPureTests(unittest.TestCase):
+    """MAJOR-1 pure check: no cc65 needed (filesystem + _refuse_stub_leaves only)."""
 
     def test_stub_leaves_refuse_symlink_and_dangling(self):
         import os
@@ -116,6 +120,11 @@ class G5FourAStubSymlinkTests(unittest.TestCase):
                             self.assertTrue(os.path.islink(out / leaf))
                     finally:
                         shutil.rmtree(tmp, ignore_errors=True)
+
+
+@requires_cc65
+class G5FourAStubSymlinkTests(unittest.TestCase):
+    """MAJOR-1 builder checks: cc65 required (full G5 builds)."""
 
     def test_builder_refuses_before_stub_generation(self):
         import os
@@ -264,6 +273,105 @@ class G5FourAManifestOrderTests(unittest.TestCase):
             self.assertEqual(info["diagnostic_rom"], diag_rom.name)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_rerun_with_different_sel_leaves_all_outputs_unchanged(self):
+        import hashlib
+        import os
+        import shutil
+        import tempfile
+        from unittest import mock
+        from build_rom import build as build_normal
+        import build_ipl_loader_g5_4a as G54A
+        from build_ipl_loader_g5_4a import build_ipl_loader_g5_4a_simulated
+        tmp = Path(tempfile.mkdtemp(prefix="pce-g54a-major-rerun-"))
+        try:
+            normal_path = build_normal(tmp / "normal", root=ROOT)
+            out = tmp / "g5out"
+            std_rom, diag_rom, _, _ = build_ipl_loader_g5_4a_simulated(
+                normal_path, out, 0x109, "debug", "rerun",
+                ["-D", "IPL_PUBLIC"], 1)
+            self.assertTrue(std_rom.is_file())
+            self.assertTrue(diag_rom.is_file())
+
+            def snap():
+                files = {}
+                for p in sorted(out.iterdir()):
+                    if p.is_symlink() or p.is_file():
+                        files[p.name] = p.read_bytes() if p.is_file() and not p.is_symlink() else None
+                return files
+
+            before = snap()
+            # All three stub leaves plus every standard/diagnostic output
+            # must exist by now (stub assembler ran on the first build).
+            for leaf in ("slot02_return_stub.o", "slot02_return_stub.cfg",
+                         "slot02_return_stub.bin"):
+                self.assertIn(leaf, before)
+            # The standard builder must NOT run on a refused rerun: patch it
+            # to fail loudly if called.
+            with mock.patch.object(
+                    G54A, "build_ipl_loader_g5_rom",
+                    side_effect=AssertionError("standard builder must not run")):
+                with self.assertRaises(ValueError):
+                    build_ipl_loader_g5_4a_simulated(
+                        normal_path, out, 0x110, "debug", "rerun",
+                        ["-D", "IPL_PUBLIC"], 1)
+            after = snap()
+            self.assertEqual(set(after), set(before))
+            for name in before:
+                self.assertEqual(after[name], before[name])
+            # Explicit SHA pins for the control/diagnostic pair.
+            std_name = std_rom.name
+            self.assertEqual(
+                hashlib.sha256((out / std_name).read_bytes()).hexdigest(),
+                hashlib.sha256(before[std_name]).hexdigest())
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_single_diag_artifact_or_symlink_refuses_before_standard_build(self):
+        import os
+        import shutil
+        import tempfile
+        from unittest import mock
+        from build_rom import build as build_normal
+        import build_ipl_loader_g5_4a as G54A
+        from build_ipl_loader_g5_4a import build_ipl_loader_g5_4a_simulated
+        cases = ("diag_only", "manifest_only", "diag_symlink", "manifest_symlink",
+                 "diag_dangling", "manifest_dangling")
+        for case in cases:
+            with self.subTest(case=case):
+                tmp = Path(tempfile.mkdtemp(prefix="pce-g54a-major-single-"))
+                try:
+                    normal_path = build_normal(tmp / "normal", root=ROOT)
+                    out = tmp / "g5out"
+                    out.mkdir()
+                    diag = out / "dev-ipl-loader-g5-not-compatible-solo-4a-sim.pce"
+                    man = out / "manifest-solo-4a-sim.json"
+                    sentinel = None
+                    if case == "diag_only":
+                        diag.write_bytes(b"DIAG-PLACEHOLDER")
+                    elif case == "manifest_only":
+                        man.write_bytes(b"{}")
+                    elif case in ("diag_symlink", "manifest_symlink"):
+                        sentinel = tmp / f"sentinel-{case}.bin"
+                        sentinel.write_bytes(b"SENTINEL-" + case.encode())
+                        os.symlink(sentinel, diag if "diag" in case else man)
+                    else:
+                        os.symlink(tmp / f"missing-{case}.bin",
+                                   diag if "diag" in case else man)
+                    before_files = sorted(p.name for p in out.iterdir())
+                    with mock.patch.object(
+                            G54A, "build_ipl_loader_g5_rom",
+                            side_effect=AssertionError("standard builder must not run")):
+                        with self.assertRaises(ValueError):
+                            build_ipl_loader_g5_4a_simulated(
+                                normal_path, out, 0x109, "debug", "solo",
+                                ["-D", "IPL_PUBLIC"], 1)
+                    # No standard build ran: no new files, sentinel intact.
+                    self.assertEqual(sorted(p.name for p in out.iterdir()), before_files)
+                    if sentinel is not None:
+                        self.assertEqual(sentinel.read_bytes(), b"SENTINEL-" + case.encode())
+                finally:
+                    shutil.rmtree(tmp, ignore_errors=True)
 
 
 if __name__ == "__main__":
