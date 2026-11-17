@@ -76,6 +76,7 @@
     "fixture": [
       "src/ad_trans_dma_probe.s",
       "src/adt_dma_routine_boot.s",
+      "src/cd_base_2base.s",
       "src/cd_base_proto.s",
       "src/cd_load_exec_payload.s",
       "src/cd_load_exec_probe.s",
@@ -97,7 +98,8 @@
       "src/cd_reset_probe.s": "development-only CD-ROM2 bus-reset diagnostic (#10)",
       "src/cdda_probe.s": "development-only CD-DA observation diagnostic (#15)",
       "src/startup_probe.s": "development-only System Card startup checkpoint (#4)",
-      "src/ipl_loader_g5_glue.s": "experimental-only XSEL selection + EX_DSPOFF slot33 wrapper for the PUBLIC IPL loader G5 image (Issue #800); never linked into the normal/production BIOS, not firmware code"
+      "src/ipl_loader_g5_glue.s": "experimental-only XSEL selection + EX_DSPOFF slot33 wrapper for the PUBLIC IPL loader G5 image (Issue #800); never linked into the normal/production BIOS, not firmware code",
+      "src/cd_base_2base.s": "experimental-only CD_BASE 2-base recbase0/1 fragment for G5 synthetic + opt-in commercial (2-system bases); never linked into the normal/production BIOS, not firmware code"
     }
   },
   "files": {
