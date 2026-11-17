@@ -9,7 +9,8 @@
 ;   Preconditions: MPR1=$F8 (work RAM $2000-$3FFF readable), stack in work RAM,
 ;     IRQs masked by the caller, experimental_selection (track + 21-bit INDEX01 LBA
 ;     of the first data track, from the loader XSEL record) available.
-;   Inputs (work RAM, read-only, preserved):
+;   Inputs (work RAM, read-only OBSERVABLE NET-ZERO: saved on entry, restored on
+;   every exit; no caller/game byte is observably modified):
 ;     $20FB (_bh) top two bits: $00 LBA, $40 MSF, $80 TRACK, $C0 CURRENT (reject).
 ;     TRACK: $20F8 (_al) BCD track (01-99). $20F9/$20FA/$20FF must be $00.
 ;       Only the selection track (first data track) resolves to INDEX01; other
@@ -24,24 +25,37 @@
 ;     $20FD (_ch) must be $00 (reserved high; Zeograd _ch skip-bits are NOT used;
 ;       commercial + HuCC S1 + Stum + llvm support _cl, so _cl wins with grounds).
 ;     $20FE/$20FF (_dl/_dh) must be $00 (unused).
-;   State (owned work RAM $2400-$2404 + $2408-$240A, MPR1=$F8):
+;   Owned state (MPR1=$F8 work RAM):
 ;     $2400/$2401/$2402 recbase0 HI/MID/LO (big-endian; $03 link reads this).
 ;     $2408/$2409/$240A recbase1 HI/MID/LO (big-endian; failover reserve).
 ;     $2403 generation counter (INC on each success that updates >=1 base).
-;     $2404 ST_LAST (0 success; errors below). $2405-$2407 preserved (untouched).
+;     $2404 ST_LAST (0 success; errors below).
+;     $2405/$2406/$2407 preserved (untouched, never scratch).
+;     $240B magic (0xA5 when seeded) + $240C valid flags (bit0 recbase0,
+;       bit1 recbase1): first-use bootstrap seeds both bases to INDEX01 when
+;       invalid, so ST_LAST==0 always implies a usable recbase0 (A-6). Seed does
+;       not touch ST_GEN/ST_LAST.
+;   Scratch discipline (A-1): static $00Fx is NEVER written, so no caller/game
+;     RAM can be aliased regardless of the MPR0 mapping. All temporaries live
+;     in registers, on the caller stack (balanced push/pull on every path), or
+;     in owned state. Caller inputs $20F0-$20FF are pushed on entry and popped
+;     on every exit (observable net-zero, proven by canary tests); the _cl
+;     snapshot is kept in Y. SP balanced, MPRs untouched, no TAM, no I/O.
 ;   Computation:
+;     - On entry with invalid seed, seed both bases to INDEX01 first.
 ;     - Decode _bh top bits; CURRENT ($C0) refused.
 ;     - Resolve LBA per mode (TRACK: selection track -> INDEX01; LBA: direct;
-;       MSF: convert -150). Range HI < $20 required.
-;     - Update recbase0 and/or recbase1 per _cl; NONE updates neither.
+;       MSF: 16-bit-safe convert -150). Range HI < $20 required.
+;     - Update per snapshot _cl; NONE updates neither.
 ;     - ST_LAST=0 on success (any mode incl. NONE); error code otherwise.
 ;   Returns:
 ;     A=0 success, C=0, Z=1; A=error, C=1, Z=0 (N=bit7 of A, always 0 here).
-;     X/Y/MPRs preserved; I/D/V/T preserved (PLP); SP balanced (4 pushes/4 pulls).
+;     X/Y/MPRs preserved; I/D/V/T preserved (PLP); SP balanced.
 ;     Error codes (EXPERIMENTAL, not genuine): $18 bad mode, $19 bad address,
-;       $1A range over 21-bit, $15 bad track (non-BCD or not selection track).
-;   Side effects: only the state above; inputs, RES $2300, BUF $2800, EXEC $3000,
-;     MARK $3F00 and all MPRs untouched (no TAM, no I/O, no IRQ).
+;     $1A range over 21-bit, $15 bad track (non-BCD or not selection track).
+;   Side effects: only the state above; inputs restored, RES $2300, BUF $2800,
+;     EXEC $3000, MARK $3F00 and all MPRs untouched (no TAM, no I/O, no IRQ).
+;     $20F2-$20F4 (old link block) preserved.
 ;
 ; Genuine ABI status: UNKNOWN/BLOCKED. This file never claims VERIFIED, DEV_CALLABLE,
 ; or compatibility. Reference JSR 0/81, ABI VERIFIED 0/81, DEV_CALLABLE 0,
@@ -53,7 +67,7 @@
 .export cd_base_2base_entry
 .import experimental_selection
 
-; Work-RAM inputs (caller-owned, read-only).
+; Work-RAM inputs (caller-owned, read-only; saved/restored across the call).
 IN_AL = $20F8
 IN_AH = $20F9
 IN_BL = $20FA
@@ -72,6 +86,10 @@ ST_LAST = $2404
 RB1_HI = $2408
 RB1_MID = $2409
 RB1_LO = $240A
+ST_MAGIC = $240B
+ST_VALID = $240C
+SEED_MAGIC = $A5
+VALID_BOTH = $03
 
 ; Experimental error codes (not genuine BIOS codes).
 ERR_MODE = $18
@@ -79,12 +97,113 @@ ERR_ADDR = $19
 ERR_RANGE = $1A
 ERR_TRACK = $15
 
+; Save/restore the caller input window $20F0-$20FF (16 bytes). The order is
+; fixed ($20F0 first) so every exit path restores identically. No static
+; $00Fx is used anywhere in this routine.
+.macro SAVE_INPUTS
+    lda $20F0
+    pha
+    lda $20F1
+    pha
+    lda $20F2
+    pha
+    lda $20F3
+    pha
+    lda $20F4
+    pha
+    lda $20F5
+    pha
+    lda $20F6
+    pha
+    lda $20F7
+    pha
+    lda $20F8
+    pha
+    lda $20F9
+    pha
+    lda $20FA
+    pha
+    lda $20FB
+    pha
+    lda $20FC
+    pha
+    lda $20FD
+    pha
+    lda $20FE
+    pha
+    lda $20FF
+    pha
+.endmacro
+
+.macro RESTORE_INPUTS
+    pla
+    sta $20FF
+    pla
+    sta $20FE
+    pla
+    sta $20FD
+    pla
+    sta $20FC
+    pla
+    sta $20FB
+    pla
+    sta $20FA
+    pla
+    sta $20F9
+    pla
+    sta $20F8
+    pla
+    sta $20F7
+    pla
+    sta $20F6
+    pla
+    sta $20F5
+    pla
+    sta $20F4
+    pla
+    sta $20F3
+    pla
+    sta $20F2
+    pla
+    sta $20F1
+    pla
+    sta $20F0
+.endmacro
+
 cd_base_2base_entry:
     php
     pha
     phx
     phy
-    cld
+    ; Snapshot _cl now: later scratch must never change what @have_lba sees.
+    lda IN_CL
+    tay
+    SAVE_INPUTS
+    ; --- first-use seed: both bases = INDEX01 while VALID incomplete ---
+    lda ST_MAGIC
+    cmp #SEED_MAGIC
+    bne @seed
+    lda ST_VALID
+    cmp #VALID_BOTH
+    beq @seeded
+@seed:
+    lda experimental_selection+8
+    sta RB0_HI
+    lda experimental_selection+9
+    sta RB0_MID
+    lda experimental_selection+10
+    sta RB0_LO
+    lda experimental_selection+8
+    sta RB1_HI
+    lda experimental_selection+9
+    sta RB1_MID
+    lda experimental_selection+10
+    sta RB1_LO
+    lda #SEED_MAGIC
+    sta ST_MAGIC
+    lda #VALID_BOTH
+    sta ST_VALID
+@seeded:
     ; --- _ch must be $00 (reserved high; _cl carries the mode) ---
     lda IN_CH
     beq @ok_ch
@@ -99,8 +218,8 @@ cd_base_2base_entry:
     beq @ok_dh
     jmp @err_mode
 @ok_dh:
-    ; --- _cl mode 0-3 ---
-    lda IN_CL
+    ; --- _cl mode 0-3 (snapshot in Y; scratch below must not matter) ---
+    tya
     cmp #$04
     bcc @ok_mode
     jmp @err_mode
@@ -158,9 +277,8 @@ cd_base_2base_entry:
     jmp @err_track
 @trk_le99:
     ; Only the selection track resolves (first data track -> INDEX01).
-    ; experimental_selection+7 = track (binary? loader stores binary track).
-    ; Compare BCD input converted to binary vs selection track binary.
-    ; Convert BCD _al to binary in X.
+    ; Convert BCD _al to binary in X (hi*10+lo); X restored via plx at exit.
+    ; (Y holds the _cl snapshot here and must not be touched.)
     lda IN_AL
     pha
     and #$F0
@@ -169,31 +287,17 @@ cd_base_2base_entry:
     lsr a
     lsr a
     sta $00F0
-    asl $00F0
-    asl $00F0
-    asl $00F0
-    sta $00F0
-    ; $00F0 = hi*8? redo: hi*10 = hi*8+hi*2
-    pla
-    pha
-    and #$F0
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    sta $00F1
-    lda $00F1
     asl a
     asl a
     asl a
     clc
-    adc $00F1
-    adc $00F1
-    sta $00F1
+    adc $00F0
+    adc $00F0
+    sta $00F0
     pla
     and #$0F
     clc
-    adc $00F1
+    adc $00F0
     tax
     ; X = binary track; compare to selection track
     lda experimental_selection+7
@@ -211,13 +315,20 @@ cd_base_2base_entry:
     sta $00F4
     jmp @have_lba
 @mode_lba:
-    ; $20F8/$20F9/$20FA big-endian HI/MID/LO; $20FF already 0
+    ; $20F8/$20F9/$20FA big-endian HI/MID/LO; $20FF already 0.
+    ; Copy via stack (no static temps): push HI/MID/LO, pop to LBA homes.
     lda IN_AL
-    sta $00F2
+    pha
     lda IN_AH
-    sta $00F3
+    pha
     lda IN_BL
+    pha
+    pla
     sta $00F4
+    pla
+    sta $00F3
+    pla
+    sta $00F2
     ; HI < $20 (21-bit)
     lda $00F2
     cmp #$20
@@ -269,17 +380,17 @@ cd_base_2base_entry:
     bcc @msf_fr_lo_ok
     jmp @err_addr
 @msf_fr_lo_ok:
-    ; Convert BCD to binary: min, sec, frame
-    ; min
+    ; Convert BCD to binary in $00F5(min)/$00F6(sec); frame pushed on stack.
+    ; Re-reads of IN_AL/AH/BL are safe: each $00Fx temp aliases only $20Fx,
+    ; never the input byte being re-read ($20F8/$20F9/$20FA).
+    ; min = hi*10+lo
     lda IN_AL
-    pha
     and #$F0
     lsr a
     lsr a
     lsr a
     lsr a
     sta $00F5
-    lda $00F5
     asl a
     asl a
     asl a
@@ -287,21 +398,19 @@ cd_base_2base_entry:
     adc $00F5
     adc $00F5
     sta $00F5
-    pla
+    lda IN_AL
     and #$0F
     clc
     adc $00F5
-    sta $00F5
-    ; sec
+    tax
+    ; sec = hi*10+lo
     lda IN_AH
-    pha
     and #$F0
     lsr a
     lsr a
     lsr a
     lsr a
     sta $00F6
-    lda $00F6
     asl a
     asl a
     asl a
@@ -309,21 +418,19 @@ cd_base_2base_entry:
     adc $00F6
     adc $00F6
     sta $00F6
-    pla
+    lda IN_AH
     and #$0F
     clc
     adc $00F6
     sta $00F6
-    ; frame
+    ; frame = hi*10+lo, then pushed (kept clear of multiply temps)
     lda IN_BL
-    pha
     and #$F0
     lsr a
     lsr a
     lsr a
     lsr a
     sta $00F7
-    lda $00F7
     asl a
     asl a
     asl a
@@ -331,31 +438,34 @@ cd_base_2base_entry:
     adc $00F7
     adc $00F7
     sta $00F7
-    pla
+    lda IN_BL
     and #$0F
     clc
     adc $00F7
-    sta $00F7
-    ; range: sec < 60, frame < 75
+    pha
+    ; range: sec < 60
     lda $00F6
     cmp #60
     bcc @msf_sec_ok
+    pla
     jmp @err_addr
 @msf_sec_ok:
-    lda $00F7
+    ; frame < 75
+    pla
     cmp #75
+    pha
     bcc @msf_fr_ok
+    pla
     jmp @err_addr
 @msf_fr_ok:
-    ; total = ((min*60)+sec)*75+frame; 8-bit min (0-99) fits: min*60 <= 5940, +59 = 5999, *75 = 449925 (>24-bit? 449925 < 16777216 ok).
-    ; Compute with 24-bit scratch $00F8-$00FA? Use $00F8/$00F9/$00FA (careful: overlaps IN_AL? IN_AL=$20F8 work RAM, scratch $00F8 is zero page, different (MPR0 zero page $2000? No, $00F8 is zero page, distinct from $20F8). Safe.
-    ; min*60: min*64-min*4
-    lda $00F5
+    ; total = ((min*60)+sec)*75+frame; min in X, sec in $00F6,
+    ; frame on stack. min*60 = min*64-min*4, all 24-bit explicit.
+    ; min*64 into $00F8(LO)/$00F9(MID)/$00FA(HI=0).
+    txa
     sta $00F8
     lda #$00
     sta $00F9
     sta $00FA
-    ; *64
     asl $00F8
     rol $00F9
     rol $00FA
@@ -374,15 +484,16 @@ cd_base_2base_entry:
     asl $00F8
     rol $00F9
     rol $00FA
-    ; -min*4: compute min*4 in $00FB-$00FD
-    lda $00F5
-    asl a
-    asl a
+    ; min*4 16-bit in $00FB(lo)/$00FC(hi): shift the 16-bit value twice.
+    txa
     sta $00FB
     lda #$00
     sta $00FC
-    sta $00FD
-    ; subtract
+    asl $00FB
+    rol $00FC
+    asl $00FB
+    rol $00FC
+    ; total -= min*4
     sec
     lda $00F8
     sbc $00FB
@@ -391,7 +502,7 @@ cd_base_2base_entry:
     sbc $00FC
     sta $00F9
     lda $00FA
-    sbc $00FD
+    sbc #$00
     sta $00FA
     ; +sec
     clc
@@ -404,15 +515,14 @@ cd_base_2base_entry:
     lda $00FA
     adc #$00
     sta $00FA
-    ; *75 = *64 + *8 + *2 + *1
-    ; save base in $00FB-$00FD
+    ; *75 = *64 + *8 + *2 + *1. Save base in $00FB(lo)/$00FC(mid)/$00FD(hi).
     lda $00F8
     sta $00FB
     lda $00F9
     sta $00FC
     lda $00FA
     sta $00FD
-    ; *64
+    ; *64 (in place, 24-bit)
     asl $00F8
     rol $00F9
     rol $00FA
@@ -431,7 +541,7 @@ cd_base_2base_entry:
     asl $00F8
     rol $00F9
     rol $00FA
-    ; + *8: base<<3
+    ; + *8: base<<3 into $00F5(lo)/$00F6(mid)/$00F7(hi)
     lda $00FB
     asl a
     sta $00F5
@@ -488,10 +598,10 @@ cd_base_2base_entry:
     lda $00FA
     adc $00FD
     sta $00FA
-    ; +frame
+    ; +frame (stacked)
+    pla
     clc
-    lda $00F8
-    adc $00F7
+    adc $00F8
     sta $00F8
     lda $00F9
     adc #$00
@@ -519,7 +629,7 @@ cd_base_2base_entry:
     bcc @msf_ok
     jmp @err_range
 @msf_ok:
-    ; LBA HI/MID/LO = $00FA/$00F9/$00F8? Our $00F8=LO? Let's track: $00F8 low (frames), $00F9 mid, $00FA high. Yes.
+    ; LBA HI/MID/LO = $00FA/$00F9/$00F8
     lda $00FA
     sta $00F2
     lda $00F9
@@ -529,15 +639,15 @@ cd_base_2base_entry:
     jmp @have_lba
 @have_lba:
     ; $00F2=HI, $00F3=MID, $00F4=LO. Range HI < $20 already checked for LBA/MSF; TRACK uses INDEX01 (<$20 via loader validation).
-    ; Update per _cl ($20FC): 0 BOTH, 1 FIRST, 2 SECOND, 3 NONE.
-    lda IN_CL
+    ; Update per snapshot _cl in Y: 0 BOTH, 1 FIRST, 2 SECOND, 3 NONE.
+    tya
     cmp #$00
     beq @upd_both
     cmp #$01
     beq @upd_first
     cmp #$02
     beq @upd_second
-    ; $03 NONE: success without update (gen not incremented? keep: no gen inc for NONE).
+    ; $03 NONE: success without update (gen not incremented).
     jmp @success_none
 @upd_both:
     lda $00F2
@@ -575,6 +685,7 @@ cd_base_2base_entry:
 @success_none:
     lda #$00
     sta ST_LAST
+    RESTORE_INPUTS
     ply
     plx
     pla
@@ -585,6 +696,7 @@ cd_base_2base_entry:
 @success:
     lda #$00
     sta ST_LAST
+    RESTORE_INPUTS
     ply
     plx
     pla
@@ -593,38 +705,46 @@ cd_base_2base_entry:
     clc
     rts
 @err_mode:
+    lda #ERR_MODE
+    sta ST_LAST
+    RESTORE_INPUTS
     ply
     plx
     pla
     plp
     lda #ERR_MODE
-    sta ST_LAST
     sec
     rts
 @err_addr:
+    lda #ERR_ADDR
+    sta ST_LAST
+    RESTORE_INPUTS
     ply
     plx
     pla
     plp
     lda #ERR_ADDR
-    sta ST_LAST
     sec
     rts
 @err_range:
+    lda #ERR_RANGE
+    sta ST_LAST
+    RESTORE_INPUTS
     ply
     plx
     pla
     plp
     lda #ERR_RANGE
-    sta ST_LAST
     sec
     rts
 @err_track:
+    lda #ERR_TRACK
+    sta ST_LAST
+    RESTORE_INPUTS
     ply
     plx
     pla
     plp
     lda #ERR_TRACK
-    sta ST_LAST
     sec
     rts

@@ -254,11 +254,11 @@ int main(int argc, char** argv) {
                         bool bcd = ((alv & 0xF0) <= 0x90) && ((alv & 0x0F) <= 0x09) && (alv >= 0x01) && (alv <= 0x99);
                         if (bcd) track_bcd = "true";
                         else track_bcd = "false";
-                    }
+                    } else track_bcd = "UNKNOWN";
                     if ((w[0xF9] == 0) && (w[0xFA] == 0) && (w[0xFF] == 0)) reserved_z = "true";
                     else reserved_z = "false";
-                    if (w[0xFE] < 0x20) base_hi_ok = "true";
-                    else base_hi_ok = "false";
+                    if (top == 0) base_hi_ok = (w[0xF8] < 0x20) ? "true" : "false";
+                    else base_hi_ok = "UNKNOWN";
                 }
 
                 if (slot == 3 && memory->GetMpr(1) == 0xF8) {
