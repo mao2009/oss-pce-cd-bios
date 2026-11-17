@@ -58,6 +58,9 @@ class RefusalTests(unittest.TestCase):
         self.assertTrue(out["issued"])
         self.assertEqual(out["lba"], 0x109)
         self.assertEqual(out["stage"], 8)
+        # Success matches the guest contract: GOOD status (0), message 0.
+        self.assertEqual((out["scsi_status"], out["msg"]), (0, 0))
+        self.assertEqual(out["bytes"], C.SECTOR_BYTES)
 
     def test_window_end_plus16_no_after(self):
         # Link V1 reports $64 here; commercial first-mode accepts (no window end).

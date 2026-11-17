@@ -31,23 +31,39 @@ def _blk_be(block):
 class CdReadCommercialSynthetic(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        import tempfile
         from build_ipl_loader_g5_2base import build_ipl_loader_g5_rom, parse_labels
         from geargrafx_api import compile_probe
         orig = ROOT / "build" / "debug" / "bios-dev" / "dev-only-not-compatible-syscard3.pce"
-        cls.out = Path("/tmp/pce-cdread-comm-synth")
-        cls.out.mkdir(parents=True, exist_ok=True)
+        # C-6: isolated private fixture; rebuild both ROMs from current sources
+        # every fixture (never reuse a stale ROM). Only this directory is
+        # removed in tearDownClass.
+        cls._tmp = tempfile.TemporaryDirectory(prefix="pce-cdread-comm-")
+        cls.out = Path(cls._tmp.name)
         cls.sel = SEL
         cls.track_sel = TRACK_SEL
-        rom_name = "dev-ipl-loader-g5-not-compatible-vct.pce"
-        cls.rom = cls.out / rom_name
-        if not cls.rom.is_file():
-            rom, _ = build_ipl_loader_g5_rom(
-                orig, cls.out, cls.sel, "debug", "vct", ["-D", "IPL_PUBLIC"],
-                track=cls.track_sel, private_input=False)
-            cls.rom = rom
+        cls.rom, cls.syms = build_ipl_loader_g5_rom(
+            orig, cls.out, cls.sel, "debug", "vct", ["-D", "IPL_PUBLIC"],
+            track=cls.track_sel, private_input=False, cd_read="commercial")
+        cls.rom_ctrl, cls.syms_ctrl = build_ipl_loader_g5_rom(
+            orig, cls.out, cls.sel, "debug", "vct-ctrl", ["-D", "IPL_PUBLIC"],
+            track=cls.track_sel, private_input=False, cd_read="link")
+        # ROM identity: distinct builds; each $E009 table entry must point at
+        # its own link body (verified again per-test where it matters).
+        assert cls.rom.read_bytes() != cls.rom_ctrl.read_bytes()
+        for _rom, _syms, _entry in (
+                (cls.rom, cls.syms, "cd_read_commercial_entry"),
+                (cls.rom_ctrl, cls.syms_ctrl, "cd_read_link_entry")):
+            data = _rom.read_bytes()
+            tab = data[0xE009 - 0xE000:0xE009 - 0xE000 + 3]
+            assert tuple(tab) == (0x4C, _syms[_entry] & 0xFF,
+                                  (_syms[_entry] >> 8) & 0xFF), (_rom.name, _entry)
         trace = cls.out / "ipl-loader-g5-vct.lbl"
         cls.labels = parse_labels(
             trace, ("api_unimplemented", "cd_halt_fail", "cd_unexpected_interrupt"))
+        trace_ctrl = cls.out / "ipl-loader-g5-vct-ctrl.lbl"
+        cls.labels_ctrl = parse_labels(
+            trace_ctrl, ("api_unimplemented", "cd_halt_fail", "cd_unexpected_interrupt"))
         cls.probe = compile_probe(cls.out, "geargrafx_api_return_probe.cpp", "vct-probe")
         import geargrafx_ipl_loader as L
         cls.L = L
@@ -56,10 +72,28 @@ class CdReadCommercialSynthetic(unittest.TestCase):
         cls.USER_OFFSET = USER_OFFSET
         cls.RAW_BYTES = RAW_BYTES
 
+    @classmethod
+    def tearDownClass(cls):
+        import tempfile
+        tmp = cls._tmp.name
+        assert "pce-cdread-comm-" in tmp and tmp.startswith(tempfile.gettempdir())
+        cls._tmp.cleanup()
+
     def _run(self, name, setup_lines, via_slot03=False, slot03_block=0,
-             poke_base=None, skip_base_call=False):
-        """Assemble payload CODE ($3000) + commercial BOOT ($3800); run cold+warm."""
+             poke_base=None, skip_base_call=False, rom_kind="exp",
+             via_table=False, tamper_mpr3=False):
+        """Assemble payload CODE ($3000) + commercial BOOT ($3800); run cold+warm.
+
+        rom_kind selects the Experimental (commercial $03) or Control (link V1
+        $03) ROM; via_table=True issues the call through the $E009 table entry
+        instead of a direct JSR, proving table routing on real hardware."""
         import geargrafx_api_entry as Eentry
+        if rom_kind == "exp":
+            rom, labels = self.rom, self.labels
+        elif rom_kind == "ctrl":
+            rom, labels = self.rom_ctrl, self.labels_ctrl
+        else:
+            raise ValueError("rom_kind must be 'exp' or 'ctrl'")
         comm_src = ROOT / "src" / "cd_read_commercial.s"
         comm_text = comm_src.read_text(encoding="ascii")
         # The commercial body is segment-agnostic (absolute work-RAM/I-O only);
@@ -97,6 +131,9 @@ class CdReadCommercialSynthetic(unittest.TestCase):
                     f" lda #${bhi:02X}\n sta $20F4\n"
                     f" lda #${wlo:02X}\n sta $20F5\n lda #${wmid:02X}\n sta $20F6\n"
                     f" lda #${whi:02X}\n sta $20F7\n jsr $E009\n")
+        elif via_table:
+            call = "\n".join(setup_lines) + "\n jsr $E009\n"
+            setup_lines = []
         else:
             call = " jsr cd_read_commercial_entry\n"
         asm = (
@@ -118,6 +155,10 @@ class CdReadCommercialSynthetic(unittest.TestCase):
             " ldx #$12\n ldy #$34\n"  # X/Y canaries (routine must preserve)
             + call +
             " sta $2F80\n php\n pla\n sta $2F81\n stx $2FDE\n sty $2FDF\n"
+            + (" lda #$42\n tam #$08\n" if tamper_mpr3 else "") +
+            " tma #$01\n sta $2FD0\n tma #$02\n sta $2FD1\n tma #$04\n sta $2FD2\n"
+            " tma #$08\n sta $2FD3\n tma #$10\n sta $2FD4\n tma #$20\n sta $2FD5\n"
+            " tma #$40\n sta $2FD6\n tma #$80\n sta $2FD7\n"
             " tma #$01\n sta $2F8C\n tma #$02\n sta $2F8D\n tma #$04\n sta $2F8E\n"
             " tma #$08\n sta $2F8F\n tma #$10\n sta $2F90\n tma #$20\n sta $2F91\n"
             " tma #$40\n sta $2F92\n tma #$80\n sta $2F93\n"
@@ -125,6 +166,8 @@ class CdReadCommercialSynthetic(unittest.TestCase):
             " pla\n sta $2F93\n pla\n sta $2F92\n pla\n sta $2F91\n pla\n sta $2F90\n"
             " pla\n sta $2F8F\n pla\n sta $2F8E\n pla\n sta $2F8D\n pla\n sta $2F8C\n"
             + base_pull +
+            # post-call legacy-input snapshot (proves save/restore net-zero).
+            " lda $20F2\n sta $2FD8\n lda $20F3\n sta $2FD9\n lda $20F4\n sta $2FDA\n"
             # SP baseline (pre-stash) vs final SP (all pulls done): must match
             " lda $F1\n sta $2F82\n tsx\n stx $2F83\n"
             " ldx #$09\nrc: lda $2330,x\n sta $2F94,x\n lda $2320,x\n sta $2F9E,x\n dex\n bpl rc\n"
@@ -168,11 +211,12 @@ class CdReadCommercialSynthetic(unittest.TestCase):
         halt = int(t.group(1), 16)
         lab = o / (name + ".labels")
         lab.write_text(
-            f"cd_halt_ok {halt:04x}\ncd_halt_fail {self.labels['cd_halt_fail']:04x}\n"
-            f"cd_unexpected_interrupt {self.labels['cd_unexpected_interrupt']:04x}\n"
-            f"api_unimplemented {self.labels['api_unimplemented']:04x}\n",
+            f"cd_halt_ok {halt:04x}\ncd_halt_fail {labels['cd_halt_fail']:04x}\n"
+            f"cd_unexpected_interrupt {labels['cd_unexpected_interrupt']:04x}\n"
+            f"api_unimplemented {labels['api_unimplemented']:04x}\n",
             encoding="ascii")
-        rec = Eentry.run_probe(self.probe, self.rom, cue, lab, BUDGET, "synthetic")
+        self._last_cue, self._last_lab = cue, lab
+        rec = Eentry.run_probe(self.probe, rom, cue, lab, BUDGET, "synthetic")
         return rec
 
     def _buf(self, rec):
@@ -187,8 +231,9 @@ class CdReadCommercialSynthetic(unittest.TestCase):
         return {
             "a": buf[base], "p": buf[base + 1],
             "sp0": buf[base + 2], "sp1": buf[base + 3],
-            "mpr0": list(buf[base + 4:base + 12]),
-            "mpr1": list(buf[base + 12:base + 20]),
+            "mpr_pre": list(buf[base + 12:base + 20]),
+            "mpr_post": list(buf[base + 0x50:base + 0x58]),  # $2FD0-$2FD7 (post-call snapshot)
+            "sentinel": list(buf[base + 0x58:base + 0x5B]),  # $2FD8-$2FDA post-call sentinels
             "cres": list(buf[base + 20:base + 30]),
             "lres": list(buf[base + 30:base + 40]),
             "buf16": list(buf[base + 40:base + 56]),
@@ -235,7 +280,11 @@ class CdReadCommercialSynthetic(unittest.TestCase):
         self.assertEqual(tuple(r["cres"][7:10]), (0, 1, 9))  # LBA 0x109
         self.assertEqual(r["lres"], [0] * 10)  # LINK_RES untouched (area separation)
         self.assertEqual(r["sp0"], r["sp1"])  # SP balanced
-        self.assertEqual(r["mpr1"], [255, 248, 128, 129, 130, 131, 132, 0])  # MPR preserved (post-call; pre-call area lies inside the transfer window)
+        # MPR preserved across the call: pre-call snapshot vs post-call
+        # snapshot in disjoint areas (no shared-window aliasing possible).
+        self.assertEqual(r["mpr_pre"], [255, 248, 128, 129, 130, 131, 132, 0])
+        self.assertEqual(r["mpr_post"], [255, 248, 128, 129, 130, 131, 132, 0])
+        self.assertEqual(r["mpr_pre"], r["mpr_post"])
         self.assertEqual((r["x_after"], r["y_after"]), (0x12, 0x34))  # X/Y
         exp = self._expected_frame("c01", 0x109)
         got = list(cold[0x000:0x800])[:2048]
@@ -259,20 +308,30 @@ class CdReadCommercialSynthetic(unittest.TestCase):
 
     def test_c03_win16_accepted_vs_control_after(self):
         rec = self._run("c03", self._comm_regs(16))
-        cold, _ = self._buf(rec)
+        cold, warm = self._buf(rec)
+        self.assertEqual(cold, warm)
         r = self._res(cold)
         self.assertEqual(r["a"], 0)  # experimental accepts win+16
         self.assertEqual(tuple(r["cres"][7:10]), (0, 1, 0x19))
+        self.assertEqual(r["mpr_pre"], r["mpr_post"])
         exp = self._expected_frame("c03", 0x119)
         got3 = list(cold[0:2048])
         self.assertEqual(got3[0:1920], exp[0:1920])
         self.assertEqual(got3[2016:2048], exp[2016:2048])
-        # control: link V1 at $03 with $20F2=16 reports $64 AFTER, no transfer
+
+    def test_c03ctrl_control_reports_after(self):
+        # Control ROM (link V1 $03, $20F2 block): win+16 is AFTER ($64),
+        # no transfer, canary intact. Experimental ROM must NOT behave so.
         rec2 = self._run("c03ctrl", [], via_slot03=True, slot03_block=16,
-                         poke_base=0x109, skip_base_call=True)
-        cold2, _ = self._buf(rec2)
-        self.assertEqual(cold2[0x780], 0x64)
-        self.assertEqual(list(cold2[0:16]), [0xAA] * 16)  # canary intact
+                         poke_base=0x109, skip_base_call=True,
+                         rom_kind="ctrl")
+        cold2, warm2 = self._buf(rec2)
+        self.assertEqual(cold2, warm2)
+        r2 = self._res(cold2)
+        self.assertEqual(r2["a"], 0x64)
+        self.assertEqual(tuple(r2["cres"][7:10]), (0, 0, 0))
+        self.assertEqual(list(cold2[0:16]), [0xAA] * 16)
+        self.assertEqual(list(cold2[0x7FF:0x800]), [0xAA])  # canary intact
 
     def test_c04_before_pregap_guard(self):
         rec = self._run("c04", self._comm_regs(5), poke_base=0, skip_base_call=True)
@@ -281,6 +340,7 @@ class CdReadCommercialSynthetic(unittest.TestCase):
         r = self._res(cold)
         self.assertEqual(r["a"], 0x63)
         self.assertEqual((r["cres"][2], r["cres"][3]), (0, 0))
+        self.assertEqual(list(r["cres"]), [0] * 10)  # no CRES writes on refusal
         self.assertEqual(list(cold[0:16]), [0xAA] * 16)
         self.assertEqual(cold[0x7FF], 0xAA)  # canary tail intact
 
@@ -300,6 +360,7 @@ class CdReadCommercialSynthetic(unittest.TestCase):
         r = self._res(cold)
         self.assertEqual(r["a"], 0x62)
         self.assertEqual((r["cres"][2], r["cres"][3]), (0, 0))
+        self.assertEqual(list(r["cres"]), [0] * 10)  # no CRES writes on refusal
         self.assertEqual(list(cold[0:16]), [0xAA] * 16)
 
     def test_c06_mode_refuse(self):
@@ -308,6 +369,7 @@ class CdReadCommercialSynthetic(unittest.TestCase):
             cold, _ = self._buf(rec)
             r = self._res(cold)
             self.assertEqual(r["a"], 0x65, name)
+            self.assertEqual(list(r["cres"]), [0] * 10, name)  # no CRES writes on refusal
             self.assertEqual(list(cold[0:16]), [0xAA] * 16, name)
 
     def test_c07_size_refuse(self):
@@ -315,6 +377,7 @@ class CdReadCommercialSynthetic(unittest.TestCase):
         cold, _ = self._buf(rec)
         r = self._res(cold)
         self.assertEqual(r["a"], 0x66)
+        self.assertEqual(list(r["cres"]), [0] * 10)  # no CRES writes on refusal
         self.assertEqual(list(cold[0:16]), [0xAA] * 16)
 
     def test_c08_dest_refuse(self):
@@ -324,6 +387,7 @@ class CdReadCommercialSynthetic(unittest.TestCase):
             cold, _ = self._buf(rec)
             r = self._res(cold)
             self.assertEqual(r["a"], 0x67, name)
+            self.assertEqual(list(r["cres"]), [0] * 10, name)  # no CRES writes on refusal
             self.assertEqual(list(cold[0:16]), [0xAA] * 16, name)
 
     def test_c09_20f2_independence(self):
@@ -346,7 +410,9 @@ class CdReadCommercialSynthetic(unittest.TestCase):
         cold, warm = self._buf(rec)
         self.assertEqual(self._res(cold)["a"], self._res(warm)["a"])
         self.assertEqual(self._res(cold)["cres"], self._res(warm)["cres"])
-        self.assertEqual(self._res(cold)["mpr0"], self._res(warm)["mpr0"])
+        self.assertEqual(self._res(cold)["mpr_pre"], self._res(warm)["mpr_pre"])
+        self.assertEqual(self._res(cold)["mpr_post"], self._res(warm)["mpr_post"])
+        self.assertEqual(self._res(cold)["mpr_pre"], self._res(cold)["mpr_post"])
         r = self._res(cold)
         self.assertEqual(r["base_a"], 0)
         self.assertEqual(r["rb0"], (0, 1, 9))
@@ -359,6 +425,7 @@ class CdReadCommercialSynthetic(unittest.TestCase):
         r = self._res(cold)
         self.assertEqual(r["a"], 0x60)
         self.assertEqual(tuple(r["cres"][7:10]), (0, 0, 0))
+        self.assertEqual(list(r["cres"]), [0] * 10)  # no CRES writes on refusal
         self.assertEqual(list(cold[0:16]), [0xAA] * 16)
 
     def test_c12_no_oob_and_payload_intact(self):
@@ -372,3 +439,64 @@ class CdReadCommercialSynthetic(unittest.TestCase):
         self.assertEqual(r["in8"], [0, 8, 0, 0x28, 0, 0, 0, 0])
         # payload CODE at $3000 intact (halt reached, no self-overwrite):
         self.assertNotEqual(list(cold[0x800:0x810]), [0xAA] * 16)
+
+    def test_c13_rom_identity_separation(self):
+        # Control vs Experimental are distinct ROMs; each $E009 table entry
+        # points at its own link body (verified from each ROM's own bytes).
+        import hashlib
+        exp = self.rom.read_bytes()
+        ctrl = self.rom_ctrl.read_bytes()
+        self.assertNotEqual(hashlib.sha256(exp).digest(),
+                            hashlib.sha256(ctrl).digest())
+        for rom, syms, entry in (
+                (exp, self.syms, "cd_read_commercial_entry"),
+                (ctrl, self.syms_ctrl, "cd_read_link_entry")):
+            tab = rom[0xE009 - 0xE000:0xE009 - 0xE000 + 3]
+            self.assertEqual(tuple(tab),
+                             (0x4C, syms[entry] & 0xFF,
+                              (syms[entry] >> 8) & 0xFF))
+
+    def test_c14_slot03_table_routes_to_commercial(self):
+        # JSR $E009 on the experimental ROM reaches the commercial entry:
+        # transfer succeeds, returns $00, MPRs preserved, canary intact.
+        rec = self._run("c14", self._comm_regs(0), via_table=True)
+        cold, warm = self._buf(rec)
+        self.assertEqual(cold, warm)
+        r = self._res(cold)
+        self.assertEqual(r["a"], 0)
+        self.assertEqual(tuple(r["cres"][7:10]), (0, 1, 9))
+        self.assertEqual(r["mpr_pre"], r["mpr_post"])
+        exp = self._expected_frame("c14", 0x109)
+        got = list(cold[0:2048])
+        self.assertEqual(got[0:1920], exp[0:1920])
+        self.assertEqual(got[2016:2048], exp[2016:2048])
+
+    def test_c15_mpr_tamper_detected(self):
+        # Mutant: tamper MPR3 after the call but before the post-call snapshot
+        # must show up as pre != post (proves the comparison is real, not
+        # vacuous). Normal runs assert pre == post (see c01/c10).
+        rec = self._run("c15", self._comm_regs(0), tamper_mpr3=True)
+        cold, _ = self._buf(rec)
+        r = self._res(cold)
+        self.assertEqual(r["a"], 0)  # call itself still succeeds
+        self.assertNotEqual(r["mpr_pre"], r["mpr_post"])
+        self.assertEqual(r["mpr_pre"],
+                         [255, 248, 128, 129, 130, 131, 132, 0])
+
+    def test_c16_refused_call_preserves_everything(self):
+        # Refused call ($65) writes nothing observable: inputs intact
+        # (incl. legacy $20F2-$20F4 sentinels), CRES zeros, canary intact.
+        lines = self._comm_regs(0, mode=1) + [
+            " lda #$11\n sta $20F2", " lda #$22\n sta $20F3",
+            " lda #$33\n sta $20F4",
+        ]
+        rec = self._run("c16", lines)
+        cold, warm = self._buf(rec)
+        self.assertEqual(cold, warm)
+        r = self._res(cold)
+        self.assertEqual(r["a"], 0x65)
+        self.assertEqual(list(r["cres"]), [0] * 10)
+        self.assertEqual(r["mpr_pre"], r["mpr_post"])
+        self.assertEqual(list(cold[0:16]), [0xAA] * 16)
+        self.assertEqual(r["sentinel"], [0x11, 0x22, 0x33])
+        self.assertEqual(r["in8"], [0, 8, 0, 0x28, 0, 0, 0, 1])

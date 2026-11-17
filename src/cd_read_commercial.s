@@ -46,13 +46,9 @@
 ;     - 24-bit add LBA = recbase0 + commercial block WITH carry
 ;       (LO $20FE -> MID $20FD -> HI $20FC). Carry out of bit 23 is OVER_CAP
 ;       (refused; never used as a READ address).
-;     - CRES LBA spec: CR_LHI/CR_LMID/CR_LLO hold the low 24 bits of
-;       base+block (total & $FFFFFF) on every call except INVALID_STATE
-;       (which stores $00/$00/$00; no base is claimed). In particular an
-;       OVER_CAP via 24-bit carry reports the wrapped value (e.g. base
-;       $FFFFFF + block 1 -> CR $00/$00/$00 with code $62); an OVER_CAP via
-;       HI >= $20 without carry reports the computed LBA (e.g. $200000).
-;       BEFORE/valid paths report the computed LBA.
+;     - CRES LBA spec: on the valid path only, CR_LHI/CR_LMID/CR_LLO hold
+;       the low 24 bits of base+block (total & $FFFFFF). Refusals write no
+;       CRES bytes (read-only fail-closed); the caller reads code in A.
 ;     - Refuse BEFORE any $1800 access when: last != $00 (INVALID_STATE $60),
 ;       window HI >= $20 (INVALID_WINDOW $61), carry or LBA HI >= $20
 ;       (OVER_CAP $62), LBA < window start (BEFORE $63: pregap/audio positional
@@ -100,11 +96,17 @@
 ;     X/Y/MPRs preserved (no TAM, no TXS, no I/O mapping change); I/D/V/T preserved
 ;     (PLP restore, only C/Z/N change via LDA/CLC/SEC); SP balanced.
 ;   Side effects:
-;     CRES $2330-$2339 updated on every call (code/stage/bytes/SCSI/msg/last/LBA;
-;       deliberately separate from link V1 LINK_RES $2320-$2329 so control (V1)
-;       vs experimental (V1-commercial) runs are comparable without overwrite).
-;     CRES_CDB $27E8-$27ED written on valid path only. ZP temps $00-$0B + $0F-$11
-;       used. On success: $2800-$2FFF = exactly 2048 sector bytes. On refusal:
+;     CRES $2330-$2339 written only on the valid path (in-progress marker +
+;       result; deliberately separate from link V1 LINK_RES $2320-$2329 so
+;       control (V1) vs experimental runs are comparable without overwrite).
+;     Refusals write nothing except A (+ observable net-zero temp restore):
+;       CRES keeps caller-visible prior bytes (canary-tested), never stale
+;       LBA claims. CRES_CDB $27E8-$27ED written on valid path only.
+;     ZP temps $00-$02,$04-$0B,$0F-$11 (= aliased $2000-$2002,$2004-$200B,
+;       $200F-$2011) are saved on entry and restored on every exit
+;       (observable net-zero, canary-tested); inputs $20F8-$20FF are only
+;       ever read, never written. On success: $2800-$2FFF = exactly 2048
+;       sector bytes. On refusal: $2800 untouched (canary intact).
 ;       $2800 untouched. On READ fail/timeout: $2800 may be partial (bytes field
 ;       reports transfer count); never writes outside $2800-$2FFF. Untouched: $2300
 ;       bootloader RES, LINK_RES $2320-$2329, $2400-$2407 base state, input bytes,
@@ -205,30 +207,41 @@ ERR_DEST   = $67
 ERR_FAIL   = $70
 ERR_TMO    = $71
 
+; --- caller-scratch save/restore (C-3): ZP temps $00-$02,$04-$0B,$0F-$11 alias
+; work-RAM $2000-$2002,$2004-$200B,$200F-$2011 on this core. Saved on entry
+; (loop over the contiguous $2000-$2011 window, covering the used bytes),
+; restored on every exit (observable net-zero, proven by canary tests).
+; Inputs $20F8-$20FF and state $2400-$2407 are only ever read.
+.macro SAVE_TEMPS
+    ldx #$11
+:
+    lda $2000,x
+    pha
+    dex
+    bpl :-
+.endmacro
+
+.macro RESTORE_TEMPS
+    ldx #$00
+:
+    pla
+    sta $2000,x
+    inx
+    cpx #$12
+    bcc :-
+.endmacro
+
 cd_read_commercial_entry:
     php
     pha
     phx
     phy
     cld
-    ; CRES in-progress marker; stage 1 = entered/computed (refusal stage).
-    lda #$FF
-    sta CR_CODE
-    lda #$01
-    sta CR_STAGE
-    lda #$00
-    sta CR_BYTES
-    sta CR_BYTES_HI
-    sta CR_SCSI
-    sta CR_MSG
-    sta CR_LAST
-    ; MEDIUM-1: initialise the one-shot early-abort phase ($0B alt) before the
-    ; first wait so caller-residue RAM cannot cause a false timeout. Re-inited
-    ; only here (per call), never unconditionally inside the wait helper. The
-    ; DATA_IN path still overrides alt with PH_STATUS before its wait.
-    lda #$FF
-    sta alt
+    SAVE_TEMPS
     ; --- invalid-state: base never established (last != $00/DATA) ---
+    ; (read-only: input/state are only read here; first writes happen at
+    ; @do_read after all validation passes. Temp save above makes ZP temps
+    ; free scratch with observable net-zero at every exit.)
     lda ST_LAST
     beq @have_base
     jmp @ref_state
@@ -251,15 +264,8 @@ cd_read_commercial_entry:
     lda ST_HI
     adc CBLK_HI
     sta lhi
-    ; CRES LBA spec (OVER_CAP): CR_LHI/MID/LLO = low 24 bits of
-    ; base+block (total & $FFFFFF) on every non-INVALID_STATE call, stored
-    ; BEFORE the carry check so a 24-bit wrap cannot leave stale bytes.
-    lda lhi
-    sta CR_LHI
-    lda lmid
-    sta CR_LMID
-    lda llo
-    sta CR_LLO
+    ; (No CRES writes here: refusals stay read-only; the valid path records
+    ; the LBA after all validation passes.)
     bcc @no_wrap
     jmp @ref_cap               ; carry out of bit 23: definitely over 21 bits
 @no_wrap:
@@ -321,13 +327,8 @@ cd_read_commercial_entry:
     jmp @do_read
 
 @ref_state:
-    lda #ERR_STATE
-    sta CR_CODE
-    ; LBA bytes unknown without a valid base; store zeros (no base read claimed).
-    lda #$00
-    sta CR_LHI
-    sta CR_LMID
-    sta CR_LLO
+    ; Refusal writes nothing (read-only fail-closed; only A carries $60).
+    RESTORE_TEMPS
     ply
     plx
     pla
@@ -336,19 +337,8 @@ cd_read_commercial_entry:
     sec
     rts
 @ref_window:
-    ; store computed LBA if computable (base+commercial block), else zeros.
-    clc
-    lda ST_LO
-    adc CBLK_LO
-    sta CR_LLO
-    lda ST_MID
-    adc CBLK_MID
-    sta CR_LMID
-    lda ST_HI
-    adc CBLK_HI
-    sta CR_LHI
-    lda #ERR_WINDOW
-    sta CR_CODE
+    ; Refusal writes nothing (read-only fail-closed; only A carries $61).
+    RESTORE_TEMPS
     ply
     plx
     pla
@@ -357,8 +347,8 @@ cd_read_commercial_entry:
     sec
     rts
 @ref_cap:
-    lda #ERR_CAP
-    sta CR_CODE
+    ; Refusal writes nothing (read-only fail-closed; only A carries $62).
+    RESTORE_TEMPS
     ply
     plx
     pla
@@ -367,8 +357,8 @@ cd_read_commercial_entry:
     sec
     rts
 @ref_before:
-    lda #ERR_BEFORE
-    sta CR_CODE
+    ; Refusal writes nothing (read-only fail-closed; only A carries $63).
+    RESTORE_TEMPS
     ply
     plx
     pla
@@ -377,8 +367,8 @@ cd_read_commercial_entry:
     sec
     rts
 @ref_mode:
-    lda #ERR_MODE
-    sta CR_CODE
+    ; Refusal writes nothing (read-only fail-closed; only A carries $65).
+    RESTORE_TEMPS
     ply
     plx
     pla
@@ -387,8 +377,8 @@ cd_read_commercial_entry:
     sec
     rts
 @ref_size:
-    lda #ERR_SIZE
-    sta CR_CODE
+    ; Refusal writes nothing (read-only fail-closed; only A carries $66).
+    RESTORE_TEMPS
     ply
     plx
     pla
@@ -397,8 +387,8 @@ cd_read_commercial_entry:
     sec
     rts
 @ref_dest:
-    lda #ERR_DEST
-    sta CR_CODE
+    ; Refusal writes nothing (read-only fail-closed; only A carries $67).
+    RESTORE_TEMPS
     ply
     plx
     pla
@@ -408,6 +398,28 @@ cd_read_commercial_entry:
     rts
 
 @do_read:
+    ; In-progress marker (first writes: all read-only validation passed).
+    lda #$FF
+    sta CR_CODE
+    lda #$01
+    sta CR_STAGE
+    lda #$00
+    sta CR_BYTES
+    sta CR_BYTES_HI
+    sta CR_SCSI
+    sta CR_MSG
+    sta CR_LAST
+    ; One-shot early-abort phase ($0B alt): caller residue cannot cause a
+    ; false timeout; re-inited per call, never unconditionally inside waits.
+    lda #$FF
+    sta alt
+    ; Record the validated LBA (valid path only).
+    lda lhi
+    sta CR_LHI
+    lda lmid
+    sta CR_LMID
+    lda llo
+    sta CR_LLO
     ; Build READ(6) CDB at CRES_CDB: 08, HI&$1F, MID, LO, 01, 00.
     lda #$08
     sta CRES_CDB
@@ -449,6 +461,7 @@ cd_read_commercial_entry:
     lda #ERR_TMO
     sta CR_CODE
     jsr ccom_store_counts
+    RESTORE_TEMPS
     ply
     plx
     pla
@@ -471,6 +484,7 @@ cd_read_commercial_entry:
     lda #ERR_TMO
     sta CR_CODE
     jsr ccom_store_counts
+    RESTORE_TEMPS
     ply
     plx
     pla
@@ -492,6 +506,7 @@ cd_read_commercial_entry:
     lda #ERR_TMO
     sta CR_CODE
     jsr ccom_store_counts
+    RESTORE_TEMPS
     ply
     plx
     pla
@@ -507,6 +522,7 @@ cd_read_commercial_entry:
     lda #ERR_TMO
     sta CR_CODE
     jsr ccom_store_counts
+    RESTORE_TEMPS
     ply
     plx
     pla
@@ -517,7 +533,9 @@ cd_read_commercial_entry:
 @next:
     iny
     cpy #6
-    bne @cmd
+    beq @nocmd_tramp
+    jmp @cmd
+@nocmd_tramp:
     lda #5
     sta CR_STAGE
 @data:
@@ -528,7 +546,9 @@ cd_read_commercial_entry:
     lda #PH_STATUS
     sta alt
     jsr ccom_wait_phase
-    bcc @take
+    bcs @notake_tramp
+    jmp @take
+@notake_tramp:
     lda last
     and #PH_MASK
     cmp #PH_STATUS
@@ -536,6 +556,7 @@ cd_read_commercial_entry:
     lda #ERR_TMO
     sta CR_CODE
     jsr ccom_store_counts
+    RESTORE_TEMPS
     ply
     plx
     pla
@@ -547,6 +568,7 @@ cd_read_commercial_entry:
     lda #ERR_FAIL
     sta CR_CODE
     jsr ccom_store_counts
+    RESTORE_TEMPS
     ply
     plx
     pla
@@ -566,6 +588,7 @@ cd_read_commercial_entry:
     lda #ERR_TMO
     sta CR_CODE
     jsr ccom_store_counts
+    RESTORE_TEMPS
     ply
     plx
     pla
@@ -581,7 +604,9 @@ cd_read_commercial_entry:
     dec remain
     lda remain
     ora remain+1
-    bne @data
+    beq @nodata_tramp
+    jmp @data
+@nodata_tramp:
     lda #6
     sta CR_STAGE
     lda #PH_MASK
@@ -589,7 +614,9 @@ cd_read_commercial_entry:
     lda #PH_STATUS
     sta want
     jsr ccom_wait_phase
-    bcs @tail_tmo
+    bcc @tail_ok_1
+    jmp @tail_tmo
+@tail_ok_1:
     lda CD_DATA
     sta CR_SCSI
     jsr ccom_ack_byte
@@ -613,13 +640,16 @@ cd_read_commercial_entry:
     lda #PH_FREE
     sta want
     jsr ccom_wait_phase
-    bcs @tail_not_free
+    bcc @tail_ok_2
+    jmp @tail_not_free
+@tail_ok_2:
     lda CR_SCSI
     ora CR_MSG
     bne @tail_bad
     jsr ccom_store_counts
     lda #$00
     sta CR_CODE
+    RESTORE_TEMPS
     ply
     plx
     pla
@@ -631,6 +661,7 @@ cd_read_commercial_entry:
     lda #ERR_TMO
     sta CR_CODE
     jsr ccom_store_counts
+    RESTORE_TEMPS
     ply
     plx
     pla
@@ -642,6 +673,7 @@ cd_read_commercial_entry:
     lda #ERR_TMO
     sta CR_CODE
     jsr ccom_store_counts
+    RESTORE_TEMPS
     ply
     plx
     pla
@@ -653,6 +685,7 @@ cd_read_commercial_entry:
     lda #ERR_FAIL
     sta CR_CODE
     jsr ccom_store_counts
+    RESTORE_TEMPS
     ply
     plx
     pla

@@ -139,7 +139,7 @@ def link(base_hi, base_mid, base_lo, gen, last,
         return refusal(ERR_BAD_DEST, (hi, mid, lo))
 
     base_out = {"a": 0, "c": 0, "z": 1, "issued": True, "stage": 8,
-                "bytes": SECTOR_BYTES, "scsi_status": 2, "msg": 0,
+                "bytes": SECTOR_BYTES, "scsi_status": 0, "msg": 0,
                 "last_bus": PH_FREE, "lba": lba,
                 "lhi": hi, "lmid": mid, "llo": lo, "code": 0}
     if scsi == "ok":
