@@ -17,7 +17,9 @@ tools/build_slot02_return_loader.py). Every assertion is fail-closed:
 - stub must start with RTS and fit in 5 bytes (side-effect-free RTS/NOP only);
 - diagnostic diff vs standard must be exactly the $4A window (RESET, vectors,
   IPL loader, $02/$03/$33 windows unchanged);
-- diagnostic is a separate file; the standard ROM is never overwritten;
+- diagnostic patch goes to a separate file and never overwrites the standard
+  ROM image (the standard image itself is (re)built deterministically by
+  the standard builder);
 - mismatch anywhere is BLOCKED (no silent no-op, no partial patch).
 
 Result classification (never genuine):
@@ -180,7 +182,9 @@ def build_ipl_loader_g5_4a_simulated(
         raise ValueError("BLOCKED: diagnostic moved the vectors")
     if len(patched) != IMAGE_BYTES or patched[BANK_BYTES:] != b"\xff" * (IMAGE_BYTES - BANK_BYTES):
         raise ValueError("BLOCKED: diagnostic changed image size/unused banks")
-    # Separate files; never overwrite the standard ROM. MEDIUM-1: inspect
+    # The diagnostic patch goes to separate files and never overwrites the
+    # standard ROM image (the standard image itself is rebuilt by the
+    # standard builder). MEDIUM-1: inspect
     # BOTH final outputs BEFORE the first publish, so a bad manifest path
     # can never leave an orphan diagnostic ROM behind. The manifest content
     # is built and validated in memory before the ROM is published.
