@@ -32,14 +32,23 @@ class CdReadCommercialSynthetic(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         import tempfile
+        from unittest.mock import patch
+        import build_rom
         from build_ipl_loader_g5_2base import build_ipl_loader_g5_rom, parse_labels
         from geargrafx_api import compile_probe
-        orig = ROOT / "build" / "debug" / "bios-dev" / "dev-only-not-compatible-syscard3.pce"
+        # A-4/C-6: self-contained DEV ROM built from current sources into
+        # the private temp dir; never depend on a repo build/ tree.
+        cls._tmp = tempfile.TemporaryDirectory(prefix="pce-cdread-comm-")
+        cls.out = Path(cls._tmp.name)
+        dev_out = Path(cls._tmp.name) / "dev"
+        with patch("sys.argv", ["build_rom.py", "--mode", "debug",
+                                  "--output", str(dev_out)]):
+            assert build_rom.main() == 0
+        orig = dev_out / "dev-only-not-compatible-syscard3.pce"
+        assert orig.is_file()
         # C-6: isolated private fixture; rebuild both ROMs from current sources
         # every fixture (never reuse a stale ROM). Only this directory is
         # removed in tearDownClass.
-        cls._tmp = tempfile.TemporaryDirectory(prefix="pce-cdread-comm-")
-        cls.out = Path(cls._tmp.name)
         cls.sel = SEL
         cls.track_sel = TRACK_SEL
         cls.rom, cls.syms = build_ipl_loader_g5_rom(
