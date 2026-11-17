@@ -499,6 +499,69 @@ class IplLoaderG5OutputSafetyTest(unittest.TestCase):
         self.assertEqual(self._snapshot_dir_files(self.fake_normal_dir), before)
         self.assertTrue(alias.is_symlink())
 
+    def _mock_canonical_dir(self, name):
+        # Isolated stand-in for ROOT/build/<mode>/bios-dev. The real tree is
+        # never touched: only the lookup is mocked, never the filesystem.
+        canon = self.work / name / "build" / "debug" / "bios-dev"
+        canon.mkdir(parents=True)
+        (canon / "sentinel.txt").write_bytes(b"CANONICAL-SENTINEL")
+        return canon
+
+    def test_canonical_dev_dir_output_refused(self):
+        # MAJOR-1: a temp copy used as input must not re-open the canonical
+        # normal DEV tree. Mock only the canonical-dir lookup.
+        from unittest import mock
+        canon = self._mock_canonical_dir("canon")
+        before = self._snapshot_dir_files(canon)
+        with mock.patch("build_ipl_loader_g5._canonical_dev_dir",
+                         return_value=canon, create=True):
+            with self.assertRaises(ValueError):
+                self.build(self.fake_base, canon, SEL, "debug", self.VARIANT)
+        self.assertEqual(self._snapshot_dir_files(canon), before)
+        self.assertEqual((canon / "sentinel.txt").read_bytes(), b"CANONICAL-SENTINEL")
+
+    def test_canonical_dev_dir_spellings_refused(self):
+        # MAJOR-1 spellings: relative path, ".", ".." and symlink alias
+        # of the canonical dir are refused without creating anything.
+        from unittest import mock
+        canon = self._mock_canonical_dir("canonspell")
+        before = self._snapshot_dir_files(canon)
+        rel = Path(os.path.relpath(str(canon), str(Path.cwd())))
+        spellings = [
+            rel,
+            canon / "." / ".." / canon.name,
+            canon / "sub" / "..",
+        ]
+        alias = self.work / "canonalias"
+        alias.symlink_to(canon, target_is_directory=True)
+        spellings.append(alias)
+        with mock.patch("build_ipl_loader_g5._canonical_dev_dir",
+                         return_value=canon, create=True):
+            for spelling in spellings:
+                with self.subTest(spelling=str(spelling)):
+                    with self.assertRaises(ValueError):
+                        self.build(self.fake_base, spelling, SEL, "debug", self.VARIANT)
+        self.assertEqual(self._snapshot_dir_files(canon), before)
+        self.assertEqual((canon / "sentinel.txt").read_bytes(), b"CANONICAL-SENTINEL")
+        self.assertTrue(alias.is_symlink())
+
+    def test_foreign_part_like_files_preserved(self):
+        # MEDIUM-2: only this run's own temp files may be cleaned. A foreign
+        # file (or link) that merely matches the part pattern must survive
+        # a successful build byte-identical.
+        out = self.work / "foreign-part"
+        out.mkdir()
+        foreign = out / f"dev-ipl-loader-g5-not-compatible-{self.VARIANT}.pce.part-foreign.tmp"
+        foreign.write_bytes(b"FOREIGN-NOT-OURS")
+        ext, sentinel = self._sentinel_dir("ext-partlink")
+        link = out / f"manifest-{self.VARIANT}-g5.json.part-link.tmp"
+        link.symlink_to(sentinel)
+        rom, _ = self.build(self.fake_base, out, SEL, "debug", self.VARIANT)
+        self.assertTrue(rom.is_file())
+        self.assertEqual(foreign.read_bytes(), b"FOREIGN-NOT-OURS")
+        self.assertTrue(link.is_symlink())
+        self._assert_untouched(ext, sentinel)
+
     def test_unsafe_variants_refused_before_any_write(self):
         bad = ["../outside", "a/b", "a\\b", "/tmp/outside.pce",
                "C:\\outside", "C:/outside", "\\\\server\\share",
@@ -529,13 +592,21 @@ class IplLoaderG5OutputSafetyTest(unittest.TestCase):
         self.assertEqual(hashlib.sha256(rom2.read_bytes()).hexdigest(), sha1)
 
     def test_failed_verification_leaves_no_rom(self):
-        # MEDIUM-2: the final image is verified in memory before any disk
-        # write. Force the API-area check to fail and prove that no .pce,
+        # MEDIUM-2/MEDIUM-1: the final image is verified in memory before any
+        # disk write. Corrupt the RESET symbol (a check that runs AFTER the
+        # ROM write in the old implementation) and prove that no .pce,
         # manifest or trace labels are published (RED on code that writes
         # the ROM first and verifies afterwards).
         from unittest import mock
+        from build_dev_ipl_loader_bios import parse_labels as real_parse  # noqa: E402
+
+        def bad_parse(labels_path, names):
+            syms = dict(real_parse(labels_path, names))
+            syms["reset"] = 0xE000
+            return syms
+
         out = self.work / "romfail-fresh"
-        with mock.patch("build_ipl_loader_g5.unified_api_windows", return_value=set()):
+        with mock.patch("build_ipl_loader_g5.parse_labels", side_effect=bad_parse):
             with self.assertRaises(ValueError):
                 self.build(self.fake_base, out, SEL, "debug", self.VARIANT)
         for leaf in (f"dev-ipl-loader-g5-not-compatible-{self.VARIANT}.pce",
@@ -546,15 +617,24 @@ class IplLoaderG5OutputSafetyTest(unittest.TestCase):
         self.assertEqual(self._part_files(out), [])
 
     def test_failed_verification_preserves_existing_rom(self):
-        # MEDIUM-2: a failed rebuild must not destroy the previous good
-        # ROM/manifest/trace labels.
+        # MEDIUM-2 (+MEDIUM-1 injection): a failed rebuild must not destroy
+        # the previous good ROM/manifest/trace labels. The corrupted RESET
+        # symbol fails the vector/RESET contract check -- after the ROM
+        # write in the old implementation, before any write in the new one.
         from unittest import mock
+        from build_dev_ipl_loader_bios import parse_labels as real_parse  # noqa: E402
+
+        def bad_parse(labels_path, names):
+            syms = dict(real_parse(labels_path, names))
+            syms["reset"] = 0xE000
+            return syms
+
         out = self.work / "romfail-keep"
         rom1, _ = self.build(self.fake_base, out, SEL, "debug", self.VARIANT)
         self.assertTrue(rom1.is_file())
         finals = self._final_names()
         before = {name: (out / name).read_bytes() for name in finals}
-        with mock.patch("build_ipl_loader_g5.unified_api_windows", return_value=set()):
+        with mock.patch("build_ipl_loader_g5.parse_labels", side_effect=bad_parse):
             with self.assertRaises(ValueError):
                 self.build(self.fake_base, out, SEL, "debug", self.VARIANT)
         for name in finals:

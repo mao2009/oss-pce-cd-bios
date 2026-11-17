@@ -130,6 +130,11 @@ def _same_directory(first, second):
             == os.path.normcase(os.path.realpath(second)))
 
 
+def _canonical_dev_dir(mode: str) -> Path:
+    """The canonical normal DEV ROM output directory for `mode`. Pure path (no IO)."""
+    return ROOT / "build" / mode / "bios-dev"
+
+
 def _refuse_unsafe_output_dir(output):
     """Refuse a symlinked or non-directory output before mkdir (R1)."""
     if os.path.lexists(output):
@@ -194,29 +199,6 @@ def _atomic_write(path: Path, data: bytes):
         except OSError:
             pass
         raise
-
-
-def _cleanup_part_files(output: Path, final_names) -> None:
-    """Remove stale `*.part-*.tmp` files from killed builds (unlink only).
-
-    Only entries exactly matching our own `<final>.part-*.tmp` pattern are
-    touched, and unlink() never follows a link target, so a planted name is
-    removed (fail-safe) rather than written through. Called after the output
-    directory itself is validated.
-    """
-    try:
-        children = sorted(output.iterdir())
-    except OSError:
-        return
-    for child in children:
-        name = child.name
-        for final in final_names:
-            if name.startswith(final + ".part-") and name.endswith(".tmp"):
-                try:
-                    os.unlink(child)
-                except OSError:
-                    pass
-                break
 
 
 def _g5_leaf_names(variant: str) -> list:
@@ -392,10 +374,16 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
             raise ValueError("G5 IPL loader toolchain is not the pinned cc65 build")
     output = Path(output)
     # R3: refuse the normal DEV ROM directory before any output write.
-    # Realpath comparison covers spelling variants, "..", relative paths
-    # and symlink aliases; the input ROM and its manifest are left untouched.
+    # Both the input ROM's own directory and the canonical project output
+    # directory (ROOT/build/<mode>/bios-dev) are guarded: a temp copy used
+    # as input must not re-open the canonical tree. Realpath comparison
+    # covers spellings, "..", relative paths and symlink aliases; the input
+    # ROM and its manifest are left untouched.
     if _same_directory(output, Path(original_path).parent):
         raise ValueError("G5 IPL loader output must not be the normal DEV ROM directory "
+                         "(it would replace the normal DEV manifest)")
+    if _same_directory(output, _canonical_dev_dir(mode)):
+        raise ValueError("G5 IPL loader output must not be the canonical normal DEV ROM directory "
                          "(it would replace the normal DEV manifest)")
     # R1: refuse a symlinked or non-directory output before mkdir.
     _refuse_unsafe_output_dir(output)
@@ -405,9 +393,6 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
     for leaf in _g5_leaf_names(variant):
         _refuse_symlink(output / leaf)
     output.mkdir(parents=True, exist_ok=True)
-    _cleanup_part_files(output, (f"{ROM_STEM}-{variant}.pce",
-                                   f"manifest-{variant}-g5.json",
-                                   f"trace-labels-{variant}-g5.txt"))
     # Labels for the loader/proto/link/glue objects must survive in release
     # mode too: `reset`/`irq_stub`/etc. are local labels, and the pinned
     # linker only emits them to the -Ln file with debug info. `-g` never
