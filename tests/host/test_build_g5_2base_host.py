@@ -9,6 +9,28 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class Build2BaseHostTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        # Self-contained: build the DEV ROM into a private temp dir so the
+        # suite never depends on a repo build/ tree (CI runs host tests
+        # without a prior `make dev-rom`).
+        import sys
+        import tempfile
+        sys.path[:0] = [str(ROOT / "tools")]
+        from unittest.mock import patch
+        import build_rom
+        cls._tmp = tempfile.TemporaryDirectory(prefix="pce-2base-devrom-")
+        out = Path(cls._tmp.name) / "dev"
+        with patch("sys.argv", ["build_rom.py", "--mode", "debug",
+                                  "--output", str(out)]):
+            assert build_rom.main() == 0
+        cls.orig = out / "dev-only-not-compatible-syscard3.pce"
+        assert cls.orig.is_file()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmp.cleanup()
+
     def test_sources_exist(self):
         self.assertTrue((ROOT / "src" / "cd_base_2base.s").is_file())
         self.assertTrue((ROOT / "tools" / "build_ipl_loader_g5_2base.py").is_file())
@@ -41,26 +63,23 @@ class Build2BaseHostTests(unittest.TestCase):
             (out / f"cd_base_2base_victim.o").symlink_to("/etc/hostname")
             with self.assertRaises(ValueError):
                 b2.build_ipl_loader_g5_rom(
-                    ROOT / "build" / "debug" / "bios-dev" / "dev-only-not-compatible-syscard3.pce",
-                    out, 0x109, "debug", "victim", ["-D", "IPL_PUBLIC"],
-                    track=2, private_input=False)
+                    self.orig, out, 0x109, "debug", "victim",
+                    ["-D", "IPL_PUBLIC"], track=2, private_input=False)
 
     def test_rebuild_is_deterministic(self):
         # A-4: two fresh builds from current sources are byte-identical
         # (no stale-ROM reuse can mask a source change).
         import sys
         import tempfile
+        import hashlib
         sys.path[:0] = [str(ROOT / "tools")]
         import build_ipl_loader_g5_2base as b2
-        orig = ROOT / "build" / "debug" / "bios-dev" / "dev-only-not-compatible-syscard3.pce"
-        self.assertTrue(orig.is_file(), "run make dev-rom first")
         digests = []
         for tag in ("det-a", "det-b"):
             with tempfile.TemporaryDirectory(prefix="pce-2base-det-") as td:
                 rom, _ = b2.build_ipl_loader_g5_rom(
-                    orig, Path(td), 0x109, "debug", tag, ["-D", "IPL_PUBLIC"],
-                    track=2, private_input=False)
-                import hashlib
+                    self.orig, Path(td), 0x109, "debug", tag,
+                    ["-D", "IPL_PUBLIC"], track=2, private_input=False)
                 digests.append(hashlib.sha256(rom.read_bytes()).hexdigest())
         self.assertEqual(digests[0], digests[1])
 
