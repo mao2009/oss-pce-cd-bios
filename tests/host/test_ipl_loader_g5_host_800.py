@@ -543,6 +543,7 @@ class IplLoaderG5OutputSafetyTest(unittest.TestCase):
                      f"trace-labels-{self.VARIANT}-g5.txt"):
             self.assertFalse((out / leaf).exists(),
                              f"{leaf} must not be published when verification fails")
+        self.assertEqual(self._part_files(out), [])
 
     def test_failed_verification_preserves_existing_rom(self):
         # MEDIUM-2: a failed rebuild must not destroy the previous good
@@ -551,9 +552,7 @@ class IplLoaderG5OutputSafetyTest(unittest.TestCase):
         out = self.work / "romfail-keep"
         rom1, _ = self.build(self.fake_base, out, SEL, "debug", self.VARIANT)
         self.assertTrue(rom1.is_file())
-        finals = (f"dev-ipl-loader-g5-not-compatible-{self.VARIANT}.pce",
-                  f"manifest-{self.VARIANT}-g5.json",
-                  f"trace-labels-{self.VARIANT}-g5.txt")
+        finals = self._final_names()
         before = {name: (out / name).read_bytes() for name in finals}
         with mock.patch("build_ipl_loader_g5.unified_api_windows", return_value=set()):
             with self.assertRaises(ValueError):
@@ -561,6 +560,62 @@ class IplLoaderG5OutputSafetyTest(unittest.TestCase):
         for name in finals:
             self.assertEqual((out / name).read_bytes(), before[name],
                              f"{name} must survive a failed rebuild")
+        self.assertEqual(self._part_files(out), [])
+
+    def _final_names(self):
+        return (f"dev-ipl-loader-g5-not-compatible-{self.VARIANT}.pce",
+                f"manifest-{self.VARIANT}-g5.json",
+                f"trace-labels-{self.VARIANT}-g5.txt")
+
+    def _part_files(self, out):
+        return sorted(p.name for p in out.iterdir()
+                      if ".part-" in p.name and p.name.endswith(".tmp"))
+
+    def test_final_publish_atomic_on_replace_failure(self):
+        # A mid-publish failure (os.replace raising, e.g. ENOSPC/permission)
+        # must leave the previous finals intact and no temp files behind.
+        from unittest import mock
+        out = self.work / "atomic-keep"
+        rom1, _ = self.build(self.fake_base, out, SEL, "debug", self.VARIANT)
+        self.assertTrue(rom1.is_file())
+        finals = self._final_names()
+        before = {name: (out / name).read_bytes() for name in finals}
+        with mock.patch.object(os, "replace", side_effect=OSError("ENOSPC")):
+            with self.assertRaises(OSError):
+                self.build(self.fake_base, out, SEL, "debug", self.VARIANT)
+        for name in finals:
+            self.assertEqual((out / name).read_bytes(), before[name],
+                             f"{name} must survive a failed publish")
+        self.assertEqual(self._part_files(out), [])
+
+    def test_final_publish_atomic_on_fresh_dir_replace_failure(self):
+        # Same as above but with no previous files: nothing is published.
+        from unittest import mock
+        out = self.work / "atomic-fresh"
+        with mock.patch.object(os, "replace", side_effect=OSError("ENOSPC")):
+            with self.assertRaises(OSError):
+                self.build(self.fake_base, out, SEL, "debug", self.VARIANT)
+        for name in self._final_names():
+            self.assertFalse((out / name).exists(),
+                             f"{name} must not be published when replace fails")
+        self.assertEqual(self._part_files(out), [])
+
+    def test_tmp_cleaned_on_write_failure(self):
+        # A failure during the temp-file write (fsync raising) must unlink
+        # the partial temp file and preserve the previous finals.
+        from unittest import mock
+        out = self.work / "atomic-write-fail"
+        rom1, _ = self.build(self.fake_base, out, SEL, "debug", self.VARIANT)
+        self.assertTrue(rom1.is_file())
+        finals = self._final_names()
+        before = {name: (out / name).read_bytes() for name in finals}
+        with mock.patch.object(os, "fsync", side_effect=OSError("EIO")):
+            with self.assertRaises(OSError):
+                self.build(self.fake_base, out, SEL, "debug", self.VARIANT)
+        for name in finals:
+            self.assertEqual((out / name).read_bytes(), before[name],
+                             f"{name} must survive a failed temp write")
+        self.assertEqual(self._part_files(out), [])
 
 
 if __name__ == "__main__":

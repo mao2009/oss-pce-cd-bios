@@ -47,6 +47,7 @@ import re
 import stat
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 if __package__:
@@ -162,6 +163,60 @@ def _refuse_unsafe_variant(variant):
         raise ValueError(f"variant must be at most {_VARIANT_MAX_LEN} characters: {variant!r}")
     if _VARIANT_RE.fullmatch(variant) is None:
         raise ValueError(f"variant must match [A-Za-z0-9_-]+: {variant!r}")
+
+
+def _atomic_write(path: Path, data: bytes):
+    """Publish `path` without ever truncating the previous file. Fail-closed.
+
+    Writes to a fresh mkstemp file in the same directory (O_EXCL: a planted
+    name can only fail the build, never redirect the write), fsyncs, then
+    atomically replaces the target with os.replace. A mid-write failure
+    (e.g. ENOSPC) leaves the previous file intact and unlinks the partial
+    temp file. Each file is complete-or-absent; multi-file atomicity across
+    the rom/manifest/trace set is NOT guaranteed (documented residual limit).
+    """
+    _refuse_symlink(path)
+    parent = path.parent
+    prefix, suffix = path.name + ".part-", ".tmp"
+    fd, tmp_name = tempfile.mkstemp(dir=str(parent), prefix=prefix, suffix=suffix)
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(tmp, 0o644)
+        _refuse_symlink(path)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _cleanup_part_files(output: Path, final_names) -> None:
+    """Remove stale `*.part-*.tmp` files from killed builds (unlink only).
+
+    Only entries exactly matching our own `<final>.part-*.tmp` pattern are
+    touched, and unlink() never follows a link target, so a planted name is
+    removed (fail-safe) rather than written through. Called after the output
+    directory itself is validated.
+    """
+    try:
+        children = sorted(output.iterdir())
+    except OSError:
+        return
+    for child in children:
+        name = child.name
+        for final in final_names:
+            if name.startswith(final + ".part-") and name.endswith(".tmp"):
+                try:
+                    os.unlink(child)
+                except OSError:
+                    pass
+                break
 
 
 def _g5_leaf_names(variant: str) -> list:
@@ -350,6 +405,9 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
     for leaf in _g5_leaf_names(variant):
         _refuse_symlink(output / leaf)
     output.mkdir(parents=True, exist_ok=True)
+    _cleanup_part_files(output, (f"{ROM_STEM}-{variant}.pce",
+                                   f"manifest-{variant}-g5.json",
+                                   f"trace-labels-{variant}-g5.txt"))
     # Labels for the loader/proto/link/glue objects must survive in release
     # mode too: `reset`/`irq_stub`/etc. are local labels, and the pinned
     # linker only emits them to the -Ln file with debug info. `-g` never
@@ -428,10 +486,11 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
         raise ValueError("$4A table entry changed; SIMULATED control must stay separate")
     # MEDIUM-2: build the final image in memory and verify it BEFORE any
     # disk write. A failed verification leaves no .pce behind and never
-    # touches a previous good ROM/manifest/trace. Writes are sequential, so
-    # multi-file atomicity is NOT guaranteed (a crash between files can leave
-    # a mixed set); each file is complete-or-absent, never partial, because
-    # write_bytes/write_text either succeed or raise before publishing.
+    # touches a previous good ROM/manifest/trace. Each final file is then
+    # published via temp-file + atomic replace (never truncated in place),
+    # so a mid-write failure keeps the previous file intact. Writes are
+    # sequential, so multi-file atomicity is NOT guaranteed (a crash between
+    # files can leave a mixed set); each file is complete-or-absent.
     data = bytes(patched) + b"\xff" * (IMAGE_BYTES - BANK_BYTES)
     if len(data) != IMAGE_BYTES or data[BANK_BYTES:] != b"\xff" * (IMAGE_BYTES - BANK_BYTES):
         raise ValueError("G5 image changed size or unused banks")
@@ -458,7 +517,7 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
     for leaf in (rom_name, manifest_name, trace_name):
         _refuse_symlink(output / leaf)
     rom = output / rom_name
-    rom.write_bytes(data)
+    _atomic_write(rom, data)
     link_labels = {
         "api_slot_02": symbols["api_slot_02"],
         "api_slot_03": symbols["api_slot_03"],
@@ -474,11 +533,10 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
     }
     manifest = g5_manifest(sel, track, mode, variant, canon_defines, data, symbols,
                            link_labels, rom.name, private_input=private_input)
-    (output / manifest_name).write_text(
-        json.dumps(manifest, indent=2, sort_keys=True) + "\n")
-    (output / trace_name).write_text(
-        "".join(f"{name} {value:04x}\n" for name, value in symbols.items()),
-        encoding="ascii")
+    _atomic_write(output / manifest_name,
+                  json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8") + b"\n")
+    lines = "".join(f"{name} {value:04x}\n" for name, value in symbols.items())
+    _atomic_write(output / trace_name, lines.encode("ascii"))
     return rom, symbols
 
 
