@@ -175,70 +175,20 @@ ERR_TRACK = $15
 .endmacro
 
 ; Save/restore the zero-page scratch window $00F0-$00FD (14 bytes) used by
-; BCD conversion and 16/24-bit math below. Pushed after SAVE_INPUTS on
-; entry, popped (RESTORE_ZP) before RESTORE_INPUTS on every exit, so the
-; routine is net-zero on both windows. Order fixed ($00F0 first).
+; BCD conversion and 16/24-bit math below. Inline X-indexed loops keep the
+; 8 KiB bank0 budget (~10 bytes per site); a jsr-subroutine form is WRONG
+; here (a save-sub would have to rts past its own pushes). A/X/flags are
+; scratch here (caller regs pushed before SAVE_ZP runs; exits set A/C
+; explicitly after the restores; Y snapshot kept in Y throughout).
 .macro SAVE_ZP
-    lda $00F0
+    ldx #$00
+@svS: lda $00F0,x
     pha
-    lda $00F1
-    pha
-    lda $00F2
-    pha
-    lda $00F3
-    pha
-    lda $00F4
-    pha
-    lda $00F5
-    pha
-    lda $00F6
-    pha
-    lda $00F7
-    pha
-    lda $00F8
-    pha
-    lda $00F9
-    pha
-    lda $00FA
-    pha
-    lda $00FB
-    pha
-    lda $00FC
-    pha
-    lda $00FD
-    pha
+    inx
+    cpx #$0E
+    bne @svS
 .endmacro
 
-.macro RESTORE_ZP
-    pla
-    sta $00FD
-    pla
-    sta $00FC
-    pla
-    sta $00FB
-    pla
-    sta $00FA
-    pla
-    sta $00F9
-    pla
-    sta $00F8
-    pla
-    sta $00F7
-    pla
-    sta $00F6
-    pla
-    sta $00F5
-    pla
-    sta $00F4
-    pla
-    sta $00F3
-    pla
-    sta $00F2
-    pla
-    sta $00F1
-    pla
-    sta $00F0
-.endmacro
 
 cd_base_2base_entry:
     php
@@ -757,7 +707,11 @@ cd_base_2base_entry:
 @success_none:
     lda #$00
     sta ST_LAST
-    RESTORE_ZP
+    ldx #$0D
+@rs0: pla
+    sta $00F0,x
+    dex
+    bpl @rs0
     RESTORE_INPUTS
     ply
     plx
@@ -769,7 +723,11 @@ cd_base_2base_entry:
 @success:
     lda #$00
     sta ST_LAST
-    RESTORE_ZP
+    ldx #$0D
+@rs1: pla
+    sta $00F0,x
+    dex
+    bpl @rs1
     RESTORE_INPUTS
     ply
     plx
@@ -781,7 +739,11 @@ cd_base_2base_entry:
 @err_mode:
     lda #ERR_MODE
     sta ST_LAST
-    RESTORE_ZP
+    ldx #$0D
+@rs2: pla
+    sta $00F0,x
+    dex
+    bpl @rs2
     RESTORE_INPUTS
     ply
     plx
@@ -793,7 +755,11 @@ cd_base_2base_entry:
 @err_addr:
     lda #ERR_ADDR
     sta ST_LAST
-    RESTORE_ZP
+    ldx #$0D
+@rs3: pla
+    sta $00F0,x
+    dex
+    bpl @rs3
     RESTORE_INPUTS
     ply
     plx
@@ -805,7 +771,11 @@ cd_base_2base_entry:
 @err_range:
     lda #ERR_RANGE
     sta ST_LAST
-    RESTORE_ZP
+    ldx #$0D
+@rs4: pla
+    sta $00F0,x
+    dex
+    bpl @rs4
     RESTORE_INPUTS
     ply
     plx
@@ -817,7 +787,11 @@ cd_base_2base_entry:
 @err_track:
     lda #ERR_TRACK
     sta ST_LAST
-    RESTORE_ZP
+    ldx #$0D
+@rs5: pla
+    sta $00F0,x
+    dex
+    bpl @rs5
     RESTORE_INPUTS
     ply
     plx
