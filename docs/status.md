@@ -1,4 +1,11 @@
-# Implementation status — 2026-11-13 G5 update and historical 2026-11-06 snapshot
+# Implementation status — 2026-11-18 G5 addendum, 2026-11-13 update and historical 2026-11-06 snapshot
+
+## 2026-11-18 addendum — main `04922be2`
+
+- Merged since 2026-11-13: [#799](https://github.com/mao2009/oss-pce-cd-bios/pull/799) (G5 DEV profile), [#801](https://github.com/mao2009/oss-pce-cd-bios/pull/801) (PUBLIC IPL loader, Issue #800 closed), [#803](https://github.com/mao2009/oss-pce-cd-bios/pull/803) (`$4A` SIMULATED diagnostic, Issue #793 stays open for the genuine-contract work), [#805](https://github.com/mao2009/oss-pce-cd-bios/pull/805) (CD_BASE 2-base, preservation Issue #804 stays open). Draft [#806](https://github.com/mao2009/oss-pce-cd-bios/pull/806) (CD_READ commercial FIRST mode) is **unmerged** with `verify-full` still pending and must not be confused with the merged link V1 on main.
+- Owner closed [#789](https://github.com/mao2009/oss-pce-cd-bios/issues/789) (matched-selection; PR #790 content verified in main) on 2026-11-18. Open: #802 (next commercial step), #806, #783/#777 (scope-overlap review candidates), #634 (this doc-sync parent).
+- Correction: the 2026-11-18 audit's commercial NOT_RUN statement is superseded by Owner-permitted observations recorded on [Issue #802](https://github.com/mao2009/oss-pce-cd-bios/issues/802): standard G5 image runs reached IPLJMP with API orders `$02 -> $33 -> $4A` and `$1E -> $4A`, halting at the unimplemented `$4A` stub (HISTORICALLY_OBSERVED); the #803 SIMULATED diagnostic advanced conditionally to `$23 -> $25` and `$02`/`$21` -> `$1C` stops (SIMULATED_NEXT_API). Genuine `$4A` ABI stays UNKNOWN/BLOCKED; G5_OBSERVED=false. No commercial media was re-read for this documentation change.
+- Ledger reading: 18/81 counts slots with a present `implementation` entry (`src/overrides/slot_*.s`, 18 files); all 81 rows keep `state: NOT_READY` pending owner approval (DEV_CALLABLE 0). The two figures are different axes, not a contradiction. See the [2026-11-18 evidence addendum](g5-evidence-2026-11-18.md) for the variant ledger and the full evidence taxonomy.
 
 ## 2026-11-13 G5 update — merged on main `faad5170`
 
@@ -30,7 +37,7 @@ Derived from `spec/dev_implementations.json`, `src/overrides/slot_*.s` and `spec
 | Commercial BIOS-mediated boots | **0 demonstrated** | No retail-title compatibility established |
 | Firmware release | **`release_eligible: false`** | Release gates intentionally refuse publication |
 
-The 17 installed development routines are `EX_GETVER` ($1E), `EX_JOYSNS` ($21), `EX_JOYREP` ($22), `EX_SCRSIZ` ($23), `EX_BGON` ($2E), `EX_SETWRT` ($3A), `EX_BINBCD` ($3C), `EX_BCDBIN` ($3D), `EX_RND` ($3E), `MA_MUL8U` ($3F), `MA_MUL8S` ($40), `MA_MUL16U` ($41), `MA_DIV16S` ($42), `MA_DIV16U` ($43), `MA_SQRT` ($44), `MA_SIN` ($45), `MA_COS` ($46) and `MA_MUL16S` ($4F). Every routine has **DEV-only** evidence and no promotion to reference ABI VERIFIED.
+The 18 installed development routines are `EX_GETVER` ($1E), `EX_JOYSNS` ($21), `EX_JOYREP` ($22), `EX_SCRSIZ` ($23), `EX_BGON` ($2E), `EX_SETWRT` ($3A), `EX_BINBCD` ($3C), `EX_BCDBIN` ($3D), `EX_RND` ($3E), `MA_MUL8U` ($3F), `MA_MUL8S` ($40), `MA_MUL16U` ($41), `MA_DIV16S` ($42), `MA_DIV16U` ($43), `MA_SQRT` ($44), `MA_SIN` ($45), `MA_COS` ($46) and `MA_MUL16S` ($4F). Every routine has **DEV-only** evidence and no promotion to reference ABI VERIFIED.
 ## Boot and media paths
 
 | Target | Verified scope | Not established |
