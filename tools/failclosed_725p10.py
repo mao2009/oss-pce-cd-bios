@@ -360,17 +360,33 @@ def _audit_verdict_reads(loader) -> list[tuple[str, str]]:
         _record("read", str(self))
         return orig_path_open(self, *args, **kwargs)
 
+    def _opener_present(args, kwargs):
+        # opener is the 8th parameter of both builtins.open and io.open
+        # (file, mode, buffering, encoding, errors, newline, closefd,
+        # opener), verified against the runtime signatures; it may arrive
+        # by keyword or by position. opener=None is the normal path.
+        if kwargs.get("opener", None) is not None:
+            return True
+        return len(args) > 6 and args[6] is not None
+
     def _builtin_open(file, *args, **kwargs):
         # A custom opener can redirect the read independently of the path
         # string; it cannot be resolved safely here, so fail closed.
-        if kwargs.get("opener", None) is not None:
+        # An int fd is likewise unresolvable to a path: fail closed.
+        if _opener_present(args, kwargs):
             records.append(("read", "<custom-opener>"))
+        if isinstance(file, int):
+            records.append(("read", "<int-fd-read>"))
+            return orig_builtin_open(file, *args, **kwargs)
         _record("read", file)
         return orig_builtin_open(file, *args, **kwargs)
 
     def _io_open(file, *args, **kwargs):
-        if kwargs.get("opener", None) is not None:
+        if _opener_present(args, kwargs):
             records.append(("read", "<custom-opener>"))
+        if isinstance(file, int):
+            records.append(("read", "<int-fd-read>"))
+            return orig_io_open(file, *args, **kwargs)
         _record("read", file)
         return orig_io_open(file, *args, **kwargs)
 
@@ -386,11 +402,22 @@ def _audit_verdict_reads(loader) -> list[tuple[str, str]]:
         _record("read", path)
         return orig_os_open(path, *args, **kwargs)
 
+    def _dir_fd_present(kwargs):
+        # os.stat/os.lstat take dir_fd keyword-only; a non-default dir_fd
+        # redirects relative paths to another directory, so the recorded
+        # string alone cannot identify the real target: fail closed.
+        # follow_symlinks and other flags pass through unchanged.
+        return kwargs.get("dir_fd", None) is not None
+
     def _os_stat(path, *args, **kwargs):
+        if _dir_fd_present(kwargs):
+            records.append(("stat", "<dir_fd-relative-stat>"))
         _record("stat", path)
         return orig_os_stat(path, *args, **kwargs)
 
     def _os_lstat(path, *args, **kwargs):
+        if _dir_fd_present(kwargs):
+            records.append(("stat", "<dir_fd-relative-stat>"))
         _record("stat", path)
         return orig_os_lstat(path, *args, **kwargs)
 
@@ -529,7 +556,11 @@ def check_synthetic_host_docs_non_promotion() -> list[str]:
     recorded at call time (catching direct, dynamically built and
     helper-indirected paths on every occurrence) and must contain no
     forbidden docs//build//rom//test-result input while every
-    canonically-resolved data read stays allowlisted. Scope: the audit
+    canonically-resolved data read stays allowlisted. Reads are recorded
+    with their call-time canonical location, so a later chdir cannot
+    re-target them; non-default os.stat/os.lstat dir_fd, custom openers
+    (keyword or positional) and unresolvable int-fd opens are fail-closed
+    markers, never silently allowed. Scope: the audit
     covers only the executed path through the monitored APIs — preopened-FD
     reads, mmap, subprocess reads, directory enumeration, unexecuted future
     code paths and OS traffic outside the monitored set are not observed,

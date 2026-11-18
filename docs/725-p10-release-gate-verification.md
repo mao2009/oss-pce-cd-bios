@@ -35,7 +35,7 @@ Ran (host-only, synthetic fixtures only, no cc65 required for this gate):
 * `python3 tools/failclosed_gate.py --check` → exit 0, 8/8 PASS.
 * `python3 tools/failclosed_725p10.py --check` → exit 0, 3/3 PASS.
 * `python3 -m unittest discover -s tests/host -p 'test_725*'` → all PASS
-  (base 23 + P10 52).
+  (base 23 + P10 55).
 * `python3 tools/reference_jsr_gate.py --check` → exit 3 (BLOCKED convention),
   `BLOCKED: reference JSR execution gate closed for 81/81 slots; jsr_count=0`.
 * `python3 tools/build_rom.py --release-gate` → exit 3,
@@ -89,7 +89,7 @@ ledger writes, no unlock input):
   UNKNOWN/SOURCE_SUPPORTED, verification NOT_RUN, contract statuses
   UNKNOWN/HYPOTHESIS/BLOCKED.
 
-New tests `tests/host/test_725_p10_failclosed.py` (52 tests, host-only):
+New tests `tests/host/test_725_p10_failclosed.py` (55 tests, host-only):
 
 * GREEN on the committed tree for all three P10 checks plus base-gate
   regression and CLI `--check` (exit 0).
@@ -146,7 +146,7 @@ committed tree is GREEN (all gates pass). Mutants are never committed.
 | neutered detector (always-[]) | RED mutant tests FAIL | load-bearing proven (sensitivity test) |
 | `is_execution_permitted("SYNTHETIC PASS" / "host PASS" / "DOC_ONLY" / …)` | `False` for every look-alike | RED detected (all refused) |
 | Makefile `release:` stub broken (covered by base gate) | `release_makefile_guard` reports reasons | RED detected (base gate, not duplicated here) |
-| Committed tree: base 8/8 + P10 3/3 + host 75 tests (P10 52 + base 23) | exit 0, `release_eligible=false`, JSR 0/81 | GREEN |
+| Committed tree: base 8/8 + P10 3/3 + host 78 tests (P10 55 + base 23) | exit 0, `release_eligible=false`, JSR 0/81 | GREEN |
 
 ## 5. Future unlock procedure (independent review + Owner re-approval required)
 

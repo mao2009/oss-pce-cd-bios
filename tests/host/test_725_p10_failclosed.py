@@ -722,6 +722,110 @@ class P10InputClosureMutants(unittest.TestCase):
             self.assertNotIn(tmp, blob)
             self.assertIn("OSError", blob)
 
+    def test_stat_dir_fd_refused(self):
+        # MAJOR-1: os.stat/os.lstat with a non-default dir_fd cannot be
+        # resolved from the path string, so it is fail-closed even when the
+        # string looks allowlisted. Temp dummies only.
+        import os as _os
+        import tempfile
+        for api_name in ("stat", "lstat"):
+            with self.subTest(api=api_name):
+                with tempfile.TemporaryDirectory() as ext:
+                    (Path(ext) / "spec").mkdir()
+                    (Path(ext) / "spec" / "approval.json").write_text("{}\n")
+                    fd = _os.open(ext, _os.O_RDONLY | getattr(_os, "O_DIRECTORY", 0))
+                    try:
+                        # NOTE: the API is resolved inside mutant(), i.e.
+                        # inside the audit window, so the patched wrapper
+                        # (not a pre-window early binding) observes the call.
+                        def mutant(name=api_name):
+                            getattr(_os, name)("spec/approval.json", dir_fd=fd)
+
+                        forbidden, non_allowlisted = self._audit_with_mutant(mutant)
+                    finally:
+                        _os.close(fd)
+                self.assertTrue(
+                    any("dir_fd" in n for n in non_allowlisted),
+                    f"{api_name}: {forbidden} {non_allowlisted}")
+        # Control: the same stat without dir_fd on a committed allowlisted
+        # file is GREEN (detection fires on dir_fd, not on stat itself).
+        forbidden, non_allowlisted = self._audit_with_mutant(
+            lambda: _os.stat(str(ROOT / "Makefile")))
+        self.assertEqual((forbidden, non_allowlisted), ([], []))
+
+    def test_positional_opener_refused(self):
+        # MAJOR-2: opener by position (8th arg of open/io.open) is detected
+        # like the keyword form. An allowlisted-looking path with a custom
+        # opener redirecting outside is refused via the opener marker.
+        import io as _io
+        import os as _os
+        import tempfile
+        with tempfile.TemporaryDirectory() as ext:
+            outside = Path(ext) / "evil.json"
+            outside.write_text("{}\n")
+            readers = {
+                "builtins.open/kw":
+                    lambda fd: open("spec/approval.json", opener=lambda p, fl: fd),
+                "builtins.open/pos":
+                    lambda fd: open("spec/approval.json", "r", -1, None, None,
+                                    None, True, lambda p, fl: fd),
+                "io.open/kw":
+                    lambda fd: _io.open("spec/approval.json", opener=lambda p, fl: fd),
+                "io.open/pos":
+                    lambda fd: _io.open("spec/approval.json", "r", -1, None, None,
+                                        None, True, lambda p, fl: fd),
+            }
+            for name, reader in readers.items():
+                with self.subTest(api=name):
+                    # Fresh fd per subtest: closing the opened file consumes it.
+                    redirect = _os.open(str(outside), _os.O_RDONLY)
+                    try:
+                        def mutant():
+                            try:
+                                reader(redirect).close()
+                            except OSError:
+                                pass
+
+                        forbidden, non_allowlisted = self._audit_with_mutant(mutant)
+                    finally:
+                        try:
+                            _os.close(redirect)
+                        except OSError:
+                            pass
+                    self.assertTrue(
+                        any("custom-opener" in n for n in non_allowlisted),
+                        f"{name}: {forbidden} {non_allowlisted}")
+        # Controls: opener=None stays on the normal path.
+        with tempfile.TemporaryDirectory() as ext:
+            target = Path(ext) / "plain.txt"
+            target.write_text("ok\n")
+            forbidden, non_allowlisted = self._audit_with_mutant(
+                lambda: open(str(target), opener=None).close())
+            self.assertTrue(
+                any("outside repository allowlist" in n for n in non_allowlisted))
+            self.assertFalse(any("custom-opener" in n for n in non_allowlisted))
+
+    def test_int_fd_open_refused(self):
+        # An int fd cannot be resolved to a path: fail closed, not ignored.
+        # (os.read itself is outside the monitored open set per the
+        # documented scope; opening by int fd inside the window is flagged.)
+        import os as _os
+        import tempfile
+        with tempfile.TemporaryDirectory() as ext:
+            target = Path(ext) / "g.txt"
+            target.write_text("y\n")
+            fd = _os.open(str(target), _os.O_RDONLY)
+            try:
+                forbidden, non_allowlisted = self._audit_with_mutant(
+                    lambda: open(fd, "rb").close())
+            finally:
+                try:
+                    _os.close(fd)
+                except OSError:
+                    pass
+        self.assertTrue(any("int-fd" in n for n in non_allowlisted),
+                        (forbidden, non_allowlisted))
+
     def test_no_absolute_paths_in_messages(self):
         # Findings must not leak absolute filesystem paths (tmpdirs, homes).
         import tempfile
