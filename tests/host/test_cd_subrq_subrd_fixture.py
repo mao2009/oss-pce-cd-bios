@@ -2,16 +2,20 @@
 
 Synthetic only: the medium (data track 1 + audio track 2) and every expected value are author-defined model
 expectations, not measured device or System Card behaviour. The single grounded query kind (``current_q``) is
-author-defined; any other request string is an unmodelled call mode and stays UNKNOWN, never a refusal or an
-acceptance. No emulator runs, no reference BIOS is read or called (reference_jsr_count = 0), and nothing
-under ./rom/ is touched. This is a synthetic model judgment, not a real-device PASS. Passing these tests
-validates only this fixture and its judge. The fixture stays BLOCKED_ABI and release_eligible=false, and must
-not be wired into any build, ROM or callable entry.
+an unverified author choice (HYPOTHESIS); no public source proves it is a real CD_SUBRQ/CD_SUBRD call mode
+and Issue #272 grounded-kind acceptance remains open. Any other request string is an unmodelled call mode;
+when the query reaches the request-kind check it returns UNKNOWN, never a refusal or an acceptance.
+Earlier precedence (malformed control flag, callee dependence, no medium, malformed medium, malformed
+query) may return a different verdict first. No emulator runs, no reference BIOS is read or called
+(reference_jsr_count = 0), and nothing under ./rom/ is touched. This is a synthetic model judgment,
+not a real-device PASS. Passing these tests validates only this fixture and its judge. The fixture stays
+BLOCKED_ABI and release_eligible=false, and must not be wired into any build, ROM or callable entry.
 
 The global candidate-string occurrence check used by sibling fixtures is intentionally not repeated here:
 $0D/$E027/CD_SUBRQ/CD_SUBRD already have legitimate pre-existing references (slot ledger, scenario table,
-Issue #271 conflict tests). Instead the wiring tests below pin the fixture filename (only this test may
-reference it) and the absence of build/ROM/callable markers.
+Issue #271 conflict tests). Instead the literal-reference check below pins the fixture filename in tracked
+content (only this test may reference it) and the absence of build/ROM/callable markers; it does not
+prove that a glob-based build rule could never select the file.
 """
 import hashlib
 import json
@@ -24,7 +28,7 @@ FIXTURE_REL = "tests/fixtures/cdsubrq-subrd-slot0d-cases.json"
 FIXTURE = ROOT / FIXTURE_REL
 SELF_REL = "tests/host/test_cd_subrq_subrd_fixture.py"
 # sha256 of the canonical JSON (sort_keys, compact separators, UTF-8). Editing the fixture requires updating it here.
-FIXTURE_SHA256 = "cd5f198044aefae8979237a5078db464f66ee9f2c8e8a3ee999a6e55b991adee"
+FIXTURE_SHA256 = "39db6e7eb5320d17035db6d075ba3c857d7618f72d927ce547c37d41d246c9d1"
 POSITIVE, NEGATIVE, UNKNOWN, BLOCKED = "POSITIVE", "NEGATIVE", "UNKNOWN", "BLOCKED"
 TOP_LEVEL_KEYS = {"schema", "issue", "parent_issue", "slot", "entry_candidate", "candidate_name", "abi_status",
                   "release_eligible", "execution", "provenance", "callee_abi", "medium", "io_range",
@@ -35,14 +39,14 @@ GROUNDED_REQUEST = "current_q"
 TRACK_TYPES = ("data", "audio")
 POSITIVE_IDS = {"pos_t1_start", "pos_t1_end", "pos_t2_start", "pos_t2_mid", "pos_t2_end"}
 NEGATIVE_IDS = {"neg_nomedium", "neg_no_such_track", "neg_track_zero", "neg_track_mismatch", "neg_before_track2",
-                "neg_past_leadout", "neg_negative_lba", "neg_bool_track", "neg_float_lba", "neg_string_lba",
-                "neg_none_track", "neg_bool_lba"}
+                "neg_track1_past_end", "neg_past_leadout", "neg_negative_lba", "neg_bool_track", "neg_float_lba",
+                "neg_string_lba", "neg_none_track", "neg_bool_lba"}
 UNKNOWN_IDS = {"unk_request_stream", "unk_request_cached"}
 BLOCKED_IDS = {"blocked_callee_args", "blocked_callee_nomedium"}
 # Negatives/unknowns/blocked that the deliberately lenient judge wrongly accepts (must be exactly these).
-LENIENT_CAUGHT_IDS = {"neg_track_mismatch", "neg_before_track2", "neg_past_leadout", "neg_bool_track",
-                      "neg_float_lba", "neg_string_lba", "neg_bool_lba", "unk_request_stream",
-                      "unk_request_cached", "blocked_callee_args"}
+LENIENT_CAUGHT_IDS = {"neg_track_mismatch", "neg_before_track2", "neg_track1_past_end", "neg_past_leadout",
+                      "neg_bool_track", "neg_float_lba", "neg_string_lba", "neg_bool_lba",
+                      "unk_request_stream", "unk_request_cached", "blocked_callee_args"}
 
 
 def canonical_sha256(data):
@@ -89,9 +93,10 @@ def judge(medium, query, present=True, needs_callee=False):
     """Reference judge: (verdict, detail, result). Never a PASS/VERIFIED verdict; ABI stays BLOCKED_ABI.
 
     Precedence (first matching rule decides): malformed control flag -> callee dependence ->
-    no medium -> malformed medium -> unmodelled request -> malformed track/LBA -> unknown track ->
-    LBA outside the track -> POSITIVE. Control flags must be plain bool; any other type is
-    UNKNOWN, never POSITIVE.
+    no medium -> malformed medium -> malformed query -> unmodelled request -> malformed track/LBA ->
+    unknown track -> LBA outside the track -> POSITIVE. Control flags must be plain bool and query
+    must be a dict; any other type is UNKNOWN, never POSITIVE. An unmodelled request returns UNKNOWN
+    only when it reaches the request-kind check; earlier rules may return another verdict first.
     """
     if type(present) is not bool or type(needs_callee) is not bool:
         return UNKNOWN, "malformed control flag: present and needs_callee must be plain bool", None
@@ -101,6 +106,8 @@ def judge(medium, query, present=True, needs_callee=False):
         return NEGATIVE, "no medium present", None
     if not _well_formed(medium):
         return UNKNOWN, "medium is outside the synthetic model", None
+    if not isinstance(query, dict):
+        return UNKNOWN, "malformed query: query must be a dict", None
     request = query.get("request")
     if request != GROUNDED_REQUEST:
         return UNKNOWN, "unmodelled call mode: only current_q is grounded", None
@@ -193,7 +200,8 @@ class CdSubrqSubrdSlot0dFixtureTests(unittest.TestCase):
         by_id = {c["id"]: c["expected"] for c in self.cases}
         for boundary in ("pos_t1_start", "pos_t1_end", "pos_t2_start", "pos_t2_end"):
             self.assertEqual(by_id[boundary], POSITIVE)
-        for boundary in ("neg_nomedium", "neg_track_zero", "neg_no_such_track", "neg_past_leadout"):
+        for boundary in ("neg_nomedium", "neg_track_zero", "neg_no_such_track", "neg_before_track2",
+                         "neg_track1_past_end", "neg_past_leadout"):
             self.assertEqual(by_id[boundary], NEGATIVE)
         self.assertEqual(self.fixture["query_model"]["grounded_request"], GROUNDED_REQUEST)
 
@@ -301,6 +309,33 @@ class CdSubrqSubrdSlot0dFixtureTests(unittest.TestCase):
         self.assertEqual(verdict, POSITIVE)
         self.assertIsNotNone(result)
 
+    def test_malformed_query_is_unknown_and_never_positive(self):
+        bad_queries = (None, [], "current_q", 1, True, 0.0, ("current_q",), b"current_q")
+        for bad in bad_queries:
+            with self.subTest(query=repr(bad)):
+                verdict, detail, result = judge(self.medium, bad)
+                self.assertEqual(verdict, UNKNOWN)
+                self.assertIsNone(result)
+                self.assertTrue(detail)
+        # Precedence: flags -> callee -> no-medium -> malformed medium -> malformed query.
+        verdict, detail, _ = judge(self.medium, None, present="bad")
+        self.assertEqual(verdict, UNKNOWN)
+        self.assertIn("control flag", detail)
+        verdict, _, _ = judge(self.medium, None, present=True, needs_callee=True)
+        self.assertEqual(verdict, BLOCKED)
+        verdict, _, _ = judge(self.medium, None, present=False, needs_callee=False)
+        self.assertEqual(verdict, NEGATIVE)
+        bad_medium = {"synthetic": True, "leadout_lba": 200, "tracks": []}
+        verdict, detail, _ = judge(bad_medium, None)
+        self.assertEqual(verdict, UNKNOWN)
+        self.assertIn("medium", detail)
+        # Sanity: valid dict query still reaches the request-kind and position checks.
+        verdict, _, _ = judge(self.medium, {"request": "stream_q", "track": 2, "lba": 150})
+        self.assertEqual(verdict, UNKNOWN)
+        verdict, _, result = judge(self.medium, {"request": "current_q", "track": 2, "lba": 150})
+        self.assertEqual(verdict, POSITIVE)
+        self.assertIsNotNone(result)
+
     def test_no_negative_case_is_accepted_and_lenient_judge_is_caught(self):
         accepted = [c["id"] for c in self.cases if c["expected"] != POSITIVE
                     and judge(self.medium, c, c.get("present", True),
@@ -319,7 +354,9 @@ class CdSubrqSubrdSlot0dFixtureTests(unittest.TestCase):
         self.assertEqual(row["mapping_status"], "HYPOTHESIS")
         self.assertEqual(row["verification"], {"status": "NOT_RUN", "executed_callee": False, "evidence": []})
 
-    def test_fixture_is_not_wired_into_build_rom_or_callable_entries(self):
+    def test_fixture_has_no_literal_reference_outside_self_and_no_callable_marker(self):
+        # Literal-reference scope only: git grep finds the filename string in tracked files; it cannot
+        # detect indirect build inclusion via globs or resolved build inputs. No build-system change here.
         self.assertNotIn("DEV_CALLABLE", FIXTURE.read_text(encoding="utf-8"))
         out = subprocess.run(["git", "-C", str(ROOT), "grep", "-l", "-F", "cdsubrq-subrd-slot0d", "--", "."],
                              capture_output=True, text=True)

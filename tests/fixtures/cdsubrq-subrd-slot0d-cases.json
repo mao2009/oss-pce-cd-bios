@@ -33,7 +33,7 @@
   },
   "query_model": {
     "grounded_request": "current_q",
-    "request_provenance": "author-defined: the only modelled Q-query kind; any other request string is an unmodelled call mode, not a refusal",
+    "request_provenance": "unverified author choice (HYPOTHESIS): no public source proves current_q is a real CD_SUBRQ/CD_SUBRD call mode; selected only to give the synthetic model one grounded kind; any other request string is an unmodelled call mode, not a refusal; do not treat as System Card ABI fact; Issue #272 grounded-kind acceptance remains open",
     "unmodelled_call_mode": "UNKNOWN",
     "callee_dependent": "BLOCKED_ABI"
   },
@@ -48,6 +48,7 @@
     {"id": "neg_track_zero", "request": "current_q", "track": 0, "lba": 100, "present": true, "needs_callee": false, "expected": "NEGATIVE", "reason": "track number zero is not a track"},
     {"id": "neg_track_mismatch", "request": "current_q", "track": 1, "lba": 150, "present": true, "needs_callee": false, "expected": "NEGATIVE", "reason": "LBA lies in track 2 but track 1 is requested"},
     {"id": "neg_before_track2", "request": "current_q", "track": 2, "lba": 99, "present": true, "needs_callee": false, "expected": "NEGATIVE", "reason": "last data LBA, one before the audio track start"},
+    {"id": "neg_track1_past_end", "request": "current_q", "track": 1, "lba": 100, "present": true, "needs_callee": false, "expected": "NEGATIVE", "reason": "first audio LBA but track 1 requested (symmetric boundary to neg_before_track2)"},
     {"id": "neg_past_leadout", "request": "current_q", "track": 2, "lba": 200, "present": true, "needs_callee": false, "expected": "NEGATIVE", "reason": "lead-out LBA, one past the audio track end"},
     {"id": "neg_negative_lba", "request": "current_q", "track": 1, "lba": -1, "present": true, "needs_callee": false, "expected": "NEGATIVE", "reason": "negative LBA"},
     {"id": "neg_bool_track", "request": "current_q", "track": true, "lba": 100, "present": true, "needs_callee": false, "expected": "NEGATIVE", "reason": "bool is not an int track (malformed)"},
