@@ -4344,7 +4344,8 @@ class ChainRulePieceDTests(unittest.TestCase):
                     "{ cd sub; } | cat; rm ../file.txt",
                     "eval 'cd sub' | cat; rm ../file.txt",
                     "cd sub | cat && rm ../file.txt",
-                    "(cd sub) | cat && rm ../file.txt"):
+                    "(cd sub) | cat && rm ../file.txt",
+                    "cd sub | rm ../file.txt"):
             with self.subTest(cmd=cmd):
                 verdict, reason = self._decide(cmd)
                 self.assertEqual(verdict, "DENY", (cmd, reason))
@@ -4492,17 +4493,23 @@ class ChainRulePieceDTests(unittest.TestCase):
         self.assertEqual(verdict, "DENY", reason)
 
     def test_failed_cd_keeps_old_cwd(self):
-        # CodeRabbit #815 (MAJOR, run-12 Gu1P): `cd` into an absent
+        # CodeRabbit #815 (MAJOR, run-12 Gu1P/OQwR): `cd` into an absent
         # directory fails and keeps the old cwd (verified on Bash with
         # harmless pwd probes), so a later `cd ..` leaves the repository
         # and the rm outside it is refused. Both plain and eval-wrapped
-        # forms are covered (eval merges cwd into the caller). An
-        # existing directory still moves the cwd (no over-denial).
+        # forms are covered (eval merges cwd into the caller). A bare
+        # name may still resolve through CDPATH, so it keeps the cwd but
+        # marks the result uncertain; an explicit path (`./x`, `a/b`)
+        # cannot come from CDPATH and stays certain. An existing
+        # directory still moves the cwd (no over-denial).
         write_text(os.path.join(self.tmp, "README.md"), "outside\n")
         verdict, reason = self._decide("cd missing; cd ..; rm README.md")
         self.assertEqual(verdict, "DENY", reason)
-        self.assertTrue(reason.startswith("rm-outside-repo"), reason)
+        self.assertTrue(reason.startswith("cwd-uncertain"), reason)
         verdict, reason = self._decide("eval 'cd missing'; cd ..; rm README.md")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("cwd-uncertain"), reason)
+        verdict, reason = self._decide("cd ./missing; cd ..; rm README.md")
         self.assertEqual(verdict, "DENY", reason)
         self.assertTrue(reason.startswith("rm-outside-repo"), reason)
         verdict, reason = self._decide("cd sub; rm inner.txt")
@@ -4535,14 +4542,14 @@ class ChainRulePieceDTests(unittest.TestCase):
     def test_powershell_uncertain_branch_denies_relative_rm(self):
         # CodeRabbit #815 (MAJOR, run-12 Gu1n): the taken-branch location
         # is one outcome of several. When the condition is uncertain, a
-        # later relative-path judgment is refused, in both braced and
-        # braceless forms.
+        # later relative-path judgment is refused. A newline may precede
+        # the brace-delimited body (valid PowerShell).
         write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
         verdict, reason = self._decide("if ($c) { Set-Location sub }; Remove-Item ../file.txt",
                                        tool="PowerShell")
         self.assertEqual(verdict, "DENY", reason)
         self.assertTrue(reason.startswith("cwd-uncertain"), reason)
-        verdict, reason = self._decide("if ($c) Set-Location sub; Remove-Item ../file.txt",
+        verdict, reason = self._decide("if ($c)\n{ Set-Location sub }; Remove-Item ../file.txt",
                                        tool="PowerShell")
         self.assertEqual(verdict, "DENY", reason)
         self.assertTrue(reason.startswith("cwd-uncertain"), reason)
@@ -4557,6 +4564,80 @@ class ChainRulePieceDTests(unittest.TestCase):
                                        tool="PowerShell")
         self.assertEqual(verdict, "DENY", reason)
         self.assertTrue(reason.startswith("cwd-uncertain"), reason)
+
+    def test_and_or_end_pipeline(self):
+        # CodeRabbit #815 (MAJOR, run-12 OQwd): `&&`/`||` terminate the
+        # pipeline like `;` (verified on Bash: the next command runs in
+        # the enclosing cwd), but they do not start a new background
+        # list. A stage `cd` must not reach the later relative rm.
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        verdict, reason = self._decide("true | cd sub && rm ../file.txt")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("rm-outside-repo"), reason)
+        verdict, reason = self._decide("true | cd sub || rm ../file.txt")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("rm-outside-repo"), reason)
+        # Without a pipeline, `&&` stays sequential (no over-denial).
+        verdict, reason = self._decide("cd sub && rm inner.txt")
+        self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_group_local_pipeline_entry(self):
+        # CodeRabbit #815 (MAJOR, run-12 OQwm): a brace group runs the
+        # calling shell, so an inner `;` advances a group-local pipeline
+        # start. `{ cd sub; true | cat; }` stages fork from the in-group
+        # cwd, and the outer start is restored at the close.
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        verdict, reason = self._decide("{ cd sub; true | cat; }; rm ../file.txt")
+        self.assertEqual(verdict, "ALLOW", reason)
+        verdict, reason = self._decide("{ cd ..; true | cat; }; rm file.txt")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("rm-outside-repo"), reason)
+
+    def test_nested_opener_after_then(self):
+        # CodeRabbit #815 (MAJOR, run-12 OQwq): `then if true` opens a
+        # nested scope of its own, so the inner `fi` must not pop (and
+        # blindly trust) the outer entry. A later body move still marks
+        # the outcome uncertain, and the pipeline entry stays clean.
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        verdict, reason = self._decide("if true; then if true; then echo hi; fi; cd sub; fi | cat; rm ../file.txt")
+        self.assertEqual(verdict, "DENY", reason)
+
+    def test_else_arm_runs_from_entry(self):
+        # CodeRabbit #815 (MAJOR, run-12 OQww): each arm runs from the
+        # conditional entry, not from the previous arm's end. The `else`
+        # rm below targets the parent (DENY) instead of trusting the
+        # `then` cwd (which would ALLOW an in-repo path).
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        verdict, reason = self._decide("if grep -q x file.txt; then cd sub; else rm ../file.txt; fi")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("rm-outside-repo"), reason)
+        # Sequential-equality trap: both arms run in sequence would end
+        # at the entry, but the real outcomes diverge, so the later
+        # relative rm is refused.
+        verdict, reason = self._decide("if grep -q x file.txt; then cd sub; else cd ..; fi; rm file.txt")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("cwd-uncertain"), reason)
+
+    def test_subshell_abs_cd_keeps_outer_uncertainty(self):
+        # CodeRabbit #815 (MAJOR, run-12 OQwj): a subshell exit restores
+        # the caller's cwd *and* its certainty. An absolute cd inside
+        # must not launder outer uncertainty into a certain judgment.
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        verdict, reason = self._decide("if true; then cd sub; fi; (cd /); rm file.txt")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("cwd-uncertain"), reason)
+        # The fail-open shape: the taken branch targets the parent file.
+        verdict, reason = self._decide("if true; then cd ..; fi; (cd /); rm file.txt")
+        self.assertEqual(verdict, "DENY", reason)
+
+    def test_eval_abs_cd_restores_certainty(self):
+        # CodeRabbit #815 (MINOR, run-12 OQwI): a nested call that
+        # establishes a certain cwd publishes it (assign, not OR), while
+        # a nested call that leaves cwd unchanged preserves uncertainty.
+        # An absolute `cd` through `eval` clears the fuzz, so a later
+        # in-repo rm is judged on the certain cwd (no over-denial).
+        verdict, reason = self._decide("if true; then cd sub; fi; eval 'cd %s'; rm file.txt" % self.repo)
+        self.assertEqual(verdict, "ALLOW", reason)
 
     def test_bg_list_in_scope_restores_parent(self):
         # `&` backgrounds the whole in-scope list in a subshell: the
@@ -4771,15 +4852,15 @@ class ChainRuleMutationTests(unittest.TestCase):
             '        _nested_text(" ".join(args), ctx, ps, depth + 1, merge_cwd=True)',
             '        _nested_text(" ".join(args), ctx, ps, depth + 1, merge_cwd=False)  # mutant'),
         "subshell scope open destroyed": (
-            '                if not scope_stack and not bbrace_stack:\n                    # A top-level `( ... )` may be the whole first pipeline\n                    # stage: remember the pre-group cwd for the entry.\n                    scope_entry = ctx.cwd\n                    scope_just_closed = False\n                scope_stack.append(ctx.cwd)',
+            '                if not scope_stack and not bbrace_stack:\n                    # A top-level `( ... )` may be the whole first pipeline\n                    # stage: remember the pre-group cwd for the entry.\n                    scope_entry = (ctx.cwd, ctx.cwd_fuzzy)\n                    scope_just_closed = False\n                scope_stack.append((ctx.cwd, ctx.cwd_fuzzy))',
             '                if not scope_stack and not bbrace_stack:\n                    # A top-level `( ... )` may be the whole first pipeline\n                    # stage: remember the pre-group cwd for the entry.\n                    scope_entry = ctx.cwd\n                    scope_just_closed = False\n                pass  # mutant: subshell scope destroyed'),
         "subshell cwd restore removed": (
-            '        if seg == SUBSHELL_CLOSE:\n            if not ps and scope_stack:\n                ctx.cwd = scope_stack.pop()\n                if pipe_scope:\n                    pipe_entry, prev_was_pipe = pipe_scope.pop()\n                if bg_scope:\n                    bg_scope.pop()\n'
+            '        if seg == SUBSHELL_CLOSE:\n            if not ps and scope_stack:\n                ctx.cwd, ctx.cwd_fuzzy = scope_stack.pop()\n                if pipe_scope:\n                    pipe_entry, prev_was_pipe = pipe_scope.pop()\n                if bg_scope:\n                    bg_scope.pop()\n'
             '                if not scope_stack and not bbrace_stack:',
             '        if seg == SUBSHELL_CLOSE:\n            if not ps and scope_stack:\n                scope_stack.pop()  # mutant: subshell cwd leaks\n                if pipe_scope:\n                    pipe_entry, prev_was_pipe = pipe_scope.pop()\n                if bg_scope:\n                    bg_scope.pop()\n'
             '                if not scope_stack and not bbrace_stack:'),
         "subshell taint propagation removed": (
-            '        if seg == SUBSHELL_CLOSE:\n            if not ps and scope_stack:\n                ctx.cwd = scope_stack.pop()\n                if pipe_scope:\n                    pipe_entry, prev_was_pipe = pipe_scope.pop()\n                if bg_scope:\n                    bg_scope.pop()\n'
+            '        if seg == SUBSHELL_CLOSE:\n            if not ps and scope_stack:\n                ctx.cwd, ctx.cwd_fuzzy = scope_stack.pop()\n                if pipe_scope:\n                    pipe_entry, prev_was_pipe = pipe_scope.pop()\n                if bg_scope:\n                    bg_scope.pop()\n'
             '                if not scope_stack and not bbrace_stack:',
             '        if seg == SUBSHELL_CLOSE:\n            if not ps and scope_stack:\n                ctx.cwd = scope_stack.pop()\n                if pipe_scope:\n                    pipe_entry, prev_was_pipe = pipe_scope.pop()\n                if bg_scope:\n                    bg_scope.pop()\n'
             '                ctx.tainted = False  # mutant: subshell taint dropped\n'
@@ -4794,7 +4875,7 @@ class ChainRuleMutationTests(unittest.TestCase):
             '    if sub == "stash" and rest[:1] not in (["list"], ["show"]):\n        rewrite = True',
             '    if sub == "stash":\n        rewrite = True  # mutant: read-only stash list taints'),
         "pipeline stage cwd reset removed": (
-            '        if prev_was_pipe and not ps and pipe_entry is not None:\n            ctx.cwd = pipe_entry',
+            '        if prev_was_pipe and not ps and pipe_entry is not None:\n            ctx.cwd, ctx.cwd_fuzzy = pipe_entry',
             '        pass  # mutant: pipe stage cwd not reset'),
         "pipeline taint cleared at boundary": (
             '                if pipe_entry is None:\n                    if scope_just_closed:',
@@ -4812,59 +4893,77 @@ class ChainRuleMutationTests(unittest.TestCase):
             'SAME_SHELL_NAMES = frozenset({"command", "builtin", "eval"}) | CD_NAMES',
             'SAME_SHELL_NAMES = frozenset({"command", "builtin"}) | CD_NAMES  # mutant: eval cwd lost'),
         "powershell paren cwd wrongly restored": (
-            '        if seg == SUBSHELL_OPEN:\n            if not ps:\n                if prev_was_pipe and pipe_entry is not None:\n                    # A group right after `|` is the next stage: it forks\n                    # from the entry, and inner commands must not see or\n                    # move the outer pipeline state.\n                    ctx.cwd = pipe_entry\n                pipe_scope.append((pipe_entry, prev_was_pipe))\n                pipe_entry = None\n                prev_was_pipe = False\n                if not scope_stack and not bbrace_stack:\n                    # A top-level `( ... )` may be the whole first pipeline\n                    # stage: remember the pre-group cwd for the entry.\n                    scope_entry = ctx.cwd\n                    scope_just_closed = False\n                scope_stack.append(ctx.cwd)\n                bg_scope.append(ctx.cwd)\n            continue\n        if seg == SUBSHELL_CLOSE:\n            if not ps and scope_stack:\n',
+            '        if seg == SUBSHELL_OPEN:\n            if not ps:\n                if prev_was_pipe and pipe_entry is not None:\n                    # A group right after `|` is the next stage: it forks\n                    # from the entry, and inner commands must not see or\n                    # move the outer pipeline state.\n                    ctx.cwd, ctx.cwd_fuzzy = pipe_entry\n                pipe_scope.append((pipe_entry, prev_was_pipe))\n                pipe_entry = None\n                prev_was_pipe = False\n                if not scope_stack and not bbrace_stack:\n                    # A top-level `( ... )` may be the whole first pipeline\n                    # stage: remember the pre-group cwd for the entry.\n                    scope_entry = (ctx.cwd, ctx.cwd_fuzzy)\n                    scope_just_closed = False\n                scope_stack.append((ctx.cwd, ctx.cwd_fuzzy))\n                bg_scope.append((ctx.cwd, ctx.cwd_fuzzy))\n            continue\n        if seg == SUBSHELL_CLOSE:\n            if not ps and scope_stack:\n',
             '        if seg == SUBSHELL_OPEN:\n            if True:  # mutant: ps paren wrongly scoped\n                if prev_was_pipe and pipe_entry is not None:\n                    # A group right after `|` is the next stage: it forks\n                    # from the entry, and inner commands must not see or\n                    # move the outer pipeline state.\n                    ctx.cwd = pipe_entry\n                pipe_scope.append((pipe_entry, prev_was_pipe))\n                pipe_entry = None\n                prev_was_pipe = False\n                if not scope_stack and not bbrace_stack:\n                    # A top-level `( ... )` may be the whole first pipeline\n                    # stage: remember the pre-group cwd for the entry.\n                    scope_entry = ctx.cwd\n                    scope_just_closed = False\n                scope_stack.append(ctx.cwd)\n                bg_scope.append(ctx.cwd)\n            continue\n        if seg == SUBSHELL_CLOSE:\n            if scope_stack:  # mutant\n'),
 
         "pipeline over-taint": (
-            '        if prev_was_pipe and not ps and pipe_entry is not None:\n            ctx.cwd = pipe_entry',
+            '        if prev_was_pipe and not ps and pipe_entry is not None:\n            ctx.cwd, ctx.cwd_fuzzy = pipe_entry',
             '        if prev_was_pipe and not ps and pipe_entry is not None:\n            ctx.cwd = pipe_entry\n            ctx.tainted = True  # mutant: pipe over-taint'),
         "or-list treated as pipeline": (
-            '                if nxt == "|":\n                    i += 1  # consume ||: no scope boundary',
+            '                if nxt == "|":\n                    i += 1  # consume ||: ends an open pipeline, not the list',
             '                if nxt == "|":\n                    segs.append(PIPE_BOUND)  # mutant: || as pipeline\n                    redirs.append([])\n                    i += 1'),
         "bash brace open token boundary removed": (
             '            if cur_blank and (nxt == "" or nxt in " \\t\\n"):',
             '            if True:  # mutant: any { opens a group'),
         "background parent restore removed": (
-            '                if (scope_stack or bbrace_stack) and bg_scope:\n                    ctx.cwd = bg_scope[-1]\n                else:\n                    ctx.cwd = bg_start',
+            '                if (scope_stack or bbrace_stack) and bg_scope:\n                    ctx.cwd, ctx.cwd_fuzzy = bg_scope[-1]\n                else:\n                    ctx.cwd, ctx.cwd_fuzzy = bg_start',
             '                pass  # mutant: background parent cwd not restored'),
         "scope-local background start removed": (
-            '            if bg_scope and (scope_stack or bbrace_stack):\n                # A `;`/newline inside a scope group starts a new list\n                # there: a later `&` restores this scope-local start,\n                # never the stale outer bg_start.\n                bg_scope[-1] = ctx.cwd',
+            '            if bg_scope and (scope_stack or bbrace_stack):\n                # A `;`/newline inside a scope group starts a new list\n                # there: a later `&` restores this scope-local start,\n                # never the stale outer bg_start.\n                bg_scope[-1] = (ctx.cwd, ctx.cwd_fuzzy)',
             '            pass  # mutant: in-scope list start never refreshed'),
         "pipeline end restore removed": (
-            '            if not ps and pipe_entry is not None:\n                ctx.cwd = pipe_entry\n                pipe_entry = None',
+            '            # A `;`/newline ends a pipeline and a background list: later\n            # foreground segments are judged from the pipeline-entry cwd,\n            # never from a finished stage\'s cwd. Entry snapshots restart\n            # after the boundary for the next list.\n            if not ps and pipe_entry is not None:\n                ctx.cwd, ctx.cwd_fuzzy = pipe_entry\n                pipe_entry = None',
             '            if False:  # mutant: pipeline-end entry not restored\n                pass'),
 
         "pipeline continuation newline treated as boundary": (
             '            if c == "\\n" and not ps and pipe_open and cur_blank:',
             '            if False:  # mutant: pipeline continuation ends the list'),
         "brace group stage does not fork": (
-            '            is_stage = bool(prev_was_pipe and pipe_entry is not None)\n            if is_stage:\n                ctx.cwd = pipe_entry',
-            '            is_stage = False  # mutant: brace stage does not fork\n            if is_stage:\n                ctx.cwd = pipe_entry'),        "scope entry falls back to stale run": (
+            '            is_stage = bool(prev_was_pipe and pipe_entry is not None)\n            if is_stage:\n                ctx.cwd, ctx.cwd_fuzzy = pipe_entry',
+            '            is_stage = False  # mutant: brace stage does not fork\n            if is_stage:\n                ctx.cwd, ctx.cwd_fuzzy = pipe_entry'),        "scope entry falls back to stale run": (
             '                    if scope_just_closed:\n                        pipe_entry = scope_entry',
             '                    if False:  # mutant: scope entry ignored\n                        pass'),
         "command-boundary snapshots removed": (
-            '            if not scope_stack and not bbrace_stack and not cond_stack:\n                run_start = ctx.cwd\n                bg_start = ctx.cwd',
+            '            if not scope_stack and not cond_stack:\n                run_start = (ctx.cwd, ctx.cwd_fuzzy)\n                bg_start = (ctx.cwd, ctx.cwd_fuzzy)',
             '            pass  # mutant: boundary snapshots not refreshed'),
         "cwd-uncertain check removed": (
             '        if ctx.cwd_fuzzy and not for_cd:\n            # run-12: a relative path cannot be judged from an uncertain\n            # working directory (conditional branch outcomes). Absolute\n            # paths do not depend on the cwd and stay checkable.\n            raise Deny("cwd-uncertain", "a relative path with an uncertain working directory is not inspected")',
             '        pass  # mutant: uncertain cwd trusted'),
         "failed-cd keep-old removed": (
-            '    if not ctx.tainted and not os.path.isdir(real):\n        # Nothing earlier in this command could have created the\n        # directory, so it is still absent at run time and the shell\n        # keeps the old cwd (verified with harmless pwd probes): model\n        # the failed cd instead of adopting a directory never entered.\n        return ctx.cwd, ctx.cwd_fuzzy',
+            '    if not ctx.tainted and not os.path.isdir(real):\n        # Nothing earlier in this command could have created the\n        # directory. An explicit path (with a slash) cannot come from\n        # CDPATH, so the shell keeps the old cwd for certain. A bare\n        # name may still resolve through CDPATH (which the hook cannot\n        # see, including command-prefix assignments), so only the cwd\n        # is kept while the result is marked uncertain.\n        if "/" in target.replace("\\\\", "/"):\n            return ctx.cwd, ctx.cwd_fuzzy\n        return ctx.cwd, True',
             '    pass  # mutant: failed cd adopted'),
         "conditional scope tracking removed": (
             '        if not ps and first_cmd in COND_OPENERS:',
             '        if False:  # mutant: conditional scope ignored'),
+        "nested opener after then removed": (
+            '        elif not ps and cond_stack and first_cmd in ("then", "else", "do", "elif"):',
+            '        elif False:  # mutant: nested opener after then ignored'),
         "conditional close fuzz removed": (
-            '            # A stray closer with no open scope is ignored, as before.\n            _fuzz_on_change(ctx, cond_stack.pop())',
+            '            entry = cond_stack.pop()\n            if entry["moved"] or ctx.cwd != entry["cwd"]:\n                ctx.cwd_fuzzy = True\n            ctx.tainted = ctx.tainted or entry["then_taint"]\n            if cond_stack and (entry["moved"] or ctx.cwd != cond_stack[-1]["cwd"]):\n                cond_stack[-1]["moved"] = True',
             '            pass  # mutant: conditional close trusted'),
         "coproc nested scope restored wrong": (
             '                segs.append(BBRACE_CLOSE if kind == "brace" else COPROC_CLOSE)',
             '                segs.append(BBRACE_CLOSE)  # mutant: coproc close leaks'),
+        "andor ends pipeline removed": (
+            '                if nxt == "&":\n                    i += 1  # consume &&: ends an open pipeline, not the list\n                    if pipe_open:\n                        segs.append(PIPE_END)\n                        redirs.append([])\n                    pipe_open = False',
+            '                if nxt == "&":\n                    i += 1  # mutant: && never ends the pipeline\n                    pipe_open = False'),
+        "subshell fuzz restore removed": (
+            '        if seg == SUBSHELL_CLOSE:\n            if not ps and scope_stack:\n                ctx.cwd, ctx.cwd_fuzzy = scope_stack.pop()',
+            '        if seg == SUBSHELL_CLOSE:\n            if not ps and scope_stack:\n                ctx.cwd = scope_stack.pop()[0]  # mutant: fuzz not restored'),
+        "else arm reset removed": (
+            '        if cond_stack and first_cmd in ("else", "elif"):',
+            '        if False:  # mutant: else arm reuses previous arm state'),
+        "cdpath bare cd treated certain": (
+            '        if "/" in target.replace("\\\\", "/"):\n            return ctx.cwd, ctx.cwd_fuzzy\n        return ctx.cwd, True',
+            '        return ctx.cwd, ctx.cwd_fuzzy  # mutant: bare CDPATH miss treated certain'),
+        "eval certainty publish removed": (
+            '    if merge_cwd:\n        ctx.cwd = sub.cwd\n        ctx.cwd_fuzzy = sub.cwd_fuzzy',
+            '    if merge_cwd:\n        ctx.cwd = sub.cwd\n        if sub.cwd_fuzzy:  # mutant: eval never restores certainty\n            ctx.cwd_fuzzy = True'),
         "powershell cond marker removed": (
-            '        if seg == PSCOND_CLOSE:\n            if cond_stack:\n                _fuzz_on_change(ctx, cond_stack.pop())\n            continue',
+            '        if seg == PSCOND_CLOSE:\n            if cond_stack:\n                # run-12 OQww: join the arm outcomes conservatively: any\n                # move inside the scope leaves the cwd uncertain, and\n                # taint from either arm reaches later segments.\n                entry = cond_stack.pop()\n                if entry["moved"] or ctx.cwd != entry["cwd"]:\n                    ctx.cwd_fuzzy = True\n                ctx.tainted = ctx.tainted or entry["then_taint"]\n                if cond_stack and (entry["moved"] or ctx.cwd != cond_stack[-1]["cwd"]):\n                    cond_stack[-1]["moved"] = True\n            continue',
             '        if seg == PSCOND_CLOSE:\n            continue  # mutant: ps close trusted'),
         "coproc compound scope removed": (
-            '        if seg == COPROC_CLOSE:\n            if scope_stack:\n                ctx.cwd = scope_stack.pop()\n                if bg_scope:\n                    bg_scope.pop()\n                if pipe_scope:\n                    pipe_entry, prev_was_pipe = pipe_scope.pop()\n'
+            '        if seg == COPROC_CLOSE:\n            if scope_stack:\n                ctx.cwd, ctx.cwd_fuzzy = scope_stack.pop()\n                if bg_scope:\n                    bg_scope.pop()\n                if pipe_scope:\n                    pipe_entry, prev_was_pipe = pipe_scope.pop()\n'
             '                if not scope_stack and not bbrace_stack:',
             '        if seg == COPROC_CLOSE:\n            if scope_stack:\n                scope_stack.pop()  # mutant: coproc body leaks cwd\n                if bg_scope:\n                    bg_scope.pop()\n                if pipe_scope:\n                    pipe_entry, prev_was_pipe = pipe_scope.pop()\n'
             '                if not scope_stack and not bbrace_stack:'),
@@ -4931,7 +5030,13 @@ class ChainRuleMutationTests(unittest.TestCase):
         "conditional scope tracking removed": "test_if_pipeline_stage_does_not_leak_cwd",
         "conditional close fuzz removed": "test_if_pipeline_stage_does_not_leak_cwd",
         "coproc nested scope restored wrong": "test_nested_coproc_body_is_subshell_scoped",
-        "powershell cond marker removed": "test_powershell_if_else_branch_denies_relative_rm",
+        "andor ends pipeline removed": "test_and_or_end_pipeline",
+        "subshell fuzz restore removed": "test_subshell_abs_cd_keeps_outer_uncertainty",
+        "nested opener after then removed": "test_nested_opener_after_then",
+        "else arm reset removed": "test_else_arm_runs_from_entry",
+        "cdpath bare cd treated certain": "test_failed_cd_keeps_old_cwd",
+        "eval certainty publish removed": "test_eval_abs_cd_restores_certainty",
+        "powershell cond marker removed": "test_powershell_uncertain_branch_denies_relative_rm",
         "coproc compound scope removed": "test_coproc_compound_body_is_subshell_scoped",
         "command double-dash handling removed": "test_command_double_dash_merges_cwd",
         "same-shell duplicate validation restored": "test_same_shell_target_does_not_self_deny",

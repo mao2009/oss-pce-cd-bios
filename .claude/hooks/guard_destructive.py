@@ -133,6 +133,9 @@ BBRACE_CLOSE = "\x02b}"
 # is not known statically, so the close marks the cwd uncertain.
 PSCOND_OPEN = "\x02p{"
 PSCOND_CLOSE = "\x02p}"
+# run-12 OQwd: `&&`/`||` terminate the pipeline like `;` (but do not
+# start a new background list). The enclosing cwd is restored first.
+PIPE_END = "\x02e"
 # PowerShell `{ ... }` groups (statement bodies, scriptblocks, hashtables)
 # run in the calling scope for cwd purposes: `if`/`while`/`foreach` bodies
 # execute in the current scope, so a Set-Location inside persists like a
@@ -263,10 +266,10 @@ class Ctx:
         return c
 
 
-def _fuzz_on_change(ctx, entry):
-    """Mark the cwd uncertain when a conditional body may have moved it (run-12)."""
-    if ctx is not None and ctx.cwd != entry:
-        ctx.cwd_fuzzy = True
+def _cond_entry(ctx):
+    """Snapshot a conditional/loop entry (run-12 OQww)."""
+    return {"cwd": ctx.cwd, "fuzzy": ctx.cwd_fuzzy, "tainted": ctx.tainted,
+            "then_taint": ctx.tainted, "moved": False}
 
 
 def _taint(ctx):
@@ -295,8 +298,7 @@ def _nested_text(text, ctx, ps, depth, merge_cwd=False):
         ctx.tainted = True
     if merge_cwd:
         ctx.cwd = sub.cwd
-        if sub.cwd_fuzzy:
-            ctx.cwd_fuzzy = True
+        ctx.cwd_fuzzy = sub.cwd_fuzzy
 
 
 def _nested_text_from(text, ctx, entry_tainted, ps, depth):
@@ -380,8 +382,7 @@ def _nested_argv_same_shell(words, ctx, ps, depth):
     if sub.tainted:
         ctx.tainted = True
     ctx.cwd = sub.cwd
-    if sub.cwd_fuzzy:
-        ctx.cwd_fuzzy = True
+    ctx.cwd_fuzzy = sub.cwd_fuzzy
 
 
 def canon(path, normalize=True):
@@ -609,14 +610,18 @@ def resolve(raw, ctx, for_cd=False):
 
 
 def _cd_target(target, ctx):
-    """Resolve a cd target and the certainty it leaves (run-12 Gu1P)."""
+    """Resolve a cd target and the certainty it leaves (run-12 Gu1P/OQwR)."""
     lex, real = resolve(target, ctx, for_cd=True)
     if not ctx.tainted and not os.path.isdir(real):
         # Nothing earlier in this command could have created the
-        # directory, so it is still absent at run time and the shell
-        # keeps the old cwd (verified with harmless pwd probes): model
-        # the failed cd instead of adopting a directory never entered.
-        return ctx.cwd, ctx.cwd_fuzzy
+        # directory. An explicit path (with a slash) cannot come from
+        # CDPATH, so the shell keeps the old cwd for certain. A bare
+        # name may still resolve through CDPATH (which the hook cannot
+        # see, including command-prefix assignments), so only the cwd
+        # is kept while the result is marked uncertain.
+        if "/" in target.replace("\\", "/"):
+            return ctx.cwd, ctx.cwd_fuzzy
+        return ctx.cwd, True
     p = target.replace("\\", "/")
     if p.startswith("/") or re.match(r"^[A-Za-z]:/", p) or p == "~" or p.startswith("~/"):
         return real, False
@@ -893,14 +898,11 @@ def split_segments(text, ps=False):
                 continue
             flushed_head = "".join(cur).split()
             if ps and flushed_head and flushed_head[0].lower() in PS_COND_WORDS:
-                # run-12 Gu1n: `if ($c) {` flushes `if ` at `(` long
+                # run-12 Gu1n/OQwX: `if ($c) {` flushes `if ` at `(` long
                 # before the `{`: remember the opener across the paren
-                # segments so the body still gets its marker.
+                # segments (newlines included) so the body still gets
+                # its marker. Only the block itself consumes it.
                 ps_cond_pending = True
-            if ps and c in ";\n":
-                # A braceless body is one statement: `;`/newline ends
-                # it (a pipeline `|` belongs to the statement itself).
-                ps_cond_pending = False
             segs.append("".join(cur))
             redirs.append(rd)
             cur, rd = [], []
@@ -911,7 +913,10 @@ def split_segments(text, ps=False):
                 # pipes stderr too and is still a pipeline boundary.
                 nxt = text[i + 1] if i + 1 < n else ""
                 if nxt == "|":
-                    i += 1  # consume ||: no scope boundary
+                    i += 1  # consume ||: ends an open pipeline, not the list
+                    if pipe_open:
+                        segs.append(PIPE_END)
+                        redirs.append([])
                     pipe_open = False
                 else:
                     segs.append(PIPE_BOUND)
@@ -925,7 +930,10 @@ def split_segments(text, ps=False):
                 # reaching here.
                 nxt = text[i + 1] if i + 1 < n else ""
                 if nxt == "&":
-                    i += 1  # consume &&: no scope boundary
+                    i += 1  # consume &&: ends an open pipeline, not the list
+                    if pipe_open:
+                        segs.append(PIPE_END)
+                        redirs.append([])
                     pipe_open = False
                 elif nxt != ">":
                     segs.append(BG_BOUND)
@@ -2382,6 +2390,8 @@ def analyze_text(text, ctx, ps, depth):
             continue
         if seg == PIPE_BOUND or seg == BG_BOUND or seg == CMD_BOUND:
             continue
+        if seg == PIPE_END:
+            continue
         if seg == COPROC_OPEN or seg == COPROC_CLOSE:
             continue
         if seg == PSCOND_OPEN or seg == PSCOND_CLOSE:
@@ -2416,21 +2426,24 @@ def analyze_text(text, ctx, ps, depth):
     # refused instead of trusting one branch outcome. An absolute `cd`
     # restores certainty. A failed `cd` into an absent directory keeps the
     # old cwd when nothing earlier could have created it (Gu1P).
-    scope_stack = []
+    # run-12 OQwj: every cwd snapshot carries its certainty, so a child
+    # scope exit restores both and a relative judgment never outlives the
+    # scope that made it uncertain. Taint stays a single shared flag.
+    scope_stack = []  # (cwd, fuzzy) per open subshell/coprocess
     bbrace_stack = []
-    pipe_entry = None
-    run_start = ctx.cwd
-    bg_start = ctx.cwd
-    scope_entry = ctx.cwd
+    pipe_entry = None  # (cwd, fuzzy) or None
+    run_start = (ctx.cwd, ctx.cwd_fuzzy)
+    bg_start = (ctx.cwd, ctx.cwd_fuzzy)
+    scope_entry = (ctx.cwd, ctx.cwd_fuzzy)
     scope_just_closed = False
     prev_was_pipe = False
     # Saved (pipe_entry, prev_was_pipe) per open Bash scope, plus the
     # brace-group stage cwd for calling-shell groups used as a stage.
     pipe_scope = []
-    bstage = []
-    bg_scope = []
-    cond_stack = []  # run-12: entry cwd per open conditional/loop scope
-    ps_body_pending = None  # run-12: entry cwd while a PS condition awaits its body
+    bstage = []  # (is_stage, cwd, fuzzy)
+    bg_scope = []  # (cwd, fuzzy) per open scope
+    run_scope = []  # (run_start, bg_start) per open brace group (OQwm)
+    cond_stack = []  # run-12: entry dict per open conditional/loop scope
     # Scope-local background-list start per open group: a `&` backgrounds
     # the whole in-scope list, so the parent continues from the cwd the
     # in-scope list started with (after the last in-scope `;`), not from
@@ -2442,21 +2455,21 @@ def analyze_text(text, ctx, ps, depth):
                     # A group right after `|` is the next stage: it forks
                     # from the entry, and inner commands must not see or
                     # move the outer pipeline state.
-                    ctx.cwd = pipe_entry
+                    ctx.cwd, ctx.cwd_fuzzy = pipe_entry
                 pipe_scope.append((pipe_entry, prev_was_pipe))
                 pipe_entry = None
                 prev_was_pipe = False
                 if not scope_stack and not bbrace_stack:
                     # A top-level `( ... )` may be the whole first pipeline
                     # stage: remember the pre-group cwd for the entry.
-                    scope_entry = ctx.cwd
+                    scope_entry = (ctx.cwd, ctx.cwd_fuzzy)
                     scope_just_closed = False
-                scope_stack.append(ctx.cwd)
-                bg_scope.append(ctx.cwd)
+                scope_stack.append((ctx.cwd, ctx.cwd_fuzzy))
+                bg_scope.append((ctx.cwd, ctx.cwd_fuzzy))
             continue
         if seg == SUBSHELL_CLOSE:
             if not ps and scope_stack:
-                ctx.cwd = scope_stack.pop()
+                ctx.cwd, ctx.cwd_fuzzy = scope_stack.pop()
                 if pipe_scope:
                     pipe_entry, prev_was_pipe = pipe_scope.pop()
                 if bg_scope:
@@ -2471,27 +2484,33 @@ def analyze_text(text, ctx, ps, depth):
             # the pipeline entry when the whole group is the first stage.
             is_stage = bool(prev_was_pipe and pipe_entry is not None)
             if is_stage:
-                ctx.cwd = pipe_entry
+                ctx.cwd, ctx.cwd_fuzzy = pipe_entry
             pipe_scope.append((pipe_entry, prev_was_pipe))
             pipe_entry = None
             prev_was_pipe = False
-            bstage.append((is_stage, ctx.cwd))
+            bstage.append((is_stage, ctx.cwd, ctx.cwd_fuzzy))
             if not scope_stack and not bbrace_stack:
-                scope_entry = ctx.cwd
+                scope_entry = (ctx.cwd, ctx.cwd_fuzzy)
                 scope_just_closed = False
             bbrace_stack.append(ctx.cwd)
-            bg_scope.append(ctx.cwd)
+            bg_scope.append((ctx.cwd, ctx.cwd_fuzzy))
+            # run-12 OQwm: the group runs the calling shell, so its `;`
+            # advances a group-local pipeline/list start; the outer one
+            # is restored at the close.
+            run_scope.append((run_start, bg_start))
             continue
         if seg == BBRACE_CLOSE:
             if bbrace_stack:
                 bbrace_stack.pop()
                 if bg_scope:
                     bg_scope.pop()
-                was_stage, stage_cwd = bstage.pop() if bstage else (False, ctx.cwd)
+                if run_scope:
+                    run_start, bg_start = run_scope.pop()
+                was_stage, stage_cwd, stage_fuzzy = bstage.pop() if bstage else (False, ctx.cwd, ctx.cwd_fuzzy)
                 if was_stage:
                     # A brace group used as a pipeline stage forked: drop
                     # the body-local cwd instead of leaking it.
-                    ctx.cwd = stage_cwd
+                    ctx.cwd, ctx.cwd_fuzzy = stage_cwd, stage_fuzzy
                 if pipe_scope:
                     pipe_entry, prev_was_pipe = pipe_scope.pop()
                 if not scope_stack and not bbrace_stack:
@@ -2502,19 +2521,19 @@ def analyze_text(text, ctx, ps, depth):
             # scope handling as `( ... )`. The `coproc ...` segment itself
             # is still dispatched (in a taint-only copy) by analyze_argv.
             if prev_was_pipe and pipe_entry is not None:
-                ctx.cwd = pipe_entry
+                ctx.cwd, ctx.cwd_fuzzy = pipe_entry
             pipe_scope.append((pipe_entry, prev_was_pipe))
             pipe_entry = None
             prev_was_pipe = False
             if not scope_stack and not bbrace_stack:
-                scope_entry = ctx.cwd
+                scope_entry = (ctx.cwd, ctx.cwd_fuzzy)
                 scope_just_closed = False
-            scope_stack.append(ctx.cwd)
-            bg_scope.append(ctx.cwd)
+            scope_stack.append((ctx.cwd, ctx.cwd_fuzzy))
+            bg_scope.append((ctx.cwd, ctx.cwd_fuzzy))
             continue
         if seg == COPROC_CLOSE:
             if scope_stack:
-                ctx.cwd = scope_stack.pop()
+                ctx.cwd, ctx.cwd_fuzzy = scope_stack.pop()
                 if bg_scope:
                     bg_scope.pop()
                 if pipe_scope:
@@ -2526,16 +2545,20 @@ def analyze_text(text, ctx, ps, depth):
             # run-12 Gu1n: a PowerShell conditional/loop body in braces
             # runs in the calling scope when taken, but the outcome is
             # uncertain: remember the entry and mark the cwd uncertain
-            # on close when the body moved it. A pending braceless arm
-            # compares here too (a condition alone moves nothing).
-            if ps_body_pending is not None:
-                _fuzz_on_change(ctx, ps_body_pending)
-                ps_body_pending = None
-            cond_stack.append(ctx.cwd)
+            # on close when the body moved it.
+            cond_stack.append(_cond_entry(ctx))
             continue
         if seg == PSCOND_CLOSE:
             if cond_stack:
-                _fuzz_on_change(ctx, cond_stack.pop())
+                # run-12 OQww: join the arm outcomes conservatively: any
+                # move inside the scope leaves the cwd uncertain, and
+                # taint from either arm reaches later segments.
+                entry = cond_stack.pop()
+                if entry["moved"] or ctx.cwd != entry["cwd"]:
+                    ctx.cwd_fuzzy = True
+                ctx.tainted = ctx.tainted or entry["then_taint"]
+                if cond_stack and (entry["moved"] or ctx.cwd != cond_stack[-1]["cwd"]):
+                    cond_stack[-1]["moved"] = True
             continue
         if seg == CMD_BOUND:
             # A `;`/newline ends a pipeline and a background list: later
@@ -2543,23 +2566,29 @@ def analyze_text(text, ctx, ps, depth):
             # never from a finished stage's cwd. Entry snapshots restart
             # after the boundary for the next list.
             if not ps and pipe_entry is not None:
-                ctx.cwd = pipe_entry
+                ctx.cwd, ctx.cwd_fuzzy = pipe_entry
                 pipe_entry = None
             prev_was_pipe = False
-            if ps and ps_body_pending is not None:
-                # run-12 Gu1n: a braceless conditional body runs above
-                # as part of the segments before this boundary; mark the
-                # cwd uncertain when it moved.
-                _fuzz_on_change(ctx, ps_body_pending)
-                ps_body_pending = None
-            if not scope_stack and not bbrace_stack and not cond_stack:
-                run_start = ctx.cwd
-                bg_start = ctx.cwd
+            if not scope_stack and not cond_stack:
+                run_start = (ctx.cwd, ctx.cwd_fuzzy)
+                bg_start = (ctx.cwd, ctx.cwd_fuzzy)
             if bg_scope and (scope_stack or bbrace_stack):
                 # A `;`/newline inside a scope group starts a new list
                 # there: a later `&` restores this scope-local start,
                 # never the stale outer bg_start.
-                bg_scope[-1] = ctx.cwd
+                bg_scope[-1] = (ctx.cwd, ctx.cwd_fuzzy)
+            scope_just_closed = False
+            continue
+        if seg == PIPE_END:
+            # run-12 OQwd: `&&`/`||` terminate the pipeline like `;` (the
+            # next command runs in the enclosing cwd), but they do not
+            # start a new background list: bg_start/bg_scope are kept.
+            if not ps and pipe_entry is not None:
+                ctx.cwd, ctx.cwd_fuzzy = pipe_entry
+                pipe_entry = None
+            prev_was_pipe = False
+            if not scope_stack and not cond_stack:
+                run_start = (ctx.cwd, ctx.cwd_fuzzy)
             scope_just_closed = False
             continue
         if seg == PIPE_BOUND:
@@ -2569,12 +2598,16 @@ def analyze_text(text, ctx, ps, depth):
             # (run_start tracks sequential `cd`, but never a stage body or
             # a keyword/empty segment; a scope that is itself the first
             # stage contributes its pre-group cwd via scope_entry).
+            # run-12 OQwj: the entry carries the live certainty, not the
+            # snapshot's stale flag (uncertainty set just before the pipe
+            # must survive the stages and the closing boundary).
             if not ps:
                 if pipe_entry is None:
                     if scope_just_closed:
                         pipe_entry = scope_entry
                     else:
                         pipe_entry = run_start
+                    pipe_entry = (pipe_entry[0], ctx.cwd_fuzzy)
                 prev_was_pipe = True
                 scope_just_closed = False
             continue
@@ -2588,9 +2621,9 @@ def analyze_text(text, ctx, ps, depth):
             # this a `cd` left of `&` leaks into the in-scope foreground.
             if not ps:
                 if (scope_stack or bbrace_stack) and bg_scope:
-                    ctx.cwd = bg_scope[-1]
+                    ctx.cwd, ctx.cwd_fuzzy = bg_scope[-1]
                 else:
-                    ctx.cwd = bg_start
+                    ctx.cwd, ctx.cwd_fuzzy = bg_start
                 pipe_entry = None
                 prev_was_pipe = False
                 scope_just_closed = False
@@ -2602,13 +2635,23 @@ def analyze_text(text, ctx, ps, depth):
             # and taint detection unchanged), but the cwd it leaves is
             # one branch outcome of several: later segments must not
             # trust it via run_start/pipe_entry either.
-            cond_stack.append(ctx.cwd)
-        elif ps and seg_words and first_cmd is not None and first_cmd.lower() in PS_COND_WORDS:
-            # run-12 Gu1n: arm on a conditional opener (`if ($c) ...`);
-            # the body (braceless statements, or a braced body via its
-            # marker) is compared at the next command boundary. Arming
-            # on the condition alone is free: it moves nothing.
-            ps_body_pending = ctx.cwd
+            cond_stack.append(_cond_entry(ctx))
+        elif not ps and cond_stack and first_cmd in ("then", "else", "do", "elif"):
+            # run-12 OQwq: a nested opener after a branch/loop keyword
+            # (`then if true`) starts its own scope; the inner `fi`
+            # must not pop the outer entry. Only command position after
+            # the keyword counts, never an argument.
+            rest = [w for w in seg_words if not ASSIGN.match(w)]
+            if len(rest) > 1 and rest[1] in COND_OPENERS:
+                cond_stack.append(_cond_entry(ctx))
+        if cond_stack and first_cmd in ("else", "elif"):
+            # run-12 OQww: each arm runs from the conditional entry, not
+            # from the previous arm's end (Bash and PowerShell alike).
+            # Taint joins at the close.
+            entry = cond_stack[-1]
+            entry["then_taint"] = entry["then_taint"] or ctx.tainted
+            ctx.cwd = entry["cwd"]
+            ctx.tainted = entry["tainted"]
         if not seg_words and not ops:
             # A boundary flush with no words and no redirects (e.g. the
             # empty segment before `{` in `| { ...`): consumes no pipeline
@@ -2616,7 +2659,7 @@ def analyze_text(text, ctx, ps, depth):
             # segment (or scope open) is still the stage.
             continue
         if prev_was_pipe and not ps and pipe_entry is not None:
-            ctx.cwd = pipe_entry
+            ctx.cwd, ctx.cwd_fuzzy = pipe_entry
         # Refresh the pipeline-entry candidate only at a top-level segment
         # with a real command word, so a compound body or an empty/keyword
         # segment never moves it (Piece D, #636 CRITICAL-1). A scope that
@@ -2626,13 +2669,13 @@ def analyze_text(text, ctx, ps, depth):
         # inner command never ends the enclosing entry lifetime.
         if not scope_stack and not bbrace_stack and seg_words:
             scope_just_closed = False
-        if (not prev_was_pipe and not scope_stack and not bbrace_stack
+        if (not prev_was_pipe and not scope_stack
                 and not cond_stack
                 and any(
                     w not in KEYWORDS and not ASSIGN.match(w)
                     for w in seg_words)):
-            run_start = ctx.cwd
-        if (not prev_was_pipe and not scope_stack and not bbrace_stack
+            run_start = (ctx.cwd, ctx.cwd_fuzzy)
+        if (not prev_was_pipe and not scope_stack
                 and not cond_stack):
             # A top-level non-stage segment ends the pipeline entry
             # lifetime. Segments inside a scope group must not end the
@@ -2658,18 +2701,23 @@ def analyze_text(text, ctx, ps, depth):
         if wrote:
             ctx.tainted = True
         analyze_argv(words_of(seg, ps), ctx, ps, depth)
+        if cond_stack and ctx.cwd != cond_stack[-1]["cwd"]:
+            # run-12 OQww: any move inside the scope makes the outcome
+            # uncertain, even when a later arm moves it back.
+            cond_stack[-1]["moved"] = True
         if not ps and cond_stack and first_cmd in COND_CLOSERS:
             # run-12: the body ran above (still analysed as taken); a
             # cwd it moved is uncertain, since the branch may not run.
             # A stray closer with no open scope is ignored, as before.
-            _fuzz_on_change(ctx, cond_stack.pop())
+            entry = cond_stack.pop()
+            if entry["moved"] or ctx.cwd != entry["cwd"]:
+                ctx.cwd_fuzzy = True
+            ctx.tainted = ctx.tainted or entry["then_taint"]
+            if cond_stack and (entry["moved"] or ctx.cwd != cond_stack[-1]["cwd"]):
+                cond_stack[-1]["moved"] = True
     for body in rest_subs:
         # Defensive: a body no segment claimed is still analysed, never skipped.
         _nested_text(body, ctx, ps, depth + 1)
-    if ps_body_pending is not None:
-        # run-12 Gu1n: a trailing braceless conditional body with no
-        # later boundary still leaves the cwd uncertain.
-        _fuzz_on_change(ctx, ps_body_pending)
     if scope_stack:
         # An unclosed subshell never runs in a real shell: refuse instead
         # of judging later segments against a guessed cwd (fail closed).
