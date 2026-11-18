@@ -351,6 +351,9 @@ class G5IntegratedChainSynthetic(unittest.TestCase):
         trace = cls.out / "ipl-loader-g5-vch.lbl"
         cls.labels = parse_labels(
             trace, ("api_unimplemented", "cd_halt_fail", "cd_unexpected_interrupt"))
+        trace_ctrl = cls.out / "ipl-loader-g5-vch-ctrl.lbl"
+        cls.labels_ctrl = parse_labels(
+            trace_ctrl, ("api_unimplemented", "cd_halt_fail", "cd_unexpected_interrupt"))
         cls.probe = compile_probe(cls.out, "geargrafx_api_return_probe.cpp", "vch-probe")
         import geargrafx_ipl_loader as L
         cls.L = L
@@ -371,7 +374,7 @@ class G5IntegratedChainSynthetic(unittest.TestCase):
         if rom_kind == "exp":
             rom, labels = self.rom, self.labels
         elif rom_kind == "ctrl":
-            rom, labels = self.rom_ctrl, self.labels
+            rom, labels = self.rom_ctrl, self.labels_ctrl
         else:
             raise ValueError("rom_kind must be 'exp' or 'ctrl'")
         CFG = ("MEMORY {\n    RAM: start = $3000, size = $0F00, file = %O;\n}\n"
@@ -486,6 +489,19 @@ class G5IntegratedChainSynthetic(unittest.TestCase):
         self.assertEqual(list(r[base + 42:base + 52]), [0] * 10)  # no CRES writes
         self.assertEqual(list(r[0:16]), [0xAA] * 16)  # transfer window untouched
         self.assertEqual([r[base + 3], r[base + 31], r[base + 73]], [0x02, 0x03, 0x33])
+        # Review regression: the control probe must use the control ROM's own
+        # halt labels (loader CODE shifts with the BOOT body size; exp and ctrl
+        # cd_halt_fail/cd_unexpected_interrupt differ). With the wrong labels
+        # a control failure path would run to budget unrecognized.
+        lab_text = Path(self._last_lab).read_text(encoding="ascii")
+        self.assertIn(f"cd_halt_fail {self.labels_ctrl['cd_halt_fail']:04x}", lab_text)
+        self.assertIn(f"cd_unexpected_interrupt {self.labels_ctrl['cd_unexpected_interrupt']:04x}",
+                        lab_text)
+        runs = {r["cycle"]: r for r in rec["RUN"]}
+        for cycle, run in runs.items():
+            with self.subTest(cycle=cycle):
+                self.assertEqual(run["reason"], "cd_halt_ok")
+                self.assertTrue(run["halt_confirmed"])
 
     def test_chain_bad_mode_fail_closed(self):
         rec, base = self._run("badmode", BADMODE_ASM, ["-DTRACKNUM=2"])
