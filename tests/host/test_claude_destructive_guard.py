@@ -3779,7 +3779,66 @@ class StdinProgramTests(unittest.TestCase):
                     "python3 -m unittest",
                     'echo "$(node)"',
                     'echo data | echo "$(cat)"',
-                    'echo hi | echo "$(node script.js)"']:
+                    'echo hi | echo "$(node script.js)"',
+                    'f() { cat; }; printf \'data\\n\' | echo "$(f)"',
+                    'f() { g; }; g() { cat; }; printf \'data\\n\' | echo "$(f)"']:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self._d(cmd)[0], "ALLOW")
+
+    def test_function_calls_inherit_stdin(self):
+        # MAJOR function: pipe-fed/redirected calls to locally defined functions
+        # whose bodies may run stdin-as-program are DENY (fail-closed).
+        for cmd in ["f() { node; }\nprintf 'console.log(123)\\n' | f",
+                    "f() { node; }; f < code.js",
+                    "f() { python3; }; printf 'print(123)\\n' | f",
+                    "f() { sh -c 'node'; }; printf 'console.log(123)\\n' | f",
+                    "f() { node; }; printf 'data\\n' | f",
+                    "f() { python3 -W ignore; }; printf 'x\\n' | f",
+                    "f() { if true; then node; fi; }; printf 'x\\n' | f",
+                    "f() { (node); }; printf 'x\\n' | f",
+                    "f() { echo $(node); }; printf 'x\\n' | f"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                # stdin-program preferred; function/depth/parse/compound/unexpanded are dedicated fail-closed (not generic).
+                self.assertTrue(any(k in reason for k in ("stdin-program", "function", "depth", "parse", "compound", "unexpanded")), reason)
+                self.assertNotIn("external command", reason)
+                if "unknown" in reason:
+                    self.assertIn("stdin-program", reason)
+
+    def test_function_safe_forms_stay_allowed(self):
+        for cmd in ["f() { cat; }; printf 'data\\n' | f",
+                    "f() { node script.js; }; printf 'data\\n' | f",
+                    "f() { node; }; f",
+                    "f() { echo hi; }; echo hi",
+                    "node script.js",
+                    "python3 -m unittest"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self._d(cmd)[0], "ALLOW")
+
+    def test_nested_redirect_inherits_stdin(self):
+        # MAJOR redirect: outer input redirect taints inner sh -c / python / node.
+        for cmd in ["sh -c 'if true; then node; fi' < code.js",
+                    "sh -c 'if true; then node; fi' <<< 'console.log(456)'",
+                    "bash -c 'if true; then python3; fi' < code.py",
+                    "sh -c 'node' < code.js",
+                    "bash -c 'node' <<< 'console.log(456)'",
+                    "sh -c 'python3 -W ignore' < code.py",
+                    "bash -c 'node --no-warnings' < code.js"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertTrue(any(k in reason for k in ("stdin-program", "function", "depth", "parse", "compound", "unexpanded")), reason)
+                self.assertNotIn("external command", reason)
+                if "unknown" in reason:
+                    self.assertIn("stdin-program", reason)
+
+    def test_nested_redirect_safe_forms_stay_allowed(self):
+        for cmd in ["sh -c 'node script.js' < data.txt",
+                    "sh -c 'echo ok' < data.txt",
+                    "bash -c 'cat' < data.txt",
+                    "echo data | node script.js",
+                    "echo data | sh -c 'cat'"]:
             with self.subTest(cmd=cmd):
                 self.assertEqual(self._d(cmd)[0], "ALLOW")
 
@@ -3834,8 +3893,8 @@ class StdinProgramMutationTests(unittest.TestCase):
             "    for body, parent_idx in zip(subs, sub_parents):",
             "    for body, parent_idx in zip(subs, [0]*len(subs)):"),
         "nested subs inheritance disabled": (
-            "        analyze_text(body, ctx.copy(), ps, depth + 1, inherited_fed=sub_fed)",
-            "        analyze_text(body, ctx.copy(), ps, depth + 1, inherited_fed=False)"),
+            "        analyze_text(body, ctx.copy(), ps, depth + 1, inherited_fed=sub_fed, outer_funcs=all_funcs)",
+            "        analyze_text(body, ctx.copy(), ps, depth + 1, inherited_fed=False, outer_funcs=all_funcs)"),
         "subs global taint over-approximation": (
             "            sub_fed = fed_list[parent_idx]",
             "            sub_fed = any(fed_list)"),
@@ -3846,7 +3905,11 @@ class StdinProgramMutationTests(unittest.TestCase):
                  "test_wrapper_stdin_refused", "test_node_option_forms_classified",
                  "test_compound_pipe_inherits_across_semicolons", "test_nested_shell_inherits_pipe",
                  "test_command_substitution_inherits_pipe",
-                 "test_command_substitution_independent_stays_allowed"]
+                 "test_command_substitution_independent_stays_allowed",
+                 "test_function_calls_inherit_stdin", "test_nested_redirect_inherits_stdin",
+                 "test_function_safe_forms_stay_allowed", "test_nested_redirect_safe_forms_stay_allowed",
+                 "test_independent_command_after_pipeline_stays_allowed",
+                 "test_node_file_operand_stays_allowed"]
 
     def _run(self, hook_text):
         with tempfile.TemporaryDirectory() as td:

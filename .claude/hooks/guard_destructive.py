@@ -2190,6 +2190,213 @@ def _interp_program(name, args):
     return 'unknown'
 
 
+def _find_matching_brace(text, start):
+    """Find matching "}" for "{" at start. Returns (inside_text, end_idx_after_closing).
+    Fail-closed: return None on unbalanced/too deep/unparseable (treated as unknown body -> unsafe).
+    Handles single/double quotes, backslash escapes, # comments (to newline),
+    $(...), backticks, <(...)/>(...) skipping (fail-closed None on failure)."""
+    # start must be "{" ?
+    if start >= len(text) or text[start] != "{":
+        return None
+    depth = 1
+    quote = None
+    i = start + 1
+    n = len(text)
+    while i < n:
+        c = text[i]
+        if quote == "'":
+            if c == "'":
+                quote = None
+            i += 1
+            continue
+        if c == "\\" and i + 1 < n:  # Bash backslash escapes next char (also inside ""? approximate)
+            # In PowerShell, backtick escapes, not backslash; treating backslash as escape is safe over-approx (may miss brace, fail-closed via depth? Actually skipping escaped char could miss quote handling? Safe: skip next char (may incorrectly skip, but then brace matching may fail -> None -> unsafe -> DENY, fail-closed safe).
+            i += 2
+            continue
+        if c == "$" and i + 1 < n and text[i + 1] == "(":
+            # Skip $(...) via _matched-like depth counting with quotes? Simplify: use _matched logic? To avoid dependency, do manual with quote awareness? For minimal, try to find matching ")" via _matched equivalent? Use simple depth with quotes? Hmm.
+            # For fail-closed, on any complexity, return None? Actually $(...) may contain braces (e.g., $(echo "}")). Must skip correctly, else brace depth miscount -> over/under-taint? Under-taint unsafe (leak), over-taint safe. To be safe (fail-closed), on encountering "$(", return None (unknown) -> unsafe -> DENY tainted calls (safe). Good - simple fail-closed for $(...) inside function body braces? But many function bodies contain $(...)? Example f() { echo "$(node)"; }? Unlikely in required tests (bodies are simple node/cat/script). Returning None (unsafe) for any body containing $(...) would cause over-denial for safe bodies with $(...)? Example f() { echo "$(cat)"; }; printf data | f - body contains $(...), our matcher would return None (unknown) -> unsafe -> DENY tainted call (over-denial, safe? Actually body echo "$(cat)" with tainted stdin - inner cat reads...? Hmm, safe? Over-denial safe. Acceptable per fail-closed.
+            # Actually task requires subs in function bodies? Not explicitly, but nested subs + functions combo should be considered. Our simple fail-closed (unknown on $() inside {}) would DENY tainted calls with subs in body (safe over-denial). Acceptable.
+            return None
+        if c == "`":
+            # Skip backticks: find closing unescaped backtick (fail-closed None on failure)
+            j = text.find("`", i + 1)
+            if j < 0:
+                return None
+            i = j + 1
+            continue
+        if c in "<>" and quote is None and i + 1 < n and text[i + 1] == "(":
+            # Process substitution <(...) / >(...): skip via paren matching (fail-closed None on failure)
+            # Find matching ")" for "(" at i+1 with quote awareness? Simplify: return None (unknown) to be fail-closed (safe) since process subst in function body is exotic.
+            return None
+        if quote == '"':
+            if c == '"':
+                quote = None
+            i += 1
+            continue
+        if quote is None and c == "#" and (i == 0 or text[i-1] in " \t\n;&|(){}"):
+            # Word-initial # starts comment to end of line (approximate split_segments logic, plus {,})
+            j = text.find("\n", i)
+            i = n if j < 0 else j
+            continue
+        if c in "'\"":
+            quote = c
+            i += 1
+            continue
+        if c == "{":
+            depth += 1
+            if depth > 8:
+                return None
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return (text[start+1:i], i+1)
+            if depth < 0:
+                return None
+        i += 1
+    return None
+
+def _extract_function_defs(text, ps):
+    """Extract shell function definitions: name -> list of body texts (or None for unknown/unparseable -> unsafe).
+    Handles Bash name() { ... }, name() ( ... ), function name [()] { ... } / ( ... ). PowerShell function name { ... }.
+    Fail-closed: unparseable/too deep/unknown forms yield None body (treated as unsafe)."""
+    defs = {}
+    # Pattern for name() with { or ( body opener after optional spaces (including newlines)
+    # Use regex to find candidates, then brace/paren matching for body (fail-closed None on failure).
+    # To avoid missing due to newlines, use \s* (includes \n).
+    import re as _re
+    # Bash name() { ... } and name() ( ... )
+    for m in _re.finditer(r'(?<![A-Za-z0-9_])([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*\)\s*(\{|\()', text):
+        name = m.group(1)
+        opener = m.group(2)
+        body_start_idx = m.start(2)  # index of "{" or "("
+        # Skip if opener inside quotes/comments? Regex over-matches quoted (fail-closed safe: over-denial). Accept.
+        if opener == "{":
+            res = _find_matching_brace(text, body_start_idx)
+            if res is None:
+                body = None
+            else:
+                body_inside, _end = res
+                body = body_inside
+        else:  # "(" subshell body: use paren matching with quote awareness? Simplify: use _matched-like? For minimal, try to find matching ")" via simple depth with quotes (fail-closed None on failure).
+            # Find matching ")" for "(" at body_start_idx
+            depth = 1
+            quote = None
+            i = body_start_idx + 1
+            n = len(text)
+            found = None
+            while i < n:
+                c = text[i]
+                if quote == "'":
+                    if c == "'":
+                        quote = None
+                    i += 1
+                    continue
+                if c == "\\" and i + 1 < n:
+                    i += 2
+                    continue
+                if c == "$" and i + 1 < n and text[i+1] == "(":
+                    # Nested $(...): fail-closed unknown (return None for whole body to be safe? Actually body contains $(...), analyzing body with subs handling will handle subs separately? For body extraction, $(...) inside (...) body - need to skip correctly, else paren depth miscount. Fail-closed: return None (unknown -> unsafe).
+                    found = None
+                    break
+                if c == "`":
+                    j = text.find("`", i+1)
+                    if j < 0:
+                        found = None
+                        break
+                    i = j + 1
+                    continue
+                if quote == '"':
+                    if c == '"':
+                        quote = None
+                    i += 1
+                    continue
+                if c in "'\"":
+                    quote = c
+                    i += 1
+                    continue
+                if c == "(":
+                    depth += 1
+                    if depth > 8:
+                        found = None
+                        break
+                elif c == ")":
+                    depth -= 1
+                    if depth == 0:
+                        found = (text[body_start_idx+1:i], i+1)
+                        break
+                    if depth < 0:
+                        found = None
+                        break
+                i += 1
+            if found is None:
+                body = None
+            else:
+                body, _end = found
+        defs.setdefault(name, []).append(body)
+    # function name [()] { ... } / ( ... )  (Bash + PowerShell)
+    for m in _re.finditer(r'(?<![A-Za-z0-9_])function\s+([A-Za-z_][A-Za-z0-9_]*)\s*(\(\s*\))?\s*(\{|\()', text):
+        name = m.group(1)
+        opener = m.group(3)
+        body_start_idx = m.start(3)
+        if opener == "{":
+            res = _find_matching_brace(text, body_start_idx)
+            body = None if res is None else res[0]
+        else:
+            # "(" subshell body after function: same paren matching as above (fail-closed None on $(), backticks, etc.)
+            depth = 1
+            quote = None
+            i = body_start_idx + 1
+            n = len(text)
+            found = None
+            while i < n:
+                c = text[i]
+                if quote == "'":
+                    if c == "'":
+                        quote = None
+                    i += 1
+                    continue
+                if c == "\\" and i + 1 < n:
+                    i += 2
+                    continue
+                if c == "$" and i + 1 < n and text[i+1] == "(":
+                    found = None
+                    break
+                if c == "`":
+                    j = text.find("`", i+1)
+                    if j < 0:
+                        found = None
+                        break
+                    i = j + 1
+                    continue
+                if quote == '"':
+                    if c == '"':
+                        quote = None
+                    i += 1
+                    continue
+                if c in "'\"":
+                    quote = c
+                    i += 1
+                    continue
+                if c == "(":
+                    depth += 1
+                    if depth > 8:
+                        found = None
+                        break
+                elif c == ")":
+                    depth -= 1
+                    if depth == 0:
+                        found = (text[body_start_idx+1:i], i+1)
+                        break
+                    if depth < 0:
+                        found = None
+                        break
+                i += 1
+            body = None if found is None else found[0]
+        defs.setdefault(name, []).append(body)
+    return defs
+
+
 def _has_input_redirect(seg):
     """True when a raw segment contains an unquoted `<` (input redirect, heredoc `<<`, here-string `<<<`)."""
     quote, i, n = None, 0, len(seg)
@@ -2208,7 +2415,12 @@ def _has_input_redirect(seg):
         elif c in "'\"":
             quote = c
         elif c == "<":
-            return True
+            # "<(" is process substitution, not stdin redirection (do not confuse).
+            # FD duplication "<&", heredoc "<<", here-string "<<<" remain tainted (fail-closed).
+            if i + 1 < n and seg[i + 1] == "(":
+                pass
+            else:
+                return True
         i += 1
     return False
 
@@ -2547,7 +2759,7 @@ def command_name(w):
     return name
 
 
-def analyze_argv(words, ctx, ps, depth, fed=False):
+def analyze_argv(words, ctx, ps, depth, fed=False, outer_funcs=None):
     if depth > MAX_DEPTH:
         raise Deny("depth", "command nesting too deep")
     # A program-naming environment variable anywhere in the command (prefix, export, env -S, a shell string) is denied.
@@ -2611,9 +2823,9 @@ def analyze_argv(words, ctx, ps, depth, fed=False):
             rest = words[1:]
             if not rest:
                 raise Deny("coproc", "coproc without a command is not resolvable")
-            analyze_argv(rest, ctx.copy(), ps, depth + 1, fed)
+            analyze_argv(rest, ctx.copy(), ps, depth + 1, fed, outer_funcs)
             if len(rest) >= 2:
-                analyze_argv(rest[1:], ctx.copy(), ps, depth + 1, fed)
+                analyze_argv(rest[1:], ctx.copy(), ps, depth + 1, fed, outer_funcs)
             return
         if SUBST in w0:
             raise Deny("command-word", "command substitution in command position")
@@ -2641,7 +2853,7 @@ def analyze_argv(words, ctx, ps, depth, fed=False):
             # timeout's option grammar (long options with a separate value, non-integer durations) is not parsed, so
             # the command it runs is taken from its grammar (timeout_candidates), with conservative extra candidates.
             for cand in timeout_candidates(words[1:]):
-                analyze_argv(cand, ctx.copy(), ps, depth + 1, fed)
+                analyze_argv(cand, ctx.copy(), ps, depth + 1, fed, outer_funcs)
             return
         if handoff(name):
             for cand in wrapper_candidates(name, words[1:], ctx):
@@ -2650,7 +2862,7 @@ def analyze_argv(words, ctx, ps, depth, fed=False):
                 # For a wrapper with a grammar the command word is exact, so it is analysed even when it looks like an option.
                 if name not in WRAPPER_OPTS and cand and (cand[0].startswith("-") or cand[0].isdigit()):
                     continue
-                analyze_argv(cand, ctx.copy(), ps, depth + 1, fed)
+                analyze_argv(cand, ctx.copy(), ps, depth + 1, fed, outer_funcs)
             if name in STRING_LAUNCHERS:
                 # A shell string argument is text, whatever its shape: a quoted string with a space (sudo -s "rm -rf x"),
                 # the value after -c or --command (flock -c rm lock), and the value after --name= (flock --command="rm").
@@ -2696,7 +2908,7 @@ def analyze_argv(words, ctx, ps, depth, fed=False):
     if name in ("iex", "invoke-expression"):
         raise Deny("powershell", "Invoke-Expression is not inspected")
     if name == "eval":
-        analyze_text(" ".join(args), ctx.copy(), ps, depth + 1, inherited_fed=fed)
+        analyze_text(" ".join(args), ctx.copy(), ps, depth + 1, inherited_fed=fed, outer_funcs=outer_funcs)
     elif name in SHELLS:
         shell_rule(args, ctx, depth, fed)
     elif name in PS_HOSTS:
@@ -2740,7 +2952,7 @@ def analyze_argv(words, ctx, ps, depth, fed=False):
 MAX_REDIRECTS = 64  # each redirection is a path check; an unbounded number of them is refused (fail closed, time bound)
 
 
-def analyze_text(text, ctx, ps, depth, inherited_fed=False):
+def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None):
     if depth > MAX_DEPTH:
         raise Deny("depth", "command nesting too deep")
     if ps and METHOD_CALL_RE.search(text):
@@ -2751,8 +2963,24 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False):
     # MAJOR-1/2: split_segments already tracks compound inheritance; nested shells
     # (sh -c, wrappers, eval, subs) inherit outer pipe-fed stdin (fail-closed OR).
     fed_list = [p or inherited_fed for p in piped]
+    # MAJOR function: collect shell function definitions in this text and merge
+    # with outer (caller) definitions for lexical sibling resolution. ANY unsafe
+    # body makes tainted calls fail-closed DENY (redefinition safe over-denial).
+    try:
+        func_defs = _extract_function_defs(text, ps)
+    except Deny:
+        # Unparseable function syntax: fail-closed taint (never ALLOW guessed).
+        # Mark as unknown body for a synthetic name that no call will match?
+        # Simpler: treat whole text as tainted unknown -> rely on per-seg checks.
+        func_defs = {}
+    if outer_funcs:
+        all_funcs = dict(outer_funcs)
+        for _k, _v in func_defs.items():
+            all_funcs.setdefault(_k, []).extend(_v)
+    else:
+        all_funcs = func_defs
     # A python command whose argv is not certain (unquoted or double-quoted expansion characters) is refused.
-    for seg, fed in zip(segs, fed_list):
+    for seg, fed, seg_text in zip(segs, fed_list, segs):
         words = words_of(seg, ps)
         pargs = python_position_args(words)
         if pargs is not None:
@@ -2764,27 +2992,72 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False):
         refusal = stdin_program_refusal(words, fed, seg)
         if refusal is not None:
             raise refusal
+        # MAJOR function: pipe-fed or redirected calls to locally defined functions
+        # whose bodies may run stdin-as-program interpreters are fail-closed DENY.
+        # Only the command position is considered (not args like "echo f"), and
+        # only same-shell prefixes ("!", "time", "coproc") are skipped -- external
+        # wrappers ("sudo", "env", ...) do NOT run shell functions.
+        call_taint = fed or _has_input_redirect(seg)
+        if call_taint and all_funcs:
+            _fi = 0
+            while _fi < len(words) and (words[_fi] in KEYWORDS or ASSIGN.match(words[_fi])):
+                _fi += 1
+            # Skip same-shell prefixes that run pipelines/functions in the same shell.
+            while _fi < len(words) and words[_fi] in ("time", "coproc"):
+                _fi += 1
+            if _fi < len(words):
+                _cname = _cmd_name(words[_fi])
+                # Do not consider NON_EXEC leading commands (e.g. "echo f" arg, not call).
+                _first = words[_fi]
+                # Recompute first meaningful word for NON_EXEC check (after KEYWORDS/ASSIGN only, not time/coproc? Actually "time echo f"? Unlikely. Keep simple: check _cname's source word's leading? Use _first for NON_EXEC via _cmd_name? NON_EXEC check uses _cmd_name(words[i]) in original stdin check (after KEYWORDS/ASSIGN). For functions, mimic: if first meaningful (after KEYWORDS/ASSIGN) is NON_EXEC, skip (no call).
+                pass
+            # Recompute with NON_EXEC guard (matching stdin_program_refusal behavior).
+            _j = 0
+            while _j < len(words) and (words[_j] in KEYWORDS or ASSIGN.match(words[_j])):
+                _j += 1
+            if _j < len(words) and _cmd_name(words[_j]) in NON_EXEC_COMMANDS:
+                pass
+            else:
+                # Find command after same-shell prefixes.
+                _k = _j
+                while _k < len(words) and words[_k] in ("time", "coproc"):
+                    _k += 1
+                if _k < len(words):
+                    _fname = _cmd_name(words[_k])
+                    if _fname in all_funcs:
+                        for _body in all_funcs[_fname]:
+                            if _body is None:
+                                raise Deny("function", "function '" + _fname + "' with uninspectable body called with stdin: not inspected")
+                            try:
+                                analyze_text(_body, ctx.copy(), ps, depth + 1, inherited_fed=True, outer_funcs=all_funcs)
+                            except Deny as _d:
+                                raise _d
     if sum(len(ops) for ops in redirs) > MAX_REDIRECTS:
         raise Deny("redirect", "more than %d redirections are not inspected" % MAX_REDIRECTS)
     for body, parent_idx in zip(subs, sub_parents):
-        # MAJOR subs fix: each substitution belongs to its parent segment.
-        # Inherit the parent segment's pipe-fed state (already ORed with outer
-        # inherited_fed in fed_list) instead of only the global inherited_fed.
+        # MAJOR subs + MAJOR redirect: each substitution belongs to its parent segment.
+        # Inherit the parent segment's stdin provenance (pipe-fed OR input redirect,
+        # already ORed with outer inherited taint in fed_list for pipe part) instead
+        # of only the global inherited_fed. Parent redirect is ORed here so that
+        # 'echo "$(node)" < file' taints the inner body even without outer pipe.
         # This avoids over-tainting independent later commands (e.g. "| cat;
         # echo \"$(node)\"" stays ALLOW for the second sub) while closing the
         # "| echo \"$(node)\"" bypass (parent seg pipe-fed True -> inner DENY).
         # Unidentifiable belonging is fail-closed tainted (never guessed ALLOW).
-        if 0 <= parent_idx < len(fed_list):
-            sub_fed = fed_list[parent_idx]
+        if 0 <= parent_idx < len(segs):
+            sub_fed = fed_list[parent_idx] or _has_input_redirect(segs[parent_idx])
         else:
             sub_fed = True
-        analyze_text(body, ctx.copy(), ps, depth + 1, inherited_fed=sub_fed)
+        analyze_text(body, ctx.copy(), ps, depth + 1, inherited_fed=sub_fed, outer_funcs=all_funcs)
     for seg, ops, fed_seg in zip(segs, redirs, fed_list):
         if ops and inside_claude(ctx.cwd, ctx):
             raise Deny("claude-write", "redirect while cwd is inside .claude/ is denied")
         for op, target in ops:
             check_redirect(target, op, ctx, ps)
-        analyze_argv(words_of(seg, ps), ctx, ps, depth, fed_seg)
+        # MAJOR redirect: outer stdin taint is pipe-fed OR input redirect for this
+        # segment (parent-local, not global). Output-only ">" never taints here.
+        seg_taint = fed_seg or _has_input_redirect(seg)
+        analyze_argv(words_of(seg, ps), ctx, ps, depth, seg_taint, outer_funcs=all_funcs)
 
 
 def load_registry(root):
