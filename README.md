@@ -1,114 +1,97 @@
+![oss-pce-cd-bios — retro PC Engine CD research illustration](assets/readme/hero.svg)
+
+<div align="center">
+
 # oss-pce-cd-bios
 
-## G5 update — 2026-11-13 (experimental, synthetic only)
+**PC Engine / TurboGrafx-CD 向けオープンソース System Card 互換BIOSを目指す研究・開発プロジェクト**
 
-Merged [PR #788](https://github.com/mao2009/oss-pce-cd-bios/pull/788) and [PR #790](https://github.com/mao2009/oss-pce-cd-bios/pull/790) demonstrate a **three-service experimental chain** (`$02 CD_BASE` prototype, `$33 EX_DSPOFF`, `$03 CD_READ` link) and real Geargrafx READ(6) of 2,048 bytes on **synthetic CD media**. In the A/B/C/D matched comparison, fake-RTS variants halt at successive stubs while D performs the three experimental effects and halts cleanly, cold and warm. **No retail title screen or commercial-compatible BIOS has been demonstrated.** Ordinary DEV implementation count, ABI approval and release gates remain separate.
+*Researching a clean-room, open-source System Card BIOS replacement. Not compatible firmware yet.*
 
-See the [dated 2026-11-13 G5 progress/evidence report](docs/g5-progress-2026-11-13.md) for details and limitations. The [2026-11-18 addendum](docs/g5-evidence-2026-11-18.md) records the later merges (#799 DEV profile, #801 PUBLIC loader, #803 `$4A` SIMULATED diagnostic, #805 CD_BASE 2-base, #806 CD_READ commercial FIRST mode), and a correction: Owner-permitted commercial observations are HISTORICALLY_OBSERVED on Issue #802 (standard G5 image and SIMULATED diagnostic runs), not NOT_RUN. The older 2026-11-06 snapshot below is retained as historical context.
+[![CI](https://github.com/mao2009/oss-pce-cd-bios/actions/workflows/ci.yml/badge.svg)](https://github.com/mao2009/oss-pce-cd-bios/actions/workflows/ci.yml)
+[![Core harness](https://github.com/mao2009/oss-pce-cd-bios/actions/workflows/core-harness.yml/badge.svg)](https://github.com/mao2009/oss-pce-cd-bios/actions/workflows/core-harness.yml)
+[![DEV diagnostics](https://github.com/mao2009/oss-pce-cd-bios/actions/workflows/api-source.yml/badge.svg)](https://github.com/mao2009/oss-pce-cd-bios/actions/workflows/api-source.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-365b94.svg)](LICENSE)
 
+![Experimental](https://img.shields.io/badge/status-EXPERIMENTAL-805ad5.svg)
+![DEV services](https://img.shields.io/badge/DEV%20routines-18%2F81-17a2b8.svg)
+![Reference ABI](https://img.shields.io/badge/verified%20ABI-0%2F81-e55364.svg)
+![Release](https://img.shields.io/badge/release-BLOCKED-c0392b.svg)
+![G5](https://img.shields.io/badge/G5__OBSERVED-false-6b7280.svg)
+![Platform](https://img.shields.io/badge/target-HuC6280%20%7C%20Geargrafx-4254ad.svg)
 
-An open-source project to create a **PC Engine / TurboGrafx-CD Super System Card 3.0-compatible BIOS replacement**, using original and appropriately licensed reusable OSS code.
+**[現在地](#現在地-at-a-glance) · [実測結果](#商用cdの観測) · [使い方](#試してみる) · [ドキュメント](docs/README.md) · [ロードマップ](#ロードマップ)**
 
-> **Status: historical main `5a8dc5a` (2026-11-06) plus this revision — development diagnostics only.** The repository does **not** yet contain a releasable or commercial-game-compatible System Card BIOS. Historical main `5a8dc5a` has **14/81** DEV implementations and **67 stubs**. This revision (EX_JOYSNS $21 and EX_SCRSIZ $23) has **18/81** DEV implementations and **63 stubs**. Owner-approved DEV_CALLABLE: **0**; reference ABI VERIFIED: **0/81**; reference JSR permitted: **0/81**; `release_eligible: false`. See [status](docs/status.md).
+</div>
 
-Current DEV implementation count: 18/81; current stubs: 63/81; owner-approved DEV_CALLABLE: 0; reference ABI VERIFIED: 0/81; reference JSR permitted: 0/81.
+> [!IMPORTANT]
+> **これは市販CDを動かせる完成済み互換BIOSではありません。** 開発用診断ROM・実験用API・合成媒体および許可されたローカル商用媒体の観測結果を公開しています。ゲームのタイトル画面到達、真正System Card ABI互換、リリース適格性は**未達**です。
 
-## Current development-only capabilities
+## 現在地 / At a glance
 
-The 81 candidate slots in `spec/dev_implementations.json` contain 18 project-defined implementations: `EX_GETVER` ($1E), `EX_JOYSNS` ($21), `EX_JOYREP` ($22), `EX_SCRSIZ` ($23), `EX_BGON` ($2E), `EX_SETWRT` ($3A), `EX_BINBCD` ($3C), `EX_BCDBIN` ($3D), `EX_RND` ($3E), `MA_MUL8U` ($3F), `MA_MUL8S` ($40), `MA_MUL16U` ($41), `MA_DIV16S` ($42), `MA_DIV16U` ($43), `MA_SQRT` ($44), `MA_SIN` ($45), `MA_COS` ($46) and `MA_MUL16S` ($4F). The other **63** entries are nonreturning stubs. An installed DEV routine is **not** a reference-BIOS-verified ABI.
+![Current capabilities and limitations — 2026-11-18 evidence snapshot](assets/readme/overview.svg)
 
-The pinned Geargrafx core executes original HuCARD and development firmware diagnostics: reset/stack/MPR/IRQ probes, synthetic CD READ(6), RAM payload execution, and experimental IPL loading. These do **not** implement callable, independently verified `CD_BOOT`, `CD_RESET`, `CD_BASE` or `CD_READ` services.
+| できていること | まだできないこと |
+| :-- | :-- |
+| 再現可能なDEV ROMと固定版Geargrafxの検証 | 互換System Card BIOSとしての配布 |
+| 開発用ルーチン **18 / 81**、残り **63スタブ** | 正式ABI検証 **0 / 81** |
+| 合成CDでのPUBLIC IPLと実験的CDサービスの結合検証 | 市販タイトル画面到達（**G5_OBSERVED=false**） |
+| 商用CDの最初の停止APIの特定（読取り専用） | 実験コードを真正APIと認定すること |
 
-- [PR #681](https://github.com/mao2009/oss-pce-cd-bios/pull/681) (merged 2026-11-06): MPR2/MPR3 measurement and a **multi-sector synthetic IPL** loader on the 8 KiB HuCARD+CUE path. Its PR evidence reports 22 scenarios, cold/warm.
-- [PR #683](https://github.com/mao2009/oss-pce-cd-bios/pull/683) (merged 2026-11-06): the same 22 synthetic scenarios through a **separate 256 KiB DEV image** using Geargrafx `LoadBiosFromBuffer` and loader-identity checks. This demonstrates the selected DEV loader path, **not System Card compatibility**.
-- The **single-sector PCEX** experiment (Issue #668) is a different DEV contract and remains available. No lawful commercial CD game boot or verified reference ABI is demonstrated.
+<sub>数値・図は **2026-11-18 / main `fa694281`** のスナップショット。CIバッジだけはGitHub Actionsの現在の結果です。詳細な集計定義は [status](docs/status.md) を参照。</sub>
 
-Historical reference only: main `f90c16b` (2026-10-22) had 9 DEV implementations and 72 stubs; main `2954e90` (2026-10-28) had 13 DEV implementations and 68 stubs. These are not current counts.
+## 商用CDの観測
 
-## Objectives
+![Two sanitized commercial-CD execution paths converge on the unimplemented $4A API](assets/readme/boot-path.svg)
 
-- Prioritize a software **Super System Card 3.0-compatible ROM** as the first target, serving CD-ROM² and SUPER CD-ROM² software where the emulated hardware configuration permits.
-- Long-term aim: broad commercial CD title compatibility, starting with Japanese releases, and expansion to other regional releases and later Arcade Card-related requirements where technically applicable.
-- Replace the **BIOS software**, not the PCE CD hardware: emulators or FPGA implementations supply the HuC6280 CPU, CD-ROM interface, additional RAM, ADPCM and other peripherals.
-- Target **Geargrafx** first as the instrumented emulator/debugger; use another independent emulator for cross-checks. FPGA BIOS loading may be validated later.
-- Reuse appropriately licensed existing OSS code where technically suitable; adapt it to the HuC6280/System Card ABI or implement original code as needed. Produce reproducible ROM builds and redistributable synthetic test fixtures.
-- Share documentation, evidence formats, tests, and reusable components with [oss-mcd-bios](https://github.com/mao2009/oss-mcd-bios) when technically and legally appropriate; isolate console-specific behavior. The API/behavior specification may also inform a future RetroRecompStudio PCE runtime.
+- **CUE[0]**: PUBLIC IPL → `$02` → `$33` → `$4A` **停止**
+- **CUE[1]**: PUBLIC IPL → `$1E` → `$4A` **停止**
 
-The goal is **behavioral compatibility**, not binary identity with any proprietary System Card. A homebrew disc boot is an intermediate milestone, **not** proof of retail compatibility.
+どちらもINFO/BODY読込みとIPLJMPに到達し、cold/warmで結果が一致。**共通ブロッカーは未実装の `$4A`（KEY_BIOS / EX_MEMOPEN候補）**です。 `$03` commercial FIRSTは今回の商用prefixでは呼び出されていません。**起動成功ではありません。**
 
-## Non-goals (initially)
+[実測の詳細と制限](docs/g5-commercial-reobservation-2026-11-18.md) · [Issue #802](https://github.com/mao2009/oss-pce-cd-bios/issues/802) · [API #84](https://github.com/mao2009/oss-pce-cd-bios/issues/84)
 
-- Building a physical HuCARD or replacing the original console's RAM hardware.
-- Shipping NEC/Hudson BIOS images, commercial game data, copyrighted artwork/audio, or disassembled/translated proprietary code.
-- Pretending the project already passes tests or supports games.
-- Guaranteeing every game or FPGA implementation works before empirical verification.
+## しくみ / Architecture
 
-## Development sequence
+![Experimental boot flow and evidence boundaries](assets/readme/architecture.svg)
 
-1. Verify the System Card 3.0 ROM layout, banking, vectors, HuC6280 startup and documented API calling conventions.
-2. Maintain the implemented pinned HuC6280 assembler/linker and reproducible fixture build/ROM checks.
-3. Instrument **real Geargrafx core execution** with synthetic ROM/CD fixtures and headless traces; mocks remain separate.
-4. Implement reset, essential System Card entry points, CD commands and disc boot.
-5. Expand services and prove each compatible behavior with negative tests, independent emulator comparisons and named gameplay scenarios.
+実験用ビルダーは **PUBLIC IPL → RAMへのロード → 実験API呼出し** を観測します。通常DEV ROM、実験用BIOS、将来の互換BIOSは**別のもの**です。
 
-**Important:** references describe the System Card function jump table around CPU address `$E000`, but precise bank mapping, ABI and service behavior must be validated per revision. Geargrafx documentation lists a `syscard` BIOS type of 256 KiB; this is a *loader target*, not confirmation that any arbitrary 256 KiB image boots.
+[設計](docs/architecture.md) · [DEVと実験用ROMの違い](docs/project-guide.md) · [API台帳](docs/api-inventory.md)
 
-## Optional local ROM and disc images
+## 試してみる
 
-For local, **optional** diagnostics, contributors can put their own lawfully obtained game-disc images or separate System Card reference ROMs under `./rom/`. The directory is Git-ignored and is not required by setup, public tests, or CI. Tool-specific format support and test commands still apply; placing files there does **not** automatically run tests or establish BIOS/game compatibility. See [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md).
+Linux / WSL向け。診断用ROMは**市販System Cardの代わりに使えません**。
 
-## Documentation
-
-- [Actual implementation status (main vs open Draft PR, if any)](docs/status.md)
-- [G5 experiment and matched-selection progress (2026-11-13)](docs/g5-progress-2026-11-13.md)
-- [Architecture](docs/architecture.md)
-- [Building and setup](docs/building.md)
-- [Tests and evidence scope](docs/testing.md)
-- [Toolchain selection](docs/toolchain.md)
-- [Geargrafx setup and debugging](docs/emulator-geargrafx.md)
-- [ROM and API research status](docs/specification.md)
-- [System Card ROM source contract](docs/system-card-rom.md)
-- [81-slot ABI contract ledger](docs/abi-contracts.md)
-- [Expanded Geargrafx CPU/RAM/IRQ evidence](docs/geargrafx-contract-evidence.md)
-- [Pinned OSS research audit](docs/oss-audit-systemcard.md)
-- [System Card 3.0 API-by-API Issue inventory](docs/api-inventory.md)
-- [Geargrafx harness plan](docs/geargrafx.md)
-- [Compatibility and evidence](docs/compatibility.md)
-- [OSS reuse, licensing and provenance policy](docs/provenance.md)
-- [Initial OSS reuse candidate inventory](docs/reuse-inventory.md)
-- [Roadmap](docs/roadmap.md)
-- [Change-aware nightly developer ROM builds](docs/nightly.md)
-- [Contributing](CONTRIBUTING.md)
-
-## Build and verification
-
-Linux x86_64 (or WSL) requires Python 3.10+, GNU Make, GCC/G++, binutils and curl. `make setup` downloads/builds checksum-pinned tools into an **external** cache.
-
-```sh
-make setup
-make build                        # original 8 KiB HuCARD test fixture, not BIOS
-make test                         # host tests (cc65 required)
-make test-real-core               # pinned real Geargrafx core
-make check                        # source and workflow checks
-make dev-rom                      # 256 KiB DEV ROM; 18 project-defined routines
-make dev-test                     # DEV diagnostics; no reference ABI guarantee
-make dev-release-gate-blocked     # expected refusal
+```bash
+make setup          # 固定版ツールチェーンの準備
+make dev-rom        # 開発用256KiB診断ROM
+make test           # ホストテスト
+make test-real-core # Geargrafx実コア診断
+make check          # 安全・構造チェック
 ```
 
-Opt-in development diagnostics (original **synthetic** media only):
+詳しい環境・実験手順は [Building](docs/building.md)、[Testing](docs/testing.md)、[Geargrafx](docs/emulator-geargrafx.md) へ。商用媒体は**明示的opt-inかつローカル読取り専用**、公開CIには含まれません。
 
-```sh
-make dev-cdread-integration
-make dev-cdload-exec-integration
-make dev-boot-internal-integration
-make dev-ipl-boot-integration         # one-sector PCEX (Issue #668)
-make mpr-bank-probe                   # MPR2/3 observation
-make ipl-loader-integration           # multi-sector, 8 KiB HuCARD path (#681)
-make dev-bios-ipl-loader-integration  # multi-sector, 256 KiB DEV BIOS-buffer path (#683)
-```
+## ロードマップ
 
-`make release` intentionally refuses to publish a BIOS. Each test result only supports the exact commit, toolchain and scenario it was run on; this documentation change itself is not an emulator test run. See [building](docs/building.md), [testing](docs/testing.md), [DEV IPL boot](docs/dev-ipl-boot.md) and [compatibility](docs/compatibility.md).
+![Milestones from research infrastructure through genuine ABI verification to game compatibility](assets/readme/roadmap.svg)
 
-## License
+**次のP0:** `$4A`の呼出し契約を裏付け、実際の機能を独立実装・検証して商用経路を再観測する。仮RTS通過を互換性の証明にしません。
 
-Original source code and documentation authored for this repository are MIT-licensed; see [LICENSE](LICENSE). Properly licensed third-party components may be reused under **their own** terms, with file-level approval, attribution and required notices. The presence of MIT project code does not relicense external code; see [the reuse policy](docs/provenance.md). Not affiliated with NEC, Hudson Soft, Konami or other trademark holders.
+[Roadmap](docs/roadmap.md) · [現在の評価・改善課題](docs/project-review-2026-11-18.md)
+
+## ドキュメント / Explore
+
+| 見たいこと | 入口 |
+| :-- | :-- |
+| **初めて読む / できること** | [プロジェクトガイド](docs/project-guide.md) |
+| **構成・ビルド・テスト** | [セットアップ](docs/building.md) · [アーキテクチャ](docs/architecture.md) |
+| **APIの実装状況・ABI** | [現状](docs/status.md) · [81スロット台帳](docs/api-inventory.md) |
+| **商用CD・G5検証証拠** | [11/18再観測](docs/g5-commercial-reobservation-2026-11-18.md) · [G5履歴](docs/g5-evidence-2026-11-18.md) |
+| **互換性・安全性・ライセンス** | [互換性の判定基準](docs/compatibility.md) · [来歴](docs/provenance.md) |
+| **すべての資料** | **[ドキュメント索引](docs/README.md)** |
+
+---
+
+オリジナルのコード・文書は [MIT](LICENSE)。他者のソフトウェア・媒体・商標は各権利者に帰属します。NEC / Hudson Soft / Konami等の公式プロジェクトではありません。
