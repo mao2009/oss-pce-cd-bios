@@ -687,7 +687,7 @@ def split_segments(text, ps=False):
                     # Unparseable segment: keep tainted when outer is pipe-fed.
                     # Push an unknown marker so following ";" does not clear.
                     if fed and len(compound_stack) < MAX_DEPTH:
-                        compound_stack.append(("unknown", True))
+                        compound_stack.append(("unknown", True, len(segs) - 1))
                     elif len(compound_stack) >= MAX_DEPTH:
                         raise Deny("depth", "compound nesting too deep: not inspected")
                 else:
@@ -717,39 +717,74 @@ def split_segments(text, ps=False):
                             # open a single compound (avoid double push).
                             if len(compound_stack) >= MAX_DEPTH:
                                 raise Deny("depth", "compound nesting too deep: not inspected")
-                            compound_stack.append((opener, fed))
+                            compound_stack.append((opener, fed, len(segs) - 1))
                         elif first in ("fi", "done", "esac", "}"):
                             # Closers pop only on kind match (fail-closed: mismatch
                             # keeps the stack tainted instead of popping).
+                            # MAJOR compound-redirect: if the closer segment itself carries
+                            # an input redirect ("fi < file", "} < file", ...), it applies
+                            # to the entire compound -- taint the whole range fail-closed.
+                            _opener_idx = None
                             if first == "fi":
                                 if compound_stack and compound_stack[-1][0] == "if":
-                                    compound_stack.pop()
+                                    _opener_kind, _opener_fed, _opener_idx = compound_stack.pop()
                             elif first == "done":
                                 if compound_stack and compound_stack[-1][0] == "loop":
-                                    compound_stack.pop()
+                                    _opener_kind, _opener_fed, _opener_idx = compound_stack.pop()
                             elif first == "esac":
                                 if compound_stack and compound_stack[-1][0] == "case":
-                                    compound_stack.pop()
+                                    _opener_kind, _opener_fed, _opener_idx = compound_stack.pop()
                             elif first == "}":
                                 if compound_stack and compound_stack[-1][0] in ("brace", "function"):
-                                    compound_stack.pop()
+                                    _opener_kind, _opener_fed, _opener_idx = compound_stack.pop()
+                            if _opener_idx is not None and _has_input_redirect(seg_text):
+                                # Taint the whole compound range (opener..closer inclusive).
+                                # Output-only ">" does not taint (checked inside _has_input_redirect).
+                                # "<(" process substitution does not taint (excluded inside).
+                                _closer_idx = len(segs) - 1
+                                for _k in range(_opener_idx, _closer_idx + 1):
+                                    if 0 <= _k < len(pipes):
+                                        pipes[_k] = True
                             # "then/do/else/elif/in" and ordinary commands: no push/pop.
                 # Delimiter "(" opens a subshell with the current fed.
                 if c == "(":
                     if len(compound_stack) >= MAX_DEPTH:
                         raise Deny("depth", "compound nesting too deep: not inspected")
-                    compound_stack.append(("paren", fed))
+                    compound_stack.append(("paren", fed, len(segs)))
                 elif c == ")":
                     if compound_stack and compound_stack[-1][0] == "paren":
-                        compound_stack.pop()
+                        _okind, _ofed, _oidx = compound_stack.pop()
+                        # MAJOR compound-redirect: trailing "< file" after ")" applies to
+                        # the whole subshell (e.g., "(node) < code.js"). Look ahead for
+                        # unquoted "<" (not process substitution "<(") before next
+                        # ";" / "|" / "&" / newline / "(" / ")" / "{" / "}" to taint range.
+                        # Output-only ">" never taints here.
+                        _j = i + 1
+                        while _j < n and text[_j] in " \t":
+                            _j += 1
+                        if _j < n and text[_j] == "<" and (_j + 1 >= n or text[_j + 1] != "("):
+                            # Taint inner range [opener_idx, last-inside-idx] (fail-closed).
+                            # Current seg just appended is last inside (index len(segs)-1).
+                            _cidx = len(segs) - 1
+                            for _k in range(_oidx, _cidx + 1):
+                                if 0 <= _k < len(pipes):
+                                    pipes[_k] = True
                     # Mismatch (e.g., case pattern ")"): do not pop; keep tainted.
                 elif ps and c == "{":
                     if len(compound_stack) >= MAX_DEPTH:
                         raise Deny("depth", "compound nesting too deep: not inspected")
-                    compound_stack.append(("brace", fed))
+                    compound_stack.append(("brace", fed, len(segs)))
                 elif ps and c == "}":
                     if compound_stack and compound_stack[-1][0] == "brace":
-                        compound_stack.pop()
+                        _okind, _ofed, _oidx = compound_stack.pop()
+                        _j = i + 1
+                        while _j < n and text[_j] in " \t":
+                            _j += 1
+                        if _j < n and text[_j] == "<" and (_j + 1 >= n or text[_j + 1] != "("):
+                            _cidx = len(segs) - 1
+                            for _k in range(_oidx, _cidx + 1):
+                                if 0 <= _k < len(pipes):
+                                    pipes[_k] = True
                     # Mismatch: keep tainted.
                 # Fed update for the next segment.
                 if c == "|":
@@ -757,7 +792,7 @@ def split_segments(text, ps=False):
                     nxt = text[i + 1] if i + 1 < n else ""
                     if prv == "|" or nxt == "|":
                         # "||": not a pipe; clear unless inside pipe-fed compound.
-                        if not any(ef for _, ef in compound_stack):
+                        if not any(ef for _, ef, _op in compound_stack):
                             fed = False
                         # Inside pipe-fed: keep fed (do not clear).
                     else:
@@ -775,20 +810,20 @@ def split_segments(text, ps=False):
                     elif c == ")":
                         # After closing, next is outside: True only if still inside
                         # an outer pipe-fed compound.
-                        if not any(ef for _, ef in compound_stack):
+                        if not any(ef for _, ef, _op in compound_stack):
                             fed = False
                         # Else keep fed (still inside outer pipe-fed).
                     elif ps and c == "{":
                         pass  # same as "(": next keeps current fed.
                     elif ps and c == "}":
-                        if not any(ef for _, ef in compound_stack):
+                        if not any(ef for _, ef, _op in compound_stack):
                             fed = False
                     elif ps and c == ",":
-                        if not any(ef for _, ef in compound_stack):
+                        if not any(ef for _, ef, _op in compound_stack):
                             fed = False
                     else:
                         # ";", newline, "&" (background / "&&"): clear unless inside.
-                        if not any(ef for _, ef in compound_stack):
+                        if not any(ef for _, ef, _op in compound_stack):
                             fed = False
                         # Inside pipe-fed: keep fed (do not clear).
             else:
@@ -798,11 +833,11 @@ def split_segments(text, ps=False):
                 if c == "(":
                     if len(compound_stack) >= MAX_DEPTH:
                         raise Deny("depth", "compound nesting too deep: not inspected")
-                    compound_stack.append(("paren", fed))
+                    compound_stack.append(("paren", fed, len(segs)))
                 elif ps and c == "{":
                     if len(compound_stack) >= MAX_DEPTH:
                         raise Deny("depth", "compound nesting too deep: not inspected")
-                    compound_stack.append(("brace", fed))
+                    compound_stack.append(("brace", fed, len(segs)))
                 # ")", "}" with whitespace before: pop if matching (same as above
                 # but without keyword checks, since no command words).
                 elif c == ")":
@@ -818,9 +853,62 @@ def split_segments(text, ps=False):
         i += 1
     if quote:
         raise Deny("parse", "unterminated quote")
-    segs.append("".join(cur))
+    _final_seg = "".join(cur)
+    segs.append(_final_seg)
     redirs.append(rd)
     pipes.append(fed)
+    # MAJOR compound-redirect: final segment (no trailing delimiter) may open/close
+    # compounds and may carry input redirect on a closer ("fi < file", "} < file").
+    # Process it like non-whitespace segments in the delimiter block (without fed update
+    # for a next segment, since none follows). Unclosed compounds at end are fail-closed DENY.
+    if _final_seg.strip():
+        try:
+            _final_words = words_of(_final_seg, ps)
+        except Deny:
+            if fed and len(compound_stack) < MAX_DEPTH:
+                compound_stack.append(("unknown", True, len(segs) - 1))
+            elif len(compound_stack) >= MAX_DEPTH:
+                raise Deny("depth", "compound nesting too deep: not inspected")
+        else:
+            if not ps:
+                _k = 0
+                while _k < len(_final_words) and _final_words[_k] in ("!", "time", "coproc"):
+                    _k += 1
+                _first = _final_words[_k] if _k < len(_final_words) else ""
+                _opener = None
+                if _first == "if":
+                    _opener = "if"
+                elif _first == "while" or _first == "until" or _first in ("for", "select"):
+                    _opener = "loop"
+                elif _first == "case":
+                    _opener = "case"
+                elif _first == "function":
+                    _opener = "function"
+                elif _first == "{":
+                    _opener = "brace"
+                if _opener is not None:
+                    if len(compound_stack) >= MAX_DEPTH:
+                        raise Deny("depth", "compound nesting too deep: not inspected")
+                    compound_stack.append((_opener, fed, len(segs) - 1))
+                elif _first in ("fi", "done", "esac", "}"):
+                    _opener_idx = None
+                    if _first == "fi":
+                        if compound_stack and compound_stack[-1][0] == "if":
+                            _opener_kind, _opener_fed, _opener_idx = compound_stack.pop()
+                    elif _first == "done":
+                        if compound_stack and compound_stack[-1][0] == "loop":
+                            _opener_kind, _opener_fed, _opener_idx = compound_stack.pop()
+                    elif _first == "esac":
+                        if compound_stack and compound_stack[-1][0] == "case":
+                            _opener_kind, _opener_fed, _opener_idx = compound_stack.pop()
+                    elif _first == "}":
+                        if compound_stack and compound_stack[-1][0] in ("brace", "function"):
+                            _opener_kind, _opener_fed, _opener_idx = compound_stack.pop()
+                    if _opener_idx is not None and _has_input_redirect(_final_seg):
+                        _closer_idx = len(segs) - 1
+                        for _kk in range(_opener_idx, _closer_idx + 1):
+                            if 0 <= _kk < len(pipes):
+                                pipes[_kk] = True
     return segs, subs, redirs, pipes, sub_parents
 
 
@@ -2266,7 +2354,9 @@ def _extract_function_defs(text, ps):
     # To avoid missing due to newlines, use \s* (includes \n).
     import re as _re
     # Bash name() { ... } and name() ( ... )
-    for m in _re.finditer(r'(?<![A-Za-z0-9_])([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*\)\s*(\{|\()', text):
+    # MAJOR-2: Bash function names allow hyphen/dot/colon (f-x, f.foo, f:foo verified). Fail-closed
+    # for other special chars via unknown-body DENY (no silent ALLOW).
+    for m in _re.finditer(r'(?<![A-Za-z0-9_.\-:])([A-Za-z_][A-Za-z0-9_.:\-]*)\s*\(\s*\)\s*(\{|\()', text):
         name = m.group(1)
         opener = m.group(2)
         body_start_idx = m.start(2)  # index of "{" or "("
@@ -2335,7 +2425,7 @@ def _extract_function_defs(text, ps):
                 body, _end = found
         defs.setdefault(name, []).append(body)
     # function name [()] { ... } / ( ... )  (Bash + PowerShell)
-    for m in _re.finditer(r'(?<![A-Za-z0-9_])function\s+([A-Za-z_][A-Za-z0-9_]*)\s*(\(\s*\))?\s*(\{|\()', text):
+    for m in _re.finditer(r'(?<![A-Za-z0-9_.\-:])function\s+([A-Za-z_][A-Za-z0-9_.:\-]*)\s*(\(\s*\))?\s*(\{|\()', text):
         name = m.group(1)
         opener = m.group(3)
         body_start_idx = m.start(3)

@@ -3760,7 +3760,8 @@ class StdinProgramTests(unittest.TestCase):
                     'echo x | echo "$(node)" "$(python3)"',
                     'printf "x" | echo "$(echo "$(node)")"',
                     'printf "x" | echo "`node`"',
-                    'printf "x" | if true; then echo "$(node)"; fi']:
+                    'printf "x" | if true; then echo "$(node)"; fi',
+                    'f() { node; }; printf \'x\\n\' | echo "$(f)"']:
             with self.subTest(cmd=cmd):
                 verdict, reason = self._d(cmd)
                 self.assertEqual(verdict, "DENY")
@@ -3796,7 +3797,17 @@ class StdinProgramTests(unittest.TestCase):
                     "f() { python3 -W ignore; }; printf 'x\\n' | f",
                     "f() { if true; then node; fi; }; printf 'x\\n' | f",
                     "f() { (node); }; printf 'x\\n' | f",
-                    "f() { echo $(node); }; printf 'x\\n' | f"]:
+                    "f() { echo $(node); }; printf 'x\\n' | f",
+                    "f-x() { node; }; printf 'code\\n' | f-x",
+                    "f.foo() { node; }; printf 'code\\n' | f.foo",
+                    "f:foo() { node; }; printf 'code\\n' | f:foo",
+                    "function f-x { node; }; printf 'code\\n' | f-x",
+                    "f() { g; }; g() { node; }; printf 'x\\n' | f",
+                    "f() { node; }; f() { node; }; printf 'x\\n' | f",
+                    "f() { node; echo hi; }; printf 'x\\n' | f",
+                    "f() (node); printf 'x\\n' | f",
+                    "f() { sudo node; }; printf 'x\\n' | f",
+                    "f() { `node`; }; printf 'x\\n' | f"]:
             with self.subTest(cmd=cmd):
                 verdict, reason = self._d(cmd)
                 self.assertEqual(verdict, "DENY")
@@ -3811,6 +3822,11 @@ class StdinProgramTests(unittest.TestCase):
                     "f() { node script.js; }; printf 'data\\n' | f",
                     "f() { node; }; f",
                     "f() { echo hi; }; echo hi",
+                    "f() { g; }; g() { cat; }; printf 'data\\n' | f",
+                    "f-x() { cat; }; printf 'data\\n' | f-x",
+                    "f.foo() { node script.js; }; printf 'data\\n' | f.foo",
+                    "f:foo() { node; }; f:foo",
+                    "echo f-x",
                     "node script.js",
                     "python3 -m unittest"]:
             with self.subTest(cmd=cmd):
@@ -3824,7 +3840,8 @@ class StdinProgramTests(unittest.TestCase):
                     "sh -c 'node' < code.js",
                     "bash -c 'node' <<< 'console.log(456)'",
                     "sh -c 'python3 -W ignore' < code.py",
-                    "bash -c 'node --no-warnings' < code.js"]:
+                    "bash -c 'node --no-warnings' < code.js",
+                    "node <<EOF\nconsole.log(1)\nEOF"]:
             with self.subTest(cmd=cmd):
                 verdict, reason = self._d(cmd)
                 self.assertEqual(verdict, "DENY")
@@ -3841,6 +3858,33 @@ class StdinProgramTests(unittest.TestCase):
                     "echo data | sh -c 'cat'"]:
             with self.subTest(cmd=cmd):
                 self.assertEqual(self._d(cmd)[0], "ALLOW")
+
+    def test_compound_redirect_inherits_stdin(self):
+        # MAJOR-1 compound redirect: "if ...; fi < file" taints inner members.
+        for cmd in ["if true; then node; fi < code.js",
+                    "if true; then python3; fi < code.py",
+                    "if true; then sh -c 'node'; fi < code.js",
+                    "f() { node; }; if true; then f; fi < code.js",
+                    "{ true; node; } < code.js",
+                    "(node) < code.js",
+                    "if true; then node; fi < code.js; echo hi"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertTrue(any(k in reason for k in ("stdin-program", "function", "depth", "parse", "compound", "unexpanded")), reason)
+                self.assertNotIn("external command", reason)
+                if "unknown" in reason:
+                    self.assertIn("stdin-program", reason)
+
+    def test_compound_redirect_safe_forms_stay_allowed(self):
+        for cmd in ["if true; then node script.js; fi < data.txt",
+                    "if true; then cat; fi < data.txt",
+                    "if true; then echo ok; fi > output.txt",
+                    "echo data | cat; node script.js"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self._d(cmd)[0], "ALLOW")
+
+
 
 class StdinProgramMutationTests(unittest.TestCase):
     """Mutants of the Issue #637 layers. Each must make a named StdinProgramTests method fail (an assertion
@@ -3869,7 +3913,7 @@ class StdinProgramMutationTests(unittest.TestCase):
             "        if prog in ('none', 'unknown'):",
             "        if False:"),
         "semicolon clears inside pipe-fed compound": (
-            "                    else:\n                        # \";\", newline, \"&\" (background / \"&&\"): clear unless inside.\n                        if not any(ef for _, ef in compound_stack):\n                            fed = False",
+            "                    else:\n                        # \";\", newline, \"&\" (background / \"&&\"): clear unless inside.\n                        if not any(ef for _, ef, _op in compound_stack):\n                            fed = False",
             "                    else:\n                        # \";\", newline, \"&\" (background / \"&&\"): clear unless inside.\n                        if True:\n                            fed = False"),
         "sh-c pipe inheritance disabled": (
             "            analyze_text(args[i + 1], ctx.copy(), False, depth + 1, inherited_fed=fed)",
@@ -3878,8 +3922,8 @@ class StdinProgramMutationTests(unittest.TestCase):
             "    fed_list = [p or inherited_fed for p in piped]",
             "    fed_list = [p for p in piped]"),
         "paren taint lost": (
-            "            else:\n                # Whitespace-only segment (continuation, \"(\" / \"{\" directly after\n                # a pipe): carry fed, but still track \"(\" / \"{\" openers that start\n                # a compound with the carried fed.\n                if c == \"(\":\n                    if len(compound_stack) >= MAX_DEPTH:\n                        raise Deny(\"depth\", \"compound nesting too deep: not inspected\")\n                    compound_stack.append((\"paren\", fed))",
-            "            else:\n                # Whitespace-only segment (continuation, \"(\" / \"{\" directly after\n                # a pipe): carry fed, but still track \"(\" / \"{\" openers that start\n                # a compound with the carried fed.\n                if c == \"(\":\n                    if len(compound_stack) >= MAX_DEPTH:\n                        raise Deny(\"depth\", \"compound nesting too deep: not inspected\")\n                    compound_stack.append((\"paren\", False))"),
+            "            else:\n                # Whitespace-only segment (continuation, \"(\" / \"{\" directly after\n                # a pipe): carry fed, but still track \"(\" / \"{\" openers that start\n                # a compound with the carried fed.\n                if c == \"(\":\n                    if len(compound_stack) >= MAX_DEPTH:\n                        raise Deny(\"depth\", \"compound nesting too deep: not inspected\")\n                    compound_stack.append((\"paren\", fed, len(segs)))",
+            "            else:\n                # Whitespace-only segment (continuation, \"(\" / \"{\" directly after\n                # a pipe): carry fed, but still track \"(\" / \"{\" openers that start\n                # a compound with the carried fed.\n                if c == \"(\":\n                    if len(compound_stack) >= MAX_DEPTH:\n                        raise Deny(\"depth\", \"compound nesting too deep: not inspected\")\n                    compound_stack.append((\"paren\", False, len(segs)))"),
         "case compound ignored": (
             "                        elif first == \"case\":",
             "                        elif False:"),
@@ -3898,6 +3942,36 @@ class StdinProgramMutationTests(unittest.TestCase):
         "subs global taint over-approximation": (
             "            sub_fed = fed_list[parent_idx]",
             "            sub_fed = any(fed_list)"),
+        "function call taint removed": (
+            "        call_taint = fed or _has_input_redirect(seg)",
+            "        call_taint = False"),
+        "function body inheritance disabled": (
+            "                                analyze_text(_body, ctx.copy(), ps, depth + 1, inherited_fed=True, outer_funcs=all_funcs)",
+            "                                analyze_text(_body, ctx.copy(), ps, depth + 1, inherited_fed=False, outer_funcs=all_funcs)"),
+        "compound redirect propagation disabled": (
+            "                    if _opener_idx is not None and _has_input_redirect(seg_text):",
+            "                    if False:  # compound redirect disabled"),
+        "nested shell redirect ignored": (
+            "        seg_taint = fed_seg or _has_input_redirect(seg)",
+            "        seg_taint = fed_seg"),
+        "independent later command over-tainted": (
+            "                    else:\n                        # \";\", newline, \"&\" (background / \"&&\"): clear unless inside.\n                        if not any(ef for _, ef, _op in compound_stack):\n                            fed = False",
+            "                    else:\n                        # \";\", newline, \"&\" (background / \"&&\"): clear unless inside.\n                        if False:\n                            fed = False"),
+        "file-as-data wrongly denied": (
+            "        if prog in ('code', 'file'):\n            return None",
+            "        if prog in ('code', 'file'):\n            return Deny('stdin-program', 'file over-denied')"),
+        "subs sibling funcs ignored": (
+            "        analyze_text(body, ctx.copy(), ps, depth + 1, inherited_fed=sub_fed, outer_funcs=all_funcs)",
+            "        analyze_text(body, ctx.copy(), ps, depth + 1, inherited_fed=sub_fed, outer_funcs=None)"),
+        "hyphen-dot-colon functions ignored": (
+            "                    if _fname in all_funcs:",
+            "                    if False:  # hyphen/dot/colon ignored"),
+        "compound redirect final segment disabled": (
+            "                    if _opener_idx is not None and _has_input_redirect(_final_seg):",
+            "                    if False:  # compound redirect final disabled"),
+        "heredoc ignored": (
+            "        elif c == \"<\":",
+            "        elif False:  # heredoc ignored"),
     }
     DETECTING = ["test_piped_bare_python_is_refused", "test_dash_names_stdin_program",
                  "test_bare_other_interpreters_with_piped_or_redirected_stdin_are_refused",
@@ -3909,7 +3983,9 @@ class StdinProgramMutationTests(unittest.TestCase):
                  "test_function_calls_inherit_stdin", "test_nested_redirect_inherits_stdin",
                  "test_function_safe_forms_stay_allowed", "test_nested_redirect_safe_forms_stay_allowed",
                  "test_independent_command_after_pipeline_stays_allowed",
-                 "test_node_file_operand_stays_allowed"]
+                 "test_node_file_operand_stays_allowed",
+                 "test_compound_redirect_inherits_stdin",
+                 "test_compound_redirect_safe_forms_stay_allowed"]
 
     def _run(self, hook_text):
         with tempfile.TemporaryDirectory() as td:
