@@ -51,7 +51,7 @@
     {"id": "neg_track1_past_end", "request": "current_q", "track": 1, "lba": 100, "present": true, "needs_callee": false, "expected": "NEGATIVE", "reason": "first audio LBA but track 1 requested (symmetric boundary to neg_before_track2)"},
     {"id": "neg_past_leadout", "request": "current_q", "track": 2, "lba": 200, "present": true, "needs_callee": false, "expected": "NEGATIVE", "reason": "lead-out LBA, one past the audio track end"},
     {"id": "neg_negative_lba", "request": "current_q", "track": 1, "lba": -1, "present": true, "needs_callee": false, "expected": "NEGATIVE", "reason": "negative LBA"},
-    {"id": "neg_bool_track", "request": "current_q", "track": true, "lba": 100, "present": true, "needs_callee": false, "expected": "NEGATIVE", "reason": "bool is not an int track (malformed)"},
+    {"id": "neg_bool_track", "request": "current_q", "track": true, "lba": 0, "present": true, "needs_callee": false, "expected": "NEGATIVE", "reason": "bool is not an int track (malformed); in-range LBA isolates the track-type check"},
     {"id": "neg_float_lba", "request": "current_q", "track": 2, "lba": 100.0, "present": true, "needs_callee": false, "expected": "NEGATIVE", "reason": "non-integer LBA type (malformed)"},
     {"id": "neg_string_lba", "request": "current_q", "track": 2, "lba": "100", "present": true, "needs_callee": false, "expected": "NEGATIVE", "reason": "string LBA type (malformed)"},
     {"id": "neg_none_track", "request": "current_q", "track": null, "lba": 100, "present": true, "needs_callee": false, "expected": "NEGATIVE", "reason": "None is not a track (malformed)"},

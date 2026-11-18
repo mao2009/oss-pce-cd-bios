@@ -28,7 +28,7 @@ FIXTURE_REL = "tests/fixtures/cdsubrq-subrd-slot0d-cases.json"
 FIXTURE = ROOT / FIXTURE_REL
 SELF_REL = "tests/host/test_cd_subrq_subrd_fixture.py"
 # sha256 of the canonical JSON (sort_keys, compact separators, UTF-8). Editing the fixture requires updating it here.
-FIXTURE_SHA256 = "39db6e7eb5320d17035db6d075ba3c857d7618f72d927ce547c37d41d246c9d1"
+FIXTURE_SHA256 = "2c30e717e70ee59dee6029b8711fb86b9ad315923e91294ff8bc3a3090d45098"
 POSITIVE, NEGATIVE, UNKNOWN, BLOCKED = "POSITIVE", "NEGATIVE", "UNKNOWN", "BLOCKED"
 TOP_LEVEL_KEYS = {"schema", "issue", "parent_issue", "slot", "entry_candidate", "candidate_name", "abi_status",
                   "release_eligible", "execution", "provenance", "callee_abi", "medium", "io_range",
@@ -197,12 +197,16 @@ class CdSubrqSubrdSlot0dFixtureTests(unittest.TestCase):
         self.assertEqual({c["id"] for c in self.cases if c["expected"] == NEGATIVE}, NEGATIVE_IDS)
         self.assertEqual({c["id"] for c in self.cases if c["expected"] == UNKNOWN}, UNKNOWN_IDS)
         self.assertEqual({c["id"] for c in self.cases if c["expected"] == BLOCKED}, BLOCKED_IDS)
-        by_id = {c["id"]: c["expected"] for c in self.cases}
-        for boundary in ("pos_t1_start", "pos_t1_end", "pos_t2_start", "pos_t2_end"):
-            self.assertEqual(by_id[boundary], POSITIVE)
-        for boundary in ("neg_nomedium", "neg_track_zero", "neg_no_such_track", "neg_before_track2",
-                         "neg_track1_past_end", "neg_past_leadout"):
-            self.assertEqual(by_id[boundary], NEGATIVE)
+        by_tuple = {c["id"]: (c["track"], c["lba"], c["expected"]) for c in self.cases}
+        for boundary, want in (("pos_t1_start", (1, 0, POSITIVE)), ("pos_t1_end", (1, 99, POSITIVE)),
+                               ("pos_t2_start", (2, 100, POSITIVE)), ("pos_t2_end", (2, 199, POSITIVE))):
+            self.assertEqual(by_tuple[boundary], want)
+        for boundary, want in (("neg_nomedium", (2, 150, NEGATIVE)), ("neg_track_zero", (0, 100, NEGATIVE)),
+                               ("neg_no_such_track", (3, 100, NEGATIVE)),
+                               ("neg_before_track2", (2, 99, NEGATIVE)),
+                               ("neg_track1_past_end", (1, 100, NEGATIVE)),
+                               ("neg_past_leadout", (2, 200, NEGATIVE))):
+            self.assertEqual(by_tuple[boundary], want)
         self.assertEqual(self.fixture["query_model"]["grounded_request"], GROUNDED_REQUEST)
 
     def test_callee_dependence_outranks_everything_and_unknown_is_not_a_refusal(self):
