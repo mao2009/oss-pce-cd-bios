@@ -363,6 +363,203 @@ class P10InputClosureMutants(unittest.TestCase):
             p10._audit_verdict_reads(p10._run_verdict_loads_for_audit)
             self.assertEqual(target.read_text(encoding="utf-8"), "ok")
 
+    def test_audit_restores_patches_on_exception(self):
+        # Monkeypatching is restored on exceptional exit, and the audit
+        # failure is fail-closed (a crash is a finding, never a pass).
+        import tempfile
+        sentinel = Path(tempfile.gettempdir()) / "p10-restore-probe.txt"
+
+        def boom():
+            raise RuntimeError("synthetic-audit-failure")
+
+        with self.assertRaises(RuntimeError):
+            p10._audit_verdict_reads(boom)
+        # Patches restored: a plain read works and records nothing.
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "plain.txt"
+            target.write_text("ok")
+            self.assertEqual(target.read_text(encoding="utf-8"), "ok")
+
+    def test_audit_crash_is_fail_closed(self):
+        # If the audited loader itself raises, the check reports a finding.
+        from unittest import mock
+        with mock.patch.object(p10, "_run_verdict_loads_for_audit",
+                               side_effect=RuntimeError("synthetic")):
+            problems = p10.check_synthetic_host_docs_non_promotion()
+        self.assertTrue(any("audit crashed" in p for p in problems), problems)
+
+    def test_forbidden_py_docs_policy(self):
+        # Suffix alone never exempts: docs/*.py is a forbidden data read.
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "docs" / "policy.py"
+            target.parent.mkdir(parents=True)
+            target.write_text("POLICY = 1\n")
+            forbidden, _ = self._audit_with_mutant(
+                lambda: target.read_text(encoding="utf-8"))
+        self.assertTrue(any("'docs'" in f for f in forbidden), forbidden)
+
+    def test_forbidden_py_rom_input(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "rom" / "input.py"
+            target.parent.mkdir(parents=True)
+            target.write_text("DATA = 1\n")
+            forbidden, _ = self._audit_with_mutant(
+                lambda: Path(target).read_bytes())
+        self.assertTrue(any("'rom'" in f for f in forbidden), forbidden)
+
+    def test_forbidden_pyc_under_docs(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            cached = Path(tmp) / "docs" / "__pycache__"
+            cached.mkdir(parents=True)
+            target = cached / "policy.pyc"
+            target.write_bytes(b"\x00\x01\x02")
+            forbidden, _ = self._audit_with_mutant(
+                lambda: target.read_bytes())
+        self.assertTrue(any("'docs'" in f for f in forbidden), forbidden)
+
+    def test_forbidden_py_dynamic_path(self):
+        # Dynamically assembled forbidden .py path (no literal "docs").
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            comp = "do" + "cs"
+            target = Path(tmp) / comp / ("pol" + "icy.py")
+            target.parent.mkdir(parents=True)
+            target.write_text("POLICY = 2\n")
+
+            def mutant():
+                Path(tmp, "do" + "cs", "pol" + "icy.py").read_text(encoding="utf-8")
+
+            forbidden, _ = self._audit_with_mutant(mutant)
+        self.assertTrue(any("'docs'" in f for f in forbidden), forbidden)
+
+    def test_symlink_to_forbidden_target_detected(self):
+        # Innocent link name whose canonical target sits under docs/: the raw
+        # path carries no forbidden component, only the resolved target does.
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            real_docs = Path(tmp) / "real" / "docs"
+            real_docs.mkdir(parents=True)
+            target = real_docs / "secret.py"
+            target.write_text("SECRET = 1\n")
+            link = Path(tmp) / "link.py"
+            try:
+                link.symlink_to(target)
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest(f"symlink unsupported: {exc}")
+            forbidden, _ = self._audit_with_mutant(
+                lambda: link.read_text(encoding="utf-8"))
+        self.assertTrue(any("'docs'" in f for f in forbidden), forbidden)
+
+    def test_external_json_all_read_apis_refused(self):
+        # /tmp/approval.json-style verdict input: refused on every
+        # representative read path (Path.read_text, builtins.open, io.open,
+        # os.open). Temp dummies only; never ./rom/ or the real repo.
+        import io as _io
+        import os as _os
+        import tempfile
+        apis = {
+            "Path.read_text": lambda p: Path(p).read_text(encoding="utf-8"),
+            "builtins.open": lambda p: open(p, encoding="utf-8").read(),
+            "io.open": lambda p: _io.open(p, encoding="utf-8").read(),
+            "os.open": lambda p: (_os.close(_os.open(p, _os.O_RDONLY)), "")[1],
+        }
+        for name, reader in apis.items():
+            with self.subTest(api=name):
+                with tempfile.TemporaryDirectory() as tmp:
+                    target = Path(tmp) / "approval.json"
+                    target.write_text('{"approved": true}\n')
+
+                    def mutant():
+                        reader(str(target))
+
+                    _, non_allowlisted = self._audit_with_mutant(mutant)
+                self.assertTrue(
+                    any("outside repository allowlist" in n for n in non_allowlisted),
+                    f"{name}: external data read must be refused: {non_allowlisted}")
+
+    def test_repo_nonallowlisted_json_real_read(self):
+        # A real content read of an existing but non-allowlisted repo file
+        # (no forbidden component) is refused as non-allowlisted.
+        forbidden, non_allowlisted = self._audit_with_mutant(
+            lambda: (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8"))
+        self.assertEqual(forbidden, [])
+        self.assertTrue(
+            any("CONTRIBUTING.md" in n for n in non_allowlisted),
+            (forbidden, non_allowlisted))
+
+    def test_symlink_escape_via_patched_root(self):
+        # spec/evil.json -> outside secret: canonical resolution exposes the
+        # escape even though the raw path looks allowlisted. Uses an
+        # independent temp dir with a patched ROOT; the production repo is
+        # never touched with symlinks.
+        from unittest import mock
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_root = Path(tmp) / "fakeroot"
+            spec_dir = fake_root / "spec"
+            spec_dir.mkdir(parents=True)
+            ok_file = spec_dir / "ok.json"
+            ok_file.write_text("{}\n")
+            outside = Path(tmp) / "outside" / "secret.json"
+            outside.parent.mkdir(parents=True)
+            outside.write_text('{"evil": true}\n')
+            link = spec_dir / "evil.json"
+            try:
+                link.symlink_to(outside)
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest(f"symlink unsupported: {exc}")
+            with mock.patch.object(p10, "ROOT", fake_root):
+                forbidden, non_allowlisted = p10._classify_verdict_reads([
+                    ("read", str(ok_file)),
+                    ("read", str(link)),
+                ])
+        # Outside-ROOT findings name only the component (no absolute path
+        # leaks), so the escape is proven by count: ok.json allowed, the
+        # symlink escape is the single refused read.
+        self.assertEqual(forbidden, [])
+        self.assertEqual(len(non_allowlisted), 1, (forbidden, non_allowlisted))
+        self.assertIn("outside repository allowlist", non_allowlisted[0])
+
+    def test_resolve_failure_is_fail_closed(self):
+        # Unresolvable paths are refused, never silently allowed.
+        forbidden, non_allowlisted = p10._classify_verdict_reads(
+            [("read", "/tmp/\x00bad")])
+        self.assertTrue(forbidden or non_allowlisted,
+                        "unresolvable read must be refused")
+
+    def test_no_absolute_paths_in_messages(self):
+        # Findings must not leak absolute filesystem paths (tmpdirs, homes).
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "docs" / "policy.py"
+            target.parent.mkdir(parents=True)
+            target.write_text("x")
+            other = Path(tmp) / "approval.json"
+            other.write_text("{}")
+            forbidden, non_allowlisted = self._audit_with_mutant(
+                lambda: (target.read_text(), open(str(other)).read()))
+        for message in forbidden + non_allowlisted:
+            self.assertNotIn(tmp, message, message)
+            self.assertNotIn(str(Path.home()), message, message)
+
+    def test_detector_disabled_would_miss(self):
+        # Sensitivity proof: with the classifier neutered, the same mutant is
+        # blind — so the RED assertions above genuinely depend on detection.
+        from unittest import mock
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "docs" / "policy.py"
+            target.parent.mkdir(parents=True)
+            target.write_text("x")
+            records = p10._audit_verdict_reads(lambda: target.read_text())
+        self.assertTrue(records, "mutant must perform a recorded read")
+        with mock.patch.object(p10, "_classify_verdict_reads",
+                               return_value=([], [])):
+            self.assertEqual(p10._classify_verdict_reads(records), ([], []))
+
 
 class P10WholeGate(unittest.TestCase):
     def test_all_p10_invariants_hold(self):

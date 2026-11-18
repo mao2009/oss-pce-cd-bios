@@ -11,11 +11,18 @@ not already assert explicitly, and never duplicates an existing check:
   this check additionally asserts the DEV-success precondition and the
   cross-ledger independence (DEV count > 0 while VERIFIED == 0).
 * P10-B (task items 5,6,7): synthetic PASS, host PASS and docs-only merges
-  never promote. Proven by runtime input-closure audit (every content-read
-  and existence-check performed by the verdict loads is recorded at call
-  time, catching direct, dynamically built and helper-indirected paths on
-  every occurrence) plus an extended marker refusal list and a
-  synthetic-evidence approval that still yields no execution.
+  never promote. Supported by a runtime read audit: the content-reads and
+  existence-checks actually observed, via the monitored APIs, on the
+  executed verdict-load path are recorded at call time (catching direct,
+  dynamically built and helper-indirected paths on every occurrence) and
+  must stay within the allowlist — plus an extended marker refusal list
+  and a synthetic-evidence approval that still yields no execution. The
+  audit observes only the monitored entry points on the executed path: it
+  does not cover preopened-FD reads, mmap, subprocess reads, directory
+  enumeration, unexecuted future code paths, or OS-level traffic outside
+  the monitored APIs, so it demonstrates observed-access closure on the
+  current execution path, not a universal proof for all future verdict
+  code.
 * P10-C (task item 8): unverified conditions stay UNKNOWN/BLOCKED. Asserts
   the ledgers the base gate does not validate: hardware observations validate
   (no OBSERVED), c3 production allowlist stays UNDECIDED/DESIGN_ONLY, and
@@ -196,11 +203,45 @@ def _is_forbidden_recorded_path(path_str: str) -> str | None:
 
 
 def _is_code_path(path_str: str) -> bool:
-    """Code loads (.py/.pyc/__pycache__) are not verdict data; ignore them."""
+    """Legacy suffix-only code guess (kept for reference; NOT used as an exemption).
+
+    Kept so the old, too-broad rule stays visible in history. The classifier
+    below no longer trusts suffixes: see _is_known_module_source().
+    """
     normalized = path_str.replace("\\", "/")
     if "__pycache__" in normalized.split("/"):
         return True
     return normalized.endswith(".py") or normalized.endswith(".pyc")
+
+
+def _canonical(path_str: str) -> str | None:
+    """Canonical absolute path with symlinks resolved, or None on failure.
+
+    A resolution failure is fail-closed downstream: callers treat None as
+    outside the allowlist (content reads) rather than silently allowing it.
+    """
+    try:
+        return os.path.realpath(os.fspath(path_str))
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def _is_known_module_source(canonical_repo_rel: str | None) -> bool:
+    """Restricted code exemption: canonical known gate-module sources only.
+
+    A path is exempted as code only when it canonically resolves inside the
+    tools/ module tree with a Python source form (.py, .pyc, or a
+    __pycache__ entry). Suffix alone never exempts: docs/policy.py or
+    rom/input.py are data reads and stay forbidden (checked before this).
+    """
+    if canonical_repo_rel is None:
+        return False
+    parts = canonical_repo_rel.split("/")
+    if not parts or parts[0] != "tools":
+        return False
+    if "__pycache__" in parts:
+        return True
+    return canonical_repo_rel.endswith(".py") or canonical_repo_rel.endswith(".pyc")
 
 
 def _repo_relative(path_str: str) -> str | None:
@@ -327,37 +368,57 @@ def _audit_verdict_reads(loader) -> list[tuple[str, str]]:
 def _classify_verdict_reads(records: list[tuple[str, str]]) -> tuple[list[str], list[str]]:
     """Split audit records into (forbidden, non-allowlisted) hits.
 
-    Code loads (.py) are filtered. Temp scaffolding outside ROOT is allowed
-    unless it carries a forbidden component (mutant dummies live there).
-    Repo-relative data reads must be within ALLOWLISTED_INPUT_PREFIXES;
-    stat hits on ALLOWLISTED_STAT_EXCEPTIONS (docs provenance pointers that
-    fail closed on absence) are explicitly excused.
+    Order matters: forbidden components are checked FIRST on both the raw
+    and the canonical (symlink-resolved) path, so docs/policy.py or a
+    symlink landing under docs//rom//build/ can never be laundered through
+    a code exemption. The code exemption is restricted to canonical known
+    module sources (tools/ .py/.pyc/__pycache__). Content reads outside the
+    canonical repository allowlist are refused (fail closed); outside-ROOT
+    stat hits are OS/resolve noise and ignored. Stat hits on
+    ALLOWLISTED_STAT_EXCEPTIONS (docs provenance pointers that fail closed
+    on absence) are explicitly excused. No absolute filesystem path ever
+    appears in a message: outside-ROOT hits name only the component.
     """
     forbidden: list[str] = []
     non_allowlisted: list[str] = []
     for kind, path_str in records:
-        if _is_code_path(path_str):
-            continue
+        canonical = _canonical(path_str)
+        # 1. Forbidden FIRST: raw path and symlink-resolved target alike.
+        # A symlink under an allowlisted prefix that lands outside (or under
+        # a forbidden component) is caught here via its canonical path.
         hit = _is_forbidden_recorded_path(path_str)
-        repo_rel = _repo_relative(path_str)
+        if hit is None and canonical is not None:
+            hit = _is_forbidden_recorded_path(canonical)
+        canon_rel = _repo_relative(canonical) if canonical is not None else None
         if hit is not None:
             # Excuse the known fail-closed provenance-pointer stat and the
             # parent-directory stats that resolving it implies (pathlib
             # resolve stats ancestors via os.stat); a content read of any
             # docs/ path would still be forbidden, since the validator only
             # stats existence (absence fails closed, never promotes).
-            if kind == "stat" and repo_rel in ALLOWLISTED_STAT_EXCEPTIONS:
+            if kind == "stat" and canon_rel in ALLOWLISTED_STAT_EXCEPTIONS:
                 continue
-            if kind == "stat" and repo_rel is not None and any(
-                exc == repo_rel or exc.startswith(repo_rel + "/")
+            if kind == "stat" and canon_rel is not None and any(
+                exc == canon_rel or exc.startswith(canon_rel + "/")
                 for exc in ALLOWLISTED_STAT_EXCEPTIONS
             ):
                 continue
-            forbidden.append(f"{kind} forbidden input {hit!r} via {repo_rel or path_str}")
+            if canon_rel is not None:
+                forbidden.append(f"{kind} forbidden input {hit!r} via {canon_rel}")
+            else:
+                forbidden.append(f"{kind} forbidden input {hit!r} outside repository")
             continue
-        if repo_rel is None:
-            continue  # outside ROOT without forbidden components: scaffolding
-        if repo_rel == ".":
+        # 2. Restricted code exemption: canonical known module sources only.
+        # Suffix alone never exempts (docs/policy.py stays forbidden above).
+        if _is_known_module_source(canon_rel):
+            continue
+        # 3. Outside-ROOT stat is OS/resolve noise (ancestor dirs, stdlib);
+        # content reads outside the canonical allowlist are refused.
+        if canon_rel is None:
+            if kind == "read":
+                non_allowlisted.append(f"{kind} content read outside repository allowlist")
+            continue
+        if canon_rel == ".":
             # The repo root itself carries no verdict data: validators resolve
             # paths through ROOT (pathlib resolve stats it) and its existence
             # is trivially true. A content read of a directory would fail
@@ -366,8 +427,8 @@ def _classify_verdict_reads(records: list[tuple[str, str]]) -> tuple[list[str], 
                 continue
             non_allowlisted.append(f"{kind} repo-root read (refused)")
             continue
-        if not (repo_rel == "Makefile" or repo_rel.startswith(ALLOWLISTED_INPUT_PREFIXES)):
-            non_allowlisted.append(f"{kind} non-allowlisted input {repo_rel!r}")
+        if not (canon_rel == "Makefile" or canon_rel.startswith(ALLOWLISTED_INPUT_PREFIXES)):
+            non_allowlisted.append(f"{kind} non-allowlisted input {canon_rel!r}")
     return forbidden, non_allowlisted
 
 
@@ -390,14 +451,21 @@ def _run_verdict_loads_for_audit() -> None:
 def check_synthetic_host_docs_non_promotion() -> list[str]:
     """Synthetic PASS, host PASS and docs-only merges never promote (items 5,6,7).
 
-    Input closure is proven by runtime audit: every content-read and
-    existence-check performed by the verdict loads is recorded at call time
-    (catching direct, dynamically built and helper-indirected paths on every
-    occurrence) and must contain no forbidden docs//build//rom//test-result
-    input while every repo-relative data read stays allowlisted.
-    Scope: .py code loads are filtered (code, not data); one fail-closed
-    docs provenance-pointer stat (ALLOWLISTED_STAT_EXCEPTIONS) is excused
-    because absence fails closed and content is never read as verdict data.
+    Input closure is supported by a runtime read audit: the content-reads
+    and existence-checks actually observed, via the monitored entry points
+    (Path.read_text/read_bytes/open, builtins.open, io.open, os.open/stat/
+    lstat, Path.exists/is_file/stat), on the executed verdict loads are
+    recorded at call time (catching direct, dynamically built and
+    helper-indirected paths on every occurrence) and must contain no
+    forbidden docs//build//rom//test-result input while every
+    canonically-resolved data read stays allowlisted. Scope: the audit
+    covers only the executed path through the monitored APIs — preopened-FD
+    reads, mmap, subprocess reads, directory enumeration, unexecuted future
+    code paths and OS traffic outside the monitored set are not observed,
+    so the claim is observed-access closure on the current execution path,
+    not a universal proof. One fail-closed docs provenance-pointer stat
+    (ALLOWLISTED_STAT_EXCEPTIONS) is excused because absence fails closed
+    and content is never read as verdict data.
     """
     problems: list[str] = []
     # Runtime input closure over the actual verdict loads.

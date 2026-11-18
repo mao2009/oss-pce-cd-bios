@@ -23,8 +23,8 @@ and no private `./rom/` input.
 | 3 | reference JSR 0/81 | `check_reference_jsr_closed` (81/81 closed, `jsr_count` 0, `cdseek` BLOCKED) | re-verified despite DEV success | 81/81 closed, `execution_permitted` false, `jsr_count` 0 |
 | 4 | DEV_EXPERIMENTAL success never becomes genuine ABI | `check_release_gate_refuses` (hypothetical-full 81/81 still refuses), `dev_validate` refuses VERIFIED | NEW `check_dev_success_without_promotion`: asserts 18 DEV overrides present with PROJECT_SPEC_ONLY/UNKNOWN yet `abi_verified` 0, `DEV_CALLABLE` 0, `reference_abi_verified` 0, JSR closed, full-override release still refused | 18 DEV overrides (incl. EX_JOYSNS/EX_SCRSIZ DEV_EXPERIMENTAL), 0 VERIFIED, 0 DEV_CALLABLE |
 | 5 | synthetic PASS never means release allowed | `check_promotion_negatives` (exact `"ALLOWED"` match, well-formed approval at most MATERIALS_COMPLETE) | NEW extended markers (`SYNTHETIC PASS`, `STATIC_OK`, `PROJECT_SPEC_ONLY`, …) + synthetic-evidence approval still non-ALLOWED | all refused |
-| 6 | host PASS alone never unlocks | `test_gate_has_no_unlock_path`, `test_release_gate_module_never_passes` | NEW runtime audit: every verdict read recorded at call time; repo data reads stay within `spec/`+`Makefile`+`src/`; no test-result reads | gate has no `write_text`, no `return "ALLOWED"` |
-| 7 | docs-only update never changes safety judgment | CI docs-only fast path disabled (full CI for every change) | NEW runtime audit proves docs-only cannot change verdict: audited verdict reads contain no `docs/` content read; docs prose claiming ALLOWED still yields BLOCKED | audited reads contain no `docs/` content |
+| 6 | host PASS alone never unlocks | `test_gate_has_no_unlock_path`, `test_release_gate_module_never_passes` | NEW runtime read audit (observed via monitored APIs on the executed path): canonically-resolved data reads stay within `spec/`+`Makefile`+`src/`; no test-result reads observed | gate has no `write_text`, no `return "ALLOWED"` |
+| 7 | docs-only update never changes safety judgment | CI docs-only fast path disabled (full CI for every change) | NEW runtime read audit (observed-access closure on the current path, not a universal proof): executed verdict loads show no `docs/` content read via monitored APIs; docs prose claiming ALLOWED still yields BLOCKED | observed reads contain no `docs/` content |
 | 8 | unverified stays UNKNOWN/BLOCKED | `ALLOWED_CONTRACT_STATUSES` + `verification NOT_RUN` + `execution BLOCKED` | NEW `check_unverified_persistence`: hardware ledger validates (no OBSERVED, `callee_abi` UNVERIFIED, BLOCKED/NOT_RUN), c3 allowlist UNDECIDED/DESIGN_ONLY, api_contracts mapping HYPOTHESIS / impl NOT_STARTED / provenance PENDING / confidence UNKNOWN-or-SOURCE_SUPPORTED / verification NOT_RUN | all persist |
 | 9 | negatives/mutations detect intentional destruction | Makefile evaluation-time / `.EXTRA_PREREQS` / dynamic-name mutants, ALLOWED ledger, `require_allowed` | NEW 16 RED mutants (see §4: 8 ledger/marker + 6 audit + C3/mapping via production checker + sensitivity), all detected fail-closed | RED detected, committed tree GREEN |
 
@@ -71,7 +71,7 @@ ledger writes, no unlock input):
   `abi_verified` 0, `DEV_CALLABLE` 0, owner 0, `reference_abi_verified` 0,
   every override-present slot NOT_READY with PROJECT_SPEC_ONLY/UNKNOWN, JSR
   closed, hypothetical-full release still refused.
-* `p10-synthetic-host-docs-non-promotion`: runtime input-closure audit —
+* `p10-synthetic-host-docs-non-promotion`: runtime read audit (observed-access closure on the executed path, not a universal proof) —
   every content-read and existence-check performed by the verdict loads is
   recorded at call time (direct, dynamically built and helper-indirected
   paths, every occurrence), and no forbidden `docs/`/`build/`/`rom/`/log/
@@ -101,11 +101,15 @@ New tests `tests/host/test_725_p10_failclosed.py` (31 tests, host-only):
 * Detector load-bearing: explicitly injected normal data is GREEN while the
   same production function on mutated data is RED with slot-specific
   messages (a neutered checker would FAIL these tests).
-* Input-closure audit tests: committed verdict reads are closed; six
-  forbidden-read mutants (direct `docs/`, dynamically built `docs/`, helper-
-  indirected, `build/` artifact, 2nd-occurrence after allowlisted reads,
-  `getattr`-assembled string-search-evading `rom/` read) are each flagged
-  with the forbidden component; audit patches are restored afterwards.
+* Read-audit tests: committed verdict reads are closed as observed via
+  the monitored APIs; forbidden `.py` mutants (`docs/policy.py`,
+  `rom/input.py`, `docs/__pycache__/*.pyc`, dynamic `.py`, symlink whose
+  target sits under `docs/`), external-JSON mutants on all four read APIs,
+  a symlink escape (`spec/` link pointing outside), a non-allowlisted repo
+  JSON real read, resolve-failure and no-absolute-path-in-messages checks,
+  plus detector-disabled sensitivity and restore-on-exception proofs.
+  Earlier mutants (direct/dynamic/helper/`build`/2nd-occurrence/`getattr`-
+  evasion) retained.
 * Docs prose claiming ALLOWED cannot change the verdict because the verdict
   never content-reads docs (audited).
 * No-unlock-path test: new tool contains no `return "ALLOWED"`, no
@@ -124,12 +128,18 @@ committed tree is GREEN (all gates pass). Mutants are never committed.
 | `build_rom.release_gate(set(range(81)))` (hypothetical-full) | `ReleaseBlocked("BLOCKED: …")` | RED detected (gate refuses) |
 | hardware ledger entry `status=OBSERVED` with fake runs | `hw_observation_ledger.validate_ledger` raises `ValueError` (unauthenticated principal) | RED detected |
 | c3 `production_allowlist.status=APPROVED` | production `check_unverified_persistence(c3_raw=…)` reports `c3 production_allowlist: status must stay UNDECIDED` | RED detected |
+| `docs/policy.py`, `rom/input.py`, `docs/__pycache__/policy.pyc` content reads (temp dummies) | runtime audit flags forbidden `'docs'`/`'rom'` (old code-first order missed: `([],[])`) | RED detected |
+| symlink `link.py` → canonical `docs/secret.py` | forbidden via canonical path | RED detected |
+| `/tmp/approval.json` content read via `Path.read_text`/`builtins.open`/`io.open`/`os.open` | `content read outside repository allowlist` | RED detected (4 APIs) |
+| `spec/evil.json` symlink → outside secret (patched-ROOT classifier) | escape refused (outside allowlist) | RED detected |
+| repo `CONTRIBUTING.md` real content read | `non-allowlisted input 'CONTRIBUTING.md'` | RED detected |
+| unresolvable path `\x00` content read | refused, never silently allowed | RED detected |
 | api_contracts slot 05 `mapping_status=VERIFIED` | production `check_unverified_persistence(contracts_raw=…)` reports `slot 05: mapping_status must stay HYPOTHESIS` | RED detected |
 | direct/dynamic/helper/`build/`/2nd-occurrence/`getattr`-evading forbidden reads (temp dummies) | runtime audit flags the forbidden component | RED detected (6 mutants) |
 | neutered detector (always-[]) | RED mutant tests FAIL | load-bearing proven (sensitivity test) |
 | `is_execution_permitted("SYNTHETIC PASS" / "host PASS" / "DOC_ONLY" / …)` | `False` for every look-alike | RED detected (all refused) |
 | Makefile `release:` stub broken (covered by base gate) | `release_makefile_guard` reports reasons | RED detected (base gate, not duplicated here) |
-| Committed tree: base 8/8 + P10 3/3 + host 54 tests | exit 0, `release_eligible=false`, JSR 0/81 | GREEN |
+| Committed tree: base 8/8 + P10 3/3 + host 67 tests (P10 44 + base 23) | exit 0, `release_eligible=false`, JSR 0/81 | GREEN |
 
 ## 5. Future unlock procedure (independent review + Owner re-approval required)
 
