@@ -38,7 +38,9 @@
 | 合成CDでのPUBLIC IPLと実験的CDサービスの結合検証 | 市販タイトル画面到達（**G5_OBSERVED=false**） |
 | 商用CDの最初の停止APIの特定（読取り専用） | 実験コードを真正APIと認定すること |
 
-<sub>数値・図は **2026-11-18 / main `fa694281`** のスナップショット。CIバッジだけはGitHub Actionsの現在の結果です。詳細な集計定義は [status](docs/status.md) を参照。</sub>
+<sub>数値・図は **2026-11-18 / main `fa694281`** のスナップショット。CIバッジだけはGitHub Actionsの現在の結果です。過去の基点は `f90c16b`（2026-10-22）。</sub>
+
+Current DEV implementation count: **18/81**; current stubs: **63/81**; owner-approved **DEV_CALLABLE: 0**; reference **ABI VERIFIED: 0/81**; reference **JSR permitted: 0/81**. These are distinct status axes; see [status](docs/status.md).
 
 ## 商用CDの観測
 
