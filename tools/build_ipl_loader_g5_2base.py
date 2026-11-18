@@ -11,7 +11,9 @@ experimental real-processing bodies:
 
   slot $02: api_slot_02 fallback (5 bytes) -> JMP cd_base_2base_entry + NOPs
   slot $33: $E099 table entry -> JMP experimental_slot_33 (EX_DSPOFF fragment)
-  slot $03: $E009 table entry -> JMP cd_read_link_entry (CD_READ link V1)
+  slot $03: $E009 table entry -> JMP cd_read_commercial_entry (CD_READ commercial V1,
+    FIRST mode) by default, or JMP cd_read_link_entry (CD_READ link V1) with
+    cd_read="link" for the Control ROM.
 
 Reuses (no large new builder, no logic duplication):
   - tools/build_dev_ipl_loader_bios.py: loader source, bank0 CODE/VECT layout,
@@ -21,7 +23,7 @@ Reuses (no large new builder, no logic duplication):
     and unified_api_windows (API-area diff must be exactly the three windows).
   - tools/build_rom.py: assemble_api_objects (normal DEV 18 overrides,
     byte-identical) + verify_dev_rom (tamper refusal).
-  - src/cd_base_2base.s, src/cd_read_link.s (BOOT segment). Separate variant from proto.
+  - src/cd_base_2base.s, src/cd_read_commercial.s (BOOT segment). Separate variant from proto/link V1.
   - src/ipl_loader_g5_glue.s (new, tiny): XSEL selection record (same layout
     as experimental_bios_boot.s, for the proto's INDEX01 comparison) +
     experimental_slot_33 wrapper (.include ex_dspoff.s, single source).
@@ -75,12 +77,16 @@ else:
 
 GLUE_SOURCE = ROOT / "src" / "ipl_loader_g5_glue.s"
 PROTO_SOURCE = ROOT / "src" / "cd_base_2base.s"
-LINK_SOURCE = ROOT / "src" / "cd_read_link.s"
+LINK_SOURCE_COMMERCIAL = ROOT / "src" / "cd_read_commercial.s"
+LINK_SOURCE_V1 = ROOT / "src" / "cd_read_link.s"
+LINK_SOURCE = LINK_SOURCE_COMMERCIAL  # default; see cd_read= param
+LINK_ENTRY_COMMERCIAL = "cd_read_commercial_entry"
+LINK_ENTRY_V1 = "cd_read_link_entry"
 BANK0_CFG = ROOT / "src" / "bank0.cfg"
 
 ROM_STEM = "dev-ipl-loader-g5-not-compatible"
 EXP_LABELS = ("api_slot_02", "api_unimplemented", "cd_base_2base_entry",
-              "api_slot_03", "cd_read_link_entry",
+              "api_slot_03", "cd_read_commercial_entry",
               "api_slot_33", "experimental_slot_33",
               "experimental_selection")
 ALL_LABELS = tuple(dict.fromkeys(list(LOADER_REQUIRED) + list(EXP_LABELS)))
@@ -213,7 +219,8 @@ def _g5_leaf_names(variant: str) -> list:
     ov = overrides(ROOT)
     names = ["api_table.s", "api_table.o"]
     names += [f"{ov[slot].stem}.o" for slot in sorted(ov)]
-    names += [f"cd_base_2base_{variant}.o", f"cd_read_link_{variant}.o",
+    names += [f"cd_base_2base_{variant}.o", f"cd_read_commercial_{variant}.o",
+              f"cd_read_link_{variant}.o",
               f"ipl_loader_g5_glue_{variant}.o", f"ipl_loader_{variant}.o",
               "bank0-ipl-loader-g5.cfg",
               f"bank0-{variant}-g5.bin", f"ipl-loader-g5-{variant}.lbl",
@@ -295,7 +302,7 @@ def _normalize_defines(defines) -> tuple:
 
 def g5_manifest(sel: int, track: int, mode: str, variant: str, defines: list,
                 data: bytes, symbols: dict, link_labels: dict, rom_name: str,
-                private_input: bool = False) -> dict:
+                private_input: bool = False, cd_read: str = "commercial") -> dict:
     # `defines` must be the canonical argv from _normalize_defines, so this
     # strict equality classifies exactly the build ca65 performed (MEDIUM-1:
     # no guessing from substrings like ["-I", "IPL_PUBLIC"]).
@@ -311,8 +318,11 @@ def g5_manifest(sel: int, track: int, mode: str, variant: str, defines: list,
         "rom_sha256": hashlib.sha256(data).hexdigest(), "rom_bytes": IMAGE_BYTES,
         "loader_source": "tests/integration/ipl_loader_rom.s (unchanged, Issue #670)",
         "glue_source": "src/ipl_loader_g5_glue.s (Issue #800, XSEL + slot33 wrapper)",
-        "experimental_sources": ["src/cd_base_2base.s", "src/cd_read_link.s",
-                                 "src/ex_dspoff.s (via glue, single source)"],
+        "experimental_sources": (["src/cd_base_2base.s", "src/cd_read_commercial.s",
+                                  "src/ex_dspoff.s (via glue, single source)"]
+                                 if cd_read == "commercial" else
+                                 ["src/cd_base_2base.s", "src/cd_read_link.s",
+                                  "src/ex_dspoff.s (via glue, single source)"]),
         "defines": list(defines), "symbols": dict(symbols), "labels": dict(link_labels),
         "pinned_cc65": DEPENDENCIES["cc65"]["revision"],
         "pinned_geargrafx": DEPENDENCIES["geargrafx"]["revision"],
@@ -340,7 +350,8 @@ def g5_manifest(sel: int, track: int, mode: str, variant: str, defines: list,
 def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
                             mode: str = "debug", variant: str = "main",
                             defines=None, track: int = 1,
-                            private_input: bool = False):
+                            private_input: bool = False,
+                            cd_read: str = "commercial"):
     """Return (rom_path, symbols). `sel` is the 16-bit INDEX 01 LBA.
 
     `defines` selects the loader format through an explicit whitelist
@@ -352,7 +363,19 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
     `track` is the synthetic data-track number for the XSEL record (1..99).
     Only the (sel, track) pair with kind MODE1/2352 is embedded; commercial
     LBA above 16 bits is BLOCKED (no truncation).
+    `cd_read` selects the $03 wiring: "commercial" (default, FIRST-mode
+    LOCAL helper for the Experimental ROM) or "link" (CD_READ link V1 for
+    the Control ROM). Anything else is refused.
     """
+    if cd_read not in ("commercial", "link"):
+        raise ValueError("cd_read must be 'commercial' or 'link'")
+    link_source = LINK_SOURCE_COMMERCIAL if cd_read == "commercial" else LINK_SOURCE_V1
+    link_entry = LINK_ENTRY_COMMERCIAL if cd_read == "commercial" else LINK_ENTRY_V1
+    exp_labels = ("api_slot_02", "api_unimplemented", "cd_base_2base_entry",
+                   "api_slot_03", link_entry,
+                   "api_slot_33", "experimental_slot_33",
+                   "experimental_selection")
+    all_labels = tuple(dict.fromkeys(list(LOADER_REQUIRED) + list(exp_labels)))
     if mode not in ("debug", "release"):
         raise ValueError("MODE must be debug or release")
     if type(sel) is not int or not 0 <= sel <= 0xFFFF:
@@ -361,7 +384,7 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
         raise ValueError("EXP_SELECTED_TRACK must be 1..99")
     _refuse_unsafe_variant(variant)
     canon_defines, _ = _normalize_defines(defines)  # is_public unused: manifest derives it
-    for src in (PROTO_SOURCE, LINK_SOURCE, GLUE_SOURCE):
+    for src in (PROTO_SOURCE, link_source, GLUE_SOURCE):
         if not src.is_file():
             raise ValueError(f"experimental source missing: {src}")
     original = Path(original_path).read_bytes()
@@ -404,7 +427,7 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
     g5_debug_flags = ["-g"]
     objects = assemble_api_objects(output, mode)
     exp_defs = _exp_defines(sel, track)
-    for src, extra in ((PROTO_SOURCE, exp_defs), (LINK_SOURCE, []),
+    for src, extra in ((PROTO_SOURCE, exp_defs), (link_source, []),
                        (GLUE_SOURCE, exp_defs)):
         obj = output / f"{src.stem}_{variant}.o"
         subprocess.run([ca65, str(src), *extra, "-o", str(obj), *g5_debug_flags],
@@ -419,8 +442,8 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
     subprocess.run([ld65, "-C", str(cfg), "-o", str(bank), "-Ln", str(labels),
                     "-m", str(output / f"ipl-loader-g5-{variant}.map"),
                     *map(str, objects)], check=True)
-    symbols = parse_labels(labels, ALL_LABELS)
-    missing = [n for n in ALL_LABELS if n not in symbols]
+    symbols = parse_labels(labels, all_labels)
+    missing = [n for n in all_labels if n not in symbols]
     if missing:
         raise ValueError(f"G5 IPL loader symbols missing: {missing}")
     bank_bytes = bank.read_bytes()
@@ -438,7 +461,7 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
     patched = _redirect_slot33_to_body(
         patched, symbols["api_slot_33"], symbols["experimental_slot_33"])
     patched = _redirect_slot03_to_link(
-        patched, symbols["api_slot_03"], symbols["cd_read_link_entry"])
+        patched, symbols["api_slot_03"], symbols[link_entry])
     slot02_addr = symbols["api_slot_02"]
     allowed = unified_api_windows(slot02_addr)
     api_diff = [i for i in range(0x1000) if bytes(patched)[i] != original[i]]
@@ -461,9 +484,9 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
     if bytes(patched[3 * 0x33:3 * 0x33 + 3]) != \
             bytes((0x4C, slot33_body & 0xFF, (slot33_body >> 8) & 0xFF)):
         raise ValueError("slot-$33 window is not the expected JMP body")
-    link_entry = symbols["cd_read_link_entry"]
+    link_entry_addr = symbols[link_entry]
     if bytes(patched[3 * 0x03:3 * 0x03 + 3]) != \
-            bytes((0x4C, link_entry & 0xFF, (link_entry >> 8) & 0xFF)):
+            bytes((0x4C, link_entry_addr & 0xFF, (link_entry_addr >> 8) & 0xFF)):
         raise ValueError("slot-$03 window is not the expected JMP link")
     # $4A must stay a stub (SIMULATED control separate, never wired here).
     at_4a = 3 * 0x4A
@@ -510,14 +533,15 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
         "api_unimplemented": symbols["api_unimplemented"],
         "cd_base_2base_entry": symbols["cd_base_2base_entry"],
         "experimental_slot_33": symbols["experimental_slot_33"],
-        "cd_read_link_entry": symbols["cd_read_link_entry"],
+        link_entry: symbols[link_entry],
         "experimental_selection": symbols["experimental_selection"],
         "slot_02_table_entry": 0xE000 + 3 * 0x02,
         "slot_03_table_entry": 0xE000 + 3 * 0x03,
         "slot_33_table_entry": 0xE000 + 3 * 0x33,
     }
     manifest = g5_manifest(sel, track, mode, variant, canon_defines, data, symbols,
-                           link_labels, rom.name, private_input=private_input)
+                           link_labels, rom.name, private_input=private_input,
+                           cd_read=cd_read)
     _atomic_write(output / manifest_name,
                   json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8") + b"\n")
     lines = "".join(f"{name} {value:04x}\n" for name, value in symbols.items())
