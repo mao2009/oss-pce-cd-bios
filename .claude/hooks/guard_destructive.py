@@ -536,19 +536,24 @@ def check_redirect(raw, op=">", ctx=None, ps=False):
 
 
 def split_segments(text, ps=False):
-    """Split on unquoted ; & | ( ) and newlines.
+    """Split on unquoted ; & | ( ) and newlines (plus "{}," for PowerShell).
 
     Returns (segments, substitution bodies, redirect targets per segment, pipe-fed flags per segment).
     A redirect target is the raw word after each unquoted '>' ("" when there is none). A pipe-fed flag
     is True when the segment's stdin is a pipe from the previous segment: the separator that starts it
     is a single `|` (not `||`, and `|&` keeps the pipe through the `&`). A whitespace-only segment (a line
     continuation after `|`, or `(`/`{` directly after a pipe) carries the flag over without changing it.
-    A `;` (or newline, `(`/`)`, ...) after a command ends the pipe for the next segment, so a branch that
-    starts after `;` is unmarked even inside a pipe-fed compound (`... | if c; then python3; fi`: residual,
-    see stdin_program_refusal).
+    A `;` (or newline, `&`, `||`, `,` for PowerShell) ends the pipe for the next segment only outside
+    any pipe-fed compound; inside a pipe-fed `if/while/until/for/case/select/function`, `(...)` or
+    `{...}` the flag is inherited across `;` (MAJOR-1: `... | if c; then node; fi` stays marked).
+    An independent command after the top-level pipeline (`... | cat; node`) stays unmarked.
+    Too deep compound nesting is fail-closed DENY (depth limit).
     """
     segs, subs, cur, redirs, rd, pipes = [], [], [], [], [], []
     fed = False
+    # MAJOR-1: pipe-fed inheritance through compounds (if/while/until/for/case/select/function, (...), {...}).
+    # Stack of (kind, entered-fed); too deep is fail-closed DENY (same limit as MAX_DEPTH).
+    compound_stack = []
     quote, i, n = None, 0, len(text)
     while i < n:
         c = text[i]
@@ -658,18 +663,147 @@ def split_segments(text, ps=False):
             redirs.append(rd)
             pipes.append(fed)
             cur, rd = [], []
+            # MAJOR-1: track compound nesting so that ";" inside a pipe-fed
+            # compound (if/while/until/for/case/select/function, (...) or {...})
+            # does not lose the pipe mark. A ";" at the top level (outside any
+            # pipe-fed compound) still ends the pipe for the next segment, so an
+            # independent command after the pipeline stays unmarked. Fail-closed:
+            # unknown nesting is kept tainted; too deep nesting is DENY.
             if seg_text.strip():
-                # Only a segment that holds a command ends the pipe: continuations and comments add
-                # whitespace-only segments that carry the flag over to the next segment.
+                # Keyword/brace tracking from the command words (quote-aware).
+                # PowerShell uses braces/parens via delimiters, not fi/done/esac,
+                # so Bash keywords are tracked only when ps is False.
+                try:
+                    seg_words = words_of(seg_text, ps)
+                except Deny:
+                    # Unparseable segment: keep tainted when outer is pipe-fed.
+                    # Push an unknown marker so following ";" does not clear.
+                    if fed and len(compound_stack) < MAX_DEPTH:
+                        compound_stack.append(("unknown", True))
+                    elif len(compound_stack) >= MAX_DEPTH:
+                        raise Deny("depth", "compound nesting too deep: not inspected")
+                else:
+                    if not ps:
+                        # Skip leading "!" / "time" / "coproc" prefixes to find the
+                        # real opener/closer (e.g., "time if ..."). Wrappers like
+                        # sudo/env are invalid before keywords, so they are not
+                        # skipped: mis-tracking them only over-taints (safe).
+                        k = 0
+                        while k < len(seg_words) and seg_words[k] in ("!", "time", "coproc"):
+                            k += 1
+                        first = seg_words[k] if k < len(seg_words) else ""
+                        # Openers push with entered-fed = fed for this segment.
+                        opener = None
+                        if first == "if":
+                            opener = "if"
+                        elif first == "while" or first == "until" or first in ("for", "select"):
+                            opener = "loop"
+                        elif first == "case":
+                            opener = "case"
+                        elif first == "function":
+                            opener = "function"
+                        elif first == "{":
+                            opener = "brace"
+                        if opener is not None:
+                            # "function foo { true": function and "{" in one segment
+                            # open a single compound (avoid double push).
+                            if len(compound_stack) >= MAX_DEPTH:
+                                raise Deny("depth", "compound nesting too deep: not inspected")
+                            compound_stack.append((opener, fed))
+                        elif first in ("fi", "done", "esac", "}"):
+                            # Closers pop only on kind match (fail-closed: mismatch
+                            # keeps the stack tainted instead of popping).
+                            if first == "fi":
+                                if compound_stack and compound_stack[-1][0] == "if":
+                                    compound_stack.pop()
+                            elif first == "done":
+                                if compound_stack and compound_stack[-1][0] == "loop":
+                                    compound_stack.pop()
+                            elif first == "esac":
+                                if compound_stack and compound_stack[-1][0] == "case":
+                                    compound_stack.pop()
+                            elif first == "}":
+                                if compound_stack and compound_stack[-1][0] in ("brace", "function"):
+                                    compound_stack.pop()
+                            # "then/do/else/elif/in" and ordinary commands: no push/pop.
+                # Delimiter "(" opens a subshell with the current fed.
+                if c == "(":
+                    if len(compound_stack) >= MAX_DEPTH:
+                        raise Deny("depth", "compound nesting too deep: not inspected")
+                    compound_stack.append(("paren", fed))
+                elif c == ")":
+                    if compound_stack and compound_stack[-1][0] == "paren":
+                        compound_stack.pop()
+                    # Mismatch (e.g., case pattern ")"): do not pop; keep tainted.
+                elif ps and c == "{":
+                    if len(compound_stack) >= MAX_DEPTH:
+                        raise Deny("depth", "compound nesting too deep: not inspected")
+                    compound_stack.append(("brace", fed))
+                elif ps and c == "}":
+                    if compound_stack and compound_stack[-1][0] == "brace":
+                        compound_stack.pop()
+                    # Mismatch: keep tainted.
+                # Fed update for the next segment.
                 if c == "|":
                     prv = text[i - 1] if i else ""
                     nxt = text[i + 1] if i + 1 < n else ""
-                    fed = prv != "|" and nxt != "|"
+                    if prv == "|" or nxt == "|":
+                        # "||": not a pipe; clear unless inside pipe-fed compound.
+                        if not any(ef for _, ef in compound_stack):
+                            fed = False
+                        # Inside pipe-fed: keep fed (do not clear).
+                    else:
+                        fed = True
                 elif c == "&" and (text[i - 1] if i else "") == "|" and \
                         (text[i - 2] if i >= 2 else "") != "|":
                     pass  # `|&`: the `&` continues the pipe; the flag the `|` set stays.
                 else:
-                    fed = False
+                    # ";", newline, "&", ")", "(", "," (ps), "{" / "}" (ps),
+                    # "||" above: clear only outside any pipe-fed compound.
+                    # "(" carries outer fed into the subshell (push already did);
+                    # keep fed for the first inside segment (do not clear here).
+                    if c == "(":
+                        pass  # entered-fed already pushed; next keeps current fed.
+                    elif c == ")":
+                        # After closing, next is outside: True only if still inside
+                        # an outer pipe-fed compound.
+                        if not any(ef for _, ef in compound_stack):
+                            fed = False
+                        # Else keep fed (still inside outer pipe-fed).
+                    elif ps and c == "{":
+                        pass  # same as "(": next keeps current fed.
+                    elif ps and c == "}":
+                        if not any(ef for _, ef in compound_stack):
+                            fed = False
+                    elif ps and c == ",":
+                        if not any(ef for _, ef in compound_stack):
+                            fed = False
+                    else:
+                        # ";", newline, "&" (background / "&&"): clear unless inside.
+                        if not any(ef for _, ef in compound_stack):
+                            fed = False
+                        # Inside pipe-fed: keep fed (do not clear).
+            else:
+                # Whitespace-only segment (continuation, "(" / "{" directly after
+                # a pipe): carry fed, but still track "(" / "{" openers that start
+                # a compound with the carried fed.
+                if c == "(":
+                    if len(compound_stack) >= MAX_DEPTH:
+                        raise Deny("depth", "compound nesting too deep: not inspected")
+                    compound_stack.append(("paren", fed))
+                elif ps and c == "{":
+                    if len(compound_stack) >= MAX_DEPTH:
+                        raise Deny("depth", "compound nesting too deep: not inspected")
+                    compound_stack.append(("brace", fed))
+                # ")", "}" with whitespace before: pop if matching (same as above
+                # but without keyword checks, since no command words).
+                elif c == ")":
+                    if compound_stack and compound_stack[-1][0] == "paren":
+                        compound_stack.pop()
+                elif ps and c == "}":
+                    if compound_stack and compound_stack[-1][0] == "brace":
+                        compound_stack.pop()
+                # Other delimiters with whitespace: carry fed (as before).
             i += 1
             continue
         cur.append(c)
@@ -1348,7 +1482,7 @@ def gzip_rule(args, ctx):
     raise Deny("gzip", "gzip is DENY: the checked file cannot be tied to the file it reads (TOCTOU)")
 
 
-def find_rule(args, ps, ctx, depth):
+def find_rule(args, ps, ctx, depth, fed=False):
     if "-delete" in args:
         raise Deny("find-delete", "find -delete is denied")
     if any(a in ("-fprint", "-fprint0", "-fprintf", "-fls") for a in args):
@@ -1360,7 +1494,7 @@ def find_rule(args, ps, ctx, depth):
                 j += 1
             if j == i + 1:
                 raise Deny("find", "find -exec without a command")
-            analyze_argv(args[i + 1:j], ctx, ps, depth + 1)
+            analyze_argv(args[i + 1:j], ctx, ps, depth + 1, fed)
 
 
 # Commands on this list must not run another program, whatever their options. sort (--compress-program=PROG) and
@@ -2087,11 +2221,11 @@ def stdin_program_refusal(words, piped, seg):
     `node --no-warnings script.js` and `node -- script.js`) and `-c`/`-m`/`-e` with stdin as data
     (the code or module is named in argv and judged; file content is the X3d residual, out of #637
     scope), and unpiped bare or flags-only interpreters with no delivered code (no stdin taint).
-    Pipes through `(...)`, `{...}`, wrappers and `sh -c` strings are still marked (the interpreter
-    shares the pipe-fed segment; a quoted `sh -c "node --no-warnings"` string is split and judged
-    with the outer pipe mark). Residual: control-keyword branches that start after `;` lose the mark
-    (`... | if c; then python3; fi` stays ALLOW; probed, not guessed). Tracking taint into compound
-    branches would need control-flow depth in the splitter: follow-up work, not this rule.
+    Pipes through `(...)`, `{...}`, control keywords (`if/while/until/for/case`), wrappers and
+    nested `sh -c`/`bash -c` strings are marked (MAJOR-1/2): the interpreter shares the pipe-fed
+    stdin across `;` inside pipe-fed compounds and into inner shell strings (fail-closed OR of outer
+    and inner pipe marks). An independent command after the top-level pipeline (`... | cat; node`)
+    stays unmarked. Too deep compound nesting is fail-closed DENY (depth limit).
     Known overreach (fail-closed, rare): a file operand literally named like an interpreter
     (`... | sort perl`, `... | tee node`) reads as a bare interpreter and is refused; the established
     X1 scan accepts the same trade-off for wrapper-hidden python (`nice python3`).
@@ -2168,17 +2302,20 @@ def python_rule(args):
             raise Deny("python-c", "python -c with a file or process operation")
 
 
-def shell_rule(args, ctx, depth):
+def shell_rule(args, ctx, depth, fed=False):
+    # MAJOR-2: outer pipe-fed stdin is inherited by the inner "sh -c" string.
+    # The inner text is analysed with inherited_fed so that "node;" / "(node)"
+    # with no inner pipe still sees the outer pipe (fail-closed).
     for i, a in enumerate(args):
         if short_has(a, "c"):
             if i + 1 >= len(args):
                 raise Deny("shell", "shell -c without code")
-            analyze_text(args[i + 1], ctx.copy(), False, depth + 1)
+            analyze_text(args[i + 1], ctx.copy(), False, depth + 1, inherited_fed=fed)
             return
     raise Deny("shell", "shell without -c is not inspected")
 
 
-def pwsh_rule(args, ctx, depth):
+def pwsh_rule(args, ctx, depth, fed=False):
     low = [a.lower() for a in args]
     for a in low:
         if a.startswith("-enc") or a in ("-e", "-ec"):
@@ -2187,7 +2324,7 @@ def pwsh_rule(args, ctx, depth):
             raise Deny("powershell", "-File script is not inspected")
     for i, a in enumerate(low):
         if a == "-c" or (len(a) > 2 and "-command".startswith(a)):
-            analyze_text(" ".join(args[i + 1:]), ctx.copy(), True, depth + 1)
+            analyze_text(" ".join(args[i + 1:]), ctx.copy(), True, depth + 1, inherited_fed=fed)
             return
 
 
@@ -2402,7 +2539,7 @@ def command_name(w):
     return name
 
 
-def analyze_argv(words, ctx, ps, depth):
+def analyze_argv(words, ctx, ps, depth, fed=False):
     if depth > MAX_DEPTH:
         raise Deny("depth", "command nesting too deep")
     # A program-naming environment variable anywhere in the command (prefix, export, env -S, a shell string) is denied.
@@ -2466,9 +2603,9 @@ def analyze_argv(words, ctx, ps, depth):
             rest = words[1:]
             if not rest:
                 raise Deny("coproc", "coproc without a command is not resolvable")
-            analyze_argv(rest, ctx.copy(), ps, depth + 1)
+            analyze_argv(rest, ctx.copy(), ps, depth + 1, fed)
             if len(rest) >= 2:
-                analyze_argv(rest[1:], ctx.copy(), ps, depth + 1)
+                analyze_argv(rest[1:], ctx.copy(), ps, depth + 1, fed)
             return
         if SUBST in w0:
             raise Deny("command-word", "command substitution in command position")
@@ -2496,7 +2633,7 @@ def analyze_argv(words, ctx, ps, depth):
             # timeout's option grammar (long options with a separate value, non-integer durations) is not parsed, so
             # the command it runs is taken from its grammar (timeout_candidates), with conservative extra candidates.
             for cand in timeout_candidates(words[1:]):
-                analyze_argv(cand, ctx.copy(), ps, depth + 1)
+                analyze_argv(cand, ctx.copy(), ps, depth + 1, fed)
             return
         if handoff(name):
             for cand in wrapper_candidates(name, words[1:], ctx):
@@ -2505,18 +2642,18 @@ def analyze_argv(words, ctx, ps, depth):
                 # For a wrapper with a grammar the command word is exact, so it is analysed even when it looks like an option.
                 if name not in WRAPPER_OPTS and cand and (cand[0].startswith("-") or cand[0].isdigit()):
                     continue
-                analyze_argv(cand, ctx.copy(), ps, depth + 1)
+                analyze_argv(cand, ctx.copy(), ps, depth + 1, fed)
             if name in STRING_LAUNCHERS:
                 # A shell string argument is text, whatever its shape: a quoted string with a space (sudo -s "rm -rf x"),
                 # the value after -c or --command (flock -c rm lock), and the value after --name= (flock --command="rm").
                 # Plain words and options are commands for the suffix pass, which the grammar narrows to the real command.
                 for k in range(1, len(words)):
                     if not words[k].startswith("-") and any(ch.isspace() for ch in words[k]):
-                        analyze_text(words[k], ctx.copy(), ps, depth + 1)
+                        analyze_text(words[k], ctx.copy(), ps, depth + 1, inherited_fed=fed)
                     if words[k] in ("-c", "--command") and k + 1 < len(words):
-                        analyze_text(words[k + 1], ctx.copy(), ps, depth + 1)
+                        analyze_text(words[k + 1], ctx.copy(), ps, depth + 1, inherited_fed=fed)
                     if words[k].startswith("--") and "=" in words[k]:
-                        analyze_text(words[k].split("=", 1)[1], ctx.copy(), ps, depth + 1)
+                        analyze_text(words[k].split("=", 1)[1], ctx.copy(), ps, depth + 1, inherited_fed=fed)
             return
         break
     args = words[1:]
@@ -2532,7 +2669,7 @@ def analyze_argv(words, ctx, ps, depth):
         # No candidate is skipped: a path split at its space ("Files\app.exe") is refused like any other command word,
         # so a destructive command after a separator in the same token ("tools\app.exe;rm -rf /") is still analysed.
         for k in range(len(tokens)):
-            analyze_text(" ".join(tokens[k:]), ctx.copy(), True, depth + 1)
+            analyze_text(" ".join(tokens[k:]), ctx.copy(), True, depth + 1, inherited_fed=fed)
     if name in (".", "source") and any(("$" in a or "`" in a or SUBST in a) for a in args):
         # Sourcing a path that names a variable (or a substitution) is a file that is not known here (fail closed).
         raise Deny("unexpanded", "sourcing a variable or substitution is not inspected")
@@ -2551,11 +2688,11 @@ def analyze_argv(words, ctx, ps, depth):
     if name in ("iex", "invoke-expression"):
         raise Deny("powershell", "Invoke-Expression is not inspected")
     if name == "eval":
-        analyze_text(" ".join(args), ctx.copy(), ps, depth + 1)
+        analyze_text(" ".join(args), ctx.copy(), ps, depth + 1, inherited_fed=fed)
     elif name in SHELLS:
-        shell_rule(args, ctx, depth)
+        shell_rule(args, ctx, depth, fed)
     elif name in PS_HOSTS:
-        pwsh_rule(args, ctx, depth)
+        pwsh_rule(args, ctx, depth, fed)
     elif name in CD_NAMES:
         if args and args[0].startswith("-"):
             raise Deny("cd", "cd with option is not inspected")
@@ -2569,7 +2706,7 @@ def analyze_argv(words, ctx, ps, depth):
     elif name == "git":
         git_rule(args, ctx)
     elif name == "find":
-        find_rule(args, ps, ctx, depth)
+        find_rule(args, ps, ctx, depth, fed)
     elif PY_NAME.match(name):
         python_rule(args)
     elif path_word:
@@ -2595,7 +2732,7 @@ def analyze_argv(words, ctx, ps, depth):
 MAX_REDIRECTS = 64  # each redirection is a path check; an unbounded number of them is refused (fail closed, time bound)
 
 
-def analyze_text(text, ctx, ps, depth):
+def analyze_text(text, ctx, ps, depth, inherited_fed=False):
     if depth > MAX_DEPTH:
         raise Deny("depth", "command nesting too deep")
     if ps and METHOD_CALL_RE.search(text):
@@ -2603,8 +2740,11 @@ def analyze_text(text, ctx, ps, depth):
     if ps and PS_PROC_LAUNCH_RE.search(text) and EXPR_SYNTAX_RE.search(text):
         raise Deny("launcher", "PowerShell process launcher with expression syntax is not inspected")
     segs, subs, redirs, piped = split_segments(text, ps)
+    # MAJOR-1/2: split_segments already tracks compound inheritance; nested shells
+    # (sh -c, wrappers, eval, subs) inherit outer pipe-fed stdin (fail-closed OR).
+    fed_list = [p or inherited_fed for p in piped]
     # A python command whose argv is not certain (unquoted or double-quoted expansion characters) is refused.
-    for seg, fed in zip(segs, piped):
+    for seg, fed in zip(segs, fed_list):
         words = words_of(seg, ps)
         pargs = python_position_args(words)
         if pargs is not None:
@@ -2619,13 +2759,13 @@ def analyze_text(text, ctx, ps, depth):
     if sum(len(ops) for ops in redirs) > MAX_REDIRECTS:
         raise Deny("redirect", "more than %d redirections are not inspected" % MAX_REDIRECTS)
     for body in subs:
-        analyze_text(body, ctx.copy(), ps, depth + 1)
-    for seg, ops in zip(segs, redirs):
+        analyze_text(body, ctx.copy(), ps, depth + 1, inherited_fed=inherited_fed)
+    for seg, ops, fed_seg in zip(segs, redirs, fed_list):
         if ops and inside_claude(ctx.cwd, ctx):
             raise Deny("claude-write", "redirect while cwd is inside .claude/ is denied")
         for op, target in ops:
             check_redirect(target, op, ctx, ps)
-        analyze_argv(words_of(seg, ps), ctx, ps, depth)
+        analyze_argv(words_of(seg, ps), ctx, ps, depth, fed_seg)
 
 
 def load_registry(root):

@@ -3689,14 +3689,75 @@ class StdinProgramTests(unittest.TestCase):
             with self.subTest(cmd=cmd):
                 self.assertEqual(self._d(cmd, tool="PowerShell")[0], "ALLOW")
 
+    def test_compound_pipe_inherits_across_semicolons(self):
+        # MAJOR-1: ";" inside a pipe-fed compound does not end the pipe.
+        for cmd in ["printf 'x\\n' | if true; then node --no-warnings; fi",
+                    "printf 'x\\n' | (true; node --no-warnings)",
+                    "printf 'x\\n' | { true; node --no-warnings; }",
+                    "echo x | while true; do ruby -w; done",
+                    "echo x | until false; do node --no-warnings; done",
+                    "echo x | for i in 1 2; do node --no-warnings; done",
+                    'echo x | case y in a) node --no-warnings;; esac',
+                    "echo hi | if true; then true && node --no-warnings; fi",
+                    "echo hi | if true; then false || node --no-warnings; fi"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertIn("stdin-program", reason)
+
+    def test_independent_command_after_pipeline_stays_allowed(self):
+        # Pipe ends at top-level ";": following independent command has no stdin taint.
+        for cmd in ["echo hi | cat; node --no-warnings",
+                    "echo hi | cat && node --no-warnings",
+                    "echo hi | cat || node --no-warnings",
+                    "echo hi | if true; then cat; fi; node --no-warnings",
+                    "echo hi | (cat); node --no-warnings"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self._d(cmd)[0], "ALLOW")
+
+    def test_nested_shell_inherits_pipe(self):
+        # MAJOR-2: outer pipe-fed stdin is inherited by inner sh -c strings.
+        for cmd in ["printf 'x\\n' | sh -c 'node;'",
+                    "printf 'x\\n' | sh -c '(node)'",
+                    "printf 'x\\n' | bash -c 'node --no-warnings;'",
+                    "echo x | sh -c 'python3 -W ignore;'",
+                    "echo x | env sh -c '(node)'",
+                    "echo x | sudo sh -c 'node --no-warnings;'",
+                    "echo x | sh -c 'if true; then node --no-warnings; fi'"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertIn("stdin-program", reason)
+
+    def test_nested_shell_safe_forms_stay_allowed(self):
+        for cmd in ["echo data | sh -c 'cat'",
+                    "echo data | sh -c 'node script.js'",
+                    "echo data | sh -c 'node --no-warnings script.js'",
+                    "echo data | sudo sh -c 'cat'",
+                    "sh -c 'node --no-warnings'",
+                    "sh -c 'node script.js'"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self._d(cmd)[0], "ALLOW")
+
+    def test_compound_depth_is_fail_closed(self):
+        # Too deep nesting is DENY (dedicated fail-closed reason, not generic).
+        deep = "echo hi | " + "if true; then " * 9 + "node --no-warnings" + " ; fi" * 9
+        verdict, reason = self._d(deep)
+        self.assertEqual(verdict, "DENY")
+        # Depth limit uses a dedicated reason; stdin-program is also acceptable if
+        # implementation taints instead of direct depth DENY, but generic is not.
+        self.assertTrue("depth" in reason or "stdin-program" in reason or "compound" in reason, reason)
+        self.assertNotIn("unknown", reason)
+        self.assertNotIn("external command", reason)
+
 class StdinProgramMutationTests(unittest.TestCase):
     """Mutants of the Issue #637 layers. Each must make a named StdinProgramTests method fail (an assertion
     failure, not an import error). Runs on every host (no symlink)."""
 
     MUTANTS = {
         "pipe flag never set": (
-            '                    fed = prv != "|" and nxt != "|"',
-            '                    fed = False'),
+            "                    else:\n                        fed = True",
+            "                    else:\n                        fed = False"),
         "pipe flag lost across continuations": (
             "            if seg_text.strip():",
             "            if True:"),
@@ -3715,14 +3776,27 @@ class StdinProgramMutationTests(unittest.TestCase):
         "piped-or-redirected stdin check removed": (
             "        if prog in ('none', 'unknown'):",
             "        if False:"),
-        "string-arg pipe mark lost": (
-            "                if prog in ('none', 'unknown') and piped:",
-            "                if False:"),
+        "semicolon clears inside pipe-fed compound": (
+            "                    else:\n                        # \";\", newline, \"&\" (background / \"&&\"): clear unless inside.\n                        if not any(ef for _, ef in compound_stack):\n                            fed = False",
+            "                    else:\n                        # \";\", newline, \"&\" (background / \"&&\"): clear unless inside.\n                        if True:\n                            fed = False"),
+        "sh-c pipe inheritance disabled": (
+            "            analyze_text(args[i + 1], ctx.copy(), False, depth + 1, inherited_fed=fed)",
+            "            analyze_text(args[i + 1], ctx.copy(), False, depth + 1, inherited_fed=False)"),
+        "nested inheritance ignored": (
+            "    fed_list = [p or inherited_fed for p in piped]",
+            "    fed_list = [p for p in piped]"),
+        "paren taint lost": (
+            "            else:\n                # Whitespace-only segment (continuation, \"(\" / \"{\" directly after\n                # a pipe): carry fed, but still track \"(\" / \"{\" openers that start\n                # a compound with the carried fed.\n                if c == \"(\":\n                    if len(compound_stack) >= MAX_DEPTH:\n                        raise Deny(\"depth\", \"compound nesting too deep: not inspected\")\n                    compound_stack.append((\"paren\", fed))",
+            "            else:\n                # Whitespace-only segment (continuation, \"(\" / \"{\" directly after\n                # a pipe): carry fed, but still track \"(\" / \"{\" openers that start\n                # a compound with the carried fed.\n                if c == \"(\":\n                    if len(compound_stack) >= MAX_DEPTH:\n                        raise Deny(\"depth\", \"compound nesting too deep: not inspected\")\n                    compound_stack.append((\"paren\", False))"),
+        "case compound ignored": (
+            "                        elif first == \"case\":",
+            "                        elif False:"),
     }
     DETECTING = ["test_piped_bare_python_is_refused", "test_dash_names_stdin_program",
                  "test_bare_other_interpreters_with_piped_or_redirected_stdin_are_refused",
                  "test_piped_node_options_only_is_refused", "test_node_explicit_dash_is_refused",
-                 "test_wrapper_stdin_refused", "test_node_option_forms_classified"]
+                 "test_wrapper_stdin_refused", "test_node_option_forms_classified",
+                 "test_compound_pipe_inherits_across_semicolons", "test_nested_shell_inherits_pipe"]
 
     def _run(self, hook_text):
         with tempfile.TemporaryDirectory() as td:
