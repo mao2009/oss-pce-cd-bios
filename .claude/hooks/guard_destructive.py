@@ -2442,6 +2442,9 @@ def analyze_text(text, ctx, ps, depth):
     pipe_scope = []
     bstage = []  # (is_stage, cwd, fuzzy)
     bg_scope = []  # (cwd, fuzzy) per open scope
+    ps_arm_stack = []  # run-13: pre-arm snapshots of closed PS conditionals
+    ps_arm_moved = False  # run-13: then-arm move pending for the next PS arm entry
+    ps_arm_taint = False  # run-13: then-arm taint pending for the next PS arm entry
     run_scope = []  # (run_start, bg_start) per open brace group (OQwm)
     cond_stack = []  # run-12: entry dict per open conditional/loop scope
     # Scope-local background-list start per open group: a `&` backgrounds
@@ -2464,12 +2467,19 @@ def analyze_text(text, ctx, ps, depth):
                     # stage: remember the pre-group cwd for the entry.
                     scope_entry = (ctx.cwd, ctx.cwd_fuzzy)
                     scope_just_closed = False
+                # run-13 (M1): the subshell owns its pipeline/list start:
+                # an inner `cd` moves the subshell's run, never the outer one.
+                run_scope.append((run_start, bg_start))
+                run_start = (ctx.cwd, ctx.cwd_fuzzy)
+                bg_start = (ctx.cwd, ctx.cwd_fuzzy)
                 scope_stack.append((ctx.cwd, ctx.cwd_fuzzy))
                 bg_scope.append((ctx.cwd, ctx.cwd_fuzzy))
             continue
         if seg == SUBSHELL_CLOSE:
             if not ps and scope_stack:
                 ctx.cwd, ctx.cwd_fuzzy = scope_stack.pop()
+                if run_scope:
+                    run_start, bg_start = run_scope.pop()
                 if pipe_scope:
                     pipe_entry, prev_was_pipe = pipe_scope.pop()
                 if bg_scope:
@@ -2528,12 +2538,19 @@ def analyze_text(text, ctx, ps, depth):
             if not scope_stack and not bbrace_stack:
                 scope_entry = (ctx.cwd, ctx.cwd_fuzzy)
                 scope_just_closed = False
+            # run-13 (M1): the coprocess body runs in a subshell, so it
+            # owns its pipeline/list start like `( ... )`.
+            run_scope.append((run_start, bg_start))
+            run_start = (ctx.cwd, ctx.cwd_fuzzy)
+            bg_start = (ctx.cwd, ctx.cwd_fuzzy)
             scope_stack.append((ctx.cwd, ctx.cwd_fuzzy))
             bg_scope.append((ctx.cwd, ctx.cwd_fuzzy))
             continue
         if seg == COPROC_CLOSE:
             if scope_stack:
                 ctx.cwd, ctx.cwd_fuzzy = scope_stack.pop()
+                if run_scope:
+                    run_start, bg_start = run_scope.pop()
                 if bg_scope:
                     bg_scope.pop()
                 if pipe_scope:
@@ -2547,6 +2564,13 @@ def analyze_text(text, ctx, ps, depth):
             # uncertain: remember the entry and mark the cwd uncertain
             # on close when the body moved it.
             cond_stack.append(_cond_entry(ctx))
+            if ps_arm_moved or ps_arm_taint:
+                # run-13 (M3): this is an else/elseif body: inherit the
+                # then-arm outcome so the close joins every arm.
+                cond_stack[-1]["moved"] = cond_stack[-1]["moved"] or ps_arm_moved
+                cond_stack[-1]["then_taint"] = cond_stack[-1]["then_taint"] or ps_arm_taint
+                ps_arm_moved = False
+                ps_arm_taint = False
             continue
         if seg == PSCOND_CLOSE:
             if cond_stack:
@@ -2559,6 +2583,10 @@ def analyze_text(text, ctx, ps, depth):
                 ctx.tainted = ctx.tainted or entry["then_taint"]
                 if cond_stack and (entry["moved"] or ctx.cwd != cond_stack[-1]["cwd"]):
                     cond_stack[-1]["moved"] = True
+                # run-13 (M3): keep the pre-arm snapshot for a following
+                # else/elseif arm, whose entry was already popped. Each
+                # arm restarts from this base and joins at its own close.
+                ps_arm_stack.append(entry)
             continue
         if seg == CMD_BOUND:
             # A `;`/newline ends a pipeline and a background list: later
@@ -2569,7 +2597,10 @@ def analyze_text(text, ctx, ps, depth):
                 ctx.cwd, ctx.cwd_fuzzy = pipe_entry
                 pipe_entry = None
             prev_was_pipe = False
-            if not scope_stack and not cond_stack:
+            # run-13 (M1): the snapshots are scope-local, so an in-scope
+            # `;` moves the scope's list start. Conditionals still gate
+            # the update (Gu1Y): an arm-end cwd must not become the run.
+            if not cond_stack:
                 run_start = (ctx.cwd, ctx.cwd_fuzzy)
                 bg_start = (ctx.cwd, ctx.cwd_fuzzy)
             if bg_scope and (scope_stack or bbrace_stack):
@@ -2587,7 +2618,9 @@ def analyze_text(text, ctx, ps, depth):
                 ctx.cwd, ctx.cwd_fuzzy = pipe_entry
                 pipe_entry = None
             prev_was_pipe = False
-            if not scope_stack and not cond_stack:
+            # run-13 (M1): scope-local like `;` above (bg_start is the
+            # list start and stays untouched by `&&`/`||` by design).
+            if not cond_stack:
                 run_start = (ctx.cwd, ctx.cwd_fuzzy)
             scope_just_closed = False
             continue
@@ -2598,16 +2631,18 @@ def analyze_text(text, ctx, ps, depth):
             # (run_start tracks sequential `cd`, but never a stage body or
             # a keyword/empty segment; a scope that is itself the first
             # stage contributes its pre-group cwd via scope_entry).
-            # run-12 OQwj: the entry carries the live certainty, not the
-            # snapshot's stale flag (uncertainty set just before the pipe
-            # must survive the stages and the closing boundary).
+            # run-13 (M2): the entry keeps the snapshot's own certainty:
+            # cwd and fuzzy are always the same-instant pair, so a first
+            # stage that clears the certainty cannot launder a stale cwd
+            # into certain. The snapshot is refreshed when a conditional
+            # closes (below), so uncertainty set just before the pipe
+            # still reaches the stages (OQwj).
             if not ps:
                 if pipe_entry is None:
                     if scope_just_closed:
                         pipe_entry = scope_entry
                     else:
                         pipe_entry = run_start
-                    pipe_entry = (pipe_entry[0], ctx.cwd_fuzzy)
                 prev_was_pipe = True
                 scope_just_closed = False
             continue
@@ -2644,13 +2679,31 @@ def analyze_text(text, ctx, ps, depth):
             rest = [w for w in seg_words if not ASSIGN.match(w)]
             if len(rest) > 1 and rest[1] in COND_OPENERS:
                 cond_stack.append(_cond_entry(ctx))
-        if cond_stack and first_cmd in ("else", "elif"):
+        if ps and first_cmd in ("else", "elseif") and ps_arm_stack:
+            # run-13 (M3): a PowerShell then-body close pops its entry
+            # before the else/elseif arm starts, so the arm restarts from
+            # the stashed pre-conditional snapshot (cwd, certainty,
+            # taint), never from the previous arm's end or an outer
+            # conditional's entry. The then-arm outcome (move/taint) is
+            # carried into the next arm entry and joins at its close, so
+            # the post-chain state covers every arm taken or not.
+            entry = ps_arm_stack[-1]
+            entry["then_taint"] = entry["then_taint"] or ctx.tainted
+            ctx.cwd = entry["cwd"]
+            ctx.cwd_fuzzy = entry["fuzzy"]
+            ctx.tainted = entry["tainted"]
+            ps_arm_moved = entry["moved"]
+            ps_arm_taint = entry["then_taint"]
+        elif cond_stack and first_cmd in ("else", "elif"):
             # run-12 OQww: each arm runs from the conditional entry, not
             # from the previous arm's end (Bash and PowerShell alike).
-            # Taint joins at the close.
+            # Taint joins at the close. run-13 (M3): the certainty is
+            # restored too, so a previous arm's absolute cd cannot clear
+            # an uncertain entry for the else arm.
             entry = cond_stack[-1]
             entry["then_taint"] = entry["then_taint"] or ctx.tainted
             ctx.cwd = entry["cwd"]
+            ctx.cwd_fuzzy = entry["fuzzy"]
             ctx.tainted = entry["tainted"]
         if not seg_words and not ops:
             # A boundary flush with no words and no redirects (e.g. the
@@ -2669,11 +2722,14 @@ def analyze_text(text, ctx, ps, depth):
         # inner command never ends the enclosing entry lifetime.
         if not scope_stack and not bbrace_stack and seg_words:
             scope_just_closed = False
-        if (not prev_was_pipe and not scope_stack
+        if (not prev_was_pipe
                 and not cond_stack
                 and any(
                     w not in KEYWORDS and not ASSIGN.match(w)
                     for w in seg_words)):
+            # run-13 (M1): the refresh is scope-local, so `cd` inside a
+            # subshell moves the subshell's run without touching the
+            # outer run. Conditionals still gate it (Gu1Y).
             run_start = (ctx.cwd, ctx.cwd_fuzzy)
         if (not prev_was_pipe and not scope_stack
                 and not cond_stack):
@@ -2715,6 +2771,12 @@ def analyze_text(text, ctx, ps, depth):
             ctx.tainted = ctx.tainted or entry["then_taint"]
             if cond_stack and (entry["moved"] or ctx.cwd != cond_stack[-1]["cwd"]):
                 cond_stack[-1]["moved"] = True
+            if not cond_stack:
+                # run-13 (M2): the run start is the same-instant pair
+                # again, so a later pipeline entry keeps its own
+                # certainty instead of borrowing the live one. The
+                # refresh is scope-local (M1) inside a subshell.
+                run_start = (ctx.cwd, ctx.cwd_fuzzy)
     for body in rest_subs:
         # Defensive: a body no segment claimed is still analysed, never skipped.
         _nested_text(body, ctx, ps, depth + 1)

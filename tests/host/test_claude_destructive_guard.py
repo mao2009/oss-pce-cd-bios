@@ -4630,6 +4630,81 @@ class ChainRulePieceDTests(unittest.TestCase):
         verdict, reason = self._decide("if true; then cd ..; fi; (cd /); rm file.txt")
         self.assertEqual(verdict, "DENY", reason)
 
+    def test_subshell_pipeline_uses_inner_cwd(self):
+        # Review #815 (MAJOR, run-13 M1): the pipeline/list start is
+        # scope-local, so an inner `cd` moves the subshell's run. The
+        # later rm resolves from the subshell cwd (outside the repo),
+        # never from the stale outer cwd (which would ALLOW in-repo).
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        verdict, reason = self._decide("(cd ..; true | cat; rm file.txt)")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("rm-outside-repo"), reason)
+        # An in-repo removal through the same shape stays ALLOW.
+        verdict, reason = self._decide("(cd sub; true | cat; rm inner.txt)")
+        self.assertEqual(verdict, "ALLOW", reason)
+        # The outer list start survives the subshell: an inner `;` must
+        # not rewrite the start the parent `&` resumes from (no healing
+        # boundary sits between the close and the background operator).
+        verdict, reason = self._decide("cd sub; (cd ..; true &) & rm inner.txt")
+        self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_pipe_entry_keeps_snapshot_certainty(self):
+        # Review #815 (MAJOR, run-13 M2): cwd and certainty form the
+        # same-instant pair, so a first stage that clears the certainty
+        # cannot launder a stale cwd into certain. The later relative
+        # rm is refused instead of trusting the stale certain cwd.
+        verdict, reason = self._decide("if false; then cd sub; fi; cd / | cat; rm file.txt")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("cwd-uncertain"), reason)
+        # Without a prior conditional the entry is certain and an
+        # in-repo removal through the same pipeline stays ALLOW.
+        verdict, reason = self._decide("cd / | cat; rm file.txt")
+        self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_conditional_close_refreshes_run_for_pipe(self):
+        # Review #815 (MAJOR, run-13 M2): the run start is refreshed when
+        # a conditional closes, so a pipeline directly after `fi` keeps
+        # the uncertainty instead of the stale pre-`if` certainty.
+        verdict, reason = self._decide("if false; then cd sub; fi | cat; rm file.txt")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("cwd-uncertain"), reason)
+
+    def test_else_arm_restores_entry_certainty(self):
+        # Review #815 (MAJOR, run-13 M3): each arm restarts from the full
+        # entry snapshot (cwd, certainty, taint). A previous arm's
+        # absolute cd cannot clear an uncertain entry for the else arm.
+        verdict, reason = self._decide("if false; then cd sub; fi; if false; then cd /tmp; else rm file.txt; fi")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("cwd-uncertain"), reason)
+        # A certain entry still judges the else arm as certain (no
+        # over-denial): no earlier branch left the cwd uncertain.
+        verdict, reason = self._decide("if false; then cd /tmp; else rm file.txt; fi")
+        self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_powershell_nested_else_keeps_outer_taint(self):
+        # Review #815 (MAJOR, run-13 M3): a PowerShell else arm restarts
+        # from the stashed pre-conditional snapshot, never from an outer
+        # entry. The outer then-arm write still taints the later rm.
+        write_text(os.path.join(self.repo, "g"), "x\n")
+        verdict, reason = self._decide("if ($a) { echo hi > f; if ($b) { } else { rm g } }",
+                                       tool="PowerShell")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("chain"), reason)
+        # Mutually exclusive arms share no taint: with no write before
+        # the inner conditional the else-arm rm stays ALLOW.
+        verdict, reason = self._decide("if ($a) { if ($b) { echo hi > f } else { rm g } }",
+                                       tool="PowerShell")
+        self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_powershell_elseif_arm_joins_then_taint(self):
+        # Review #815 (MAJOR, run-13 M3): an elseif arm also restarts from
+        # the stashed base, and the then-arm outcome joins at its close,
+        # so a later rm still sees the earlier write.
+        verdict, reason = self._decide("if ($a) { echo hi > f } elseif ($b) { echo bye }; rm file.txt",
+                                       tool="PowerShell")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("chain"), reason)
+
     def test_eval_abs_cd_restores_certainty(self):
         # CodeRabbit #815 (MINOR, run-12 OQwI): a nested call that
         # establishes a certain cwd publishes it (assign, not OR), while
@@ -4852,17 +4927,17 @@ class ChainRuleMutationTests(unittest.TestCase):
             '        _nested_text(" ".join(args), ctx, ps, depth + 1, merge_cwd=True)',
             '        _nested_text(" ".join(args), ctx, ps, depth + 1, merge_cwd=False)  # mutant'),
         "subshell scope open destroyed": (
-            '                if not scope_stack and not bbrace_stack:\n                    # A top-level `( ... )` may be the whole first pipeline\n                    # stage: remember the pre-group cwd for the entry.\n                    scope_entry = (ctx.cwd, ctx.cwd_fuzzy)\n                    scope_just_closed = False\n                scope_stack.append((ctx.cwd, ctx.cwd_fuzzy))',
+            '                if not scope_stack and not bbrace_stack:\n                    # A top-level `( ... )` may be the whole first pipeline\n                    # stage: remember the pre-group cwd for the entry.\n                    scope_entry = (ctx.cwd, ctx.cwd_fuzzy)\n                    scope_just_closed = False\n                # run-13 (M1): the subshell owns its pipeline/list start:\n                # an inner `cd` moves the subshell\'s run, never the outer one.\n                run_scope.append((run_start, bg_start))\n                run_start = (ctx.cwd, ctx.cwd_fuzzy)\n                bg_start = (ctx.cwd, ctx.cwd_fuzzy)\n                scope_stack.append((ctx.cwd, ctx.cwd_fuzzy))\n                bg_scope.append((ctx.cwd, ctx.cwd_fuzzy))',
             '                if not scope_stack and not bbrace_stack:\n                    # A top-level `( ... )` may be the whole first pipeline\n                    # stage: remember the pre-group cwd for the entry.\n                    scope_entry = ctx.cwd\n                    scope_just_closed = False\n                pass  # mutant: subshell scope destroyed'),
         "subshell cwd restore removed": (
-            '        if seg == SUBSHELL_CLOSE:\n            if not ps and scope_stack:\n                ctx.cwd, ctx.cwd_fuzzy = scope_stack.pop()\n                if pipe_scope:\n                    pipe_entry, prev_was_pipe = pipe_scope.pop()\n                if bg_scope:\n                    bg_scope.pop()\n'
+            '        if seg == SUBSHELL_CLOSE:\n            if not ps and scope_stack:\n                ctx.cwd, ctx.cwd_fuzzy = scope_stack.pop()\n                if run_scope:\n                    run_start, bg_start = run_scope.pop()\n                if pipe_scope:\n                    pipe_entry, prev_was_pipe = pipe_scope.pop()\n                if bg_scope:\n                    bg_scope.pop()\n'
             '                if not scope_stack and not bbrace_stack:',
-            '        if seg == SUBSHELL_CLOSE:\n            if not ps and scope_stack:\n                scope_stack.pop()  # mutant: subshell cwd leaks\n                if pipe_scope:\n                    pipe_entry, prev_was_pipe = pipe_scope.pop()\n                if bg_scope:\n                    bg_scope.pop()\n'
+            '        if seg == SUBSHELL_CLOSE:\n            if not ps and scope_stack:\n                scope_stack.pop()  # mutant: subshell cwd leaks\n                if run_scope:\n                    run_start, bg_start = run_scope.pop()\n                if pipe_scope:\n                    pipe_entry, prev_was_pipe = pipe_scope.pop()\n                if bg_scope:\n                    bg_scope.pop()\n'
             '                if not scope_stack and not bbrace_stack:'),
         "subshell taint propagation removed": (
-            '        if seg == SUBSHELL_CLOSE:\n            if not ps and scope_stack:\n                ctx.cwd, ctx.cwd_fuzzy = scope_stack.pop()\n                if pipe_scope:\n                    pipe_entry, prev_was_pipe = pipe_scope.pop()\n                if bg_scope:\n                    bg_scope.pop()\n'
+            '        if seg == SUBSHELL_CLOSE:\n            if not ps and scope_stack:\n                ctx.cwd, ctx.cwd_fuzzy = scope_stack.pop()\n                if run_scope:\n                    run_start, bg_start = run_scope.pop()\n                if pipe_scope:\n                    pipe_entry, prev_was_pipe = pipe_scope.pop()\n                if bg_scope:\n                    bg_scope.pop()\n'
             '                if not scope_stack and not bbrace_stack:',
-            '        if seg == SUBSHELL_CLOSE:\n            if not ps and scope_stack:\n                ctx.cwd = scope_stack.pop()\n                if pipe_scope:\n                    pipe_entry, prev_was_pipe = pipe_scope.pop()\n                if bg_scope:\n                    bg_scope.pop()\n'
+            '        if seg == SUBSHELL_CLOSE:\n            if not ps and scope_stack:\n                ctx.cwd = scope_stack.pop()\n                if run_scope:\n                    run_start, bg_start = run_scope.pop()\n                if pipe_scope:\n                    pipe_entry, prev_was_pipe = pipe_scope.pop()\n                if bg_scope:\n                    bg_scope.pop()\n'
             '                ctx.tainted = False  # mutant: subshell taint dropped\n'
             '                if not scope_stack and not bbrace_stack:'),
         "cd cwd update removed": (
@@ -4893,8 +4968,8 @@ class ChainRuleMutationTests(unittest.TestCase):
             'SAME_SHELL_NAMES = frozenset({"command", "builtin", "eval"}) | CD_NAMES',
             'SAME_SHELL_NAMES = frozenset({"command", "builtin"}) | CD_NAMES  # mutant: eval cwd lost'),
         "powershell paren cwd wrongly restored": (
-            '        if seg == SUBSHELL_OPEN:\n            if not ps:\n                if prev_was_pipe and pipe_entry is not None:\n                    # A group right after `|` is the next stage: it forks\n                    # from the entry, and inner commands must not see or\n                    # move the outer pipeline state.\n                    ctx.cwd, ctx.cwd_fuzzy = pipe_entry\n                pipe_scope.append((pipe_entry, prev_was_pipe))\n                pipe_entry = None\n                prev_was_pipe = False\n                if not scope_stack and not bbrace_stack:\n                    # A top-level `( ... )` may be the whole first pipeline\n                    # stage: remember the pre-group cwd for the entry.\n                    scope_entry = (ctx.cwd, ctx.cwd_fuzzy)\n                    scope_just_closed = False\n                scope_stack.append((ctx.cwd, ctx.cwd_fuzzy))\n                bg_scope.append((ctx.cwd, ctx.cwd_fuzzy))\n            continue\n        if seg == SUBSHELL_CLOSE:\n            if not ps and scope_stack:\n',
-            '        if seg == SUBSHELL_OPEN:\n            if True:  # mutant: ps paren wrongly scoped\n                if prev_was_pipe and pipe_entry is not None:\n                    # A group right after `|` is the next stage: it forks\n                    # from the entry, and inner commands must not see or\n                    # move the outer pipeline state.\n                    ctx.cwd = pipe_entry\n                pipe_scope.append((pipe_entry, prev_was_pipe))\n                pipe_entry = None\n                prev_was_pipe = False\n                if not scope_stack and not bbrace_stack:\n                    # A top-level `( ... )` may be the whole first pipeline\n                    # stage: remember the pre-group cwd for the entry.\n                    scope_entry = ctx.cwd\n                    scope_just_closed = False\n                scope_stack.append(ctx.cwd)\n                bg_scope.append(ctx.cwd)\n            continue\n        if seg == SUBSHELL_CLOSE:\n            if scope_stack:  # mutant\n'),
+            '        if seg == SUBSHELL_OPEN:\n            if not ps:\n                if prev_was_pipe and pipe_entry is not None:\n                    # A group right after `|` is the next stage: it forks\n                    # from the entry, and inner commands must not see or\n                    # move the outer pipeline state.\n                    ctx.cwd, ctx.cwd_fuzzy = pipe_entry\n                pipe_scope.append((pipe_entry, prev_was_pipe))\n                pipe_entry = None\n                prev_was_pipe = False\n                if not scope_stack and not bbrace_stack:\n                    # A top-level `( ... )` may be the whole first pipeline\n                    # stage: remember the pre-group cwd for the entry.\n                    scope_entry = (ctx.cwd, ctx.cwd_fuzzy)\n                    scope_just_closed = False\n                # run-13 (M1): the subshell owns its pipeline/list start:\n                # an inner `cd` moves the subshell\'s run, never the outer one.\n                run_scope.append((run_start, bg_start))\n                run_start = (ctx.cwd, ctx.cwd_fuzzy)\n                bg_start = (ctx.cwd, ctx.cwd_fuzzy)\n                scope_stack.append((ctx.cwd, ctx.cwd_fuzzy))\n                bg_scope.append((ctx.cwd, ctx.cwd_fuzzy))\n            continue\n        if seg == SUBSHELL_CLOSE:\n            if not ps and scope_stack:\n',
+            '        if seg == SUBSHELL_OPEN:\n            if True:  # mutant: ps paren wrongly scoped\n                if prev_was_pipe and pipe_entry is not None:\n                    # A group right after `|` is the next stage: it forks\n                    # from the entry, and inner commands must not see or\n                    # move the outer pipeline state.\n                    ctx.cwd = pipe_entry\n                pipe_scope.append((pipe_entry, prev_was_pipe))\n                pipe_entry = None\n                prev_was_pipe = False\n                if not scope_stack and not bbrace_stack:\n                    # A top-level `( ... )` may be the whole first pipeline\n                    # stage: remember the pre-group cwd for the entry.\n                    scope_entry = ctx.cwd\n                    scope_just_closed = False\n                run_scope.append((run_start, bg_start))\n                run_start = (ctx.cwd, ctx.cwd_fuzzy)\n                bg_start = (ctx.cwd, ctx.cwd_fuzzy)\n                scope_stack.append(ctx.cwd)\n                bg_scope.append(ctx.cwd)\n            continue\n        if seg == SUBSHELL_CLOSE:\n            if scope_stack:  # mutant\n'),
 
         "pipeline over-taint": (
             '        if prev_was_pipe and not ps and pipe_entry is not None:\n            ctx.cwd, ctx.cwd_fuzzy = pipe_entry',
@@ -4924,7 +4999,7 @@ class ChainRuleMutationTests(unittest.TestCase):
             '                    if scope_just_closed:\n                        pipe_entry = scope_entry',
             '                    if False:  # mutant: scope entry ignored\n                        pass'),
         "command-boundary snapshots removed": (
-            '            if not scope_stack and not cond_stack:\n                run_start = (ctx.cwd, ctx.cwd_fuzzy)\n                bg_start = (ctx.cwd, ctx.cwd_fuzzy)',
+            '            # run-13 (M1): the snapshots are scope-local, so an in-scope\n            # `;` moves the scope\'s list start. Conditionals still gate\n            # the update (Gu1Y): an arm-end cwd must not become the run.\n            if not cond_stack:\n                run_start = (ctx.cwd, ctx.cwd_fuzzy)\n                bg_start = (ctx.cwd, ctx.cwd_fuzzy)',
             '            pass  # mutant: boundary snapshots not refreshed'),
         "cwd-uncertain check removed": (
             '        if ctx.cwd_fuzzy and not for_cd:\n            # run-12: a relative path cannot be judged from an uncertain\n            # working directory (conditional branch outcomes). Absolute\n            # paths do not depend on the cwd and stay checkable.\n            raise Deny("cwd-uncertain", "a relative path with an uncertain working directory is not inspected")',
@@ -4951,8 +5026,8 @@ class ChainRuleMutationTests(unittest.TestCase):
             '        if seg == SUBSHELL_CLOSE:\n            if not ps and scope_stack:\n                ctx.cwd, ctx.cwd_fuzzy = scope_stack.pop()',
             '        if seg == SUBSHELL_CLOSE:\n            if not ps and scope_stack:\n                ctx.cwd = scope_stack.pop()[0]  # mutant: fuzz not restored'),
         "else arm reset removed": (
-            '        if cond_stack and first_cmd in ("else", "elif"):',
-            '        if False:  # mutant: else arm reuses previous arm state'),
+            '        elif cond_stack and first_cmd in ("else", "elif"):',
+            '        elif False:  # mutant: else arm reuses previous arm state'),
         "cdpath bare cd treated certain": (
             '        if "/" in target.replace("\\\\", "/"):\n            return ctx.cwd, ctx.cwd_fuzzy\n        return ctx.cwd, True',
             '        return ctx.cwd, ctx.cwd_fuzzy  # mutant: bare CDPATH miss treated certain'),
@@ -4960,12 +5035,12 @@ class ChainRuleMutationTests(unittest.TestCase):
             '    if merge_cwd:\n        ctx.cwd = sub.cwd\n        ctx.cwd_fuzzy = sub.cwd_fuzzy',
             '    if merge_cwd:\n        ctx.cwd = sub.cwd\n        if sub.cwd_fuzzy:  # mutant: eval never restores certainty\n            ctx.cwd_fuzzy = True'),
         "powershell cond marker removed": (
-            '        if seg == PSCOND_CLOSE:\n            if cond_stack:\n                # run-12 OQww: join the arm outcomes conservatively: any\n                # move inside the scope leaves the cwd uncertain, and\n                # taint from either arm reaches later segments.\n                entry = cond_stack.pop()\n                if entry["moved"] or ctx.cwd != entry["cwd"]:\n                    ctx.cwd_fuzzy = True\n                ctx.tainted = ctx.tainted or entry["then_taint"]\n                if cond_stack and (entry["moved"] or ctx.cwd != cond_stack[-1]["cwd"]):\n                    cond_stack[-1]["moved"] = True\n            continue',
+            '        if seg == PSCOND_CLOSE:\n            if cond_stack:\n                # run-12 OQww: join the arm outcomes conservatively: any\n                # move inside the scope leaves the cwd uncertain, and\n                # taint from either arm reaches later segments.\n                entry = cond_stack.pop()\n                if entry["moved"] or ctx.cwd != entry["cwd"]:\n                    ctx.cwd_fuzzy = True\n                ctx.tainted = ctx.tainted or entry["then_taint"]\n                if cond_stack and (entry["moved"] or ctx.cwd != cond_stack[-1]["cwd"]):\n                    cond_stack[-1]["moved"] = True\n                # run-13 (M3): keep the pre-arm snapshot for a following\n                # else/elseif arm, whose entry was already popped. Each\n                # arm restarts from this base and joins at its own close.\n                ps_arm_stack.append(entry)\n            continue',
             '        if seg == PSCOND_CLOSE:\n            continue  # mutant: ps close trusted'),
         "coproc compound scope removed": (
-            '        if seg == COPROC_CLOSE:\n            if scope_stack:\n                ctx.cwd, ctx.cwd_fuzzy = scope_stack.pop()\n                if bg_scope:\n                    bg_scope.pop()\n                if pipe_scope:\n                    pipe_entry, prev_was_pipe = pipe_scope.pop()\n'
+            '        if seg == COPROC_CLOSE:\n            if scope_stack:\n                ctx.cwd, ctx.cwd_fuzzy = scope_stack.pop()\n                if run_scope:\n                    run_start, bg_start = run_scope.pop()\n                if bg_scope:\n                    bg_scope.pop()\n                if pipe_scope:\n                    pipe_entry, prev_was_pipe = pipe_scope.pop()\n'
             '                if not scope_stack and not bbrace_stack:',
-            '        if seg == COPROC_CLOSE:\n            if scope_stack:\n                scope_stack.pop()  # mutant: coproc body leaks cwd\n                if bg_scope:\n                    bg_scope.pop()\n                if pipe_scope:\n                    pipe_entry, prev_was_pipe = pipe_scope.pop()\n'
+            '        if seg == COPROC_CLOSE:\n            if scope_stack:\n                scope_stack.pop()  # mutant: coproc body leaks cwd\n                if run_scope:\n                    run_start, bg_start = run_scope.pop()\n                if bg_scope:\n                    bg_scope.pop()\n                if pipe_scope:\n                    pipe_entry, prev_was_pipe = pipe_scope.pop()\n'
             '                if not scope_stack and not bbrace_stack:'),
         "command double-dash handling removed": (
             '        if i < len(args) and args[i] == "--":',
@@ -4979,6 +5054,24 @@ class ChainRuleMutationTests(unittest.TestCase):
         "brace close token boundary removed": (
             '        if c == "}" and not ps and cur_blank:',
             '        if c == "}" and not ps:  # mutant: any } closes the group'),
+        "subshell run start not scoped": (
+            '                # run-13 (M1): the subshell owns its pipeline/list start:\n                # an inner `cd` moves the subshell\'s run, never the outer one.\n                run_scope.append((run_start, bg_start))\n                run_start = (ctx.cwd, ctx.cwd_fuzzy)\n                bg_start = (ctx.cwd, ctx.cwd_fuzzy)',
+            '                pass  # mutant: subshell run start not scoped'),
+        "pipe entry snapshot certainty kept": (
+            '                    else:\n                        pipe_entry = run_start\n                prev_was_pipe = True',
+            '                    else:\n                        pipe_entry = run_start\n                    pipe_entry = (pipe_entry[0], ctx.cwd_fuzzy)  # mutant: live certainty\n                prev_was_pipe = True'),
+        "cond close run refresh removed": (
+            '            if not cond_stack:\n                # run-13 (M2): the run start is the same-instant pair\n                # again, so a later pipeline entry keeps its own\n                # certainty instead of borrowing the live one. The\n                # refresh is scope-local (M1) inside a subshell.\n                run_start = (ctx.cwd, ctx.cwd_fuzzy)',
+            '            pass  # mutant: cond close run not refreshed'),
+        "else arm certainty restore removed": (
+            '            entry = cond_stack[-1]\n            entry["then_taint"] = entry["then_taint"] or ctx.tainted\n            ctx.cwd = entry["cwd"]\n            ctx.cwd_fuzzy = entry["fuzzy"]\n            ctx.tainted = entry["tainted"]',
+            '            entry = cond_stack[-1]\n            entry["then_taint"] = entry["then_taint"] or ctx.tainted\n            ctx.cwd = entry["cwd"]\n            ctx.tainted = entry["tainted"]  # mutant: else certainty not restored'),
+        "powershell else stash restore removed": (
+            '            entry = ps_arm_stack[-1]\n            entry["then_taint"] = entry["then_taint"] or ctx.tainted\n            ctx.cwd = entry["cwd"]\n            ctx.cwd_fuzzy = entry["fuzzy"]\n            ctx.tainted = entry["tainted"]\n            ps_arm_moved = entry["moved"]\n            ps_arm_taint = entry["then_taint"]',
+            '            entry = cond_stack[-1]  # mutant: ps else uses outer entry\n            entry["then_taint"] = entry["then_taint"] or ctx.tainted\n            ctx.cwd = entry["cwd"]\n            ctx.tainted = entry["tainted"]'),
+        "powershell arm outcome inheritance removed": (
+            '            if ps_arm_moved or ps_arm_taint:\n                # run-13 (M3): this is an else/elseif body: inherit the\n                # then-arm outcome so the close joins every arm.\n                cond_stack[-1]["moved"] = cond_stack[-1]["moved"] or ps_arm_moved\n                cond_stack[-1]["then_taint"] = cond_stack[-1]["then_taint"] or ps_arm_taint\n                ps_arm_moved = False\n                ps_arm_taint = False',
+            '            pass  # mutant: ps arm outcome not inherited'),
     }
 
     # Each hook mutant must turn its expected ChainRulePieceDTests test RED
@@ -5042,6 +5135,12 @@ class ChainRuleMutationTests(unittest.TestCase):
         "same-shell duplicate validation restored": "test_same_shell_target_does_not_self_deny",
         "powershell call operator refusal removed": "test_powershell_call_scriptblock_stays_refused",
         "brace close token boundary removed": "test_brace_expansion_word_does_not_close_group",
+        "subshell run start not scoped": "test_subshell_pipeline_uses_inner_cwd",
+        "pipe entry snapshot certainty kept": "test_pipe_entry_keeps_snapshot_certainty",
+        "cond close run refresh removed": "test_conditional_close_refreshes_run_for_pipe",
+        "else arm certainty restore removed": "test_else_arm_restores_entry_certainty",
+        "powershell else stash restore removed": "test_powershell_nested_else_keeps_outer_taint",
+        "powershell arm outcome inheritance removed": "test_powershell_if_else_branch_denies_relative_rm",
     }
 
     # Mutants of the detection helper itself (this test file, not the hook).
