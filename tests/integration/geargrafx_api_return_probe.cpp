@@ -260,7 +260,54 @@ int main(int argc, char** argv) {
                     if (top == 0) base_hi_ok = (w[0xF8] < 0x20) ? "true" : "false";
                     else base_hi_ok = "UNKNOWN";
                 }
-                std::printf("APICALL {\"cycle\":\"%s\",\"step\":%ld,\"caller_pc\":%u,\"entry_pc\":%u,"
+
+                if (slot == 3 && memory->GetMpr(1) == 0xF8) {
+                    const u8* w3 = memory->GetWorkingRAM();
+                    unsigned dh = w3[0xFF];
+                    // MEDIUM-1 taxonomy (epistemic, not ABI claims).
+                    // OTHER  = determined to fall outside all named categories.
+                    // UNKNOWN = determination not possible (missing context,
+                    //   e.g. count unit in an unverified _dh mode).
+                    // LOCAL_BYTES: _dh=0, the only implemented mode (FIRST/
+                    //   LOCAL bytes; verified by this experiment).
+                    // BANK_CANDIDATE: _dh=3/6, caller-observed bank usage
+                    //   (HuCC caller-side HYPOTHESIS per docs/cd-read-contract.md
+                    //   R2/A3; Hu-Go! HLE is reference-only, never grounds).
+                    //   Callee ABI NOT confirmed -- candidacy, never confirmation.
+                    // VRAM_CANDIDATE: _dh=$FE/$FF, caller-side HYPOTHESIS
+                    //   (HuCC VRAM signal, comment-derived); callee refuses
+                    //   $65, never confirmed. Not plain VRAM.
+                    // OTHER: _dh=1/2/4/5 (UNKNOWN meaning per contract A3) and
+                    //   anything else unverified; explicitly NOT a confirmed
+                    //   mode of any kind.
+                    if (dh == 0x00) addr_mode = "LOCAL_BYTES";
+                    else if (dh == 0x03 || dh == 0x06) addr_mode = "BANK_CANDIDATE";
+                    else if (dh == 0xFE || dh == 0xFF) addr_mode = "VRAM_CANDIDATE";
+                    else addr_mode = "OTHER";
+                    unsigned sz_lo = w3[0xF8], sz_hi = w3[0xF9];
+                    unsigned sz = (sz_hi << 8) | sz_lo;
+                    // Count unit is known (bytes) only for _dh=0 (the
+                    // implemented mode). Elsewhere the unit is unknown, so
+                    // SINGLE/MULTI must not be concluded; sz==0 (no transfer)
+                    // needs no unit and stays ZERO.
+                    if (sz == 0) cl_mode = "ZERO";
+                    else if (dh == 0x00) cl_mode = (sz == 2048) ? "SINGLE" : "MULTI";
+                    else cl_mode = "UNKNOWN";
+                    unsigned da_lo = w3[0xFA], da_hi = w3[0xFB];
+                    unsigned da = (da_hi << 8) | da_lo;
+                    ch_mode = (da >= 0x2000 && da < 0x4000) ? "WRAM" : "OTHER";
+                    // MEDIUM-2: track_bcd/reserved_z/base_hi_ok carry slot02
+                    // meanings (BCD track, reserved-zero, base-HI range) that
+                    // do not apply to slot03 dest/size semantics. Storing
+                    // slot03 range facts in them misleads interpretation, so
+                    // they are UNKNOWN here (minimal fix; no new fields, no
+                    // schema/consumer/sanitizer change). ch_mode stays a pure
+                    // dest-range fact (WRAM = $2000-$3FFF). No values leak.
+                    track_bcd = "UNKNOWN";
+                    reserved_z = "UNKNOWN";
+                    base_hi_ok = "UNKNOWN";
+                }
+                                std::printf("APICALL {\"cycle\":\"%s\",\"step\":%ld,\"caller_pc\":%u,\"entry_pc\":%u,"
                             "\"in_table\":%s,\"slot\":%u,\"sp_before\":%u,\"sp_after\":%u,\"sp_delta\":%u,"
                             "\"caller_a\":%u,\"caller_x\":%u,\"caller_y\":%u,\"caller_p\":%u,"
                             "\"stack_check\":\"%s\",\"return_matches_caller\":%s,\"st_last\":\"%s\",\"addr_mode\":\"%s\",\"cl_mode\":\"%s\",\"ch_mode\":\"%s\",\"track_bcd\":\"%s\",\"reserved_z\":\"%s\",\"base_hi_ok\":\"%s\",\"idr\":%u,\"irr\":%u,\"mpr\":[",
