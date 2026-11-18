@@ -1,50 +1,50 @@
-# Project guide / oss-pce-cd-biosとは
+# Project guide
 
-[← README](../README.md) · [Docs hub](README.md)
+[← English README](../README.md) · [日本語版](project-guide.jp.md) · [Documentation hub](README.md)
 
-## 目的
+## Goal
 
-PC Engine / TurboGrafx-CDの**System Card 3.0相当のソフトウェア機能**を、適切なライセンスのOSSや独自実装で再現することを目指します。対象はBIOS**ソフトウェア**であり、CDドライブ、追加RAM、ADPCM、HuC6280などのハードウェアをエミュレータ側が提供する前提です。
+The project aims to reproduce **System Card 3.0-compatible software behavior** for PC Engine / TurboGrafx-CD using original code and appropriately licensed open-source components. It replaces BIOS software **only**: an emulator or compatible hardware implementation must provide the HuC6280 CPU, CD controller, expansion RAM, ADPCM, and other devices.
 
-目標は**振る舞いの互換性**であり、市販BIOSのバイナリ一致ではありません。将来は日本向けCD-ROM² / SUPER CD-ROM²タイトルから検証し、機能単位の真正ABI検証、複数エミュレータの照合、ゲームプレイ、セーブ/ロードへと広げます。
+The target is **behavioral compatibility**, not bit-for-bit identity with proprietary System Card firmware. Planned validation starts with Japanese CD-ROM² and SUPER CD-ROM² software, then expands through independently verified API contracts, cross-emulator comparisons, actual gameplay, and saving/loading.
 
-## 3つの異なるもの
+## Three distinct artifacts
 
-| | 通常DEV ROM | G5実験用BIOS | 将来の互換BIOS |
+| | Ordinary DEV ROM | G5 experimental BIOS | Future compatible BIOS |
 | --- | --- | --- | --- |
-| 用途 | ルーチン・機器診断 | PUBLIC IPLと実験APIの結合観測 | 市販タイトルへの互換性 |
-| API | 18個の開発用ルーチン、63スタブ | ビルダーで選ぶ限定的な実験配線 | 真正ABIを根拠にしたサービス群 |
-| 証拠 | ホスト・実コア | 合成媒体＋許可されたローカル実測 | 本番契約・相互運用・ゲーム単位 |
-| 一般利用 | いいえ | いいえ | **未実現** |
+| Primary purpose | Diagnostic routines and hardware experiments | PUBLIC IPL loader and experimental service calls | Retail System Card behavior |
+| API surface | 18 project-defined DEV routines; 63 stubs | Selected experimental service wiring per builder | Services supported by verified reference ABI |
+| Evidence | Host and real-core tests | Synthetic media and authorized local observation | Independent ABI and end-to-end game tests |
+| End-user ready? | No | No | **Not yet implemented** |
 
-通常DEVで動いたルーチンが、商用ソフトから呼べると判断してはいけません。実験用BIOSの配線は通常DEVやrelease経路に自動昇格しません。
+A DEV routine is **not** automatically callable by commercial titles. Experimental BIOS wiring does not promote anything into the ordinary DEV or release builds.
 
-## 現在できること（2026-11-18 / main fa694281）
+## What works (snapshot: 2026-11-18, main fa694281)
 
-- 固定版cc65/Geargrafxでテスト用HuCARDと256KiB DEV ROMを生成し、バイト同一性やメモリ/CPU動作を検査する。
-- 18/81の**プロジェクト独自**DEVルーチンを診断する（真正ABI VERIFIEDは0/81）。
-- 合成CDでPUBLIC IPLのINFO/BODY読込み、RAM転送、実験的な `$02`、`$03`、`$33` 経路を確認する。
-- Owner許可による商用CDのローカル読取り専用実測で、共通停止地点 `$4A` を特定する。
+- Produce deterministic HuCARD fixtures and a 256 KiB diagnostic DEV ROM with pinned cc65/Geargrafx tooling; check ROM identity and hardware/CPU behavior.
+- Test the **18/81 project-defined development routines**, without asserting a single reference-BIOS-verified ABI (0/81).
+- Load PUBLIC IPL INFO/BODY blocks, transfer code to RAM, and verify experimental `$02`, `$03`, and `$33` service integration on **synthetic** media.
+- Reproduce a common unimplemented `$4A` halt on two locally authorized, read-only commercial CD observations.
 
-### まだできないこと
+### What does not work yet
 
-- System Cardの代替として市販ゲームを起動すること。タイトル画面到達0、`G5_OBSERVED=false`。
-- 81スロットの真正ABIを宣言すること（VERIFIED 0/81、DEV_CALLABLE 0）。
-- 配布可能な互換ファームウェアの生成（`release_eligible=false`、`make release`は意図的に拒否）。
-- 参照BIOSを無許可に実行・解析すること（JSR許可0/81）。
+- Boot a commercial game as a System Card replacement; no retail title screen has been observed (**G5_OBSERVED=false**).
+- Claim reference ABI verification (0/81), owner-approved DEV_CALLABLE (0), or reference JSR permission (0/81).
+- Ship a compatible BIOS (`release_eligible=false`; `make release` intentionally refuses).
+- Analyze/execute reference BIOS code without separately approved provenance and safety permissions.
 
-## 証拠の区分
+## Evidence terminology
 
-| 呼称 | 意味 |
+| Term | Meaning |
 | --- | --- |
-| SYNTHETIC / DEV | 自作フィクスチャ上で、プロジェクト定義の動作を確認 |
-| HISTORICALLY_OBSERVED / CURRENT_OBSERVED | 条件を明示した商用媒体の観測（ゲーム互換性とは別） |
-| SIMULATED_NEXT_API | 仮RTS等の診断的操作で見えた**条件付き**後続API |
-| ABI VERIFIED | 独立した契約・副作用等の証拠を満たした真正互換性。**現在0/81** |
-| G5_OBSERVED | 商用タイトル画面到達の直接確認。**現在false** |
-| BLOCKED / NOT_RUN | 条件未充足・未実測。PASSとは呼ばない |
+| SYNTHETIC / DEV | Project-specific behavior on original fixtures |
+| HISTORICALLY_OBSERVED / CURRENT_OBSERVED | Version-scoped, anonymized observations on authorized local media, **not compatibility** |
+| SIMULATED_NEXT_API | Conditional progress with a fabricated return; **not** genuine service behavior |
+| ABI VERIFIED | Independently substantiated interface, flags, RAM/MPR/stack, and side effects — **currently 0/81** |
+| G5_OBSERVED | Directly observed retail title screen — **currently false** |
+| BLOCKED / NOT_RUN | Unmet prerequisites or absent measurements; never PASS |
 
-## はじめる
+## Developer quick start
 
 ```sh
 make setup
@@ -54,17 +54,17 @@ make test-real-core
 make check
 ```
 
-開発環境はLinux/WSL、固定版Geargrafxとcc65を前提とします。私的媒体はセットアップやCIの前提にはせず、別途opt-inとサニタイズが必須です。詳細は [Building](building.md)、[Testing](testing.md)、[Provenance](provenance.md)。
+Development assumes Linux/WSL and the pinned Geargrafx and cc65 toolchains. Private media are not needed for setup or public CI, and any local run requires explicit opt-in and evidence sanitization. See [Building](building.md), [Testing](testing.md), and [Provenance](provenance.md).
 
-## 長期の確認手順
+## Longer-term evidence sequence
 
-1. 独自実装・ソース来歴の承認
-2. 合成フィクスチャでの実処理と負例・mutation
-3. 固定版Geargrafx実コアでcold/warmとレジスタ/メモリ確認
-4. 独立した真正ABI証拠・ハードウェア条件の確認
-5. 商用ゲーム単位の起動・表示・操作・保存テスト
-6. 安全・再現性・ライセンスのrelease gate
+1. Review source originality, licenses, and provenance.
+2. Validate behavior and failure cases on synthetic fixtures, including mutation testing.
+3. Confirm cold/warm, RAM/CPU/MPR and IRQ effects on pinned Geargrafx real core.
+4. Independently establish genuine reference ABI contracts.
+5. Demonstrate retail title screens, inputs, gameplay, and save/load per title.
+6. Satisfy reproducibility, safety, provenance, and release gates.
 
-「18個」は開発用の実装数であり、上記4以降が済んだ関数の数ではありません。
+The number **18** counts DEV routines; it is not a count of completed steps 4–6.
 
 [Status](status.md) · [Roadmap](roadmap.md) · [Architecture](architecture.md)
