@@ -269,7 +269,7 @@ class Ctx:
 def _cond_entry(ctx):
     """Snapshot a conditional/loop entry (run-12 OQww)."""
     return {"cwd": ctx.cwd, "fuzzy": ctx.cwd_fuzzy, "tainted": ctx.tainted,
-            "then_taint": ctx.tainted, "moved": False}
+            "then_taint": ctx.tainted, "cond_taint": None, "moved": False}
 
 
 def _taint(ctx):
@@ -2566,11 +2566,17 @@ def analyze_text(text, ctx, ps, depth):
             cond_stack.append(_cond_entry(ctx))
             if ps_arm_moved or ps_arm_taint:
                 # run-13 (M3): this is an else/elseif body: inherit the
-                # then-arm outcome so the close joins every arm.
+                # then-arm outcome so the close joins every arm, including
+                # the condition taint stashed with the then-arm entry.
                 cond_stack[-1]["moved"] = cond_stack[-1]["moved"] or ps_arm_moved
                 cond_stack[-1]["then_taint"] = cond_stack[-1]["then_taint"] or ps_arm_taint
+                if ps_arm_stack and ps_arm_stack[-1]["cond_taint"] is not None:
+                    cond_stack[-1]["cond_taint"] = ps_arm_stack[-1]["cond_taint"]
                 ps_arm_moved = False
                 ps_arm_taint = False
+            else:
+                # run-12 P7k3: the condition ends where the body opens.
+                cond_stack[-1]["cond_taint"] = ctx.tainted
             continue
         if seg == PSCOND_CLOSE:
             if cond_stack:
@@ -2578,7 +2584,10 @@ def analyze_text(text, ctx, ps, depth):
                 # move inside the scope leaves the cwd uncertain, and
                 # taint from either arm reaches later segments.
                 entry = cond_stack.pop()
-                if entry["moved"] or ctx.cwd != entry["cwd"]:
+                # run-12 OQww/P7kz: join all outcomes including the
+                # skipped body: entry uncertainty, any move, or any end
+                # difference leaves the cwd uncertain.
+                if entry["fuzzy"] or entry["moved"] or ctx.cwd != entry["cwd"]:
                     ctx.cwd_fuzzy = True
                 ctx.tainted = ctx.tainted or entry["then_taint"]
                 if cond_stack and (entry["moved"] or ctx.cwd != cond_stack[-1]["cwd"]):
@@ -2665,6 +2674,11 @@ def analyze_text(text, ctx, ps, depth):
             continue
         seg_words = words_of(seg, ps)
         first_cmd = next((w for w in seg_words if not ASSIGN.match(w)), None)
+        if not ps and cond_stack and first_cmd == "then":
+            # run-12 OQww/P7k3: the condition just ended; snapshot its
+            # taint so `else`/`elif` arms keep condition taint while
+            # dropping the previous arm's taint (joined at the close).
+            cond_stack[-1]["cond_taint"] = ctx.tainted
         if not ps and first_cmd in COND_OPENERS:
             # run-12 Gu1Y: a Bash conditional/loop body is analysed (DENY
             # and taint detection unchanged), but the cwd it leaves is
@@ -2687,24 +2701,29 @@ def analyze_text(text, ctx, ps, depth):
             # conditional's entry. The then-arm outcome (move/taint) is
             # carried into the next arm entry and joins at its close, so
             # the post-chain state covers every arm taken or not.
+            # P7k3: condition taint wins over the pre-conditional taint.
             entry = ps_arm_stack[-1]
             entry["then_taint"] = entry["then_taint"] or ctx.tainted
             ctx.cwd = entry["cwd"]
             ctx.cwd_fuzzy = entry["fuzzy"]
-            ctx.tainted = entry["tainted"]
+            ctx.tainted = entry["cond_taint"] if entry["cond_taint"] is not None else entry["tainted"]
             ps_arm_moved = entry["moved"]
             ps_arm_taint = entry["then_taint"]
         elif cond_stack and first_cmd in ("else", "elif"):
-            # run-12 OQww: each arm runs from the conditional entry, not
-            # from the previous arm's end (Bash and PowerShell alike).
-            # Taint joins at the close. run-13 (M3): the certainty is
-            # restored too, so a previous arm's absolute cd cannot clear
-            # an uncertain entry for the else arm.
+            # run-12 OQww/P7k3: each arm runs from the conditional entry, not
+            # from the previous arm's end. Condition taint (captured at
+            # `then`, at the PowerShell block open, or lazily here) is kept;
+            # the previous arm's taint is dropped here and joined at close.
+            # run-13 (M3): the certainty is restored too, so a previous
+            # arm's absolute cd cannot clear an uncertain entry for the
+            # else arm.
             entry = cond_stack[-1]
             entry["then_taint"] = entry["then_taint"] or ctx.tainted
+            if entry["cond_taint"] is None:
+                entry["cond_taint"] = ctx.tainted
             ctx.cwd = entry["cwd"]
             ctx.cwd_fuzzy = entry["fuzzy"]
-            ctx.tainted = entry["tainted"]
+            ctx.tainted = entry["cond_taint"]
         if not seg_words and not ops:
             # A boundary flush with no words and no redirects (e.g. the
             # empty segment before `{` in `| { ...`): consumes no pipeline
@@ -2766,7 +2785,9 @@ def analyze_text(text, ctx, ps, depth):
             # cwd it moved is uncertain, since the branch may not run.
             # A stray closer with no open scope is ignored, as before.
             entry = cond_stack.pop()
-            if entry["moved"] or ctx.cwd != entry["cwd"]:
+            # run-12 OQww/P7kz: join all outcomes including the skipped
+            # body (same rule as the PowerShell close).
+            if entry["fuzzy"] or entry["moved"] or ctx.cwd != entry["cwd"]:
                 ctx.cwd_fuzzy = True
             ctx.tainted = ctx.tainted or entry["then_taint"]
             if cond_stack and (entry["moved"] or ctx.cwd != cond_stack[-1]["cwd"]):
