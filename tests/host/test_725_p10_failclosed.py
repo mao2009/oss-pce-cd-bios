@@ -857,6 +857,315 @@ class P10InputClosureMutants(unittest.TestCase):
             self.assertEqual(p10._classify_verdict_reads(records), ([], []))
 
 
+class P10MediumExternalStat(unittest.TestCase):
+    """MEDIUM-1: outside-ROOT existence checks are fail-closed (not ignored).
+
+    Old ``_classify_verdict_reads`` ignored every outside-ROOT ``stat``
+    (``canon_rel is None`` + ``kind == "stat"`` → ``continue``), so a
+    verdict-relevant ``os.stat``/``Path.exists`` on an external temp file
+    was GREEN. The fix refuses external existence checks except for the
+    narrow resolve-noise excuse (ancestor directories of ROOT hit by
+    ``pathlib.resolve``/``realpath``). Temp dummies only; never ./rom/.
+    """
+    def _audit_with_mutant(self, mutant):
+        def loader():
+            p10._run_verdict_loads_for_audit()
+            mutant()
+        records = p10._audit_verdict_reads(loader)
+        return p10._classify_verdict_reads(records)
+
+    def test_external_stat_refused(self):
+        # Production classifier through the real audit window: os.stat on
+        # an external temp file must be refused (was false GREEN).
+        import os as _os
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "external_probe.json"
+            target.write_text('{}\\n')
+
+            def mutant():
+                _os.stat(str(target))
+
+            forbidden, non_allowlisted = self._audit_with_mutant(mutant)
+        self.assertTrue(
+            any("outside repository allowlist" in n for n in non_allowlisted),
+            f"external os.stat must be refused: {forbidden} {non_allowlisted}")
+        for message in forbidden + non_allowlisted:
+            self.assertNotIn(tmp, message, message)
+
+    def test_external_exists_refused(self):
+        # Same for Path.exists / is_file / stat (all stat-kind, all
+        # outside-ROOT, all verdict-relevant existence checks).
+        import os as _os
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "external_flag.json"
+            target.write_text('{}\\n')
+            mutants = {
+                "Path.exists": lambda: Path(str(target)).exists(),
+                "Path.is_file": lambda: Path(str(target)).is_file(),
+                "Path.stat": lambda: Path(str(target)).stat(),
+                "os.lstat": lambda: _os.lstat(str(target)),
+            }
+            for name, mutant in mutants.items():
+                with self.subTest(api=name):
+                    forbidden, non_allowlisted = self._audit_with_mutant(mutant)
+                    self.assertTrue(
+                        any("outside repository allowlist" in n
+                            for n in non_allowlisted),
+                        f"{name}: external existence check must be refused: "
+                        f"{forbidden} {non_allowlisted}")
+                    for message in forbidden + non_allowlisted:
+                        self.assertNotIn(tmp, message, message)
+
+    def test_external_stat_control_green(self):
+        # Normal committed tree stays GREEN: the only outside-ROOT stats
+        # are resolve-noise ancestors (e.g. /tmp) excused narrowly.
+        records = p10._audit_verdict_reads(p10._run_verdict_loads_for_audit)
+        forbidden, non_allowlisted = p10._classify_verdict_reads(records)
+        self.assertEqual((forbidden, non_allowlisted), ([], []))
+        self.assertEqual(p10.check_synthetic_host_docs_non_promotion(), [])
+
+    def test_external_stat_bytes_and_pathlike_refused(self):
+        # Bytes and PathLike outside-ROOT stats take the same fail-closed
+        # path (decoded, never bypassed).
+        import os as _os
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "probe.json"
+            target.write_text('{}\\n')
+            encoded = _os.fsencode(str(target))
+
+            def mutant_bytes():
+                _os.stat(encoded)
+
+            def mutant_pathlike():
+                _os.stat(Path(str(target)))
+
+            for name, mutant in (("bytes", mutant_bytes),
+                                 ("PathLike", mutant_pathlike)):
+                with self.subTest(kind=name):
+                    forbidden, non = self._audit_with_mutant(mutant)
+                    self.assertTrue(
+                        any("outside repository allowlist" in n for n in non),
+                        f"{name}: {forbidden} {non}")
+
+    def test_external_stat_detector_sensitive(self):
+        # Load-bearing proof: neutering the classifier blinds the same
+        # external-stat mutant (would be false GREEN again).
+        from unittest import mock
+        import os as _os
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "s.json"
+            target.write_text('{}\\n')
+            records = p10._audit_verdict_reads(lambda: _os.stat(str(target)))
+        self.assertTrue(records, "mutant must perform a recorded stat")
+        forbidden, non = p10._classify_verdict_reads(records)
+        self.assertTrue(forbidden or non, "production detector must refuse")
+        with mock.patch.object(p10, "_classify_verdict_reads",
+                               return_value=([], [])):
+            self.assertEqual(p10._classify_verdict_reads(records), ([], []))
+
+
+class P10MediumIntFdStat(unittest.TestCase):
+    """MEDIUM-2: os.stat(int_fd)/os.lstat(int_fd) are audited (not dropped).
+
+    Old ``_record`` ignored ``int`` (``not isinstance(str/PathLike)`` →
+    ``return``), so ``os.stat(fd)`` left no record and classified GREEN.
+    The fix records a fixed ``<int-fd-stat>`` marker before delegating,
+    with no fd number or path in the message, preserving return value,
+    exceptions and patch restoration. Temp dummies only.
+    """
+    def _audit_with_mutant(self, mutant):
+        def loader():
+            p10._run_verdict_loads_for_audit()
+            mutant()
+        records = p10._audit_verdict_reads(loader)
+        return p10._classify_verdict_reads(records)
+
+    def test_int_fd_stat_refused(self):
+        # os.stat(fd) is valid on this Python/Linux (precondition) and must
+        # be refused via the fixed marker (was false GREEN).
+        import os as _os
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "d.txt"
+            target.write_text("hello\\n")
+            fd = _os.open(str(target), _os.O_RDONLY)
+            try:
+                # Precondition: fd-stat works on this platform.
+                st = _os.stat(fd)
+                self.assertGreaterEqual(st.st_size, 0)
+
+                def mutant():
+                    _os.stat(fd)
+
+                forbidden, non_allowlisted = self._audit_with_mutant(mutant)
+            finally:
+                try:
+                    _os.close(fd)
+                except OSError:
+                    pass
+        self.assertTrue(any("int-fd" in n for n in non_allowlisted),
+                        (forbidden, non_allowlisted))
+
+    def test_int_fd_lstat_attempt_refused(self):
+        # os.lstat(int) raises TypeError on CPython (no symlink for an fd),
+        # but the attempt must still be audited, not mistaken for a bypass.
+        import os as _os
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "d.txt"
+            target.write_text("x\\n")
+            fd = _os.open(str(target), _os.O_RDONLY)
+            try:
+                with self.assertRaises(TypeError):
+                    _os.lstat(fd)
+
+                def mutant():
+                    try:
+                        _os.lstat(fd)
+                    except TypeError:
+                        pass
+
+                forbidden, non_allowlisted = self._audit_with_mutant(mutant)
+            finally:
+                try:
+                    _os.close(fd)
+                except OSError:
+                    pass
+        self.assertTrue(any("int-fd" in n for n in non_allowlisted),
+                        (forbidden, non_allowlisted))
+
+    def test_int_fd_stat_control_green(self):
+        # Same stat without an int fd on a committed allowlisted file is
+        # GREEN (detection fires on the fd, not on stat itself).
+        import os as _os
+        forbidden, non_allowlisted = self._audit_with_mutant(
+            lambda: _os.stat(str(ROOT / "Makefile")))
+        self.assertEqual((forbidden, non_allowlisted), ([], []))
+        forbidden, non_allowlisted = self._audit_with_mutant(
+            lambda: _os.lstat(str(ROOT / "Makefile")))
+        self.assertEqual((forbidden, non_allowlisted), ([], []))
+
+    def test_int_fd_stat_no_path_leak(self):
+        # Findings carry only the fixed marker; no fd number, no tmp path,
+        # no external absolute path, no exception detail.
+        import os as _os
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "secret_d.txt"
+            target.write_text("s\\n")
+            fd = _os.open(str(target), _os.O_RDONLY)
+            try:
+                forbidden, non_allowlisted = self._audit_with_mutant(
+                    lambda: _os.stat(fd))
+            finally:
+                try:
+                    _os.close(fd)
+                except OSError:
+                    pass
+        for message in forbidden + non_allowlisted:
+            self.assertNotIn(tmp, message, message)
+            self.assertNotIn("secret_d", message, message)
+            self.assertNotIn(str(Path.home()), message, message)
+        self.assertTrue(any("int-fd" in m for m in forbidden + non_allowlisted))
+        # The fd number itself must not appear as a bare token.
+        for message in forbidden + non_allowlisted:
+            self.assertNotIn(str(fd), message, message)
+
+    def test_int_fd_stat_api_preserved_and_restored(self):
+        # Return value / errors pass through and patches restore on both
+        # normal and exceptional exit.
+        import os as _os
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "v.txt"
+            target.write_bytes(b"0123456789")
+            fd = _os.open(str(target), _os.O_RDONLY)
+            try:
+                orig_stat = _os.stat
+                witnessed = {}
+
+                def loader():
+                    p10._run_verdict_loads_for_audit()
+                    witnessed["size"] = _os.stat(fd).st_size
+
+                records = p10._audit_verdict_reads(loader)
+                self.assertEqual(witnessed.get("size"), 10)
+                self.assertIs(_os.stat, orig_stat)
+            finally:
+                try:
+                    _os.close(fd)
+                except OSError:
+                    pass
+            # Exceptional exit still restores.
+            orig_stat2 = _os.stat
+            orig_lstat2 = _os.lstat
+
+            def boom():
+                p10._run_verdict_loads_for_audit()
+                raise RuntimeError("synthetic")
+
+            with self.assertRaises(RuntimeError):
+                p10._audit_verdict_reads(boom)
+            self.assertIs(_os.stat, orig_stat2)
+            self.assertIs(_os.lstat, orig_lstat2)
+            # After restore, normal stat works unpatched.
+            self.assertGreaterEqual(_os.stat(str(target)).st_size, 0)
+
+    def test_int_fd_open_regression(self):
+        # Existing builtins.open(int_fd) and io.open(int_fd) detection
+        # still refuses (no regression from the stat fix).
+        import io as _io
+        import os as _os
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "g.txt"
+            target.write_text("y\\n")
+            for api_name in ("builtins.open", "io.open"):
+                with self.subTest(api=api_name):
+                    fd = _os.open(str(target), _os.O_RDONLY)
+                    try:
+                        if api_name == "builtins.open":
+                            def mutant():
+                                open(fd, "rb").close()
+                        else:
+                            def mutant():
+                                _io.open(fd, "rb").close()
+                        forbidden, non = self._audit_with_mutant(mutant)
+                    finally:
+                        try:
+                            _os.close(fd)
+                        except OSError:
+                            pass
+                    self.assertTrue(any("int-fd" in n for n in non),
+                                    f"{api_name}: {forbidden} {non}")
+
+    def test_int_fd_stat_detector_sensitive(self):
+        from unittest import mock
+        import os as _os
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "s.txt"
+            target.write_text("z\\n")
+            fd = _os.open(str(target), _os.O_RDONLY)
+            try:
+                records = p10._audit_verdict_reads(lambda: _os.stat(fd))
+            finally:
+                try:
+                    _os.close(fd)
+                except OSError:
+                    pass
+        self.assertTrue(records)
+        forbidden, non = p10._classify_verdict_reads(records)
+        self.assertTrue(forbidden or non)
+        with mock.patch.object(p10, "_classify_verdict_reads",
+                               return_value=([], [])):
+            self.assertEqual(p10._classify_verdict_reads(records), ([], []))
+
+
 class P10WholeGate(unittest.TestCase):
     def test_all_p10_invariants_hold(self):
         ok, results = p10.run_all()

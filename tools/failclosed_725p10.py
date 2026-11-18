@@ -285,6 +285,41 @@ def _repo_relative(path_str: str) -> str | None:
         return None
 
 
+def _is_failclosed_marker(path_str: str) -> bool:
+    """True for audit-internal fail-closed placeholders (never excused)."""
+    return path_str.startswith("<") and path_str.endswith(">")
+
+
+def _is_ancestor_of_root(canonical: str) -> bool:
+    """True only for ancestor directories of ROOT hit by resolve (excused).
+
+    pathlib ``resolve()``/``realpath()`` stats ancestor directories via
+    ``os.stat``/``os.lstat`` (e.g. ``/tmp`` when ROOT is
+    ``/tmp/<worktree>``). Those ancestor stats are OS/resolve noise, not
+    verdict inputs: their existence is trivially true and carries no
+    attacker-controlled signal. Only exact ancestor directories are
+    excused (directory-boundary prefix match, ``/`` handled explicitly);
+    every other outside-ROOT existence check — including sibling temp
+    files, stdlib paths and explicit ``/tmp``-style verdict probes that
+    are not ancestors — stays fail-closed. Markers (``<...>``) are never
+    ancestors.
+    """
+    try:
+        if not isinstance(canonical, str):
+            return False
+        if _is_failclosed_marker(canonical):
+            return False
+        root_resolved = os.path.realpath(str(ROOT.resolve()))
+        canon = os.path.realpath(canonical)
+        if canon == "/":
+            return True
+        if root_resolved == canon:
+            return True
+        return root_resolved.startswith(canon.rstrip("/") + "/")
+    except (OSError, ValueError, TypeError):
+        return False
+
+
 def _audit_verdict_reads(loader) -> list[tuple[str, str]]:
     """Record content-read and existence-check paths during loader().
 
@@ -394,12 +429,17 @@ def _audit_verdict_reads(loader) -> list[tuple[str, str]]:
         # dir_fd redirects relative paths to another directory; the recorded
         # path string alone cannot identify the real target (FD lifetime,
         # reuse and platform differences make safe resolution unreliable
-        # here), so any non-default dir_fd is fail-closed. The call itself
-        # still delegates unchanged: behavior is observed, never altered,
-        # and no extra file is opened for classification.
+        # here), so any non-default dir_fd is fail-closed. An int fd is
+        # likewise unresolvable to a path: fail closed with a fixed marker
+        # (no fd number or path leaks). The call itself still delegates
+        # unchanged: behavior is observed, never altered, and no extra file
+        # is opened for classification.
         if kwargs.get("dir_fd", None) is not None:
             records.append(("read", "<dir_fd-relative-path>"))
-        _record("read", path)
+        if isinstance(path, int):
+            records.append(("read", "<int-fd-read>"))
+        else:
+            _record("read", path)
         return orig_os_open(path, *args, **kwargs)
 
     def _dir_fd_present(kwargs):
@@ -410,15 +450,31 @@ def _audit_verdict_reads(loader) -> list[tuple[str, str]]:
         return kwargs.get("dir_fd", None) is not None
 
     def _os_stat(path, *args, **kwargs):
+        # An int fd (os.stat(fd) is valid on Linux/Python) is unresolvable
+        # to a repo path: fail closed with a fixed marker that carries no
+        # fd number and no absolute path. The call still delegates unchanged
+        # (return value, errors and dir_fd/follow_symlinks handling
+        # preserved); the marker is recorded before delegation so even a
+        # raising call (e.g. unsupported fd on some platforms) is flagged.
         if _dir_fd_present(kwargs):
             records.append(("stat", "<dir_fd-relative-stat>"))
-        _record("stat", path)
+        if isinstance(path, int):
+            records.append(("stat", "<int-fd-stat>"))
+        else:
+            _record("stat", path)
         return orig_os_stat(path, *args, **kwargs)
 
     def _os_lstat(path, *args, **kwargs):
+        # os.lstat(int) raises TypeError on CPython (fd has no symlink),
+        # but an attempted fd call must still be audited, not silently
+        # ignored: record the same fixed marker before delegating so the
+        # attempt is fail-closed even when the caller catches the error.
         if _dir_fd_present(kwargs):
             records.append(("stat", "<dir_fd-relative-stat>"))
-        _record("stat", path)
+        if isinstance(path, int):
+            records.append(("stat", "<int-fd-stat>"))
+        else:
+            _record("stat", path)
         return orig_os_lstat(path, *args, **kwargs)
 
     def _exists(self, *args, **kwargs):
@@ -464,20 +520,37 @@ def _audit_verdict_reads(loader) -> list[tuple[str, str]]:
 def _classify_verdict_reads(records: list[tuple[str, str]]) -> tuple[list[str], list[str]]:
     """Split audit records into (forbidden, non-allowlisted) hits.
 
-    Order matters: forbidden components are checked FIRST on both the raw
-    and the canonical (symlink-resolved) path, so docs/policy.py or a
-    symlink landing under docs//rom//build/ can never be laundered through
-    a code exemption. The code exemption is restricted to canonical known
-    module sources (tools/ .py/.pyc/__pycache__). Content reads outside the
-    canonical repository allowlist are refused (fail closed); outside-ROOT
-    stat hits are OS/resolve noise and ignored. Stat hits on
-    ALLOWLISTED_STAT_EXCEPTIONS (docs provenance pointers that fail closed
-    on absence) are explicitly excused. No absolute filesystem path ever
-    appears in a message: outside-ROOT hits name only the component.
+    Order matters: fail-closed markers (``<...>``) are refused FIRST,
+    CWD-independently, so a marker can never be laundered through a
+    canonical path that happens to fall inside ROOT. Forbidden components
+    are checked SECOND on both the raw and the canonical
+    (symlink-resolved) path, so docs/policy.py or a symlink landing under
+    docs//rom//build/ can never be laundered through a code exemption.
+    The code exemption is restricted to canonical known module sources
+    (tools/ .py/.pyc/__pycache__). Content reads outside the canonical
+    repository allowlist are refused (fail closed); outside-ROOT existence
+    checks are fail-closed except for the narrow resolve-noise excuse
+    (ancestor directories of ROOT hit by ``pathlib.resolve``/``realpath``
+    via ``os.stat``/``os.lstat``). Stat hits on ALLOWLISTED_STAT_EXCEPTIONS
+    (docs provenance pointers that fail closed on absence) are explicitly
+    excused. No absolute filesystem path, fd number or exception detail
+    ever appears in a message: outside-ROOT hits use fixed strings with
+    only the component or marker name.
     """
     forbidden: list[str] = []
     non_allowlisted: list[str] = []
     for kind, path_str in records:
+        # 0. Fail-closed markers FIRST (CWD-independent, never excused).
+        # Covers <custom-opener>, <int-fd-read>, <int-fd-stat>,
+        # <dir_fd-relative-path>, <dir_fd-relative-stat>,
+        # <unresolvable-path>, <undecodable-bytes-path>,
+        # <unrecordable-path>. The marker name itself is safe (no path,
+        # no fd number); the message keeps the marker substring so
+        # detector-sensitivity tests ("int-fd", "dir_fd",
+        # "custom-opener") keep working.
+        if _is_failclosed_marker(path_str):
+            non_allowlisted.append(f"{kind} fail-closed marker {path_str!r} (refused)")
+            continue
         canonical = _canonical(path_str)
         # 1. Forbidden FIRST: raw path and symlink-resolved target alike.
         # A symlink under an allowlisted prefix that lands outside (or under
@@ -508,11 +581,24 @@ def _classify_verdict_reads(records: list[tuple[str, str]]) -> tuple[list[str], 
         # Suffix alone never exempts (docs/policy.py stays forbidden above).
         if _is_known_module_source(canon_rel):
             continue
-        # 3. Outside-ROOT stat is OS/resolve noise (ancestor dirs, stdlib);
-        # content reads outside the canonical allowlist are refused.
+        # 3. Outside-ROOT: content reads refused; existence checks are
+        # fail-closed except for narrow resolve-noise ancestors.
+        # Previously all outside-ROOT stat was ignored (false GREEN for
+        # verdict-relevant external existence checks). Now only ancestor
+        # directories of ROOT (hit by pathlib resolve/realpath via
+        # os.stat/os.lstat) are excused; every other external stat —
+        # sibling temp files, stdlib paths, explicit /tmp probes — is
+        # refused with a fixed message (no path leak). Resolution failures
+        # (canonical is None) are also refused.
         if canon_rel is None:
             if kind == "read":
                 non_allowlisted.append(f"{kind} content read outside repository allowlist")
+            else:
+                if canonical is not None and _is_ancestor_of_root(canonical):
+                    continue
+                non_allowlisted.append(
+                    f"{kind} external existence check outside repository allowlist (refused)"
+                )
             continue
         if canon_rel == ".":
             # The repo root itself carries no verdict data: validators resolve
@@ -556,11 +642,13 @@ def check_synthetic_host_docs_non_promotion() -> list[str]:
     recorded at call time (catching direct, dynamically built and
     helper-indirected paths on every occurrence) and must contain no
     forbidden docs//build//rom//test-result input while every
-    canonically-resolved data read stays allowlisted. Reads are recorded
+    canonically-resolved data read stays allowlisted and every
+    outside-ROOT existence check is fail-closed except narrow
+    resolve-noise ancestors. Reads are recorded
     with their call-time canonical location, so a later chdir cannot
     re-target them; non-default os.stat/os.lstat dir_fd, custom openers
-    (keyword or positional) and unresolvable int-fd opens are fail-closed
-    markers, never silently allowed. Scope: the audit
+    (keyword or positional), int-fd opens/stats and unresolvable paths are
+    fail-closed markers, never silently allowed. Scope: the audit
     covers only the executed path through the monitored APIs — preopened-FD
     reads, mmap, subprocess reads, directory enumeration, unexecuted future
     code paths and OS traffic outside the monitored set are not observed,

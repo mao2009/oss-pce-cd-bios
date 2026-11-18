@@ -35,7 +35,7 @@ Ran (host-only, synthetic fixtures only, no cc65 required for this gate):
 * `python3 tools/failclosed_gate.py --check` → exit 0, 8/8 PASS.
 * `python3 tools/failclosed_725p10.py --check` → exit 0, 3/3 PASS.
 * `python3 -m unittest discover -s tests/host -p 'test_725*'` → all PASS
-  (base 23 + P10 55).
+  (base 23 + P10 67 = 90).
 * `python3 tools/reference_jsr_gate.py --check` → exit 3 (BLOCKED convention),
   `BLOCKED: reference JSR execution gate closed for 81/81 slots; jsr_count=0`.
 * `python3 tools/build_rom.py --release-gate` → exit 3,
@@ -43,6 +43,9 @@ Ran (host-only, synthetic fixtures only, no cc65 required for this gate):
 * `python3 tools/abi1_reference_review.py --check` → exit 0 (18 DEV, 0 VERIFIED).
 * `python3 tools/hw_observation_ledger.py` (via P10-C) → PASS (1 BLOCKED entry,
   `callee_abi` UNVERIFIED).
+* `make test` → 5697 tests OK (skipped=4, expected failures=3).
+* `make check` → PASS (C3 `BLOCKED`/`NOT_STATIC` is the expected UNDECIDED verdict).
+* `git diff --check` → clean.
 * `make release` (only after the static contract proved the recipe is the
   harmless `echo BLOCKED + exit 1` stub) → non-zero with BLOCKED on stderr.
   The gate itself never executes this recipe.
@@ -89,7 +92,7 @@ ledger writes, no unlock input):
   UNKNOWN/SOURCE_SUPPORTED, verification NOT_RUN, contract statuses
   UNKNOWN/HYPOTHESIS/BLOCKED.
 
-New tests `tests/host/test_725_p10_failclosed.py` (55 tests, host-only):
+New tests `tests/host/test_725_p10_failclosed.py` (67 tests, host-only):
 
 * GREEN on the committed tree for all three P10 checks plus base-gate
   regression and CLI `--check` (exit 0).
@@ -146,9 +149,141 @@ committed tree is GREEN (all gates pass). Mutants are never committed.
 | neutered detector (always-[]) | RED mutant tests FAIL | load-bearing proven (sensitivity test) |
 | `is_execution_permitted("SYNTHETIC PASS" / "host PASS" / "DOC_ONLY" / …)` | `False` for every look-alike | RED detected (all refused) |
 | Makefile `release:` stub broken (covered by base gate) | `release_makefile_guard` reports reasons | RED detected (base gate, not duplicated here) |
-| Committed tree: base 8/8 + P10 3/3 + host 78 tests (P10 55 + base 23) | exit 0, `release_eligible=false`, JSR 0/81 | GREEN |
+| external `os.stat`/`Path.exists`/`is_file`/`stat`/`lstat` on temp outside-ROOT file (old: ignored as noise) | `stat external existence check outside repository allowlist (refused)` | RED detected (`test_external_stat_refused`, `test_external_exists_refused`) |
+| external `os.stat` bytes / PathLike on temp outside-ROOT file | `outside repository allowlist (refused)` | RED detected |
+| `os.stat(int_fd)` / `os.lstat(int_fd)` on temp dummy fd (old `_record` dropped `int`) | `stat fail-closed marker '<int-fd-stat>' (refused)` | RED detected (`test_int_fd_stat_refused`, `test_int_fd_lstat_attempt_refused`) |
+| `os.open(int_fd)` attempted (invalid path kind) | `read fail-closed marker '<int-fd-read>' (refused)` | RED detected |
+| Committed tree: base 8/8 + P10 3/3 + host 90 tests (P10 67 + base 23) | exit 0, `release_eligible=false`, JSR 0/81 | GREEN |
 
-## 5. Future unlock procedure (independent review + Owner re-approval required)
+## 5. MEDIUM-1 / MEDIUM-2 final fixes (this push)
+
+Base HEAD: `ce83d62bb9727add0766e2c40ddea1180c411c63` (PR #808). Main HEAD at
+verification: `2ef4eb6baa16236c46a4d7b664c18e721c585776` (merge-base
+`0f7a3257`). No rebase/amend/reset; normal commit + normal push only.
+
+### MEDIUM-1 — external stat false GREEN
+
+* Cause: `_classify_verdict_reads` did `if canon_rel is None: if kind ==
+  "read": refuse; continue`. Every outside-ROOT `stat` (including
+  verdict-relevant `os.stat("/tmp/…")`, `Path("/tmp/…").exists()` /
+  `is_file()` / `stat()`, `os.lstat`) was unconditionally ignored as
+  "OS/resolve noise". Reproduction with temp-only dummies showed 1–3
+  records per external existence check yet `(forbidden, non_allowlisted) ==
+  ([], [])` (false GREEN).
+* Fix: outside-ROOT `stat` is now fail-closed except for the narrow
+  resolve-noise excuse. Markers (`<…>`) are refused first,
+  CWD-independently. Forbidden components are still checked first on raw
+  + canonical paths. Then `_is_ancestor_of_root(canonical)` excuses only
+  exact ancestor directories of `ROOT` hit by `pathlib.resolve`/`realpath`
+  via `os.stat`/`os.lstat` (e.g. `/tmp` when `ROOT` is `/tmp/<worktree>`;
+  `/` handled explicitly; directory-boundary prefix match). Every other
+  external existence check — sibling temp files, stdlib paths, explicit
+  `/tmp` probes that are not ancestors — is refused with the fixed message
+  `stat external existence check outside repository allowlist (refused)`
+  (no absolute path, no fd, no exception detail). Resolution failures
+  (`canonical is None`) are also refused.
+* Safety of the exception: ancestor existence is trivially true and carries
+  no attacker-controlled signal; the committed tree records exactly two
+  such stats (`lstat("/tmp")` ×2 from `hw_observation_ledger._is_repo_file`
+  `resolve()`), both excused, so no false RED. The pre-existing
+  `ALLOWLISTED_STAT_EXCEPTIONS` (`docs/cd-reset-contract.md` plus its
+  parent-dir stats) is unchanged and still checked before the code
+  exemption. Content reads outside ROOT stay refused as before.
+* RED→GREEN: `test_external_stat_refused` (`os.stat` on temp
+  `external_probe.json`), `test_external_exists_refused` (`exists` /
+  `is_file` / `stat` / `lstat` on temp `external_flag.json`), plus bytes /
+  PathLike variants, all RED via the production audit + classifier; detector
+  neutered (`_classify` → `([], [])`) goes GREEN (sensitivity proven).
+  Control `test_external_stat_control_green` (committed tree + `check_…`
+  still `[]`) stays GREEN.
+
+### MEDIUM-2 — `os.stat(int_fd)` audit gap
+
+* Cause: `_record` did `if not isinstance(value, (str, PathLike)): return`,
+  so an `int` fd left no record; `_os_stat`/`_os_lstat` called `_record`
+  unconditionally. `os.stat(fd)` is valid on this Python/Linux (verified
+  `st_size == 6` on a temp dummy) yet produced zero records → false GREEN.
+  `os.lstat(fd)` raises `TypeError` (no symlink for an fd) and likewise
+  left no record.
+* Fix: `_os_stat` / `_os_lstat` (and `_os_open` for completeness) detect
+  `isinstance(path, int)` before `_record` and append the fixed marker
+  `<int-fd-stat>` (`stat`) / `<int-fd-read>` (`os.open`) before delegating.
+  No fd number or path in the message (`stat fail-closed marker
+  '<int-fd-stat>' (refused)`). Original return value, `dir_fd` /
+  `follow_symlinks` passthrough, raised errors and patch restoration
+  (normal + exceptional exit) are preserved. The classifier refuses markers
+  first, so CWD can never launder them through an inside-ROOT canonical
+  path. `os.lstat(int)` is recorded even though it raises, so a caught
+  attempt is still flagged and never mistaken for a bypass.
+* RED→GREEN: `test_int_fd_stat_refused` (real `os.stat(fd)` works, then
+  audited `os.stat(fd)` → `int-fd` RED), `test_int_fd_lstat_attempt_refused`
+  (`lstat(fd)` raises `TypeError` yet audited attempt → `int-fd` RED),
+  `test_int_fd_stat_no_path_leak` (no tmp/home/fd-number leak),
+  `test_int_fd_stat_api_preserved_and_restored` (size passthrough,
+  restoration on normal + exceptional exit), `test_int_fd_open_regression`
+  (`builtins.open(int_fd)` + `io.open(int_fd)` still `int-fd` RED).
+  Detector neutered → GREEN (sensitivity proven). Control
+  `test_int_fd_stat_control_green` (`os.stat`/`lstat` on committed
+  `Makefile` without fd) stays GREEN.
+
+### Related-path sweep (same audit scope only)
+
+Checked and still RED-or-GREEN as appropriate (temp dummies, production
+classifier): `os.open`/`os.stat`/`os.lstat`, `Path.open`/`stat`/`exists` /
+`is_file`, `builtins.open`/`io.open`, `dir_fd` (stat + open), custom opener
+(keyword + 8th-arg positional), int fd, relative paths, CWD change,
+bytes, PathLike, symlink (raw vs canonical forbidden), symlink escape
+(patched-ROOT), provenance-pointer exception, error paths + patch
+restoration, absolute-path/fd/secret leak checks. No change to
+out-of-scope APIs: preopened-fd `os.read`, `mmap`, `subprocess`,
+directory enumeration, unexecuted paths and OS traffic outside the
+monitored set are not observed and are not claimed as verified (documented
+scope in `check_synthetic_host_docs_non_promotion`).
+
+### Monitored vs out-of-scope
+
+Monitored (patched only inside the audit window, restored after):
+`Path.read_text`/`read_bytes`/`open`/`exists`/`is_file`/`stat`,
+`builtins.open`, `io.open`, `os.open`/`stat`/`lstat`. Out of scope (never
+claimed): preopened-fd reads, `mmap`, `subprocess`, directory enumeration,
+unexecuted future code paths, OS traffic outside the monitored set.
+
+### Tests (exact)
+
+* Base `test_725_failclosed.py`: 23 tests (unchanged, no deletion/skip).
+* P10 `test_725_p10_failclosed.py`: 67 tests (was 55, +12 new).
+  New: `test_external_stat_refused`, `test_external_exists_refused`,
+  `test_external_stat_control_green`,
+  `test_external_stat_bytes_and_pathlike_refused`,
+  `test_external_stat_detector_sensitive`, `test_int_fd_stat_refused`,
+  `test_int_fd_lstat_attempt_refused`, `test_int_fd_stat_control_green`,
+  `test_int_fd_stat_no_path_leak`,
+  `test_int_fd_stat_api_preserved_and_restored`,
+  `test_int_fd_open_regression`, `test_int_fd_stat_detector_sensitive`.
+* Total `test_725*`: 90 tests, all PASS. Full `make test`: 5697 tests OK
+  (skipped=4, expected failures=3).
+
+### Safety gates (unchanged, not relaxed)
+
+`release_eligible=false` (all ledgers), reference JSR permitted 0/81
+(`BLOCKED`, exit 3), genuine ABI `VERIFIED` 0/81, `DEV_CALLABLE` 0,
+Owner-approved 0, C3 allowlist `UNDECIDED`/`VERIFICATION_DESIGN_ONLY`,
+`make release` `BLOCKED`, no SIMULATED/synthetic/`DEV_EXPERIMENTAL`
+promotion to genuine ABI, `release`/`JSR`/genuine-ABI gates untouched.
+
+### Verification HEAD / CI
+
+* PR #808 branch `mao2009/safety-473-p10-release-gate-fail-closed`, base
+  `ce83d62b`, main `2ef4eb6b`, merge-base `0f7a3257` (no HEAD drift at
+  start).
+* This push: code + tests + docs in normal commit(s) on the PR branch;
+  `verify-full` (Required) result and final HEAD/CI SHA are reported in the
+  PR / final report. `reference_jsr_gate` and `build_rom --release-gate`
+  `BLOCKED` (exit 3) is the expected closed verdict, not a failure.
+  Real-core full runs: NOT_RUN here (host-only claim); never confused
+  with CI results.
+
+## 6. Future unlock procedure (independent review + Owner re-approval required)
 
 No unlock is approved by this issue. If a future release is ever proposed,
 all of the following are required, in a separate Issue and separate Draft PR
@@ -175,7 +310,7 @@ Until every step above is completed and merged, `release_eligible` stays
 false, `make release` stays BLOCKED, and any PR that lifts the gate without
 them must be refused.
 
-## 6. Provenance
+## 7. Provenance
 
 New files added by this P10 verification: `tools/failclosed_725p10.py`,
 `tests/host/test_725_p10_failclosed.py`, `docs/725-p10-release-gate-verification.md`.
