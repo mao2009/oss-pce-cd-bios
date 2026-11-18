@@ -2,13 +2,19 @@
 ; NOT a compatible System Card BIOS. NOT the genuine CD_READ ABI. NOT release eligible.
 ; NOT DEV_CALLABLE as a formal BIOS service. Experimental helper only, assembled
 ; into a custom experimental image's BOOT bank or into a synthetic test payload
-; (segment-agnostic body; no BOOT-only dependency), never into the normal DEV ROM
-; and never via a BIOS slot/vector. Genuine CD_BASE/CD_READ ABI UNKNOWN/BLOCKED.
+; (segment-agnostic body; no BOOT-only dependency), never into the normal DEV ROM.
+; Connection method (NIT-1 clarification): the experimental ROM's builder JMPs
+; the API-table $E009 entry at the routine (experimental wiring only, not a
+; genuine BIOS slot service); the synthetic payload instead calls the routine
+; by direct JSR to its linked address. Neither connection makes this a genuine
+; ABI: genuine CD_BASE/CD_READ ABI stays UNKNOWN/BLOCKED.
 ;
 ; EXPERIMENTAL contract CD_READ_COMMERCIAL_V1 (synthetic media + opt-in commercial
 ; observation only, pinned core only; FIRST commercial mode only):
-;   Entry: JSR cd_read_commercial_entry (direct JSR by address; NOT a BIOS slot
-;     entry). RTS returns.
+;   Entry: JSR cd_read_commercial_entry (direct JSR by address in synthetic
+;     payloads; the experimental ROM instead reaches it via a JMP from the
+;     $E009 table entry -- experimental wiring, NOT a genuine BIOS slot
+;     service). RTS returns.
 ;   Preconditions: MPR1=$F8 (work RAM $2000-$3FFF), stack in work RAM, IRQs masked
 ;     by the caller (same discipline as the experimental loader/payload), MPRs already
 ;     set to EXPECTED_MPR by the bootloader (this routine performs no TAM).

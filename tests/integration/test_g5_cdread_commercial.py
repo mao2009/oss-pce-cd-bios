@@ -298,6 +298,16 @@ class CdReadCommercialSynthetic(unittest.TestCase):
         at = lba * self.RAW_BYTES + self.USER_OFFSET
         return list(raw[at:at + 2048])
 
+    def _check_full(self, got, exp, tag):
+        """Shared full-2048B comparison (normal + mutation paths).
+
+        Compares the whole transfer window [800,000) with no exclusions.
+        Normal tests and the c24 corruption mutant use this same function, so
+        detection strength is proven on the production path, not a copy.
+        (The old [0:1920]+[2016:2048] split was blind at offset 1950 and is
+        gone; c24 pins head/middle/old-excluded/tail detection.)"""
+        self.assertEqual(list(got)[:2048], list(exp)[:2048], tag)
+
     def test_c01_valid_block0_memcmp(self):
         rec = self._run("c01", self._comm_regs(0))
         cold, warm = self._buf(rec)
@@ -322,7 +332,7 @@ class CdReadCommercialSynthetic(unittest.TestCase):
         got = list(cold[0x000:0x800])[:2048]
         # Full 2048B memcmp: the transfer window [$2800,$3000) is pristine
         # (all result recording moved to the linker res_base block).
-        self.assertEqual(list(got[0:2048]), list(exp[0:2048]))
+        self._check_full(got, exp, "c01 full-2048")
 
     def test_c02_valid_block1_distinct(self):
         rec = self._run("c02", self._comm_regs(1))
@@ -332,7 +342,7 @@ class CdReadCommercialSynthetic(unittest.TestCase):
         self.assertEqual(tuple(r["cres"][7:10]), (0, 1, 10))
         exp = self._expected_frame("c02", 0x10A)
         got2 = list(cold[0:2048])
-        self.assertEqual(list(got2[0:2048]), list(exp[0:2048]))
+        self._check_full(got2, exp, "c02 full-2048")
         exp0 = self._expected_frame("c02", 0x109)
         self.assertNotEqual(exp, exp0)  # distinct sectors
 
@@ -346,7 +356,7 @@ class CdReadCommercialSynthetic(unittest.TestCase):
         self.assertEqual(r["mpr_pre"], r["mpr_post"])
         exp = self._expected_frame("c03", 0x119)
         got3 = list(cold[0:2048])
-        self.assertEqual(list(got3[0:2048]), list(exp[0:2048]))
+        self._check_full(got3, exp, "c03 full-2048")
 
     def test_c03ctrl_control_reports_after(self):
         # Control ROM (link V1 $03, $20F2 block): win+16 is AFTER ($64),
@@ -431,7 +441,7 @@ class CdReadCommercialSynthetic(unittest.TestCase):
         self.assertEqual(tuple(r["cres"][7:10]), (0, 1, 9))
         exp = self._expected_frame("c09", 0x109)
         got9 = list(cold[0:2048])
-        self.assertEqual(list(got9[0:2048]), list(exp[0:2048]))
+        self._check_full(got9, exp, "c09 full-2048")
 
     def test_c10_cold_warm_and_2base_link(self):
         rec = self._run("c10", self._comm_regs(2))
@@ -496,7 +506,7 @@ class CdReadCommercialSynthetic(unittest.TestCase):
         self.assertEqual(r["mpr_pre"], r["mpr_post"])
         exp = self._expected_frame("c14", 0x109)
         got = list(cold[0:2048])
-        self.assertEqual(list(got[0:2048]), list(exp[0:2048]))
+        self._check_full(got, exp, "c14 full-2048")
 
     def test_c15_mpr_tamper_detected(self):
         # Mutant: tamper MPR3 after the call but before the post-call snapshot
@@ -629,34 +639,71 @@ class CdReadCommercialSynthetic(unittest.TestCase):
         self.assertEqual(r["stlast"], 0)
 
     def test_c24_full_memcmp_detects_corruption(self):
-        # P2: the full 2048B transfer window is compared (no exclusions).
-        # Corrupting head/middle/old-excluded-range/tail must each be detected
-        # (proves the old $2F80-$2FDF exclusion is gone, not just moved).
+        # LOW-1: the full 2048B transfer window is compared (no exclusions)
+        # through the SHARED _check_full path. Corruption is injected into a
+        # copy of the OBSERVED buffer (not the expected frame), and the same
+        # production comparison function must PASS the clean copy and FAIL
+        # each corrupted copy. Positions: head/middle/old-excluded/tail.
+        # (The old [0:1920]+[2016:2048] split was blind at offset 1950: an
+        # old-style split compare of the corrupted copy would still PASS.)
         rec = self._run("c24", self._comm_regs(0))
-        cold, _ = self._buf(rec)
+        cold, warm = self._buf(rec)
         r = self._res(cold)
         self.assertEqual(r["a"], 0)
         exp = self._expected_frame("c24", 0x109)
-        got = list(cold[0:2048])
-        self.assertEqual(got, exp)
-        for pos, tag in ((0, "head"), (1000, "middle"),
-                         (1950, "old-excluded"), (2047, "tail")):
-            bad = list(exp)
-            bad[pos] ^= 0xFF
-            self.assertNotEqual(got, bad, tag)
+        for cyc, buf in (("cold", cold), ("warm", warm)):
+            got = list(buf[0:2048])
+            self._check_full(got, exp, f"c24 clean {cyc}")
+            for pos, tag in ((0, "head"), (1000, "middle"),
+                             (1950, "old-excluded"), (2047, "tail")):
+                bad = list(got)
+                bad[pos] ^= 0xFF
+                with self.assertRaises(AssertionError, msg=f"{tag} {cyc}"):
+                    self._check_full(bad, exp, f"c24 corrupt {tag} {cyc}")
 
     def test_c25_dh_classifier_local_bytes(self):
-        # P2: probe classifies slot-3 _dh=0 as LOCAL_BYTES (was ZERO,
-        # contradicting the implemented FIRST/LOCAL-bytes mode) and
-        # unverified _dh=1 as OTHER (was LOCAL, implying a confirmed mode
-        # the routine actually refuses $65).
-        rec = self._run("c25a", self._comm_regs(0), via_table=True)
+        # MEDIUM-1: probe classifies slot-3 _dh by epistemic status, never
+        # over-claiming. _dh=0 LOCAL_BYTES (implemented+verified); _dh=3/6
+        # BANK_CANDIDATE (caller-observed, callee unconfirmed); _dh=$FE/$FF
+        # VRAM_CANDIDATE (caller HYPOTHESIS, callee refuses); _dh=1/2/4/5
+        # OTHER (UNKNOWN meaning, never a confirmed mode). Old probe said
+        # ZERO/LOCAL/BANK/VRAM (RED); new probe says the below (GREEN).
+        cases = [
+            (0x00, "LOCAL_BYTES"), (0x01, "OTHER"), (0x02, "OTHER"),
+            (0x03, "BANK_CANDIDATE"), (0x04, "OTHER"), (0x05, "OTHER"),
+            (0x06, "BANK_CANDIDATE"),
+            (0xFE, "VRAM_CANDIDATE"), (0xFF, "VRAM_CANDIDATE"),
+        ]
+        for dh, want in cases:
+            rec = self._run(f"c25_{dh:02X}", self._comm_regs(0, mode=dh),
+                            via_table=True)
+            calls = [c for c in rec["APICALL"]
+                     if c["cycle"] == "cold" and c["slot"] == 3]
+            self.assertTrue(calls, f"dh={dh:#04x}")
+            self.assertEqual(calls[0]["addr_mode"], want, f"dh={dh:#04x}")
+        # Count unit known (bytes) only for _dh=0: SINGLE/MULTI there;
+        # UNKNOWN elsewhere (sz==0 needs no unit and stays ZERO).
+        rec = self._run("c25c", self._comm_regs(0), via_table=True)
+        calls = [c for c in rec["APICALL"]
+                 if c["cycle"] == "cold" and c["slot"] == 3]
+        self.assertEqual(calls[0]["cl_mode"], "SINGLE")
+        rec = self._run("c25d", self._comm_regs(0, mode=3), via_table=True)
+        calls = [c for c in rec["APICALL"]
+                 if c["cycle"] == "cold" and c["slot"] == 3]
+        self.assertEqual(calls[0]["cl_mode"], "UNKNOWN")
+        self.assertEqual(calls[0]["addr_mode"], "BANK_CANDIDATE")
+
+    def test_c26_slot03_fields_unknown(self):
+        # MEDIUM-2: slot03 must not reuse slot02 meanings. track_bcd /
+        # reserved_z / base_hi_ok are UNKNOWN (old probe stored slot03
+        # dest/size range facts in them: RED). Slot02 meanings unchanged
+        # (track path still yields track_bcd true/false + base_hi_ok).
+        rec = self._run("c26a", self._comm_regs(0), via_table=True)
         calls = [c for c in rec["APICALL"]
                  if c["cycle"] == "cold" and c["slot"] == 3]
         self.assertTrue(calls)
-        self.assertEqual(calls[0]["addr_mode"], "LOCAL_BYTES")
-        rec = self._run("c25b", self._comm_regs(0, mode=1), via_table=True)
-        calls = [c for c in rec["APICALL"]
-                 if c["cycle"] == "cold" and c["slot"] == 3]
-        self.assertTrue(calls)
-        self.assertEqual(calls[0]["addr_mode"], "OTHER")
+        self.assertEqual(calls[0]["track_bcd"], "UNKNOWN")
+        self.assertEqual(calls[0]["reserved_z"], "UNKNOWN")
+        self.assertEqual(calls[0]["base_hi_ok"], "UNKNOWN")
+        # ch_mode stays a pure dest-range fact (WRAM for $2800).
+        self.assertEqual(calls[0]["ch_mode"], "WRAM")
