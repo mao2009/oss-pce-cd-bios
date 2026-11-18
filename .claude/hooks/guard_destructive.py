@@ -100,8 +100,8 @@ PIPE_BOUND = "\x02|"
 # position `{` opens a group (mid-word `{a,b}` stays literal, so brace
 # expansion words keep their current validation). A stray `}` with no open
 # group stays an ordinary word, as before.
-BBRACE_OPEN = "\x02{"
-BBRACE_CLOSE = "\x02}"
+BBRACE_OPEN = "\x02b{"
+BBRACE_CLOSE = "\x02b}"
 # A PowerShell scriptblock boundary: `& { ... }` and other `{ ... }` groups
 # run their location-changing commands in a child scope, so the caller cwd
 # is restored at the close. PowerShell `(...)` grouping is the opposite:

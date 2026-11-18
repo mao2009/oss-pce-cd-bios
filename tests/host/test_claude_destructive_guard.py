@@ -4385,6 +4385,14 @@ class ChainRulePieceDTests(unittest.TestCase):
                                        tool="PowerShell")
         self.assertEqual(verdict, "DENY", reason)
         self.assertTrue(reason.startswith("rm-outside-repo"), reason)
+        # A scriptblock body is a child scope: the location change never
+        # reaches the caller, so the later removal is judged in the repo.
+        # `if` bodies are conservatively scoped too (fail closed when the
+        # branch is conditional).
+        verdict, reason = self._decide("if ($c) { Set-Location sub }; Remove-Item ../file.txt",
+                                       tool="PowerShell")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("rm-outside-repo"), reason)
 
     def test_powershell_call_scriptblock_stays_refused(self):
         # `& { ... }` is explicitly refused (fail closed): a runtime
@@ -4530,6 +4538,9 @@ class ChainRuleMutationTests(unittest.TestCase):
         "or-list treated as pipeline": (
             '                if nxt == "|":\n                    i += 1  # consume ||: no scope boundary',
             '                if nxt == "|":\n                    segs.append(PIPE_BOUND)  # mutant: || as pipeline\n                    redirs.append([])\n                    i += 1'),
+        "bash brace sentinel collides with ps": (
+            'BBRACE_OPEN = "\\x02b{"\nBBRACE_CLOSE = "\\x02b}"',
+            'BBRACE_OPEN = "\\x02{"\nBBRACE_CLOSE = "\\x02}"  # mutant: brace sentinels collide'),
     }
 
     # Each hook mutant must turn its expected ChainRulePieceDTests test RED
@@ -4569,6 +4580,7 @@ class ChainRuleMutationTests(unittest.TestCase):
         "bash subshell restore confused off": "test_subshell_cd_does_not_leak_to_parent",
         "pipeline over-taint": "test_pipeline_clean_stages_keep_allow",
         "or-list treated as pipeline": "test_or_list_keeps_calling_shell_cwd",
+        "bash brace sentinel collides with ps": "test_powershell_grouping_shares_runspace",
     }
 
     # Mutants of the detection helper itself (this test file, not the hook).
