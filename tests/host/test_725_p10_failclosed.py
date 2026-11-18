@@ -134,25 +134,15 @@ class P10SyntheticHostDocsNonPromotion(unittest.TestCase):
         self.assertIs(record["execution_permitted"], False)
         self.assertEqual(record["jsr_count"], 0)
 
-    def test_gate_input_closure_no_docs_build_reads(self):
-        # The safety verdict must not depend on docs/, build/ or test-result
-        # artefacts: a docs-only merge or a host PASS artefact cannot change it.
-        for name in ("failclosed_gate.py", "failclosed_725p10.py",
-                     "reference_jsr_gate.py", "dev_implementations.py",
-                     "abi1_reference_review.py", "cdseek_safety_gate.py",
-                     "hw_observation_ledger.py"):
-            text = (ROOT / "tools" / name).read_text(encoding="utf-8")
-            # No file read of docs/, build/ outputs or private rom/ inputs.
-            for pattern in ('"docs/', "'docs/", '"build/', "'build/",
-                            '"./rom/', "'./rom/", '"rom/', "'rom/"):
-                idx = text.find(pattern)
-                if idx == -1:
-                    continue
-                window = text[max(0, idx - 300): idx + 300]
-                self.assertNotIn("read_text", window,
-                                 f"{name}: gate must not read {pattern}")
-                self.assertNotIn("open(", window,
-                                 f"{name}: gate must not open {pattern}")
+    def test_verdict_reads_are_closed_on_committed_tree(self):
+        # Runtime input closure over the actual verdict loads: no forbidden
+        # docs//build//rom//test-result input, every repo-relative data read
+        # allowlisted. Temp scaffolding outside ROOT is ignored unless it
+        # carries a forbidden component.
+        records = p10._audit_verdict_reads(p10._run_verdict_loads_for_audit)
+        forbidden, non_allowlisted = p10._classify_verdict_reads(records)
+        self.assertEqual(forbidden, [])
+        self.assertEqual(non_allowlisted, [])
 
     def test_docs_only_prose_cannot_promote(self):
         # Even a docs file claiming ALLOWED does not change the gate verdict,
@@ -209,11 +199,15 @@ class P10UnverifiedPersistence(unittest.TestCase):
         self.assertIsNone(allow.get("review_ref"))
 
     def test_c3_approved_mutant_is_refused_red(self):
+        # The production checker itself runs on the tampered ledger and must
+        # report the allowlist refusal (not a tautological assert).
         c3 = json.loads((ROOT / "spec" / "c3_static_contracts.json").read_text(encoding="utf-8"))
         tampered = copy.deepcopy(c3)
         tampered["production_allowlist"]["status"] = "APPROVED"
-        # The P10 predicate refuses anything but UNDECIDED.
-        self.assertNotEqual(tampered["production_allowlist"]["status"], "UNDECIDED")
+        problems = p10.check_unverified_persistence(c3_raw=tampered)
+        self.assertTrue(
+            any("c3 production_allowlist" in p and "UNDECIDED" in p for p in problems),
+            f"C3 APPROVED mutant must be refused by the production checker: {problems}")
 
     def test_api_contracts_axes_stay_unpromoted(self):
         contracts = json.loads((ROOT / "spec" / "api_contracts.json").read_text(encoding="utf-8"))
@@ -227,12 +221,147 @@ class P10UnverifiedPersistence(unittest.TestCase):
                               {"status": "NOT_RUN", "executed_callee": False, "evidence": []})
 
     def test_mapping_verified_mutant_is_refused_red(self):
+        # The production checker itself runs on the tampered ledger and must
+        # report the slot-specific mapping refusal (not a tautological assert).
         contracts = json.loads((ROOT / "spec" / "api_contracts.json").read_text(encoding="utf-8"))
         tampered = copy.deepcopy(contracts)
-        tampered["apis"][0]["mapping_status"] = "VERIFIED"
-        # The P10 predicate requires HYPOTHESIS for every slot.
-        bad = [a for a in tampered["apis"] if a.get("mapping_status") != "HYPOTHESIS"]
-        self.assertTrue(bad, "mapping VERIFIED mutant must be detected")
+        tampered["apis"][5]["mapping_status"] = "VERIFIED"
+        problems = p10.check_unverified_persistence(contracts_raw=tampered)
+        self.assertTrue(
+            any("slot 05" in p and "mapping_status must stay HYPOTHESIS" in p
+                for p in problems),
+            f"mapping VERIFIED mutant must be refused by the production checker: {problems}")
+
+    def test_injected_normal_data_is_green(self):
+        # False-GREEN prevention: explicitly injected normal data also passes,
+        # proving the seam feeds the production predicate (a seam that ignored
+        # injected data would still return [] here but fail the RED tests).
+        hardware_raw = json.loads((ROOT / "spec" / "hardware_observations.json").read_text(encoding="utf-8"))
+        c3_raw = json.loads((ROOT / "spec" / "c3_static_contracts.json").read_text(encoding="utf-8"))
+        contracts_raw = json.loads((ROOT / "spec" / "api_contracts.json").read_text(encoding="utf-8"))
+        self.assertEqual(
+            p10.check_unverified_persistence(
+                hardware_raw=hardware_raw, c3_raw=c3_raw, contracts_raw=contracts_raw), [])
+
+    def test_detector_is_sensitive_to_inputs(self):
+        # Load-bearing proof: the same production function returns [] for
+        # normal data and non-empty for mutated data. A neutered checker
+        # (always []) would FAIL the RED assertions above.
+        c3 = json.loads((ROOT / "spec" / "c3_static_contracts.json").read_text(encoding="utf-8"))
+        tampered = copy.deepcopy(c3)
+        tampered["production_allowlist"]["status"] = "APPROVED"
+        self.assertEqual(p10.check_unverified_persistence(c3_raw=c3), [])
+        self.assertNotEqual(p10.check_unverified_persistence(c3_raw=tampered), [])
+
+
+class P10InputClosureMutants(unittest.TestCase):
+    """Runtime audit must catch every forbidden-input read technique.
+
+    All mutants read temp-dummy files only (never ./rom/ or any real input
+    directory). Each mutant performs a real read inside the audit window and
+    asserts the audit flags it with the forbidden component.
+    """
+    def _audit_with_mutant(self, mutant):
+        def loader():
+            p10._run_verdict_loads_for_audit()
+            mutant()
+        records = p10._audit_verdict_reads(loader)
+        return p10._classify_verdict_reads(records)
+
+    def test_direct_docs_read_detected(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "docs" / "mutant.txt"
+            target.parent.mkdir(parents=True)
+            target.write_text("dummy")
+            forbidden, _ = self._audit_with_mutant(lambda: target.read_text(encoding="utf-8"))
+        self.assertTrue(any("'docs'" in f for f in forbidden), forbidden)
+
+    def test_dynamic_docs_path_read_detected(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            component = "do" + "cs"  # assembled at runtime; no literal "docs/"
+            target = Path(tmp) / component / "m.txt"
+            target.parent.mkdir(parents=True)
+            target.write_text("dummy")
+            def mutant():
+                Path(tmp, "do" + "cs", "m.txt").read_text(encoding="utf-8")
+            forbidden, _ = self._audit_with_mutant(mutant)
+        self.assertTrue(any("'docs'" in f for f in forbidden), forbidden)
+
+    def test_helper_indirected_read_detected(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "docs" / "helper.txt"
+            target.parent.mkdir(parents=True)
+            target.write_text("dummy")
+
+            def helper(path):
+                with open(path, encoding="utf-8") as stream:
+                    return stream.read()
+
+            forbidden, _ = self._audit_with_mutant(lambda: helper(str(target)))
+        self.assertTrue(any("'docs'" in f for f in forbidden), forbidden)
+
+    def test_build_artifact_read_detected(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "build" / "out.txt"
+            target.parent.mkdir(parents=True)
+            target.write_bytes(b"dummy")
+            forbidden, _ = self._audit_with_mutant(lambda: target.read_bytes())
+        self.assertTrue(any("'build'" in f for f in forbidden), forbidden)
+
+    def test_second_occurrence_read_detected(self):
+        # The old text scan inspected only the first match; the audit records
+        # every occurrence, so a forbidden 2nd read after allowlisted 1sts is
+        # still caught.
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "rom" / "m.bin"
+            target.parent.mkdir(parents=True)
+            target.write_bytes(b"dummy")
+
+            def mutant():
+                for _ in range(3):
+                    (ROOT / "spec" / "api_contracts.json").read_text(encoding="utf-8")
+                target.read_bytes()  # 4th read, forbidden
+
+            forbidden, _ = self._audit_with_mutant(mutant)
+        self.assertTrue(any("'rom'" in f for f in forbidden), forbidden)
+
+    def test_string_search_evasion_read_detected(self):
+        # No literal "rom", "open(" or "read_text" anywhere below: the
+        # callee and the path component are assembled at runtime inside the
+        # audit window, so a plain source-text scan cannot see them while the
+        # call-time audit still records the read.
+        import os as _os
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / ("r" + "om") / ("ev" + ".bin")
+            target.parent.mkdir(parents=True)
+            target.write_bytes(b"dummy")
+
+            def mutant():
+                reader = getattr(_os, "op" + "en")
+                comp = "r" + "om"
+                fd = reader(str(Path(tmp) / comp / ("ev" + ".bin")), _os.O_RDONLY)
+                try:
+                    _os.read(fd, 5)
+                finally:
+                    _os.close(fd)
+
+            forbidden, _ = self._audit_with_mutant(mutant)
+        self.assertTrue(any("'rom'" in f for f in forbidden), forbidden)
+
+    def test_audit_window_restores_patches(self):
+        # After the audit, normal reads work unpatched (no leakage).
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "plain.txt"
+            target.write_text("ok")
+            p10._audit_verdict_reads(p10._run_verdict_loads_for_audit)
+            self.assertEqual(target.read_text(encoding="utf-8"), "ok")
 
 
 class P10WholeGate(unittest.TestCase):

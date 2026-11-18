@@ -23,10 +23,10 @@ and no private `./rom/` input.
 | 3 | reference JSR 0/81 | `check_reference_jsr_closed` (81/81 closed, `jsr_count` 0, `cdseek` BLOCKED) | re-verified despite DEV success | 81/81 closed, `execution_permitted` false, `jsr_count` 0 |
 | 4 | DEV_EXPERIMENTAL success never becomes genuine ABI | `check_release_gate_refuses` (hypothetical-full 81/81 still refuses), `dev_validate` refuses VERIFIED | NEW `check_dev_success_without_promotion`: asserts 18 DEV overrides present with PROJECT_SPEC_ONLY/UNKNOWN yet `abi_verified` 0, `DEV_CALLABLE` 0, `reference_abi_verified` 0, JSR closed, full-override release still refused | 18 DEV overrides (incl. EX_JOYSNS/EX_SCRSIZ DEV_EXPERIMENTAL), 0 VERIFIED, 0 DEV_CALLABLE |
 | 5 | synthetic PASS never means release allowed | `check_promotion_negatives` (exact `"ALLOWED"` match, well-formed approval at most MATERIALS_COMPLETE) | NEW extended markers (`SYNTHETIC PASS`, `STATIC_OK`, `PROJECT_SPEC_ONLY`, …) + synthetic-evidence approval still non-ALLOWED | all refused |
-| 6 | host PASS alone never unlocks | `test_gate_has_no_unlock_path`, `test_release_gate_module_never_passes` | NEW input closure: gate reads only `spec/`, `Makefile`, `tools/`; no test-result/build reads | gate has no `write_text`, no `return "ALLOWED"` |
-| 7 | docs-only update never changes safety judgment | CI docs-only fast path disabled (full CI for every change) | NEW input closure proves docs-only cannot change verdict: gate sources contain no `docs/` reads; docs prose claiming ALLOWED still yields BLOCKED | gate input set has no `docs/` |
+| 6 | host PASS alone never unlocks | `test_gate_has_no_unlock_path`, `test_release_gate_module_never_passes` | NEW runtime audit: every verdict read recorded at call time; repo data reads stay within `spec/`+`Makefile`+`src/`; no test-result reads | gate has no `write_text`, no `return "ALLOWED"` |
+| 7 | docs-only update never changes safety judgment | CI docs-only fast path disabled (full CI for every change) | NEW runtime audit proves docs-only cannot change verdict: audited verdict reads contain no `docs/` content read; docs prose claiming ALLOWED still yields BLOCKED | audited reads contain no `docs/` content |
 | 8 | unverified stays UNKNOWN/BLOCKED | `ALLOWED_CONTRACT_STATUSES` + `verification NOT_RUN` + `execution BLOCKED` | NEW `check_unverified_persistence`: hardware ledger validates (no OBSERVED, `callee_abi` UNVERIFIED, BLOCKED/NOT_RUN), c3 allowlist UNDECIDED/DESIGN_ONLY, api_contracts mapping HYPOTHESIS / impl NOT_STARTED / provenance PENDING / confidence UNKNOWN-or-SOURCE_SUPPORTED / verification NOT_RUN | all persist |
-| 9 | negatives/mutations detect intentional destruction | Makefile evaluation-time / `.EXTRA_PREREQS` / dynamic-name mutants, ALLOWED ledger, `require_allowed` | NEW 8 RED mutants (see §4), all detected fail-closed | RED detected, committed tree GREEN |
+| 9 | negatives/mutations detect intentional destruction | Makefile evaluation-time / `.EXTRA_PREREQS` / dynamic-name mutants, ALLOWED ledger, `require_allowed` | NEW 16 RED mutants (see §4: 8 ledger/marker + 6 audit + C3/mapping via production checker + sensitivity), all detected fail-closed | RED detected, committed tree GREEN |
 
 ## 2. What ran (and what did not run)
 
@@ -71,10 +71,16 @@ ledger writes, no unlock input):
   `abi_verified` 0, `DEV_CALLABLE` 0, owner 0, `reference_abi_verified` 0,
   every override-present slot NOT_READY with PROJECT_SPEC_ONLY/UNKNOWN, JSR
   closed, hypothetical-full release still refused.
-* `p10-synthetic-host-docs-non-promotion`: gate input closure (no `docs/`,
-  `build/`, `rom/`, log or test-result reads near any file open), extended
-  marker refusal, synthetic-evidence approval still at most
-  MATERIALS_COMPLETE with `execution_permitted` false and `jsr_count` 0.
+* `p10-synthetic-host-docs-non-promotion`: runtime input-closure audit —
+  every content-read and existence-check performed by the verdict loads is
+  recorded at call time (direct, dynamically built and helper-indirected
+  paths, every occurrence), and no forbidden `docs/`/`build/`/`rom/`/log/
+  test-result input may appear while every repo-relative data read stays
+  within `spec/`+`Makefile`+`src/`; extended marker refusal;
+  synthetic-evidence approval still at most MATERIALS_COMPLETE with
+  `execution_permitted` false and `jsr_count` 0. Scope: `.py` code loads are
+  filtered (code, not data); one fail-closed docs provenance-pointer stat
+  (`docs/cd-reset-contract.md`, absence fails closed) is excused.
 * `p10-unverified-persistence`: `hw_observation_ledger.validate_ledger`
   passes, `callee_abi` UNVERIFIED, entries BLOCKED/NOT_RUN with
   NOT_MEASURED trust; c3 status DESIGN_ONLY with allowlist UNDECIDED and
@@ -83,19 +89,27 @@ ledger writes, no unlock input):
   UNKNOWN/SOURCE_SUPPORTED, verification NOT_RUN, contract statuses
   UNKNOWN/HYPOTHESIS/BLOCKED.
 
-New tests `tests/host/test_725_p10_failclosed.py` (22 tests, host-only):
+New tests `tests/host/test_725_p10_failclosed.py` (31 tests, host-only):
 
 * GREEN on the committed tree for all three P10 checks plus base-gate
   regression and CLI `--check` (exit 0).
-* RED mutants (in-memory copies or temp-dir files; nothing written to the
-  repository, no Makefile executed): DEV VERIFIED, DEV_CALLABLE without
-  approval, abi1 OBSERVED, hypothetical-full release refusal, hardware
-  OBSERVED, c3 APPROVED, mapping VERIFIED — each refused fail-closed.
-* Input-closure test: no `docs/`/`build/`/`rom/` read near any file open in
-  any gate source; docs prose claiming ALLOWED cannot change the verdict
-  because the verdict never reads docs.
+* RED mutants (in-memory copies or temp-dir dummy files; nothing written to
+  the repository, no Makefile executed, never `./rom/`): DEV VERIFIED,
+  DEV_CALLABLE without approval, abi1 OBSERVED, hypothetical-full release
+  refusal, hardware OBSERVED, C3 APPROVED via the production checker,
+  mapping VERIFIED via the production checker — each refused fail-closed.
+* Detector load-bearing: explicitly injected normal data is GREEN while the
+  same production function on mutated data is RED with slot-specific
+  messages (a neutered checker would FAIL these tests).
+* Input-closure audit tests: committed verdict reads are closed; six
+  forbidden-read mutants (direct `docs/`, dynamically built `docs/`, helper-
+  indirected, `build/` artifact, 2nd-occurrence after allowlisted reads,
+  `getattr`-assembled string-search-evading `rom/` read) are each flagged
+  with the forbidden component; audit patches are restored afterwards.
+* Docs prose claiming ALLOWED cannot change the verdict because the verdict
+  never content-reads docs (audited).
 * No-unlock-path test: new tool contains no `return "ALLOWED"`, no
-  `release_eligible True`, no `write_text`.
+  `release_eligible True`, no `write_text`, no emulator/toolchain imports.
 
 ## 4. RED → GREEN
 
@@ -109,11 +123,13 @@ committed tree is GREEN (all gates pass). Mutants are never committed.
 | abi1 ledger slot `slot-1e` `abi_state=OBSERVED` | `abi1_reference_review.validate` raises `Invalid` | RED detected |
 | `build_rom.release_gate(set(range(81)))` (hypothetical-full) | `ReleaseBlocked("BLOCKED: …")` | RED detected (gate refuses) |
 | hardware ledger entry `status=OBSERVED` with fake runs | `hw_observation_ledger.validate_ledger` raises `ValueError` (unauthenticated principal) | RED detected |
-| c3 `production_allowlist.status=APPROVED` | P10-C predicate requires UNDECIDED | RED detected |
-| api_contracts slot 0 `mapping_status=VERIFIED` | P10-C predicate requires HYPOTHESIS | RED detected |
+| c3 `production_allowlist.status=APPROVED` | production `check_unverified_persistence(c3_raw=…)` reports `c3 production_allowlist: status must stay UNDECIDED` | RED detected |
+| api_contracts slot 05 `mapping_status=VERIFIED` | production `check_unverified_persistence(contracts_raw=…)` reports `slot 05: mapping_status must stay HYPOTHESIS` | RED detected |
+| direct/dynamic/helper/`build/`/2nd-occurrence/`getattr`-evading forbidden reads (temp dummies) | runtime audit flags the forbidden component | RED detected (6 mutants) |
+| neutered detector (always-[]) | RED mutant tests FAIL | load-bearing proven (sensitivity test) |
 | `is_execution_permitted("SYNTHETIC PASS" / "host PASS" / "DOC_ONLY" / …)` | `False` for every look-alike | RED detected (all refused) |
 | Makefile `release:` stub broken (covered by base gate) | `release_makefile_guard` reports reasons | RED detected (base gate, not duplicated here) |
-| Committed tree: base 8/8 + P10 3/3 + host 45 tests | exit 0, `release_eligible=false`, JSR 0/81 | GREEN |
+| Committed tree: base 8/8 + P10 3/3 + host 54 tests | exit 0, `release_eligible=false`, JSR 0/81 | GREEN |
 
 ## 5. Future unlock procedure (independent review + Owner re-approval required)
 

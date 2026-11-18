@@ -11,15 +11,17 @@ not already assert explicitly, and never duplicates an existing check:
   this check additionally asserts the DEV-success precondition and the
   cross-ledger independence (DEV count > 0 while VERIFIED == 0).
 * P10-B (task items 5,6,7): synthetic PASS, host PASS and docs-only merges
-  never promote. Proven by gate input closure (the gate reads only the
-  allowlisted spec ledgers, Makefile and tools sources; no docs/, build/ or
-  test-result reads) plus an extended marker refusal list and a
+  never promote. Proven by runtime input-closure audit (every content-read
+  and existence-check performed by the verdict loads is recorded at call
+  time, catching direct, dynamically built and helper-indirected paths on
+  every occurrence) plus an extended marker refusal list and a
   synthetic-evidence approval that still yields no execution.
 * P10-C (task item 8): unverified conditions stay UNKNOWN/BLOCKED. Asserts
   the ledgers the base gate does not validate: hardware observations validate
   (no OBSERVED), c3 production allowlist stays UNDECIDED/DESIGN_ONLY, and
   api_contracts mapping/implementation/provenance/confidence stay at their
-  unpromoted vocabularies.
+  unpromoted vocabularies. Accepts optional injected ledger data so tests can
+  drive the production predicate with mutants (default loads the specs).
 
 Host-only. Reads no BIOS, no ROM, no emulator, no private ./rom/ input.
 Pure stdlib plus the committed ledger validators. Exit 0 means every P10
@@ -30,7 +32,10 @@ no write path to any ledger, and no ALLOWED return path.
 from __future__ import annotations
 
 import argparse
+import builtins
+import io
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -54,15 +59,30 @@ from reference_jsr_gate import (  # noqa: E402
 import build_rom  # noqa: E402
 from build_rom import ReleaseBlocked  # noqa: E402
 import hw_observation_ledger  # noqa: E402
+# Pre-imported so the audit window records verdict data reads only: these
+# modules are otherwise lazily imported inside the verdict path, and the
+# import machinery itself stats tools/ on first load.
+import release_makefile_guard  # noqa: E402,F401
+from failclosed_gate import run_all as base_run_all  # noqa: E402
 
-# Gate input closure: the only repository files the safety verdict may
-# depend on. docs/*.md, build/ outputs and test-result artefacts must never
-# appear here; otherwise a docs-only merge or a host PASS could change the
-# verdict. Spec JSON ledgers, the Makefile and tools sources are the full
-# set (tools sources are code, not data; spec ledgers are data).
-ALLOWLISTED_INPUT_PREFIXES = ("spec/", "Makefile", "tools/")
+# Gate input closure (runtime-audited, see check_synthetic_host_docs_non_promotion).
+# The safety verdict's data reads must stay within the allowlisted inputs;
+# docs/, build/ outputs, rom/ inputs and test-result artefacts must never be
+# read as verdict data. Spec JSON ledgers, the Makefile and src/ override
+# listings are the full data set. tools/*.py sources are code (filtered from
+# the audit as .py), not data.
+ALLOWLISTED_INPUT_PREFIXES = ("spec/", "Makefile", "src/")
+# Provenance-pointer existence checks that fail closed on absence. The
+# hardware ledger records its source reference as a docs/ path and the
+# validator stats it for existence; absence fails closed (never promotes).
+ALLOWLISTED_STAT_EXCEPTIONS = ("docs/cd-reset-contract.md",)
 FORBIDDEN_INPUT_PATTERNS = ("docs/", "build/", "./rom/", "rom/", ".log",
                             "test-results", "test_results", "junit")
+# Exact path components that mark a forbidden input. Component-exact (not
+# substring) so tools/build_rom.py (component "build_rom.py") is not
+# flagged while "build/" outputs, "docs/" files and "rom/" inputs are.
+FORBIDDEN_PATH_COMPONENTS = ("docs", "build", "rom", "test-results",
+                             "test_results", "junit")
 
 
 def _fail(message: str) -> str:
@@ -156,52 +176,240 @@ def check_dev_success_without_promotion() -> list[str]:
     return problems
 
 
-def _gate_sources() -> list[Path]:
-    return [
-        ROOT / "tools" / "failclosed_gate.py",
-        ROOT / "tools" / "failclosed_725p10.py",
-        ROOT / "tools" / "reference_jsr_gate.py",
-        ROOT / "tools" / "dev_implementations.py",
-        ROOT / "tools" / "abi1_reference_review.py",
-        ROOT / "tools" / "build_rom.py",
-        ROOT / "tools" / "cdseek_safety_gate.py",
-        ROOT / "tools" / "hw_observation_ledger.py",
-    ]
+def _is_forbidden_recorded_path(path_str: str) -> str | None:
+    """Return the forbidden component if a recorded read touches one, else None.
+
+    Component-exact matching (not substring): tools/build_rom.py is code, not
+    a build/ output. Both repo-relative reads (docs/x) and temp-dummy reads
+    (/tmp/.../docs/mutant.txt) are flagged by component, so dynamically built
+    paths and helper-indirected reads are caught regardless of how the string
+    was assembled. .log files are flagged by suffix.
+    """
+    normalized = path_str.replace("\\", "/")
+    components = [c for c in normalized.split("/") if c]
+    for component in components:
+        if component in FORBIDDEN_PATH_COMPONENTS:
+            return component
+    if normalized.lower().endswith(".log"):
+        return ".log"
+    return None
+
+
+def _is_code_path(path_str: str) -> bool:
+    """Code loads (.py/.pyc/__pycache__) are not verdict data; ignore them."""
+    normalized = path_str.replace("\\", "/")
+    if "__pycache__" in normalized.split("/"):
+        return True
+    return normalized.endswith(".py") or normalized.endswith(".pyc")
+
+
+def _repo_relative(path_str: str) -> str | None:
+    """Repo-relative posix path if the read is under ROOT, else None."""
+    try:
+        candidate = Path(path_str)
+        if not candidate.is_absolute():
+            candidate = ROOT / candidate
+        resolved = candidate.resolve()
+        root_resolved = ROOT.resolve()
+        if resolved == root_resolved:
+            return "."
+        try:
+            return resolved.relative_to(root_resolved).as_posix()
+        except ValueError:
+            return None
+    except (OSError, ValueError):
+        return None
+
+
+def _audit_verdict_reads(loader) -> list[tuple[str, str]]:
+    """Record content-read and existence-check paths during loader().
+
+    Patches the common read entry points for the audit window only and
+    restores them afterwards. Catches direct reads, dynamically assembled
+    paths and helper-indirected reads alike, on every occurrence (not just
+    the first), because detection happens at call time, not by text search.
+    Only reads performed by loader() are recorded: imports are already done
+    before the window, so test-runner/import/stdlib traffic is excluded.
+    """
+    records: list[tuple[str, str]] = []
+
+    orig_read_text = Path.read_text
+    orig_read_bytes = Path.read_bytes
+    orig_path_open = Path.open
+    orig_builtin_open = builtins.open
+    orig_io_open = io.open
+    orig_os_open = os.open
+    orig_os_stat = os.stat
+    orig_os_lstat = os.lstat
+    orig_exists = Path.exists
+    orig_is_file = Path.is_file
+    orig_stat = Path.stat
+
+    def _record(kind: str, value) -> None:
+        if isinstance(value, (str, os.PathLike)):
+            try:
+                records.append((kind, os.fspath(value)))
+            except (TypeError, ValueError):
+                pass
+
+    def _read_text(self, *args, **kwargs):
+        _record("read", str(self))
+        return orig_read_text(self, *args, **kwargs)
+
+    def _read_bytes(self, *args, **kwargs):
+        _record("read", str(self))
+        return orig_read_bytes(self, *args, **kwargs)
+
+    def _path_open(self, *args, **kwargs):
+        _record("read", str(self))
+        return orig_path_open(self, *args, **kwargs)
+
+    def _builtin_open(file, *args, **kwargs):
+        _record("read", file)
+        return orig_builtin_open(file, *args, **kwargs)
+
+    def _io_open(file, *args, **kwargs):
+        _record("read", file)
+        return orig_io_open(file, *args, **kwargs)
+
+    def _os_open(path, *args, **kwargs):
+        _record("read", path)
+        return orig_os_open(path, *args, **kwargs)
+
+    def _os_stat(path, *args, **kwargs):
+        _record("stat", path)
+        return orig_os_stat(path, *args, **kwargs)
+
+    def _os_lstat(path, *args, **kwargs):
+        _record("stat", path)
+        return orig_os_lstat(path, *args, **kwargs)
+
+    def _exists(self, *args, **kwargs):
+        _record("stat", str(self))
+        return orig_exists(self, *args, **kwargs)
+
+    def _is_file(self, *args, **kwargs):
+        _record("stat", str(self))
+        return orig_is_file(self, *args, **kwargs)
+
+    def _stat(self, *args, **kwargs):
+        _record("stat", str(self))
+        return orig_stat(self, *args, **kwargs)
+
+    Path.read_text = _read_text  # type: ignore[method-assign]
+    Path.read_bytes = _read_bytes  # type: ignore[method-assign]
+    Path.open = _path_open  # type: ignore[method-assign]
+    builtins.open = _builtin_open  # type: ignore[assignment]
+    io.open = _io_open  # type: ignore[assignment]
+    os.open = _os_open  # type: ignore[assignment]
+    os.stat = _os_stat  # type: ignore[assignment]
+    os.lstat = _os_lstat  # type: ignore[assignment]
+    Path.exists = _exists  # type: ignore[method-assign]
+    Path.is_file = _is_file  # type: ignore[method-assign]
+    Path.stat = _stat  # type: ignore[method-assign]
+    try:
+        loader()
+    finally:
+        Path.read_text = orig_read_text  # type: ignore[method-assign]
+        Path.read_bytes = orig_read_bytes  # type: ignore[method-assign]
+        Path.open = orig_path_open  # type: ignore[method-assign]
+        builtins.open = orig_builtin_open  # type: ignore[assignment]
+        io.open = orig_io_open  # type: ignore[assignment]
+        os.open = orig_os_open  # type: ignore[assignment]
+        os.stat = orig_os_stat  # type: ignore[assignment]
+        os.lstat = orig_os_lstat  # type: ignore[assignment]
+        Path.exists = orig_exists  # type: ignore[method-assign]
+        Path.is_file = orig_is_file  # type: ignore[method-assign]
+        Path.stat = orig_stat  # type: ignore[method-assign]
+    return records
+
+
+def _classify_verdict_reads(records: list[tuple[str, str]]) -> tuple[list[str], list[str]]:
+    """Split audit records into (forbidden, non-allowlisted) hits.
+
+    Code loads (.py) are filtered. Temp scaffolding outside ROOT is allowed
+    unless it carries a forbidden component (mutant dummies live there).
+    Repo-relative data reads must be within ALLOWLISTED_INPUT_PREFIXES;
+    stat hits on ALLOWLISTED_STAT_EXCEPTIONS (docs provenance pointers that
+    fail closed on absence) are explicitly excused.
+    """
+    forbidden: list[str] = []
+    non_allowlisted: list[str] = []
+    for kind, path_str in records:
+        if _is_code_path(path_str):
+            continue
+        hit = _is_forbidden_recorded_path(path_str)
+        repo_rel = _repo_relative(path_str)
+        if hit is not None:
+            # Excuse the known fail-closed provenance-pointer stat and the
+            # parent-directory stats that resolving it implies (pathlib
+            # resolve stats ancestors via os.stat); a content read of any
+            # docs/ path would still be forbidden, since the validator only
+            # stats existence (absence fails closed, never promotes).
+            if kind == "stat" and repo_rel in ALLOWLISTED_STAT_EXCEPTIONS:
+                continue
+            if kind == "stat" and repo_rel is not None and any(
+                exc == repo_rel or exc.startswith(repo_rel + "/")
+                for exc in ALLOWLISTED_STAT_EXCEPTIONS
+            ):
+                continue
+            forbidden.append(f"{kind} forbidden input {hit!r} via {repo_rel or path_str}")
+            continue
+        if repo_rel is None:
+            continue  # outside ROOT without forbidden components: scaffolding
+        if repo_rel == ".":
+            # The repo root itself carries no verdict data: validators resolve
+            # paths through ROOT (pathlib resolve stats it) and its existence
+            # is trivially true. A content read of a directory would fail
+            # anyway, so only stat is excused here.
+            if kind == "stat":
+                continue
+            non_allowlisted.append(f"{kind} repo-root read (refused)")
+            continue
+        if not (repo_rel == "Makefile" or repo_rel.startswith(ALLOWLISTED_INPUT_PREFIXES)):
+            non_allowlisted.append(f"{kind} non-allowlisted input {repo_rel!r}")
+    return forbidden, non_allowlisted
+
+
+def _run_verdict_loads_for_audit() -> None:
+    """Execute every verdict-critical data load the gates depend on.
+
+    Covers the base gate and both P10 sibling checks so the audited set is
+    the actual verdict inputs, not a copy. Read-only; never writes ledgers.
+    Imports stay outside the audit window (see top-level pre-imports) so
+    import-machinery directory stats are never recorded as verdict reads.
+    """
+    base_run_all()
+    check_dev_success_without_promotion()
+    check_unverified_persistence()
+    # The synthetic-approval branch of this check also loads the JSR ledger.
+    ledger, contracts = jsr_load()
+    jsr_resolve(1, ledger, contracts)
 
 
 def check_synthetic_host_docs_non_promotion() -> list[str]:
-    """Synthetic PASS, host PASS and docs-only merges never promote (items 5,6,7)."""
+    """Synthetic PASS, host PASS and docs-only merges never promote (items 5,6,7).
+
+    Input closure is proven by runtime audit: every content-read and
+    existence-check performed by the verdict loads is recorded at call time
+    (catching direct, dynamically built and helper-indirected paths on every
+    occurrence) and must contain no forbidden docs//build//rom//test-result
+    input while every repo-relative data read stays allowlisted.
+    Scope: .py code loads are filtered (code, not data); one fail-closed
+    docs provenance-pointer stat (ALLOWLISTED_STAT_EXCEPTIONS) is excused
+    because absence fails closed and content is never read as verdict data.
+    """
     problems: list[str] = []
-    # Input closure: the safety verdict must not read docs/, build/ outputs,
-    # private rom/ inputs or test-result artefacts. A docs-only merge or a
-    # host PASS artefact therefore cannot change the verdict.
-    for path in _gate_sources():
-        try:
-            text = path.read_text(encoding="utf-8")
-        except (OSError, ValueError) as exc:
-            problems.append(f"{path.name}: unreadable ({type(exc).__name__})")
-            continue
-        for pattern in FORBIDDEN_INPUT_PATTERNS:
-            # Allow the docstring contract statements ("Reads no ...") and
-            # comments that name the forbidden inputs to describe the rule;
-            # forbid actual read paths. A real input read looks like a quoted
-            # path prefix used to open a file.
-            for needle in (f'"{pattern}', f"'{pattern}", f"/{pattern}"):
-                if needle in text and "Reads no" not in text.split(needle)[0][-200:]:
-                    # Narrow to open/read patterns to avoid prose false
-                    # positives: only flag when the file actually opens it.
-                    if "read_text" in text or "open(" in text:
-                        # Confirm the needle is near a read call.
-                        idx = text.find(needle)
-                        window = text[max(0, idx - 300): idx + 300]
-                        if "read_text" in window or "open(" in window or "read(" in window:
-                            problems.append(
-                                f"{path.name}: forbidden gate input {pattern!r} near a file read"
-                            )
-                            break
-            else:
-                continue
-            break
+    # Runtime input closure over the actual verdict loads.
+    try:
+        records = _audit_verdict_reads(_run_verdict_loads_for_audit)
+    except Exception as exc:  # noqa: BLE001 -- any audit failure fails closed
+        return [f"input-closure audit crashed ({type(exc).__name__}: {exc})"]
+    forbidden, non_allowlisted = _classify_verdict_reads(records)
+    for item in forbidden:
+        problems.append(f"input closure: {item}")
+    for item in non_allowlisted:
+        problems.append(f"input closure: {item}")
     # Extended marker refusal: no look-alike PASS string ever permits.
     for candidate in (None, "", "PASS", "SYNTHETIC PASS", "synthetic pass",
                       "host PASS", "HOST PASS", "doc-only merge", "DOC_ONLY",
@@ -237,13 +445,19 @@ def check_synthetic_host_docs_non_promotion() -> list[str]:
     return problems
 
 
-def check_unverified_persistence() -> list[str]:
-    """Unverified conditions stay UNKNOWN/BLOCKED (task item 8)."""
+def check_unverified_persistence(hardware_raw=None, c3_raw=None, contracts_raw=None) -> list[str]:
+    """Unverified conditions stay UNKNOWN/BLOCKED (task item 8).
+
+    Optional injected ledger data exists so tests can drive the production
+    predicate with mutants. Default (None) loads the committed specs, so the
+    production CLI input path is unchanged.
+    """
     problems: list[str] = []
     # Hardware observations: the base gate checks release_eligible only; here
     # the full validator must pass, so no OBSERVED promotion can slip through.
     try:
-        raw = json.loads((ROOT / "spec" / "hardware_observations.json").read_text(encoding="utf-8"))
+        raw = hardware_raw if hardware_raw is not None else json.loads(
+            (ROOT / "spec" / "hardware_observations.json").read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         return [f"hardware_observations unreadable ({type(exc).__name__})"]
     try:
@@ -266,7 +480,8 @@ def check_unverified_persistence() -> list[str]:
             problems.append(f"hardware_observations {entry.get('field')!r}: trust must stay NOT_MEASURED")
     # C3 static contract: production allowlist stays UNDECIDED, design only.
     try:
-        c3 = json.loads((ROOT / "spec" / "c3_static_contracts.json").read_text(encoding="utf-8"))
+        c3 = c3_raw if c3_raw is not None else json.loads(
+            (ROOT / "spec" / "c3_static_contracts.json").read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         return problems + [f"c3_static_contracts unreadable ({type(exc).__name__})"]
     if c3.get("status") != "VERIFICATION_DESIGN_ONLY":
@@ -283,10 +498,11 @@ def check_unverified_persistence() -> list[str]:
     # unpromoted; verification stays NOT_RUN (contract statuses are already
     # pinned by the base gate and re-asserted here for persistence).
     try:
-        contracts = json.loads((ROOT / "spec" / "api_contracts.json").read_text(encoding="utf-8"))
+        contracts = contracts_raw if contracts_raw is not None else json.loads(
+            (ROOT / "spec" / "api_contracts.json").read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         return problems + [f"api_contracts unreadable ({type(exc).__name__})"]
-    apis = contracts.get("apis", []) if isinstance(contracts.get("apis"), dict) is False else contracts.get("apis", [])
+    apis = contracts.get("apis", [])
     if not isinstance(apis, list) or len(apis) != 81:
         return problems + [f"api_contracts: expected 81 slots, found {len(apis) if isinstance(apis, list) else type(apis).__name__}"]
     allowed_contract = frozenset({"UNKNOWN", "HYPOTHESIS", "BLOCKED"})
