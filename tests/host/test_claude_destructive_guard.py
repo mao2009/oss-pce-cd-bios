@@ -1308,8 +1308,8 @@ class LauncherMutationTests(unittest.TestCase):
         "method call whitespace rule removed": (r'''(?:\w+\s*\(|['\"(])''', r'''(?:\w+\(|['\"(])'''),
         "iwmi removed from the expression launcher pattern": (r'''|iwmi|icim|''', r'''|icim|'''),
         "iwmi removed from the launcher names": ('"invoke-cimmethod", "iwmi", "icim"}', '"invoke-cimmethod"}'),
-        "while keyword removed": ('"while", "until"', '"until"'),
-        "until keyword removed": ('"while", "until"', '"while"'),
+        "while keyword removed": ('"while", "until", "(", ")"', '"until", "(", ")"'),
+        "until keyword removed": ('"while", "until", "(", ")"', '"while", "(", ")"'),
         "elif keyword removed": ('"then", "else", "elif"', '"then", "else"'),
         "fi keyword removed": ('"elif", "fi", "do"', '"elif", "do"'),
         "bang keyword removed": ('KEYWORDS = {"{", "}", "!",', 'KEYWORDS = {"{", "}",'),
@@ -4468,6 +4468,96 @@ class ChainRulePieceDTests(unittest.TestCase):
         verdict, reason = self._decide("cd sub; pwd & rm ../file.txt")
         self.assertEqual(verdict, "ALLOW", reason)
 
+    def test_nested_coproc_body_is_subshell_scoped(self):
+        # CodeRabbit #815 (MAJOR, run-12 Gu02): a `}` closes the innermost
+        # open scope. `{ coproc { true; cd sub; }; cd ..; }` runs the
+        # coprocess body in a subshell (its cd is restored) while the
+        # brace group shares the calling shell (its cd persists), so the
+        # final rm targets the parent directory and is refused. Verified
+        # on Bash with harmless pwd probes; nothing is executed here.
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        verdict, reason = self._decide("{ coproc { true; cd sub; }; cd ..; }; rm file.txt")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("rm-outside-repo"), reason)
+
+    def test_brace_boundaries_need_standalone_words(self):
+        # CodeRabbit #815 (MINOR, run-12 Gu1A): `{` opens a group only
+        # before a blank and `}` closes one only as a standalone word
+        # (verified on Bash: `{echo`, `}echo`, `}#c` never group). A glued
+        # `}` stays an ordinary word, so the unknown command it starts is
+        # refused instead of analysed as the command it resembles.
+        verdict, reason = self._decide("{ echo ok; }echo harmless; }")
+        self.assertEqual(verdict, "DENY", reason)
+        verdict, reason = self._decide("{echo hi; }")
+        self.assertEqual(verdict, "DENY", reason)
+
+    def test_failed_cd_keeps_old_cwd(self):
+        # CodeRabbit #815 (MAJOR, run-12 Gu1P): `cd` into an absent
+        # directory fails and keeps the old cwd (verified on Bash with
+        # harmless pwd probes), so a later `cd ..` leaves the repository
+        # and the rm outside it is refused. Both plain and eval-wrapped
+        # forms are covered (eval merges cwd into the caller). An
+        # existing directory still moves the cwd (no over-denial).
+        write_text(os.path.join(self.tmp, "README.md"), "outside\n")
+        verdict, reason = self._decide("cd missing; cd ..; rm README.md")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("rm-outside-repo"), reason)
+        verdict, reason = self._decide("eval 'cd missing'; cd ..; rm README.md")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("rm-outside-repo"), reason)
+        verdict, reason = self._decide("cd sub; rm inner.txt")
+        self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_if_pipeline_stage_does_not_leak_cwd(self):
+        # CodeRabbit #815 (MAJOR, run-12 Gu1Y): an `if` compound used as
+        # a pipeline stage runs in a subshell (verified on Bash), so its
+        # `cd` moves neither the entry nor later segments. The branch
+        # outcome is uncertain anyway, so the later relative rm is
+        # refused instead of trusting one branch.
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        verdict, reason = self._decide("if true; then cd sub; fi | cat; rm ../file.txt")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("cwd-uncertain"), reason)
+
+    def test_pipeline_continuation_blank_line_and_comment(self):
+        # CodeRabbit #815 (MAJOR, run-12 GuIir8): a blank line or a
+        # comment after `|` still continues the pipeline (verified on
+        # Bash), so `cd sub` runs in the stage subshell and the later rm
+        # outside the repository is refused.
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        verdict, reason = self._decide("true |\n\ncd sub; rm ../file.txt")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("rm-outside-repo"), reason)
+        verdict, reason = self._decide("true | # comment\ncd sub; rm ../file.txt")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("rm-outside-repo"), reason)
+
+    def test_powershell_uncertain_branch_denies_relative_rm(self):
+        # CodeRabbit #815 (MAJOR, run-12 Gu1n): the taken-branch location
+        # is one outcome of several. When the condition is uncertain, a
+        # later relative-path judgment is refused, in both braced and
+        # braceless forms.
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        verdict, reason = self._decide("if ($c) { Set-Location sub }; Remove-Item ../file.txt",
+                                       tool="PowerShell")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("cwd-uncertain"), reason)
+        verdict, reason = self._decide("if ($c) Set-Location sub; Remove-Item ../file.txt",
+                                       tool="PowerShell")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("cwd-uncertain"), reason)
+
+    def test_powershell_if_else_branch_denies_relative_rm(self):
+        # CodeRabbit #815 (run-12 Gu1n): with `else` the first arm entry
+        # is already replaced when the boundary runs, so only the braced
+        # close marks the move uncertain. Either branch may run, so the
+        # later relative rm is refused.
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        verdict, reason = self._decide("if ($a) { Set-Location sub } else { echo hi }; Remove-Item ../file.txt",
+                                       tool="PowerShell")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("cwd-uncertain"), reason)
+
     def test_bg_list_in_scope_restores_parent(self):
         # `&` backgrounds the whole in-scope list in a subshell: the
         # foreground continues from the scope cwd, never from a `cd` left
@@ -4573,18 +4663,19 @@ class ChainRulePieceDTests(unittest.TestCase):
         self.assertTrue(reason.startswith("rm-outside-repo"), reason)
         # A `{ ... }` group runs in the calling scope (like a Bash
         # brace group): `if`/`while`/`foreach` bodies execute in the
-        # current runspace, so a Set-Location inside persists. The body is
-        # analysed as taken; a condition the guard cannot resolve is
-        # documented residual risk (same approximation as Bash `if`).
-        # Restoring the entry cwd here would judge from the repo while a
-        # taken branch deleted outside it, so sharing is the sound side.
+        # current runspace, so a Set-Location inside persists when the
+        # branch runs. But the branch outcome is uncertain (run-12 Gu1n):
+        # a later relative-path judgment is refused instead of trusting
+        # the taken branch. The `..` case stays DENY (now for uncertainty
+        # rather than the taken-branch location).
         verdict, reason = self._decide("if ($c) { Set-Location .. }; Remove-Item file.txt",
                                        tool="PowerShell")
         self.assertEqual(verdict, "DENY", reason)
-        self.assertTrue(reason.startswith("rm-outside-repo"), reason)
+        self.assertTrue(reason.startswith("cwd-uncertain"), reason)
         verdict, reason = self._decide("if ($c) { Set-Location sub }; Remove-Item ../file.txt",
                                        tool="PowerShell")
-        self.assertEqual(verdict, "ALLOW", reason)
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("cwd-uncertain"), reason)
 
     def test_powershell_call_scriptblock_stays_refused(self):
         # `& { ... }` is explicitly refused (fail closed): a runtime
@@ -4694,7 +4785,7 @@ class ChainRuleMutationTests(unittest.TestCase):
             '                ctx.tainted = False  # mutant: subshell taint dropped\n'
             '                if not scope_stack and not bbrace_stack:'),
         "cd cwd update removed": (
-            '        ctx.cwd = resolve(args[0] if args else "~", ctx)[1]',
+            '        ctx.cwd, ctx.cwd_fuzzy = _cd_target(args[0] if args else "~", ctx)',
             '        pass  # mutant: cd cwd update removed'),
         "worktree move taint removed": (
             '    if sub == "worktree" and rest[:1] in (["add"], ["move"]):',
@@ -4731,7 +4822,7 @@ class ChainRuleMutationTests(unittest.TestCase):
             '                if nxt == "|":\n                    i += 1  # consume ||: no scope boundary',
             '                if nxt == "|":\n                    segs.append(PIPE_BOUND)  # mutant: || as pipeline\n                    redirs.append([])\n                    i += 1'),
         "bash brace open token boundary removed": (
-            '            if cur_blank:',
+            '            if cur_blank and (nxt == "" or nxt in " \\t\\n"):',
             '            if True:  # mutant: any { opens a group'),
         "background parent restore removed": (
             '                if (scope_stack or bbrace_stack) and bg_scope:\n                    ctx.cwd = bg_scope[-1]\n                else:\n                    ctx.cwd = bg_start',
@@ -4744,16 +4835,34 @@ class ChainRuleMutationTests(unittest.TestCase):
             '            if False:  # mutant: pipeline-end entry not restored\n                pass'),
 
         "pipeline continuation newline treated as boundary": (
-            '                        if k < 0 or text[k] != "|":\n                            i += 1\n                            continue',
-            '                        if k < 0 or text[k] != "|":\n                            i += 1\n                            pass  # mutant: pipeline continuation ends the list'),
+            '            if c == "\\n" and not ps and pipe_open and cur_blank:',
+            '            if False:  # mutant: pipeline continuation ends the list'),
         "brace group stage does not fork": (
             '            is_stage = bool(prev_was_pipe and pipe_entry is not None)\n            if is_stage:\n                ctx.cwd = pipe_entry',
             '            is_stage = False  # mutant: brace stage does not fork\n            if is_stage:\n                ctx.cwd = pipe_entry'),        "scope entry falls back to stale run": (
             '                    if scope_just_closed:\n                        pipe_entry = scope_entry',
             '                    if False:  # mutant: scope entry ignored\n                        pass'),
         "command-boundary snapshots removed": (
-            '            if not scope_stack and not bbrace_stack:\n                run_start = ctx.cwd\n                bg_start = ctx.cwd',
+            '            if not scope_stack and not bbrace_stack and not cond_stack:\n                run_start = ctx.cwd\n                bg_start = ctx.cwd',
             '            pass  # mutant: boundary snapshots not refreshed'),
+        "cwd-uncertain check removed": (
+            '        if ctx.cwd_fuzzy and not for_cd:\n            # run-12: a relative path cannot be judged from an uncertain\n            # working directory (conditional branch outcomes). Absolute\n            # paths do not depend on the cwd and stay checkable.\n            raise Deny("cwd-uncertain", "a relative path with an uncertain working directory is not inspected")',
+            '        pass  # mutant: uncertain cwd trusted'),
+        "failed-cd keep-old removed": (
+            '    if not ctx.tainted and not os.path.isdir(real):\n        # Nothing earlier in this command could have created the\n        # directory, so it is still absent at run time and the shell\n        # keeps the old cwd (verified with harmless pwd probes): model\n        # the failed cd instead of adopting a directory never entered.\n        return ctx.cwd, ctx.cwd_fuzzy',
+            '    pass  # mutant: failed cd adopted'),
+        "conditional scope tracking removed": (
+            '        if not ps and first_cmd in COND_OPENERS:',
+            '        if False:  # mutant: conditional scope ignored'),
+        "conditional close fuzz removed": (
+            '            # A stray closer with no open scope is ignored, as before.\n            _fuzz_on_change(ctx, cond_stack.pop())',
+            '            pass  # mutant: conditional close trusted'),
+        "coproc nested scope restored wrong": (
+            '                segs.append(BBRACE_CLOSE if kind == "brace" else COPROC_CLOSE)',
+            '                segs.append(BBRACE_CLOSE)  # mutant: coproc close leaks'),
+        "powershell cond marker removed": (
+            '        if seg == PSCOND_CLOSE:\n            if cond_stack:\n                _fuzz_on_change(ctx, cond_stack.pop())\n            continue',
+            '        if seg == PSCOND_CLOSE:\n            continue  # mutant: ps close trusted'),
         "coproc compound scope removed": (
             '        if seg == COPROC_CLOSE:\n            if scope_stack:\n                ctx.cwd = scope_stack.pop()\n                if bg_scope:\n                    bg_scope.pop()\n                if pipe_scope:\n                    pipe_entry, prev_was_pipe = pipe_scope.pop()\n'
             '                if not scope_stack and not bbrace_stack:',
@@ -4817,6 +4926,12 @@ class ChainRuleMutationTests(unittest.TestCase):
         "brace group stage does not fork": "test_brace_group_stage_forks_from_entry",
         "scope entry falls back to stale run": "test_pipeline_entry_after_sequential_cd",
         "command-boundary snapshots removed": "test_background_list_entry_is_list_start",
+        "cwd-uncertain check removed": "test_if_pipeline_stage_does_not_leak_cwd",
+        "failed-cd keep-old removed": "test_failed_cd_keeps_old_cwd",
+        "conditional scope tracking removed": "test_if_pipeline_stage_does_not_leak_cwd",
+        "conditional close fuzz removed": "test_if_pipeline_stage_does_not_leak_cwd",
+        "coproc nested scope restored wrong": "test_nested_coproc_body_is_subshell_scoped",
+        "powershell cond marker removed": "test_powershell_if_else_branch_denies_relative_rm",
         "coproc compound scope removed": "test_coproc_compound_body_is_subshell_scoped",
         "command double-dash handling removed": "test_command_double_dash_merges_cwd",
         "same-shell duplicate validation restored": "test_same_shell_target_does_not_self_deny",

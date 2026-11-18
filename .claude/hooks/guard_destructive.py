@@ -24,6 +24,13 @@ ALLOW, DENY = "ALLOW", "DENY"
 SHELL_TOOLS = ("Bash", "PowerShell")
 KEYWORDS = {"{", "}", "!", "if", "then", "else", "elif", "fi", "do", "done",
             "while", "until", "(", ")"}
+# run-12: first words that open a conditional/loop scope whose branch
+# outcome is not known statically (Gu1P/Gu1Y/Gu1n follow-ups). The body
+# is still analysed (DENY/taint detection unchanged); only the cwd it
+# leaves is marked uncertain when it moved.
+COND_OPENERS = {"if", "while", "until", "for", "case", "select"}
+COND_CLOSERS = {"fi", "done", "esac"}
+PS_COND_WORDS = {"if", "elseif", "else", "while", "for", "foreach", "switch"}
 WRAPPERS = {"sudo", "doas", "env", "command", "builtin", "exec", "nohup", "time",
             "nice", "ionice", "timeout", "setsid", "stdbuf", "xargs"}
 # External launchers (#664): each runs its arguments as a command. Their options are not parsed (wrapper_candidates analyses
@@ -121,6 +128,11 @@ COPROC_CLOSE = "\x02c}"
 # `}` with no open group stays an ordinary word, as before.
 BBRACE_OPEN = "\x02b{"
 BBRACE_CLOSE = "\x02b}"
+# run-12: a PowerShell conditional/loop body in braces. The location
+# change inside persists when the branch runs, but the branch outcome
+# is not known statically, so the close marks the cwd uncertain.
+PSCOND_OPEN = "\x02p{"
+PSCOND_CLOSE = "\x02p}"
 # PowerShell `{ ... }` groups (statement bodies, scriptblocks, hashtables)
 # run in the calling scope for cwd purposes: `if`/`while`/`foreach` bodies
 # execute in the current scope, so a Set-Location inside persists like a
@@ -232,20 +244,29 @@ class Deny(Exception):
 # judgments for later segments. The taint never clears within one command.
 # ln and rmdir are already DENY in every form; cd/pushd move the tracked cwd.
 class Ctx:
-    def __init__(self, cwd, root, git, registry, protected, tainted=False):
+    def __init__(self, cwd, root, git, registry, protected, tainted=False,
+                 cwd_fuzzy=False):
         self.cwd = cwd            # canonical absolute path
         self.root = root          # case-folded canonical repo root
         self.git = git            # case-folded canonical .git directory
         self.registry = registry  # case-folded worktree paths with a recorded owner
         self.protected = protected
         self.tainted = tainted    # Piece D (#636): an earlier segment changed the filesystem
+        self.cwd_fuzzy = cwd_fuzzy  # run-12: cwd is one of several branch outcomes (fail closed)
         self.pending_write = False  # Piece D (#636): validated write option awaiting publish
 
     def copy(self, **kw):
-        c = Ctx(self.cwd, self.root, self.git, self.registry, self.protected, self.tainted)
+        c = Ctx(self.cwd, self.root, self.git, self.registry, self.protected,
+                self.tainted, self.cwd_fuzzy)
         for k, v in kw.items():
             setattr(c, k, v)
         return c
+
+
+def _fuzz_on_change(ctx, entry):
+    """Mark the cwd uncertain when a conditional body may have moved it (run-12)."""
+    if ctx is not None and ctx.cwd != entry:
+        ctx.cwd_fuzzy = True
 
 
 def _taint(ctx):
@@ -274,6 +295,8 @@ def _nested_text(text, ctx, ps, depth, merge_cwd=False):
         ctx.tainted = True
     if merge_cwd:
         ctx.cwd = sub.cwd
+        if sub.cwd_fuzzy:
+            ctx.cwd_fuzzy = True
 
 
 def _nested_text_from(text, ctx, entry_tainted, ps, depth):
@@ -357,6 +380,8 @@ def _nested_argv_same_shell(words, ctx, ps, depth):
     if sub.tainted:
         ctx.tainted = True
     ctx.cwd = sub.cwd
+    if sub.cwd_fuzzy:
+        ctx.cwd_fuzzy = True
 
 
 def canon(path, normalize=True):
@@ -535,7 +560,7 @@ def _dotdot_unresolved(p, raw_form):
     return False
 
 
-def resolve_full(raw, ctx, deny_unresolvable_dotdot=False):
+def resolve_full(raw, ctx, deny_unresolvable_dotdot=False, for_cd=False):
     """Return (lexical canonical, real canonical, final entry is a link) for a path argument.
 
     The real path resolves the raw spelling on the filesystem, so a symlink followed by ".." reaches its
@@ -560,6 +585,11 @@ def resolve_full(raw, ctx, deny_unresolvable_dotdot=False):
     if not (p.startswith("/") or re.match(r"^[A-Za-z]:/", p)):
         if ":" in p:
             raise Deny("path", "drive-relative path")
+        if ctx.cwd_fuzzy and not for_cd:
+            # run-12: a relative path cannot be judged from an uncertain
+            # working directory (conditional branch outcomes). Absolute
+            # paths do not depend on the cwd and stay checkable.
+            raise Deny("cwd-uncertain", "a relative path with an uncertain working directory is not inspected")
         p = ctx.cwd.rstrip("/") + "/" + p
     lex = canon(p)
     raw_form = canon(p, normalize=False)
@@ -572,10 +602,25 @@ def resolve_full(raw, ctx, deny_unresolvable_dotdot=False):
     return lex, real, entry_link
 
 
-def resolve(raw, ctx):
+def resolve(raw, ctx, for_cd=False):
     """Return (lexical canonical, real canonical) for a path argument."""
-    lex, real, _ = resolve_full(raw, ctx)
+    lex, real, _ = resolve_full(raw, ctx, for_cd=for_cd)
     return lex, real
+
+
+def _cd_target(target, ctx):
+    """Resolve a cd target and the certainty it leaves (run-12 Gu1P)."""
+    lex, real = resolve(target, ctx, for_cd=True)
+    if not ctx.tainted and not os.path.isdir(real):
+        # Nothing earlier in this command could have created the
+        # directory, so it is still absent at run time and the shell
+        # keeps the old cwd (verified with harmless pwd probes): model
+        # the failed cd instead of adopting a directory never entered.
+        return ctx.cwd, ctx.cwd_fuzzy
+    p = target.replace("\\", "/")
+    if p.startswith("/") or re.match(r"^[A-Za-z]:/", p) or p == "~" or p.startswith("~/"):
+        return real, False
+    return real, ctx.cwd_fuzzy
 
 
 def strip_quotes(tok):
@@ -717,9 +762,11 @@ def split_segments(text, ps=False):
     target is the raw word after each unquoted '>' ("" when there is none).
     """
     segs, subs, cur, redirs, rd = [], [], [], [], []
-    bdepth = 0  # open Bash brace groups (command-position `{` only)
-    coproc_depth = 0  # open `coproc { ... }` compound bodies (subshell scope)
+    group_stack = []  # open Bash scopes, innermost last: "brace" or "coproc"
+    ps_group_stack = []  # open PowerShell `{` groups: True when a conditional/loop body
+    ps_cond_pending = False  # run-12: a PS conditional opener awaits its `{` across `(...)`
     ps_bdepth = 0  # open PowerShell `{ ... }` groups (calling scope; only balance is tracked)
+    pipe_open = False  # run-12: the last boundary opened a pipeline stage not yet started
     cur_blank = True  # no non-whitespace appended since the last flush
     quote, i, n = None, 0, len(text)
     while i < n:
@@ -837,6 +884,23 @@ def split_segments(text, ps=False):
         # PowerShell scriptblocks ({ ... }) are command bodies wherever they appear (try, ForEach-Object, Invoke-Command,
         # Start-Job -ScriptBlock). Each block boundary starts a segment, so the commands inside are analysed.
         if c in ";&|()\n" or (ps and c in "{},"):
+            if c == "\n" and not ps and pipe_open and cur_blank:
+                # run-12 GuIir8: a newline continues a pipeline whose
+                # next stage has not started. Blank lines and comments
+                # append no words, so cur stays blank through them and
+                # the pipeline state survives (verified on Bash).
+                i += 1
+                continue
+            flushed_head = "".join(cur).split()
+            if ps and flushed_head and flushed_head[0].lower() in PS_COND_WORDS:
+                # run-12 Gu1n: `if ($c) {` flushes `if ` at `(` long
+                # before the `{`: remember the opener across the paren
+                # segments so the body still gets its marker.
+                ps_cond_pending = True
+            if ps and c in ";\n":
+                # A braceless body is one statement: `;`/newline ends
+                # it (a pipeline `|` belongs to the statement itself).
+                ps_cond_pending = False
             segs.append("".join(cur))
             redirs.append(rd)
             cur, rd = [], []
@@ -848,9 +912,11 @@ def split_segments(text, ps=False):
                 nxt = text[i + 1] if i + 1 < n else ""
                 if nxt == "|":
                     i += 1  # consume ||: no scope boundary
+                    pipe_open = False
                 else:
                     segs.append(PIPE_BOUND)
                     redirs.append([])
+                    pipe_open = True
                     if nxt == "&":
                         i += 1  # consume |&: still a pipeline boundary
             elif c == "&" and not ps:
@@ -860,18 +926,22 @@ def split_segments(text, ps=False):
                 nxt = text[i + 1] if i + 1 < n else ""
                 if nxt == "&":
                     i += 1  # consume &&: no scope boundary
+                    pipe_open = False
                 elif nxt != ">":
                     segs.append(BG_BOUND)
                     redirs.append([])
+                    pipe_open = False
             elif c == "(":
                 # Piece D (#636): an unquoted paren opens a subshell.
                 # The sentinel is its own segment so analyze_text can
                 # scope the group without touching word parsing.
                 segs.append(SUBSHELL_OPEN)
                 redirs.append([])
+                pipe_open = False
             elif c == ")":
                 segs.append(SUBSHELL_CLOSE)
                 redirs.append([])
+                pipe_open = False
             elif ps and c == "{":
                 # Piece D (#636): a PowerShell `{ ... }` group (statement
                 # body, scriptblock, hashtable) runs in the calling scope
@@ -879,33 +949,36 @@ def split_segments(text, ps=False):
                 # marker is emitted. Only balance is tracked for the
                 # fail-closed unclosed-group check. `& { ... }` stays
                 # refused by the call-operator rule above.
+                # run-12: a conditional/loop body gets a marker as well:
+                # its location change persists when taken, but the outcome
+                # is uncertain, so the close marks the cwd uncertain.
+                head = "".join(cur).split()
+                is_cond = ps_cond_pending or (bool(head) and head[0].lower() in PS_COND_WORDS)
+                ps_cond_pending = False
+                ps_group_stack.append(is_cond)
+                if is_cond:
+                    segs.append(PSCOND_OPEN)
+                    redirs.append([])
                 ps_bdepth += 1
+                pipe_open = False
             elif ps and c == "}":
                 if ps_bdepth > 0:
                     ps_bdepth -= 1
+                if ps_group_stack:
+                    if ps_group_stack.pop():
+                        segs.append(PSCOND_CLOSE)
+                        redirs.append([])
+                pipe_open = False
                 # A stray `}` stays an ordinary word, as before.
             if c == ";" or c == "\n":
                 # A top-level command boundary ends a background list and
                 # a pipeline. No scope effect; analyze_text restores the
                 # pipeline-entry cwd and refreshes entry snapshots here.
-                # A newline right after `|`/`|&` continues the pipeline
-                # (verified on Bash): it splits words but ends nothing.
-                if c == "\n":
-                    j = i - 1
-                    while j >= 0 and text[j] in " \t":
-                        j -= 1
-                    if j >= 0 and text[j] == "|":
-                        k = j - 1
-                        while k >= 0 and text[k] in " \t":
-                            k -= 1
-                        if k < 0 or text[k] != "|":
-                            i += 1
-                            continue
-                    elif j >= 0 and text[j] == "&" and j - 1 >= 0 and text[j - 1] == "|":
-                        i += 1
-                        continue
+                # (A newline that continues a pipeline is consumed by the
+                # pipe_open check above before reaching this boundary.)
                 segs.append(CMD_BOUND)
                 redirs.append([])
+                pipe_open = False
             i += 1
             continue
         if c == "{" and not ps:
@@ -915,54 +988,61 @@ def split_segments(text, ps=False):
             # word of the `coproc ...` segment (so coproc dispatch sees
             # exactly what it saw before); only the scope is new. This
             # applies mid-command too (`echo ok; coproc { ...; }`).
-            parts = [w for w in "".join(cur).split() if not ASSIGN.match(w)]
-            if (parts and parts[0].lower() == "coproc" and len(parts) <= 2
-                    and "{" not in "".join(cur)):
-                segs.append(COPROC_OPEN)
-                redirs.append([])
-                coproc_depth += 1
-                cur.append(c)
-                cur_blank = False
-                i += 1
-                continue
-            if cur_blank:
+            # run-12 Gu02: the full split is skipped unless the `{` is at
+            # a word boundary after a short header mentioning coproc. A
+            # glued `{` (`x{`) can be neither a header nor a group open,
+            # and the bounded prefix scan keeps brace-heavy input linear.
+            nxt = text[i + 1] if i + 1 < n else ""
+            if cur_blank or "".join(cur[-4:]).endswith((" ", "\t")):
+                head = []
+                total = 0
+                for el in cur:
+                    head.append(el)
+                    total += len(el)
+                    if total >= 512:
+                        break
+                if "coproc" in "".join(head)[:512].lower():
+                    parts = [w for w in "".join(cur).split() if not ASSIGN.match(w)]
+                    if (parts and parts[0].lower() == "coproc" and len(parts) <= 2
+                            and "{" not in "".join(cur)):
+                        segs.append(COPROC_OPEN)
+                        redirs.append([])
+                        group_stack.append("coproc")
+                        cur.append(c)
+                        cur_blank = False
+                        i += 1
+                        continue
+            if cur_blank and (nxt == "" or nxt in " \t\n"):
                 # Piece D (#636, CRITICAL-1): a command-position `{`
-                # opens a brace group (calling shell). Mid-word braces
-                # (`{a,b}`) stay literal words with their current
-                # validation. cur_blank tracks the blank-buffer rule
-                # without rebuilding the segment on every `{`.
+                # followed by a blank opens a brace group (calling
+                # shell). A glued `{` (`{echo`, `{a,b}`) is a literal
+                # word (verified on Bash: no group opens, and a later
+                # `}` does not close). cur_blank tracks the blank-buffer
+                # rule without rebuilding the segment on every `{`.
                 segs.append("".join(cur))
                 redirs.append(rd)
                 cur, rd = [], []
                 cur_blank = True
                 segs.append(BBRACE_OPEN)
                 redirs.append([])
-                bdepth += 1
+                group_stack.append("brace")
                 i += 1
                 continue
         if c == "}" and not ps and cur_blank:
-            if bdepth > 0:
-                # Only a group opened above closes here.
+            # run-12 Gu02: a `}` closes the innermost open scope, not
+            # always a brace group (`{ coproc { ...; }; ...; }` leaked
+            # the coprocess body into the calling shell). run-12 Gu1A:
+            # the `}` must also stand alone (verified on Bash: `}echo`
+            # and `}#c` do not close the group).
+            nxt = text[i + 1] if i + 1 < n else ""
+            if group_stack and (nxt == "" or nxt in " \t\n;&|()<>"):
+                kind = group_stack.pop()
                 segs.append("".join(cur))
                 redirs.append(rd)
                 cur, rd = [], []
                 cur_blank = True
-                segs.append(BBRACE_CLOSE)
+                segs.append(BBRACE_CLOSE if kind == "brace" else COPROC_CLOSE)
                 redirs.append([])
-                bdepth -= 1
-                i += 1
-                continue
-            if coproc_depth > 0:
-                # Close of a `coproc { ... }` compound body (subshell
-                # scope). A stray `}` with no open group stays an
-                # ordinary word (KEYWORD-skipped), as before.
-                segs.append("".join(cur))
-                redirs.append(rd)
-                cur, rd = [], []
-                cur_blank = True
-                segs.append(COPROC_CLOSE)
-                redirs.append([])
-                coproc_depth -= 1
                 i += 1
                 continue
             # A stray `}` stays an ordinary word (KEYWORD-skipped).
@@ -2254,7 +2334,7 @@ def analyze_argv(words, ctx, ps, depth):
             # expands it. Guessing a cwd would misjudge later relative
             # paths, so it is refused instead of resolved lexically.
             raise Deny("unexpanded", "cd target with a variable or substitution is not inspected")
-        ctx.cwd = resolve(args[0] if args else "~", ctx)[1]
+        ctx.cwd, ctx.cwd_fuzzy = _cd_target(args[0] if args else "~", ctx)
     elif name in ALWAYS_DENY:
         raise Deny("destructive", name + " is denied")
     elif name == "rm" or name in PS_RM:
@@ -2304,6 +2384,8 @@ def analyze_text(text, ctx, ps, depth):
             continue
         if seg == COPROC_OPEN or seg == COPROC_CLOSE:
             continue
+        if seg == PSCOND_OPEN or seg == PSCOND_CLOSE:
+            continue
         if seg == BBRACE_OPEN or seg == BBRACE_CLOSE:
             continue
         pargs = python_position_args(words_of(seg, ps))
@@ -2328,8 +2410,12 @@ def analyze_text(text, ctx, ps, depth):
     # /`foreach` bodies execute in the current scope. Only `& { ... }`
     # (child scope, uncertain) stays refused by the call-operator rule. A
     # conditional branch taken or not taken cannot be told apart statically
-    # (same as Bash `if`), which is documented residual risk: the body is
-    # analysed as taken.
+    # (same as Bash `if`). run-12: the body is still analysed as taken
+    # (DENY/taint detection unchanged), but a cwd it leaves behind is
+    # marked uncertain (cwd_fuzzy): a later relative-path judgment is
+    # refused instead of trusting one branch outcome. An absolute `cd`
+    # restores certainty. A failed `cd` into an absent directory keeps the
+    # old cwd when nothing earlier could have created it (Gu1P).
     scope_stack = []
     bbrace_stack = []
     pipe_entry = None
@@ -2343,6 +2429,8 @@ def analyze_text(text, ctx, ps, depth):
     pipe_scope = []
     bstage = []
     bg_scope = []
+    cond_stack = []  # run-12: entry cwd per open conditional/loop scope
+    ps_body_pending = None  # run-12: entry cwd while a PS condition awaits its body
     # Scope-local background-list start per open group: a `&` backgrounds
     # the whole in-scope list, so the parent continues from the cwd the
     # in-scope list started with (after the last in-scope `;`), not from
@@ -2434,6 +2522,21 @@ def analyze_text(text, ctx, ps, depth):
                 if not scope_stack and not bbrace_stack:
                     scope_just_closed = True
             continue
+        if seg == PSCOND_OPEN:
+            # run-12 Gu1n: a PowerShell conditional/loop body in braces
+            # runs in the calling scope when taken, but the outcome is
+            # uncertain: remember the entry and mark the cwd uncertain
+            # on close when the body moved it. A pending braceless arm
+            # compares here too (a condition alone moves nothing).
+            if ps_body_pending is not None:
+                _fuzz_on_change(ctx, ps_body_pending)
+                ps_body_pending = None
+            cond_stack.append(ctx.cwd)
+            continue
+        if seg == PSCOND_CLOSE:
+            if cond_stack:
+                _fuzz_on_change(ctx, cond_stack.pop())
+            continue
         if seg == CMD_BOUND:
             # A `;`/newline ends a pipeline and a background list: later
             # foreground segments are judged from the pipeline-entry cwd,
@@ -2443,7 +2546,13 @@ def analyze_text(text, ctx, ps, depth):
                 ctx.cwd = pipe_entry
                 pipe_entry = None
             prev_was_pipe = False
-            if not scope_stack and not bbrace_stack:
+            if ps and ps_body_pending is not None:
+                # run-12 Gu1n: a braceless conditional body runs above
+                # as part of the segments before this boundary; mark the
+                # cwd uncertain when it moved.
+                _fuzz_on_change(ctx, ps_body_pending)
+                ps_body_pending = None
+            if not scope_stack and not bbrace_stack and not cond_stack:
                 run_start = ctx.cwd
                 bg_start = ctx.cwd
             if bg_scope and (scope_stack or bbrace_stack):
@@ -2487,6 +2596,19 @@ def analyze_text(text, ctx, ps, depth):
                 scope_just_closed = False
             continue
         seg_words = words_of(seg, ps)
+        first_cmd = next((w for w in seg_words if not ASSIGN.match(w)), None)
+        if not ps and first_cmd in COND_OPENERS:
+            # run-12 Gu1Y: a Bash conditional/loop body is analysed (DENY
+            # and taint detection unchanged), but the cwd it leaves is
+            # one branch outcome of several: later segments must not
+            # trust it via run_start/pipe_entry either.
+            cond_stack.append(ctx.cwd)
+        elif ps and seg_words and first_cmd is not None and first_cmd.lower() in PS_COND_WORDS:
+            # run-12 Gu1n: arm on a conditional opener (`if ($c) ...`);
+            # the body (braceless statements, or a braced body via its
+            # marker) is compared at the next command boundary. Arming
+            # on the condition alone is free: it moves nothing.
+            ps_body_pending = ctx.cwd
         if not seg_words and not ops:
             # A boundary flush with no words and no redirects (e.g. the
             # empty segment before `{` in `| { ...`): consumes no pipeline
@@ -2505,11 +2627,13 @@ def analyze_text(text, ctx, ps, depth):
         if not scope_stack and not bbrace_stack and seg_words:
             scope_just_closed = False
         if (not prev_was_pipe and not scope_stack and not bbrace_stack
+                and not cond_stack
                 and any(
                     w not in KEYWORDS and not ASSIGN.match(w)
                     for w in seg_words)):
             run_start = ctx.cwd
-        if not prev_was_pipe and not scope_stack and not bbrace_stack:
+        if (not prev_was_pipe and not scope_stack and not bbrace_stack
+                and not cond_stack):
             # A top-level non-stage segment ends the pipeline entry
             # lifetime. Segments inside a scope group must not end the
             # enclosing entry: the group owns a saved copy on pipe_scope.
@@ -2534,9 +2658,18 @@ def analyze_text(text, ctx, ps, depth):
         if wrote:
             ctx.tainted = True
         analyze_argv(words_of(seg, ps), ctx, ps, depth)
+        if not ps and cond_stack and first_cmd in COND_CLOSERS:
+            # run-12: the body ran above (still analysed as taken); a
+            # cwd it moved is uncertain, since the branch may not run.
+            # A stray closer with no open scope is ignored, as before.
+            _fuzz_on_change(ctx, cond_stack.pop())
     for body in rest_subs:
         # Defensive: a body no segment claimed is still analysed, never skipped.
         _nested_text(body, ctx, ps, depth + 1)
+    if ps_body_pending is not None:
+        # run-12 Gu1n: a trailing braceless conditional body with no
+        # later boundary still leaves the cwd uncertain.
+        _fuzz_on_change(ctx, ps_body_pending)
     if scope_stack:
         # An unclosed subshell never runs in a real shell: refuse instead
         # of judging later segments against a guessed cwd (fail closed).
