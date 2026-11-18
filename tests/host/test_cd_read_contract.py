@@ -319,6 +319,26 @@ class CallerLedgerTests(unittest.TestCase):
             with self.subTest(source=source), self.assertRaises(ValueError):
                 validate_caller_ledger((dict(CALLER_LEDGER[0], source=source, revision=self.api["sources"][source]["revision"]),), self.api)
 
+    def test_issue583_corrected_line_references_are_cited(self):
+        # Issue #583: five #148 rows cited a single line whose old description did not match
+        # the pinned caller source (pce-devel/huc @ 54f5c736, verified line by line). The `line`
+        # anchors stay (PR #571 §2.4 precedent: joint listing), so each note must cite the
+        # confirmed joint references. Statuses must stay HYPOTHESIS (never promoted).
+        by_id = {r["id"]: r for r in CALLER_LEDGER}
+        expected = {
+            "C03": (("500", "509"), "HYPOTHESIS"),
+            "C12": (("436", "438"), "HYPOTHESIS"),
+            "C16": (("594", "595"), "HYPOTHESIS"),
+            "C19": (("503", "506"), "HYPOTHESIS"),
+            "C27": (("448", "449", "450"), "HYPOTHESIS"),
+        }
+        for rid, (lines, status) in expected.items():
+            with self.subTest(row=rid):
+                row = by_id[rid]
+                self.assertEqual(row["status"], status)
+                for line in lines:
+                    self.assertIn(line, row["note"], f"{rid} note must cite line {line}")
+
     def test_unobserved_rows_are_unknown_and_callee_abi_stays_unpromoted(self):
         for row in CALLER_LEDGER:
             if row["direction"] == "UNOBSERVED":
