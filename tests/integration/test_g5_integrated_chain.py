@@ -505,7 +505,10 @@ class G5IntegratedChainSynthetic(unittest.TestCase):
         r = cold
         self.assertEqual(r[base], 0xAA)
         self.assertEqual(r[base + 1], 0)  # $02 2-base still returns on control ROM
-        self.assertNotEqual(r[base + 28], 0)  # link V1 refuses the $FFFFFF block
+        # Link V1 checks the window before the block: $20F5-$20F7 = $FFFFFF
+        # (deliberate garbage; the commercial path ignores these bytes) is an
+        # invalid window (HI >= $20), so the exact refusal code is $61 WINDOW.
+        self.assertEqual(r[base + 28], 0x61)
         self.assertEqual(list(r[base + 42:base + 52]), [0] * 10)  # no CRES writes
         self._assert_window_untouched(r, "control transfer window untouched")
         self.assertEqual([r[base + 3], r[base + 31], r[base + 73]], [0x02, 0x03, 0x33])
