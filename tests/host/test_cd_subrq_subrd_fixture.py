@@ -51,10 +51,18 @@ def canonical_sha256(data):
 
 
 def _well_formed(medium):
+    # Synthetic-model-only contract (not a CD-standard claim): the author-defined medium is
+    # contiguous from LBA 0 with no gaps or overlaps (adjacent start == previous end + 1) and
+    # leadout_lba == last track end + 1. Anything outside this model (gaps, overlaps, reordered
+    # tracks, empty track list, bad types, wrong lead-out, non-zero first start) is not
+    # well-formed; judge() reports it as UNKNOWN, never POSITIVE. No pregap/lead-in rule is
+    # assumed beyond this synthetic definition.
     if not isinstance(medium, dict) or medium.get("synthetic") is not True:
         return False
     tracks, leadout = medium.get("tracks"), medium.get("leadout_lba")
-    if not isinstance(tracks, list) or type(leadout) is not int or leadout < 0:
+    if not isinstance(tracks, list) or len(tracks) == 0:
+        return False
+    if type(leadout) is not int or leadout < 0:
         return False
     prev_no, prev_end = 0, -1
     for t in tracks:
@@ -65,18 +73,28 @@ def _well_formed(medium):
             return False
         if no < 1 or not (0 <= start <= end < leadout):
             return False
-        if no <= prev_no or start <= prev_end:
+        if no <= prev_no:
+            return False
+        # Contiguity: first track must start at 0 (prev_end starts at -1), every next track
+        # must start exactly at previous end + 1. Gaps and overlaps are both rejected here.
+        if start != prev_end + 1:
             return False
         prev_no, prev_end = no, end
+    if leadout != prev_end + 1:
+        return False
     return True
 
 
 def judge(medium, query, present=True, needs_callee=False):
     """Reference judge: (verdict, detail, result). Never a PASS/VERIFIED verdict; ABI stays BLOCKED_ABI.
 
-    Precedence (first matching rule decides): callee dependence -> no medium -> malformed medium ->
-    unmodelled request -> malformed track/LBA -> unknown track -> LBA outside the track -> POSITIVE.
+    Precedence (first matching rule decides): malformed control flag -> callee dependence ->
+    no medium -> malformed medium -> unmodelled request -> malformed track/LBA -> unknown track ->
+    LBA outside the track -> POSITIVE. Control flags must be plain bool; any other type is
+    UNKNOWN, never POSITIVE.
     """
+    if type(present) is not bool or type(needs_callee) is not bool:
+        return UNKNOWN, "malformed control flag: present and needs_callee must be plain bool", None
     if needs_callee:
         return BLOCKED, "BLOCKED_ABI: callee arguments/returns undecided; reference JSR not called", None
     if not present:
@@ -190,9 +208,98 @@ class CdSubrqSubrdSlot0dFixtureTests(unittest.TestCase):
         self.assertEqual(verdict, UNKNOWN)
         verdict, _, _ = judge({"synthetic": True, "leadout_lba": 200, "tracks": []},
                               {"request": "current_q", "track": 1, "lba": 0})
-        self.assertEqual(verdict, NEGATIVE)
+        self.assertEqual(verdict, UNKNOWN)
         verdict, _, _ = judge({"synthetic": False}, {"request": "current_q", "track": 1, "lba": 0})
         self.assertEqual(verdict, UNKNOWN)
+
+    def test_malformed_media_are_unknown_and_never_positive(self):
+        # Synthetic-model-only negatives: gaps, bad lead-out, overlaps, reordered tracks,
+        # empty list and bad types must be UNKNOWN, never POSITIVE. These are author-defined
+        # model constraints, not CD-standard claims.
+        gap = {"synthetic": True, "leadout_lba": 200, "tracks": [
+            {"no": 1, "type": "data", "start": 0, "end": 99},
+            {"no": 2, "type": "audio", "start": 101, "end": 199},
+        ]}
+        bad_leadout = {"synthetic": True, "leadout_lba": 205, "tracks": [
+            {"no": 1, "type": "data", "start": 0, "end": 99},
+            {"no": 2, "type": "audio", "start": 100, "end": 199},
+        ]}
+        overlap = {"synthetic": True, "leadout_lba": 200, "tracks": [
+            {"no": 1, "type": "data", "start": 0, "end": 99},
+            {"no": 2, "type": "audio", "start": 99, "end": 199},
+        ]}
+        reordered = {"synthetic": True, "leadout_lba": 200, "tracks": [
+            {"no": 2, "type": "audio", "start": 100, "end": 199},
+            {"no": 1, "type": "data", "start": 0, "end": 99},
+        ]}
+        empty = {"synthetic": True, "leadout_lba": 200, "tracks": []}
+        bad_type_tracks = {"synthetic": True, "leadout_lba": 200, "tracks": "not-a-list"}
+        bad_type_leadout = {"synthetic": True, "leadout_lba": "200", "tracks": [
+            {"no": 1, "type": "data", "start": 0, "end": 99},
+            {"no": 2, "type": "audio", "start": 100, "end": 199},
+        ]}
+        bad_type_track_no = {"synthetic": True, "leadout_lba": 200, "tracks": [
+            {"no": "1", "type": "data", "start": 0, "end": 99},
+            {"no": 2, "type": "audio", "start": 100, "end": 199},
+        ]}
+        nonzero_first_start = {"synthetic": True, "leadout_lba": 200, "tracks": [
+            {"no": 1, "type": "data", "start": 1, "end": 99},
+            {"no": 2, "type": "audio", "start": 100, "end": 199},
+        ]}
+        malformed = [
+            ("gap track1-end-99 track2-start-101", gap,
+             {"request": "current_q", "track": 2, "lba": 101}),
+            ("leadout-205 past final-end-199", bad_leadout,
+             {"request": "current_q", "track": 2, "lba": 150}),
+            ("overlapping boundary at 99", overlap,
+             {"request": "current_q", "track": 2, "lba": 99}),
+            ("reordered tracks", reordered,
+             {"request": "current_q", "track": 1, "lba": 0}),
+            ("empty track array", empty,
+             {"request": "current_q", "track": 1, "lba": 0}),
+            ("non-list tracks type", bad_type_tracks,
+             {"request": "current_q", "track": 1, "lba": 0}),
+            ("string leadout type", bad_type_leadout,
+             {"request": "current_q", "track": 2, "lba": 150}),
+            ("string track-no type", bad_type_track_no,
+             {"request": "current_q", "track": 1, "lba": 0}),
+            ("non-zero first start", nonzero_first_start,
+             {"request": "current_q", "track": 1, "lba": 1}),
+        ]
+        for label, medium, query in malformed:
+            with self.subTest(medium=label):
+                self.assertFalse(_well_formed(medium))
+                verdict, detail, result = judge(medium, query)
+                self.assertEqual(verdict, UNKNOWN)
+                self.assertIsNone(result)
+                self.assertTrue(detail)
+
+    def test_malformed_control_flags_are_never_positive(self):
+        query = {"request": "current_q", "track": 2, "lba": 150}
+        bad_flags = ("false", "true", "0", "1", 0, 1, None, 0.0, 1.0, [], {}, b"true")
+        for bad in bad_flags:
+            with self.subTest(present=repr(bad)):
+                verdict, _, result = judge(self.medium, query, present=bad, needs_callee=False)
+                self.assertNotEqual(verdict, POSITIVE)
+                self.assertEqual(verdict, UNKNOWN)
+                self.assertIsNone(result)
+            with self.subTest(needs_callee=repr(bad)):
+                verdict, _, result = judge(self.medium, query, present=True, needs_callee=bad)
+                self.assertNotEqual(verdict, POSITIVE)
+                self.assertEqual(verdict, UNKNOWN)
+                self.assertIsNone(result)
+        # Malformed needs_callee must not fall through to BLOCKED; malformed present
+        # must not fall through to NEGATIVE-as-absent.
+        verdict, _, _ = judge(self.medium, query, present=False, needs_callee="true")
+        self.assertEqual(verdict, UNKNOWN)
+        verdict, _, _ = judge(self.medium, query, present="false", needs_callee=True)
+        self.assertEqual(verdict, UNKNOWN)
+        # Valid bool precedence is preserved: callee dependence outranks no-medium.
+        verdict, _, _ = judge(self.medium, query, present=False, needs_callee=True)
+        self.assertEqual(verdict, BLOCKED)
+        verdict, _, result = judge(self.medium, query, present=True, needs_callee=False)
+        self.assertEqual(verdict, POSITIVE)
+        self.assertIsNotNone(result)
 
     def test_no_negative_case_is_accepted_and_lenient_judge_is_caught(self):
         accepted = [c["id"] for c in self.cases if c["expected"] != POSITIVE
