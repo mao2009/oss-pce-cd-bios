@@ -49,12 +49,6 @@ can: sta $2800,x
     dex
     bne can
     lda #$00
-    ldx #$09
-zc: sta $2330,x
-    sta $2320,x
-    dex
-    bpl zc
-    lda #$00
     ldx #$07
 bz: sta $2400,x
     dex
@@ -114,6 +108,18 @@ cpst: lda $2400,x
     sta $20FA
     lda #$28
     sta $20FB
+    ; CRES/LINK_RES canaries (MEDIUM-2): distinct non-zero fills set just
+    ; before $03 so a stray zero-write cannot pass as "unchanged".
+    lda #$A5
+    ldx #$09
+cres_can: sta $2330,x
+    dex
+    bpl cres_can
+    lda #$5A
+    ldx #$09
+lres_can: sta $2320,x
+    dex
+    bpl lres_can
     tma #$01
     sta res_base+20
     tma #$02
@@ -234,12 +240,6 @@ can: sta $2800,x
     dex
     bne can
     lda #$00
-    ldx #$09
-zc: sta $2330,x
-    sta $2320,x
-    dex
-    bpl zc
-    lda #$00
     ldx #$07
 bz: sta $2400,x
     dex
@@ -274,6 +274,18 @@ bz: sta $2400,x
     sta $20FA
     lda #$28
     sta $20FB
+    ; CRES/LINK_RES canaries (MEDIUM-2): distinct non-zero fills set just
+    ; before $03 so a stray zero-write cannot pass as "unchanged".
+    lda #$A5
+    ldx #$09
+cres_can: sta $2330,x
+    dex
+    bpl cres_can
+    lda #$5A
+    ldx #$09
+lres_can: sta $2320,x
+    dex
+    bpl lres_can
     jsr $E009
     sta res_base+28
     php
@@ -282,6 +294,8 @@ bz: sta $2400,x
     ldx #$09
 rc: lda $2330,x
     sta res_base+42,x
+    lda $2320,x
+    sta res_base+52,x
     dex
     bpl rc
     ldx #$07
@@ -315,7 +329,74 @@ res_base:
 """
 
 
-class G5IntegratedChainSynthetic(unittest.TestCase):
+class G5ChainGateMixin:
+    """Shared fail-closed gate logic (host-only, no core/ROM/cc65 needed).
+
+    Mixed into both the real-core suite and the standalone host-only suite
+    (LOW-2) so the negative tests exercise the exact production helpers
+    without ROM builds or probe compiles.
+    """
+
+    def _buf(self, rec):
+        # Fail-closed gate (P2): both cycles must have ended at the
+        # recognized payload halt. A budget-exhausted or unconfirmed run
+        # must never pass on buffer contents alone.
+        self.assertIn("RUN", rec)
+        runs = rec["RUN"]
+        self.assertEqual(len(runs), 2)
+        cycles = [r.get("cycle") for r in runs]
+        self.assertEqual(sorted(cycles), ["cold", "warm"])
+        bufs = {}
+        for r in runs:
+            self.assertEqual(r.get("reason"), "cd_halt_ok")
+            self.assertIs(r.get("halt_confirmed"), True)
+            self.assertIn("buffer_hex", r)
+            try:
+                buf = bytes.fromhex(r["buffer_hex"])
+            except (TypeError, ValueError):
+                self.fail("buffer_hex is not valid hex")
+            self.assertGreaterEqual(len(buf), 2048)
+            bufs[r["cycle"]] = buf
+        return bufs["cold"], bufs["warm"]
+
+    def _assert_window_untouched(self, buf, tag):
+        # Refusal path (P3): the whole 2048-byte destination must still
+        # be canary, not just the first 16 bytes.
+        self.assertEqual(buf[:2048], bytes([0xAA]) * 2048, tag)
+
+    def _assert_cres_unchanged(self, buf, base, tag):
+        # MEDIUM-2: CRES must keep its $A5 canary; a stray zero-write
+        # would otherwise pass the old `== [0] * 10` comparison.
+        self.assertEqual(list(buf[base + 42:base + 52]), [0xA5] * 10, tag)
+
+    def _assert_link_unchanged(self, buf, base, tag):
+        # MEDIUM-2: LINK_RES must keep its $5A canary on paths where the
+        # implementation must not write it.
+        self.assertEqual(list(buf[base + 52:base + 62]), [0x5A] * 10, tag)
+
+    def _check_full(self, got, exp, tag):
+        self.assertEqual(list(got)[:2048], list(exp)[:2048], tag)
+
+    def _neg_rec(self, cold_reason="cd_halt_ok", warm_reason="cd_halt_ok",
+                 cold_conf=True, warm_conf=True, cold_hex=None, warm_hex=None,
+                 cycles=("cold", "warm"), drop_key=None):
+        # Host-side factory for _buf() gate negatives (no core needed).
+        good = "aa" * 2048
+        runs = []
+        for cycle, reason, conf, hexval in (
+                (cycles[0] if len(cycles) > 0 else "cold", cold_reason, cold_conf,
+                 cold_hex if cold_hex is not None else good),
+                (cycles[1] if len(cycles) > 1 else "warm", warm_reason, warm_conf,
+                 warm_hex if warm_hex is not None else good)):
+            row = {"cycle": cycle, "reason": reason,
+                   "halt_confirmed": conf, "buffer_hex": hexval}
+            if drop_key is not None and cycle == "cold":
+                del row[drop_key]
+            runs.append(row)
+        return {"RUN": runs}
+
+
+class G5IntegratedChainSynthetic(unittest.TestCase, G5ChainGateMixin):
     @classmethod
     def setUpClass(cls):
         import tempfile
@@ -334,9 +415,13 @@ class G5IntegratedChainSynthetic(unittest.TestCase):
         cls.normal = orig.read_bytes()
         cls.sel = SEL
         cls.track_sel = TRACK_SEL
+        # MEDIUM-1: the experimental ROM uses the builder default
+        # (commercial FIRST). Omitting cd_read lets this gate catch a
+        # default regression to "link"; only the control ROM keeps an
+        # explicit cd_read="link".
         cls.rom, cls.syms = build_ipl_loader_g5_rom(
             orig, cls.out, cls.sel, "debug", "vch", ["-D", "IPL_PUBLIC"],
-            track=cls.track_sel, private_input=False, cd_read="commercial")
+            track=cls.track_sel, private_input=False)
         cls.rom_ctrl, cls.syms_ctrl = build_ipl_loader_g5_rom(
             orig, cls.out, cls.sel, "debug", "vch-ctrl", ["-D", "IPL_PUBLIC"],
             track=cls.track_sel, private_input=False, cd_read="link")
@@ -418,40 +503,10 @@ class G5IntegratedChainSynthetic(unittest.TestCase):
         rec = Eentry.run_probe(self.probe, rom, cue, lab, BUDGET, "synthetic")
         return rec, res_base
 
-    def _buf(self, rec):
-        # Fail-closed gate (P2): both cycles must have ended at the
-        # recognized payload halt. A budget-exhausted or unconfirmed run
-        # must never pass on buffer contents alone.
-        self.assertIn("RUN", rec)
-        runs = rec["RUN"]
-        self.assertEqual(len(runs), 2)
-        cycles = [r.get("cycle") for r in runs]
-        self.assertEqual(sorted(cycles), ["cold", "warm"])
-        bufs = {}
-        for r in runs:
-            self.assertEqual(r.get("reason"), "cd_halt_ok")
-            self.assertIs(r.get("halt_confirmed"), True)
-            self.assertIn("buffer_hex", r)
-            try:
-                buf = bytes.fromhex(r["buffer_hex"])
-            except (TypeError, ValueError):
-                self.fail("buffer_hex is not valid hex")
-            self.assertGreaterEqual(len(buf), 2048)
-            bufs[r["cycle"]] = buf
-        return bufs["cold"], bufs["warm"]
-
-    def _assert_window_untouched(self, buf, tag):
-        # Refusal path (P3): the whole 2048-byte destination must still
-        # be canary, not just the first 16 bytes.
-        self.assertEqual(buf[:2048], bytes([0xAA]) * 2048, tag)
-
     def _expected_frame(self, lba):
         raw = self._last_bin.read_bytes()
         at = lba * self.RAW_BYTES + self.USER_OFFSET
         return list(raw[at:at + 2048])
-
-    def _check_full(self, got, exp, tag):
-        self.assertEqual(list(got)[:2048], list(exp)[:2048], tag)
 
     def _chain_defines(self):
         return ["-DTRACKNUM=2", "-DCRLOW=242"]
@@ -478,7 +533,11 @@ class G5IntegratedChainSynthetic(unittest.TestCase):
                          [0xFF, 0xF8, 0x80, 0x81, 0x82, 0x83, 0x84, 0x00])
         self.assertEqual(list(r[base + 20:base + 28]), list(r[base + 34:base + 42]))
         self.assertEqual(list(r[base + 42:base + 52]), [0, 8, 0, 8, 0, 0, 0, 0, 1, 9])
-        self.assertEqual(list(r[base + 52:base + 62]), [0] * 10)
+        for cyc, b in (("cold", cold), ("warm", warm)):
+            with self.subTest(cycle=cyc, check="link-res-canary"):
+                # Commercial success must leave LINK_RES at its canary:
+                # a stray zero-write would otherwise pass as "unchanged".
+                self._assert_link_unchanged(b, base, "success LINK_RES canary")
         exp = self._expected_frame(SEL)
         self._check_full(r[0:2048], exp, "chain full-2048")
         self.assertEqual(list(r[base + 62:base + 70]), list(exp[:8]))
@@ -491,6 +550,9 @@ class G5IntegratedChainSynthetic(unittest.TestCase):
 
     def test_chain_apicall_slot_order(self):
         rec, base = self._run("order", CHAIN_ASM, self._chain_defines())
+        # LOW-1: require the recognized halt first; order alone must not
+        # pass a run that hung after $33 and hit the step budget.
+        self._buf(rec)
         for cycle in ("cold", "warm"):
             calls = [c for c in rec["APICALL"] if c["cycle"] == cycle]
             slots = [c["slot"] for c in calls]
@@ -509,7 +571,12 @@ class G5IntegratedChainSynthetic(unittest.TestCase):
         # (deliberate garbage; the commercial path ignores these bytes) is an
         # invalid window (HI >= $20), so the exact refusal code is $61 WINDOW.
         self.assertEqual(r[base + 28], 0x61)
-        self.assertEqual(list(r[base + 42:base + 52]), [0] * 10)  # no CRES writes
+        for cyc, b in (("cold", cold), ("warm", warm)):
+            with self.subTest(cycle=cyc, check="cres-canary"):
+                # Refusal must leave CRES at its canary (no zero writes).
+                self._assert_cres_unchanged(b, base, "control CRES canary")
+                # Link V1 records its own refusal: code byte $61, never canary.
+                self.assertEqual(b[base + 52], 0x61)
         self._assert_window_untouched(r, "control transfer window untouched")
         self.assertEqual([r[base + 3], r[base + 31], r[base + 73]], [0x02, 0x03, 0x33])
         # Review regression: the control probe must use the control ROM's own
@@ -533,7 +600,10 @@ class G5IntegratedChainSynthetic(unittest.TestCase):
         r = cold
         self.assertEqual(r[base], 0xAA)
         self.assertEqual(r[base + 28], 0x65)  # _dh=1 refused
-        self.assertEqual(list(r[base + 42:base + 52]), [0] * 10)  # no CRES writes
+        for cyc, b in (("cold", cold), ("warm", warm)):
+            with self.subTest(cycle=cyc, check="refusal-canaries"):
+                self._assert_cres_unchanged(b, base, "badmode CRES canary")
+                self._assert_link_unchanged(b, base, "badmode LINK_RES canary")
         self._assert_window_untouched(r, "badmode canary intact")
 
     def test_chain_mutants_detected(self):
@@ -552,23 +622,45 @@ class G5IntegratedChainSynthetic(unittest.TestCase):
         tampered_pre[3] ^= 0xFF
         self.assertNotEqual(list(tampered_pre), list(cold[base + 34:base + 42]))
 
-    def _neg_rec(self, cold_reason="cd_halt_ok", warm_reason="cd_halt_ok",
-                 cold_conf=True, warm_conf=True, cold_hex=None, warm_hex=None,
-                 cycles=("cold", "warm"), drop_key=None):
-        # Host-side factory for _buf() gate negatives (no core needed).
-        good = "aa" * 2048
-        runs = []
-        for cycle, reason, conf, hexval in (
-                (cycles[0] if len(cycles) > 0 else "cold", cold_reason, cold_conf,
-                 cold_hex if cold_hex is not None else good),
-                (cycles[1] if len(cycles) > 1 else "warm", warm_reason, warm_conf,
-                 warm_hex if warm_hex is not None else good)):
-            row = {"cycle": cycle, "reason": reason,
-                   "halt_confirmed": conf, "buffer_hex": hexval}
-            if drop_key is not None and cycle == "cold":
-                del row[drop_key]
-            runs.append(row)
-        return {"RUN": runs}
+    def test_chain_unimplemented_slot_traps(self):
+        rec, base = self._run("unimpl", UNIMPL_ASM, [])
+        runs = {r["cycle"]: r for r in rec["RUN"]}
+        self.assertEqual(sorted(runs), ["cold", "warm"])
+        for cycle, run in runs.items():
+            with self.subTest(cycle=cycle):
+                self.assertEqual(run["reason"], "api_unimplemented")
+                self.assertTrue(run["halt_confirmed"])
+                self.assertEqual(run["pc"], self.labels["api_unimplemented"])
+                self.assertEqual(run["x"], 0x04)
+                self.assertEqual(run["sp"], 0xFD)
+
+    def test_chain_rom_identity_and_table_routing(self):
+        import hashlib
+        exp = self.rom.read_bytes()
+        ctrl = self.rom_ctrl.read_bytes()
+        self.assertNotEqual(hashlib.sha256(exp).digest(), hashlib.sha256(ctrl).digest())
+        for rom_bytes, syms, entry, name in (
+                (exp, self.syms, "cd_read_commercial_entry", "exp"),
+                (ctrl, self.syms_ctrl, "cd_read_link_entry", "ctrl")):
+            tab = rom_bytes[0xE009 - 0xE000:0xE009 - 0xE000 + 3]
+            self.assertEqual(tuple(tab), (0x4C, syms[entry] & 0xFF,
+                                          (syms[entry] >> 8) & 0xFF), name)
+        for rom_bytes, name in ((exp, "exp"), (ctrl, "ctrl")):
+            tab02 = rom_bytes[0xE006 - 0xE000:0xE006 - 0xE000 + 3]
+            self.assertEqual(tab02[0], 0x4C, name)  # $02 is JMP, never fake RTS
+            tab33 = rom_bytes[0xE099 - 0xE000:0xE099 - 0xE000 + 3]
+            self.assertEqual(tab33[0], 0x4C, name)  # $33 is JMP, never fake RTS
+        # $4A ($E0DE) stays the untouched stub on both G5 ROMs (SIMULATED
+        # control lives in a separate builder; never mixed in here).
+        at_4a = 3 * 0x4A
+        self.assertEqual(exp[at_4a:at_4a + 3], self.normal[at_4a:at_4a + 3])
+        self.assertEqual(ctrl[at_4a:at_4a + 3], self.normal[at_4a:at_4a + 3])
+
+
+class G5ChainGateChecks(unittest.TestCase, G5ChainGateMixin):
+    """Host-only gate negatives (LOW-2): no setUpClass, so running this
+    class never builds ROMs or compiles probes.
+    """
 
     def test_buf_rejects_bad_runs(self):
         # P2 RED: every malformed/unfinished observer record must fail the
@@ -615,39 +707,25 @@ class G5IntegratedChainSynthetic(unittest.TestCase):
                 with self.assertRaises(AssertionError, msg=f"detect {tag}"):
                     self._assert_window_untouched(bytes(bad), f"corrupt {tag}")
 
-    def test_chain_unimplemented_slot_traps(self):
-        rec, base = self._run("unimpl", UNIMPL_ASM, [])
-        runs = {r["cycle"]: r for r in rec["RUN"]}
-        self.assertEqual(sorted(runs), ["cold", "warm"])
-        for cycle, run in runs.items():
-            with self.subTest(cycle=cycle):
-                self.assertEqual(run["reason"], "api_unimplemented")
-                self.assertTrue(run["halt_confirmed"])
-                self.assertEqual(run["pc"], self.labels["api_unimplemented"])
-                self.assertEqual(run["x"], 0x04)
-                self.assertEqual(run["sp"], 0xFD)
-
-    def test_chain_rom_identity_and_table_routing(self):
-        import hashlib
-        exp = self.rom.read_bytes()
-        ctrl = self.rom_ctrl.read_bytes()
-        self.assertNotEqual(hashlib.sha256(exp).digest(), hashlib.sha256(ctrl).digest())
-        for rom_bytes, syms, entry, name in (
-                (exp, self.syms, "cd_read_commercial_entry", "exp"),
-                (ctrl, self.syms_ctrl, "cd_read_link_entry", "ctrl")):
-            tab = rom_bytes[0xE009 - 0xE000:0xE009 - 0xE000 + 3]
-            self.assertEqual(tuple(tab), (0x4C, syms[entry] & 0xFF,
-                                          (syms[entry] >> 8) & 0xFF), name)
-        for rom_bytes, name in ((exp, "exp"), (ctrl, "ctrl")):
-            tab02 = rom_bytes[0xE006 - 0xE000:0xE006 - 0xE000 + 3]
-            self.assertEqual(tab02[0], 0x4C, name)  # $02 is JMP, never fake RTS
-            tab33 = rom_bytes[0xE099 - 0xE000:0xE099 - 0xE000 + 3]
-            self.assertEqual(tab33[0], 0x4C, name)  # $33 is JMP, never fake RTS
-        # $4A ($E0DE) stays the untouched stub on both G5 ROMs (SIMULATED
-        # control lives in a separate builder; never mixed in here).
-        at_4a = 3 * 0x4A
-        self.assertEqual(exp[at_4a:at_4a + 3], self.normal[at_4a:at_4a + 3])
-        self.assertEqual(ctrl[at_4a:at_4a + 3], self.normal[at_4a:at_4a + 3])
+    def test_canary_catches_stray_zero_write(self):
+        # MEDIUM-2 RED: a stray zero-write over the canary regions passes
+        # the old `== [0] * 10` comparison (blind GREEN) but fails the
+        # production canary helpers used by the real-core tests.
+        good = bytearray(96)
+        good[42:52] = bytes([0xA5] * 10)
+        good[52:62] = bytes([0x5A] * 10)
+        self._assert_cres_unchanged(good, 0, "intact CRES canary")
+        self._assert_link_unchanged(good, 0, "intact LINK_RES canary")
+        buggy_cres = bytearray(good)
+        buggy_cres[42:52] = bytes(10)  # stray zero-fill on a refusal path
+        self.assertEqual(list(buggy_cres[42:52]), [0] * 10)  # old: blind
+        with self.assertRaises(AssertionError, msg="cres zero-fill RED"):
+            self._assert_cres_unchanged(buggy_cres, 0, "stray CRES zero")
+        buggy_link = bytearray(good)
+        buggy_link[52:62] = bytes(10)  # stray zero-fill on success path
+        self.assertEqual(list(buggy_link[52:62]), [0] * 10)  # old: blind
+        with self.assertRaises(AssertionError, msg="link zero-fill RED"):
+            self._assert_link_unchanged(buggy_link, 0, "stray LINK_RES zero")
 
 
 if __name__ == "__main__":
