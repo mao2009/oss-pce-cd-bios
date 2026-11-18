@@ -76,9 +76,14 @@ from failclosed_gate import run_all as base_run_all  # noqa: E402
 # The safety verdict's data reads must stay within the allowlisted inputs;
 # docs/, build/ outputs, rom/ inputs and test-result artefacts must never be
 # read as verdict data. Spec JSON ledgers, the Makefile and src/ override
-# listings are the full data set. tools/*.py sources are code (filtered from
-# the audit as .py), not data.
-ALLOWLISTED_INPUT_PREFIXES = ("spec/", "Makefile", "src/")
+# listings are the full data set. tools/*.py sources are code (restricted
+# exemption in _is_known_module_source), not data.
+#
+# Prefixes are directory prefixes WITH trailing slash only, so "speculative"
+# can never match "spec/". The Makefile is an exact file allowlist entry:
+# "Makefile.approval.json" must never match a bare "Makefile" prefix.
+ALLOWLISTED_INPUT_PREFIXES = ("spec/", "src/")
+ALLOWLISTED_INPUT_FILES = frozenset({"Makefile"})
 # Provenance-pointer existence checks that fail closed on absence. The
 # hardware ledger records its source reference as a docs/ path and the
 # validator stats it for existence; absence fails closed (never promotes).
@@ -287,11 +292,20 @@ def _audit_verdict_reads(loader) -> list[tuple[str, str]]:
     orig_stat = Path.stat
 
     def _record(kind: str, value) -> None:
+        # bytes paths (accepted by os.open/builtins.open/io.open) are decoded
+        # here so they can never bypass the audit. Undecodable or otherwise
+        # unusable values become an explicit placeholder that downstream
+        # classification refuses (fail closed, never silently allowed).
+        if isinstance(value, (bytes, bytearray)):
+            try:
+                value = os.fsdecode(value)
+            except (UnicodeDecodeError, ValueError):
+                value = "<undecodable-bytes-path>"
         if isinstance(value, (str, os.PathLike)):
             try:
                 records.append((kind, os.fspath(value)))
             except (TypeError, ValueError):
-                pass
+                records.append((kind, "<unrecordable-path>"))
 
     def _read_text(self, *args, **kwargs):
         _record("read", str(self))
@@ -427,7 +441,9 @@ def _classify_verdict_reads(records: list[tuple[str, str]]) -> tuple[list[str], 
                 continue
             non_allowlisted.append(f"{kind} repo-root read (refused)")
             continue
-        if not (canon_rel == "Makefile" or canon_rel.startswith(ALLOWLISTED_INPUT_PREFIXES)):
+        allowed = canon_rel in ALLOWLISTED_INPUT_FILES or canon_rel.startswith(
+            ALLOWLISTED_INPUT_PREFIXES)
+        if not allowed:
             non_allowlisted.append(f"{kind} non-allowlisted input {canon_rel!r}")
     return forbidden, non_allowlisted
 

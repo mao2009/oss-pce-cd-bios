@@ -530,6 +530,95 @@ class P10InputClosureMutants(unittest.TestCase):
         self.assertTrue(forbidden or non_allowlisted,
                         "unresolvable read must be refused")
 
+    def test_makefile_exact_match_only(self):
+        # MEDIUM-1: "Makefile" is an exact allowlist entry, not a prefix.
+        # "Makefile.approval.json" etc. were allowed by the old startswith
+        # predicate and must now be refused; the real Makefile stays GREEN.
+        from unittest import mock
+        import tempfile
+        cases = {
+            "Makefile": [],
+            "Makefile.approval.json": ["non-allowlisted"],
+            "Makefile.backup": ["non-allowlisted"],
+            "Makefile.policy": ["non-allowlisted"],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_root = Path(tmp) / "fakeroot"
+            for name, expect in cases.items():
+                target = fake_root / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text("dummy\n")
+
+                def mutant(path=str(target)):
+                    Path(path).read_text(encoding="utf-8")
+
+                with mock.patch.object(p10, "ROOT", fake_root):
+                    records = p10._audit_verdict_reads(mutant)
+                    forbidden, non_allowlisted = p10._classify_verdict_reads(records)
+                if not expect:
+                    self.assertEqual((forbidden, non_allowlisted), ([], []), name)
+                else:
+                    self.assertTrue(
+                        any("non-allowlisted" in n for n in non_allowlisted),
+                        f"{name}: {forbidden} {non_allowlisted}")
+            # A spec/ file under the same fake root stays allowlisted.
+            ok_file = fake_root / "spec" / "ok.json"
+            ok_file.parent.mkdir(parents=True, exist_ok=True)
+            ok_file.write_text("{}\n")
+            with mock.patch.object(p10, "ROOT", fake_root):
+                records = p10._audit_verdict_reads(
+                    lambda: ok_file.read_text(encoding="utf-8"))
+                self.assertEqual(p10._classify_verdict_reads(records), ([], []))
+
+    def test_makefile_subdir_refused(self):
+        # "Makefile/approval.json" (a directory named Makefile) is not the
+        # allowlisted file and must be refused.
+        forbidden, non_allowlisted = p10._classify_verdict_reads(
+            [("read", str(ROOT / "Makefile" / "approval.json"))])
+        self.assertEqual(forbidden, [])
+        self.assertTrue(non_allowlisted, "Makefile/approval.json must be refused")
+
+    def test_bytes_paths_recorded_on_all_apis(self):
+        # MEDIUM-2: bytes paths must be recorded on every representative
+        # read API (old code dropped them silently). Temp dummies only.
+        import io as _io
+        import os as _os
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "approval.json"
+            target.write_text('{"approved": true}\n')
+            encoded = _os.fsencode(str(target))
+            readers = {
+                "os.open": lambda: _os.close(_os.open(encoded, _os.O_RDONLY)),
+                "builtins.open": lambda: open(encoded, "rb").close(),
+                "io.open": lambda: _io.open(encoded, "rb").close(),
+            }
+            for name, reader in readers.items():
+                with self.subTest(api=name):
+                    records = p10._audit_verdict_reads(reader)
+                    self.assertTrue(records, f"{name}: bytes path must be recorded")
+                    forbidden, non_allowlisted = p10._classify_verdict_reads(records)
+                    self.assertTrue(
+                        any("outside repository allowlist" in n for n in non_allowlisted),
+                        f"{name}: {forbidden} {non_allowlisted}")
+
+    def test_undecodable_bytes_fail_closed(self):
+        # undecodable bytes paths are refused, never silently allowed.
+        import os as _os
+        bad = b"\xff\xfe\x00bad"
+
+        def mutant():
+            try:
+                _os.open(bad, _os.O_RDONLY)
+            except Exception:
+                pass
+
+        records = p10._audit_verdict_reads(mutant)
+        self.assertTrue(records, "undecodable path must still be recorded")
+        forbidden, non_allowlisted = p10._classify_verdict_reads(records)
+        self.assertTrue(forbidden or non_allowlisted,
+                        "undecodable path must be refused")
+
     def test_no_absolute_paths_in_messages(self):
         # Findings must not leak absolute filesystem paths (tmpdirs, homes).
         import tempfile
