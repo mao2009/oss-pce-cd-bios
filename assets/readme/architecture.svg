@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="345" viewBox="0 0 1200 345" role="img" aria-labelledby="ttl ds"><title id="ttl">Experimental BIOS observation architecture</title><desc id="ds">Sanitized media selection, PUBLIC IPL, experimental entry points and pinned real Geargrafx core. Release remains blocked.</desc><defs><linearGradient id="bg" x2=".9" y2="1"><stop stop-color="#09132c"/><stop offset=".58" stop-color="#15295a"/><stop offset="1" stop-color="#29164d"/></linearGradient><linearGradient id="shine"><stop stop-color="#42f2fb"/><stop offset=".48" stop-color="#b4b0ff"/><stop offset="1" stop-color="#ff88df"/></linearGradient><pattern id="gr" width="32" height="32" patternUnits="userSpaceOnUse"><path d="M32 0H0V32" fill="none" stroke="#3a6097" stroke-opacity=".22"/></pattern></defs><rect width="1200" height="345" rx="14" fill="url(#bg)"/><rect width="1200" height="345" fill="url(#gr)"/>
+<text x="30" y="46" font-family="system-ui, sans-serif" font-size="25" fill="#f8ffff" font-weight="770" text-anchor="start">ARCHITECTURE / EVIDENCE BOUNDARIES</text>
+<text x="1170" y="45" font-family="system-ui, sans-serif" font-size="16" fill="#ffadbf" font-weight="760" text-anchor="end">NOT A COMPATIBLE BIOS</text>
+<rect x="31" y="78" width="248" height="215" rx="16" fill="#14264b" stroke="#3883b4" stroke-width="2"/>
+<text x="155" y="122" font-family="system-ui, sans-serif" font-size="23" fill="#fff" font-weight="770" text-anchor="middle">MEDIA</text>
+<circle cx="156" cy="192" r="52" fill="url(#shine)" stroke="#e9fbff" stroke-width="4"/><circle cx="156" cy="192" r="17" fill="#14264b" stroke="#ebfcff" stroke-width="3"/>
+<text x="155" y="276" font-family="system-ui, sans-serif" font-size="15" fill="#d6e7fb" font-weight="540" text-anchor="middle">synthetic / opt-in CD</text>
+<path d="M284 185L328 185" fill="none" stroke="#4de6f5" stroke-width="3" stroke-linecap="round"/><path d="M320 180L328 185L320 190" fill="none" stroke="#4de6f5" stroke-width="2"/>
+<rect x="341" y="78" width="244" height="215" rx="16" fill="#14264b" stroke="#3883b4" stroke-width="2"/>
+<text x="463" y="122" font-family="system-ui, sans-serif" font-size="23" fill="#fff" font-weight="780" text-anchor="middle">PUBLIC IPL</text>
+<rect x="375" y="153" width="177" height="75" rx="10" fill="#274a76" stroke="#548bc7" stroke-width="2"/>
+<text x="463" y="181" font-family="system-ui, sans-serif" font-size="18" fill="#7af0f5" font-weight="730" text-anchor="middle">INFO + BODY</text><text x="463" y="211" font-family="system-ui, sans-serif" font-size="17" fill="#fff" font-weight="710" text-anchor="middle">RAM → IPLJMP</text>
+<text x="463" y="276" font-family="system-ui, sans-serif" font-size="15" fill="#d6e7fb" font-weight="540" text-anchor="middle">loader / validator</text>
+<path d="M590 185L638 185" fill="none" stroke="#4de6f5" stroke-width="3" stroke-linecap="round"/><path d="M630 180L638 185L630 190" fill="none" stroke="#4de6f5" stroke-width="2"/>
+<rect x="651" y="78" width="255" height="215" rx="16" fill="#14264b" stroke="#8569d4" stroke-width="2"/>
+<text x="778" y="119" font-family="system-ui, sans-serif" font-size="19" fill="#fff" font-weight="770" text-anchor="middle">EXPERIMENTAL BIOS</text>
+<rect x="671" y="141" width="98" height="48" rx="9" fill="#19415c" stroke="#3dd9e8" stroke-width="2"/><text x="720" y="172" font-family="system-ui, sans-serif" font-size="21" fill="#fff" font-weight="780" text-anchor="middle">$02</text>
+<rect x="787" y="141" width="98" height="48" rx="9" fill="#19415c" stroke="#3dd9e8" stroke-width="2"/><text x="837" y="172" font-family="system-ui, sans-serif" font-size="21" fill="#fff" font-weight="780" text-anchor="middle">$03</text>
+<rect x="671" y="202" width="98" height="48" rx="9" fill="#19415c" stroke="#3dd9e8" stroke-width="2"/><text x="720" y="234" font-family="system-ui, sans-serif" font-size="21" fill="#fff" font-weight="780" text-anchor="middle">$33</text>
+<rect x="787" y="202" width="98" height="48" rx="9" fill="#523047" stroke="#f48da8" stroke-width="2"/><text x="837" y="234" font-family="system-ui, sans-serif" font-size="21" fill="#fff" font-weight="780" text-anchor="middle">$4A</text>
+<text x="778" y="277" font-family="system-ui, sans-serif" font-size="15" fill="#d6e7fb" font-weight="540" text-anchor="middle">project-defined services</text>
+<path d="M910 185L949 185" fill="none" stroke="#4de6f5" stroke-width="3" stroke-linecap="round"/><path d="M941 180L949 185L941 190" fill="none" stroke="#4de6f5" stroke-width="2"/>
+<rect x="962" y="78" width="207" height="215" rx="16" fill="#14264b" stroke="#47cdbb" stroke-width="2"/>
+<text x="1065" y="128" font-family="system-ui, sans-serif" font-size="24" fill="#fff" font-weight="780" text-anchor="middle">Geargrafx</text>
+<text x="1065" y="166" font-family="system-ui, sans-serif" font-size="22" fill="#64e8fa" font-weight="710" text-anchor="middle">HuC6280</text>
+<text x="1065" y="213" font-family="system-ui, sans-serif" font-size="17" fill="#d6e7fb" font-weight="590" text-anchor="middle">pinned real core</text>
+<text x="1065" y="274" font-family="system-ui, sans-serif" font-size="15" fill="#d6e7fb" font-weight="540" text-anchor="middle">evidence only</text>
+<text x="33" y="325" font-family="system-ui, sans-serif" font-size="18" fill="#ffb8c6" font-weight="750" text-anchor="start">REFERENCE ABI VERIFIED = 0 / 81</text>
+<text x="1168" y="325" font-family="system-ui, sans-serif" font-size="18" fill="#ffc1c7" font-weight="730" text-anchor="end">RELEASE = BLOCKED</text>
+</svg>

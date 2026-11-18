@@ -1,4 +1,12 @@
-# Implementation status — 2026-11-18 G5 addendum, 2026-11-13 update and historical 2026-11-06 snapshot
+# Implementation status — current notes and dated historical snapshots
+
+## 2026-11-18 latest main / commercial FIRST-mode observation (fa694281)
+
+- PR #812 was merged (G5 synthetic integrated chain: project experimental `$02` 2-base, `$03` commercial FIRST and `$33` EX_DSPOFF). The current **normal DEV** count remains **18/81** with **63 stubs**; genuine ABI VERIFIED **0/81**, owner-approved DEV_CALLABLE **0**, reference JSR permitted **0/81**, `release_eligible=false`.
+- Owner-permitted, private read-only commercial CD observations on [Issue #802](https://github.com/mao2009/oss-pce-cd-bios/issues/802#issuecomment-6977401984): CUE[0] `$02 → $33 → $4A` and CUE[1] `$1E → $4A`. Both hit the unimplemented `$4A` stub; cold/warm agreed; game title screen not observed. The commercial prefixes **did not invoke `$03`**; its FIRST mode remains synthetic-only evidence in this scenario.
+- `G5_OBSERVED=false` and genuine `$4A` ABI UNKNOWN/BLOCKED. For the concise overview, see [project guide](project-guide.md), [G5 commercial re-observation](g5-commercial-reobservation-2026-11-18.md) and [visual README](../README.md).
+- Earlier dates below remain historical version-scoped evidence; they are not new measurements on this documentation change.
+
 
 ## 2026-11-18 addendum — main `5b893616` (audit snapshot `04922be2`)
 

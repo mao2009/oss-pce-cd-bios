@@ -1,6 +1,6 @@
 # Compatibility and reproducible evidence
 
-**No retail CD game has been tested with an oss-pce-cd-bios image.** Main has loadable **development-only** System Card diagnostics and actual Geargrafx startup/synthetic-CD sector observations, but **not a bootable compatible BIOS**. See [status](status.md).
+**As of 2026-11-18 (main `fa694281`), two Owner-permitted local commercial-CD observations exist, but no retail title screen or playable game has been demonstrated.** Both anonymously indexed CUEs reached PUBLIC IPL execution and the unimplemented `$4A` stub (`$02 → $33 → $4A` / `$1E → $4A`), cold/warm consistent. This does **not** establish a compatible or bootable replacement System Card BIOS. See [the sanitized FIRST-mode re-observation](g5-commercial-reobservation-2026-11-18.md), [Issue #802](https://github.com/mao2009/oss-pce-cd-bios/issues/802) and [status](status.md).
 
 ## Current experimental evidence (2026-11-06)
 
