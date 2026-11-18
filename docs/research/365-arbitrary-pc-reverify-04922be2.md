@@ -79,8 +79,8 @@ GREEN 条件：armed 17 が上表の refused／fail-closed で停止し、VDC �
 ## host / real-core / CI（OBSERVED と INFERRED の区別）
 
 - host（OBSERVED）：`test_365_st_boundary_record` 141 tests OK。本worktreeでの全 host スイート `python3 -m unittest discover -s tests/host` → 5613 tests OK（skipped=3、expected failures=3）。
-- real-core（OBSERVED）：`tests/integration/geargrafx_st_boundary.py` EXIT 0、EVIDENCE 40行・JSR_OBSERVATION 40行（hazard 6行は `JSR_OBSERVATION_EXCLUDED` が正本）。`observation_kind: REAL_CORE_EXECUTION`、`bios: SYNTHETIC`、core `b49ae82a…`。商用・参照BIOS由来の観測なし。
-- CI（INFERRED／UNKNOWN）：`tools/contracts.py` PASS（81 candidate contracts consistent; BIOS verification NOT_RUN）。required CI（`make test` / `make test-real-core` / `make check` 全系）および独立レビューは本 Draft PR では未完了（UNKNOWN）。Owner 承認までマージ禁止。
+- real-core（OBSERVED）：`tests/integration/geargrafx_st_boundary.py` EXIT 0、EVIDENCE 40行、JSR_OBSERVATION 34行、JSR_OBSERVATION_EXCLUDED 6行。hazard 6行（hwpage／BBR3-taken の unsafe-read・peek-fail-step・no-hazard-latch各3行）は `to_jsr_observation` が `None` を返すため JSR view から除外され（schema v1 に hazard outcome がない）、EVIDENCE が正本。`observation_kind: REAL_CORE_EXECUTION`、`bios: SYNTHETIC`、core `b49ae82a…`。商用・参照BIOS由来の観測なし。
+- CI（INFERRED／UNKNOWN→時点別に記録）：`tools/contracts.py` PASS（81 candidate contracts consistent; BIOS verification NOT_RUN）。初回記録時点では required CI 全系および独立レビューは未完了（UNKNOWN）だった。前回確認時点（PR HEAD `8385cae8`、2026-11-18）では Required CI 全GREEN（`verify-full`・`verify`・`guard-verify`・`bios-dev-full`・`core-harness` を含む、CI対象SHA＝PR HEAD一致確認）・既知LOW指摘の修正＋Resolve済み・未解決スレッド0件を確認。本修正後の新HEADについては CI・レビューを別途確認する（旧HEADのGREENを新HEADの結果として扱わない）。Owner 承認までマージ禁止。
 
 ## 機械可読証拠（本記録の要約行、EVIDENCE 互換）
 
@@ -97,4 +97,4 @@ GREEN 条件：armed 17 が上表の refused／fail-closed で停止し、VDC �
 - 任意の reference BIOS JSR は実行していない（0/81）。`spec/reference_jsr_gate.json` の slot $01 は `BLOCKED` のまま。
 - `release_eligible=false`、genuine ABI VERIFIED 0/81、#173 OPEN／BLOCKED を変更しない。本記録の `PASS` は「検証可能な合成 single-step 範囲だけ」の意味であり、互換性・一般安全性の VERIFIED ではない。
 - 検証用プローブ（`tests/integration/geargrafx_st_boundary.*`、pinned debugger 専用）は本番安全機構ではない。出荷 ROM・ゲート判定に組み込まない。
-- 本 Draft PR は独立レビュー・最終HEAD CI・Owner 承認を待つ。承認までマージしない。
+- 本 Draft PR は最終HEAD CI・Owner 承認を待つ。独立レビューは実施済み（既知指摘はLOWのみで解消済み）が、本修正後の新HEADのCI結果はPRコメント／最終報告へ記録する。承認までマージしない。
