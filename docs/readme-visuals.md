@@ -21,11 +21,12 @@
 
 ## Maintenance checklist
 
-1. If the ledger changes, derive current DEV count/stub count from `spec/dev_implementations.json`; ABI from the contract ledger; release from actual gate data. Update `README.md`, `docs/status.md`, `overview.svg` together.
+1. If the ledger changes, derive current DEV count/stub count from `spec/dev_implementations.json`; ABI from the contract ledger; release from actual gate data. Update the canonical English `README.md`, its Japanese translation `readme.jp.md`, `docs/status.md`, and `overview.svg` together.
 2. If new commercial observations occur, cite their sanitized Issue entry and commit; update `boot-path.svg` and `g5-commercial-reobservation-2026-11-18.md` by **new dated addendum**, not by overwriting historic evidence.
 3. Never use colors or badges alone to claim PASS: accompanying text must spell out the condition and limitation.
 4. Dynamic CI shields must link to the matching workflow. Static experimental/ABI counters are not CI badges.
-5. Verify each SVG loads in GitHub markdown, remains readable on mobile, and has accessible alt/title/description.
-6. Public documentation changes must pass `tests/host/test_public_docs_current.py`, `tools/check_pages.py` and `make check` before merge; if CI cannot be run, state NOT_RUN.
+5. Verify each SVG loads from **both** README files in GitHub markdown, remains readable on mobile, and has accessible alt/title/description.
+6. Keep English `README.md` the canonical/SSOT, `readme.jp.md` a Japanese translation with visible language-switch links on both. Documentation indices and project guides have the same English-primary arrangement; avoid diverging metrics and use shared image assets.
+7. Public documentation changes must pass `tests/host/test_public_docs_current.py`, `tools/check_pages.py` and `make check` before merge; if CI cannot be run, state NOT_RUN.
 
 **Graphic art generated for brainstorming outside the repository is not technical evidence.** Versioned SVGs are the canonical diagrams; private or commercial assets are never embedded.
