@@ -104,4 +104,4 @@ See [Building](docs/building.md), [Testing](docs/testing.md), and [Geargrafx](do
 
 Original project code and documentation are [MIT-licensed](LICENSE); third-party contributions retain their respective license terms. This project is not affiliated with NEC, Hudson Soft, Konami, or other trademark holders.
 
-[日本語版 README](readme.jp.md) · English README is the canonical project introduction.
+[Japanese translation](readme.jp.md) · English README is the canonical project introduction.
