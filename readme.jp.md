@@ -68,7 +68,7 @@ DEV実装数: **18/81**、未実装スタブ: **63/81**、Owner承認済み **DE
 
 実験用ビルダーは **PUBLIC IPL → RAMへのロード → 実験API呼出し** を観測します。通常DEV ROM、実験用BIOS、将来の互換BIOSは**別のもの**です。
 
-[設計](docs/architecture.md) · [DEVと実験用ROMの違い](docs/project-guide.md) · [API台帳](docs/api-inventory.md)
+[設計](docs/architecture.md) · [DEVと実験用ROMの違い](docs/project-guide.jp.md) · [API台帳](docs/api-inventory.md)
 
 ## 試してみる
 
@@ -96,7 +96,7 @@ make check          # 安全・構造チェック
 
 | 見たいこと | 入口 |
 | :-- | :-- |
-| **初めて読む / できること** | [プロジェクトガイド](docs/project-guide.md) |
+| **初めて読む / できること** | [プロジェクトガイド](docs/project-guide.jp.md) |
 | **構成・ビルド・テスト** | [セットアップ](docs/building.md) · [アーキテクチャ](docs/architecture.md) |
 | **APIの実装状況・ABI** | [現状](docs/status.md) · [81スロット台帳](docs/api-inventory.md) |
 | **商用CD・G5検証証拠** | [11/18再観測](docs/g5-commercial-reobservation-2026-11-18.md) · [G5履歴](docs/g5-evidence-2026-11-18.md) |

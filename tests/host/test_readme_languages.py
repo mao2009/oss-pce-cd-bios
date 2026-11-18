@@ -111,6 +111,8 @@ class ReadmeLanguageTests(unittest.TestCase):
         self.assertIn("../readme.jp.md", hub)
         self.assertIn("project-guide.jp.md", eng)
         self.assertIn("project-guide.md", jpn)
+        self.assertIn("../readme.jp.md", jpn)
+        self.assertIn("docs/project-guide.jp.md", self.jp)
 
 
 if __name__ == "__main__":

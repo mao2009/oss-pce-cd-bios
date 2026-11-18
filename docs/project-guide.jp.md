@@ -4,7 +4,7 @@
 
 # Project guide / oss-pce-cd-biosとは
 
-[← README](../README.md) · [Docs hub](README.md)
+[← 日本語README](../readme.jp.md) · [Docs hub](README.md)
 
 ## 目的
 
