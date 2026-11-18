@@ -12,10 +12,12 @@ The loader source `tests/integration/ipl_loader_rom.s` has two formats, selected
 | DEV (default) | none | must already be `$80..$87` (raw) | 16-bit additive body sum, must match | must be zero | 1..10 | `$8000` | sum of disc bytes == header sum, readback == sum |
 | PUBLIC | `IPL_PUBLIC` | bank index `0..7`, mapped to `$80 + index` | ignored | ignored (public meaning not verified) | 1..31 | `$E000` | readback == sum of disc bytes read (no header sum) |
 
-- The default build is byte-identical to the previous loader. This was a ONE-TIME manual comparison of the SHA-256
-  of the 256 KiB default image (before and after the change, value recorded in the PR). It is NOT an automated
-  test. The 256 KiB harness records the current hash in its evidence JSON; it does not compare that hash with a
-  stored value.
+- The default build was byte-identical to the previous loader across the format split (a ONE-TIME manual
+  comparison of the SHA-256 of the 256 KiB default image before and after the change, value recorded in the PR).
+  Since Issue #696 the pin is automated: `tests/host/test_696_default_image_hash.py` rebuilds the 256 KiB default
+  image (SEL `0x0109`, debug mode, pinned cc65) and compares its SHA-256 against the pinned value, with the
+  baseline provenance recorded in that module. The 256 KiB harness also records the current hash in its evidence
+  JSON; it does not compare that hash with a stored value.
 - A single ROM never auto-detects the format.
 - The DEV checksum is never disabled unconditionally: the DEV build keeps every DEV check, and the boundary
   cases `0000` / `FFFF` are tested as mismatches.
@@ -101,13 +103,21 @@ body byte at the same logical address. That expected value exists only if the bo
 
 ## 4. Residual risk (must be read with the change)
 
-- PUBLIC build: the body is verified only by readback against the sum of the bytes read from the disc. The disc
-  content itself is not checked. A change to the disc that preserves the 16-bit additive sum is NOT detected.
-  The test `pub_post_sum_preserving_change_accepted_documented_limit` pins this behaviour so it cannot change silently.
+- PUBLIC build: disc-content authenticity is NOT checked. There is no expected reference value for
+  the disc. The loader computes a 16-bit additive sum of the bytes read from the disc and compares it with the
+  16-bit additive sum of the destination bytes read back after copying. Equality of those sums does NOT prove
+  that the transferred and read-back byte sequences are identical: sum-preserving post-copy corruption can pass.
+  Any disc content can be accepted without an authenticity reference, whether or not its sum matches any other
+  disc content.
+  The test `pub_post_sum_preserving_change_accepted_documented_limit` demonstrates a sum-preserving post-copy
+  substitution that passes this checksum comparison. It does NOT imply that only sum-preserving changes to
+  disc content are accepted: in the PUBLIC format no disc content is verified against a known reference.
 - PUBLIC build: bytes 14..15 are ignored, because their public meaning is not verified. Treating them as a checksum
   would be wrong for public media.
 - The SCSI transfer and the readback are the only integrity checks in the PUBLIC build.
-- The DEV-only sum remains weak (single-byte and most copy errors are detected; sum-preserving corruption is not).
+- DEV format limit (distinct from the PUBLIC limit above): the DEV-only header sum is weak (single-byte and most
+  copy errors are detected; sum-preserving corruption is not). This is a checksum-strength limit on a check that
+  does compare against a header reference, not the PUBLIC format's absence of any disc reference.
 - The MPR rule is an observation for one BIOS and one core (section 2), not a specification.
 
 ## 4a. PUBLIC expansion beyond the DEV window (synthetic evidence)

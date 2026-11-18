@@ -73,6 +73,9 @@ SCENARIO_KIND = {
 #   UNOBSERVED  - no cited caller reads it; stays UNKNOWN
 # The human-readable twin table lives in 撤去済み文書 section 2; tests/host/
 # test_cd_read_contract.py checks both against this module and spec/api_contracts.json.
+#583: the `line` anchors keep the §2.1 values (PR #571 §2.4 precedent: joint listing);
+# the notes cite the confirmed joint references (L500/L509, L436/L438, L594-601,
+# L503-506, L448-450). Statuses are unchanged. The §2.1 table itself was removed by #596.
 HUC_REV = "54f5c73606c1e7142e8095c727cab2767e2b3cb3"
 HUC_INC = "huc:include/hucc/pcengine.inc"
 HUC_ASM = "huc:include/hucc/hucc-systemcard.asm"
@@ -87,7 +90,7 @@ CALLER_LEDGER = (
     {"id": "C02", "source": HUC_CORE, "revision": HUC_REV, "line": 42, "slot": "Y", "direction": "CALLER_IN", "status": "HYPOTHESIS",
      "note": "system macro loads Y with the vector lo-byte: Y is the $E000 jump-table selector, not a CD_READ argument"},
     {"id": "C03", "source": HUC_KERNEL, "revision": HUC_REV, "line": 509, "slot": "Y", "direction": "CALLER_IN", "status": "HYPOTHESIS",
-     "note": "call_bios JSRs $E000 with Y=selector; the dispatcher is BIOS code, unobserved here"},
+     "note": "call_bios patches the JSR target with the selector: the system macro loads Y with the vector lo-byte (C02) and L500 stores Y into the JSR operand (sty .self_mod_func + 1), so L509 jumps to $E000+Y (e.g. $E009 for cd_read); the dispatcher is BIOS code, unobserved here"},
     {"id": "C04", "source": HUC_INC, "revision": HUC_REV, "line": 329, "slot": "$20F8-$20FF", "direction": "CALLER_DECLARATION", "status": "HYPOTHESIS",
      "note": "pcengine.inc equates _ax/_bx/_cx/_dx at $F8:20F8-$20FF: SDK declaration/alias, not a runtime caller write before the call"},
     {"id": "C05", "source": HUC_H, "revision": HUC_REV, "line": 95, "slot": "$20F8-$20FF", "direction": "CALLER_DECLARATION", "status": "HYPOTHESIS",
@@ -105,7 +108,7 @@ CALLER_LEDGER = (
     {"id": "C11", "source": HUC_ASM, "revision": HUC_REV, "line": 381, "slot": "_ax", "direction": "CALLER_IN", "status": "HYPOTHESIS",
      "note": "_cd_loaddata.4 sets _ax to the byte count of the next chunk"},
     {"id": "C12", "source": HUC_ASM, "revision": HUC_REV, "line": 436, "slot": "_al", "direction": "CALLER_IN", "status": "HYPOTHESIS",
-     "note": "_cd_loadbank.4 copies the entry _dh count into _al (0=whole file): the count field is reused"},
+     "note": "_cd_loadbank.4 copies the entry _dh count into _al (0=whole file): the _dh read is L436 (lda <_dh) and the _al write is L438 (sta <_al, only when non-0); the count field is reused"},
     {"id": "C13", "source": HUC_ASM, "revision": HUC_REV, "line": 361, "slot": "_bx", "direction": "CALLER_IN", "status": "HYPOTHESIS",
      "note": "_cd_loaddata.4 sets _bx as the RAM destination pointer (TII _bp->_bx)"},
     {"id": "C14", "source": HUC_KERNEL, "revision": HUC_REV, "line": 589, "slot": "_bl/_bh", "direction": "CALLER_IN", "status": "HYPOTHESIS",
@@ -113,13 +116,13 @@ CALLER_LEDGER = (
     {"id": "C15", "source": HUC_KERNEL, "revision": HUC_REV, "line": 539, "slot": "_cl/_ch/_dl", "direction": "CALLER_IN", "status": "HYPOTHESIS",
      "note": "get_file_lba fills the 3-byte LBA triple; _cl is the record-base high byte and also carried the overlay index"},
     {"id": "C16", "source": HUC_ASM, "revision": HUC_REV, "line": 594, "slot": "_dl/_ch/_cl", "direction": "CALLER_IN", "status": "HYPOTHESIS",
-     "note": "_add_sectors adds the sector offset into the LBA triple _dl/_ch/_cl"},
+     "note": "_add_sectors adds the sector offset into the LBA triple _dl/_ch/_cl: L594 is the entry (clc), the _dl/_ch reads and writes are L595-599, and _cl is conditionally incremented at L600-601 (bcc !+ / inc <_cl)"},
     {"id": "C17", "source": HUC_KERNEL, "revision": HUC_REV, "line": 585, "slot": "P.I", "direction": "CALLER_IN", "status": "HYPOTHESIS",
      "note": "exec_overlay executes CLI before cd_read; no caller deliberately sets the other P bits"},
     {"id": "C18", "source": HUC_STARTUP, "revision": HUC_REV, "line": 125, "slot": "MPR0/MPR1", "direction": "CALLER_IN", "status": "HYPOTHESIS",
      "note": "startup maps MPR0=$FF and MPR1=$F8 as the caller's general BIOS-call prerequisite"},
     {"id": "C19", "source": HUC_KERNEL, "revision": HUC_REV, "line": 503, "slot": "MPR7", "direction": "CALLER_SAVE", "status": "HYPOTHESIS",
-     "note": "call_bios saves caller MPR7 (L503-504), maps bank 0, restores it after the call (L511-514)"},
+     "note": "call_bios saves caller MPR7 (L503 tma7, L504 sta .self_mod_bank + 1), maps bank 0 (L505 cla, L506 tam7), restores it after the call (L511-514)"},
     {"id": "C20", "source": HUC_ASM, "revision": HUC_REV, "line": 346, "slot": "MPR3/MPR4", "direction": "CALLER_SAVE", "status": "HYPOTHESIS",
      "note": "_cd_loaddata.4 saves and restores MPR3/MPR4 itself (caller defence, not callee proof)"},
     {"id": "C21", "source": HUC_ASM, "revision": HUC_REV, "line": 443, "slot": "MPR3", "direction": "CALLER_SAVE", "status": "HYPOTHESIS",
@@ -135,7 +138,7 @@ CALLER_LEDGER = (
     {"id": "C26", "source": HUC_ASM, "revision": HUC_REV, "line": 300, "slot": "Y:A", "direction": "CALLER_OUT", "status": "HYPOTHESIS",
      "note": "caller return-shaping: CLY zeroes Y then LEAVE moves X to A; the caller never reads callee Y, so this is not callee-output evidence"},
     {"id": "C27", "source": HUC_ASM, "revision": HUC_REV, "line": 448, "slot": "MPR3", "direction": "CALLER_SAVE", "status": "HYPOTHESIS",
-     "note": "_cd_loadbank.4 restores MPR3 after the call; its comment asserts MPR3 is destroyed on a CD error (callee unverified)"},
+     "note": "_cd_loadbank.4 restores MPR3 after the call (L449 pla, L450 tam3; L448 tax only shapes the return into X, not a restore); its comment asserts MPR3 is destroyed on a CD error (callee unverified)"},
     {"id": "C28", "source": HUC_ASM, "revision": HUC_REV, "line": 388, "slot": "X", "direction": "UNOBSERVED", "status": "UNKNOWN",
      "note": "callers overwrite X with TAX, so the callee's X is never observed"},
     {"id": "C29", "source": HUC_ASM, "revision": HUC_REV, "line": 388, "slot": "Y", "direction": "UNOBSERVED", "status": "UNKNOWN",
