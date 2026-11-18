@@ -194,13 +194,24 @@ class MemopenSynthetic(unittest.TestCase):
         cls._tmp.cleanup()
 
     def _run(self, name, defines, rom_kind="exp"):
-        import geargrafx_api_entry as Eentry
+        import geargrafx_api_entry as Eentry  # noqa: F401 (re-export for probes)
         if rom_kind == "exp":
             rom, labels = self.rom, self.labels
         elif rom_kind == "stub":
             rom, labels = self.rom_stub, self.labels_stub
         else:
             raise ValueError("rom_kind must be 'exp' or 'stub'")
+        return self._run_probe_on_rom(name, rom, labels, defines)
+
+    def _run_on_rom(self, name, rom_bytes, defines):
+        # Run the synthetic payload against caller-supplied ROM bytes
+        # (mutants). Same labels/disc flow as _run with the experimental ROM.
+        rom_path = self.out / (name + ".pce")
+        rom_path.write_bytes(bytes(rom_bytes))
+        return self._run_probe_on_rom(name, rom_path, self.labels, defines)
+
+    def _run_probe_on_rom(self, name, rom, labels, defines):
+        import geargrafx_api_entry as Eentry
         CFG = ("MEMORY {\n    RAM: start = $3000, size = $0F00, file = %O;\n}\n"
                "SEGMENTS {\n    CODE: load = RAM, type = ro, start = $3000;\n}\n")
         o = self.out / name
@@ -288,48 +299,6 @@ class MemopenSynthetic(unittest.TestCase):
                 "defs": {"POPEN": popen, "XONE": xone, "YONE": yone,
                          "PTWO": ptwo, "XTWO": xtwo, "YTWO": ytwo}}
 
-    def _run_on_rom(self, name, rom_bytes, defines):
-        # Run the synthetic payload against caller-supplied ROM bytes
-        # (mutants). Same labels/disc flow as _run with the experimental ROM.
-        import geargrafx_api_entry as Eentry
-        rom_path = self.out / (name + ".pce")
-        rom_path.write_bytes(bytes(rom_bytes))
-        CFG = ("MEMORY {\n    RAM: start = $3000, size = $0F00, file = %O;\n}\n"
-               "SEGMENTS {\n    CODE: load = RAM, type = ro, start = $3000;\n}\n")
-        o = self.out / name
-        o.mkdir(exist_ok=True)
-        src = o / (name + ".s")
-        src.write_text(defines["asm"], encoding="ascii")
-        obj, binp, cfgp, lblp = (o / (name + ".o"), o / (name + ".bin"),
-                                 o / (name + ".cfg"), o / (name + ".lbl"))
-        cfgp.write_text(CFG, encoding="ascii")
-        import environment
-        ca65, ld65 = environment.executable("ca65"), environment.executable("ld65")
-        subprocess.run([ca65, str(src), *[f"-D{d}={v}" for d, v in defines["defs"].items()],
-                        "-o", str(obj), "-g"], check=True)
-        subprocess.run([ld65, "-C", str(cfgp), "-o", str(binp), "-Ln", str(lblp),
-                        str(obj)], check=True)
-        text = lblp.read_text(encoding="ascii")
-        syms = {}
-        for line in text.splitlines():
-            m = re.match(r"^al ([0-9A-Fa-f]{6}) \.(.+)$", line)
-            if m:
-                syms[m.group(2)] = int(m.group(1), 16)
-        res_base = syms["res_base"] - 0x2800
-        code = binp.read_bytes()
-        body = self.L.body_for(code, 2)
-        info = self.L.info_sector(2, 2, 0x3000, 0x3000, [0, 1, 2, 3, 4], 0,
-                                  sum(body) & 0xFFFF)
-        cue = self.L.make_disc(o, self.L.case_disc({"n": 2, "iplblk": 2}, body, info))
-        m = re.search(r"^al ([0-9A-Fa-f]{6}) \.payload_halt$", text, re.M)
-        halt = int(m.group(1), 16)
-        lab = o / (name + ".labels")
-        lab.write_text(
-            f"cd_halt_ok {halt:04x}\ncd_halt_fail {self.labels['cd_halt_fail']:04x}\n"
-            f"cd_unexpected_interrupt {self.labels['cd_unexpected_interrupt']:04x}\n"
-            f"api_unimplemented {self.labels['api_unimplemented']:04x}\n", encoding="ascii")
-        rec = Eentry.run_probe(self.probe, rom_path, cue, lab, BUDGET, "synthetic")
-        return rec, res_base
 
     def _mutate_body(self, rom_bytes, offset, new_bytes):
         # Patch the experimental $4A body in a ROM copy (mutants live in
