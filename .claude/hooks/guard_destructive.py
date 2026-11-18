@@ -190,6 +190,7 @@ class Ctx:
         self.registry = registry  # case-folded worktree paths with a recorded owner
         self.protected = protected
         self.tainted = tainted    # Piece D (#636): an earlier segment changed the filesystem
+        self.pending_write = False  # Piece D (#636): validated write option awaiting publish
 
     def copy(self, **kw):
         c = Ctx(self.cwd, self.root, self.git, self.registry, self.protected, self.tainted)
@@ -232,25 +233,18 @@ def _nested_text_from(text, ctx, entry_tainted, ps, depth):
         ctx.tainted = True
 
 
-def _validated_write_present(name, args):
-    """True if validated argv contains a write option (Piece D, #636).
+def _record_validated_write(ctx):
+    """Record a validated write option for end-of-validation publish (Piece D, #636)."""
+    if ctx is not None:
+        ctx.pending_write = True
 
-    Runs only after allowlist_rule accepted the invocation, so every option
-    form seen here is legal: a short cluster containing 'o' always gives the
-    write value, and an unambiguous --output prefix always names the write
-    option. A '--' ends option parsing."""
-    if name != "sort":
-        return False
-    for a in args:
-        if a.startswith("--"):
-            if a == "--":
-                return False
-            key = a[2:].split("=", 1)[0]
-            if key and "output".startswith(key):
-                return True
-        elif a.startswith("-") and len(a) > 1 and "o" in a[1:]:
-            return True
-    return False
+
+def _publish_pending_write(ctx, name):
+    """Publish a recorded write-option taint after full argv validation."""
+    if getattr(ctx, "pending_write", False):
+        ctx.pending_write = False
+        _require_untainted(ctx, name)
+        _taint(ctx)
 
 
 def _nested_argv(words, ctx, ps, depth):
@@ -793,6 +787,9 @@ def rm_rule(args, ps, ctx):
     # Piece D (#636): last, so a tainted rm that hook-state already refuses
     # keeps its original reason and only a would-be ALLOW is refused here.
     _require_untainted(ctx, "rm")
+    # An accepted removal changes the filesystem: later judgments must not
+    # validate against the pre-removal snapshot.
+    _taint(ctx)
 
 
 def worktree_remove(args, ctx):
@@ -884,8 +881,14 @@ def git_rule(args, ctx):
     # resolution saw, so later destructive segments must not rely on it.
     rewrite = sub in ("checkout", "switch", "merge", "pull", "apply", "am",
                       "rebase", "cherry-pick", "revert", "mv", "rm", "clone")
-    if sub == "reset" and any(git_long_is(a, ("--keep",)) for a in rest):
-        rewrite = True
+    if sub == "reset":
+        # Only the option portion counts: after --, words are pathspecs.
+        for a in rest:
+            if a == "--":
+                break
+            if git_long_is(a, ("--keep",)):
+                rewrite = True
+                break
     if sub == "stash" and rest[:1] not in (["list"], ["show"]):
         rewrite = True
     if sub == "submodule" and rest and rest[:1] != ["status"]:
@@ -1141,6 +1144,8 @@ def allowlist_rule(name, args, ctx=None):
                     raise Deny("write", name + " " + opt + " writes a file: DENY in every form (Owner Round 13)")
                 if opt in spec.get("long_writes", ()) and not (ctx is not None and tar_path_ok(value, ctx, "archive")):
                     raise Deny("write", name + " " + opt + " writes outside the repository or a protected path: " + a)
+                if opt in spec.get("long_writes", ()):
+                    _record_validated_write(ctx)
                 if not eq:
                     i += 1  # the value is the next word
                 if any(value.lower().startswith(p) for p in spec.get("long_arg_deny_prefix", {}).get(opt, ())):
@@ -1169,6 +1174,8 @@ def allowlist_rule(name, args, ctx=None):
                         raise Deny("write", name + " -" + ch + " writes a file: DENY in every form (Owner Round 13)")
                     if ch in spec.get("short_writes", "") and not (ctx is not None and tar_path_ok(value, ctx, "archive")):
                         raise Deny("write", name + " -" + ch + " writes outside the repository or a protected path: " + a)
+                    if ch in spec.get("short_writes", ""):
+                        _record_validated_write(ctx)
                     if j == len(a) - 1:
                         i += 1  # the value is the next word
                     if ch in spec.get("short_value_strict", "") and (
@@ -1352,12 +1359,9 @@ def program_option_rule(name, args, ctx=None):
         tar_rule(args, ctx)
         return
     allowlist_rule(name, args, ctx)
-    # Piece D (#636): a validated write option (sort -o/--output) mutates the
-    # filesystem, so later segments must not rely on hook-time state. The
-    # check runs after full argv validation, once per invocation.
-    if _validated_write_present(name, args):
-        _require_untainted(ctx, name)
-        _taint(ctx)
+    # Piece D (#636): a validated write option (sort -o/--output) mutates
+    # the filesystem. The check runs once, after full argv validation.
+    _publish_pending_write(ctx, name)
 
 
 SAFE_WRITE_OPTS = {"cp": {"-r", "-R", "-p", "-v", "-n"}, "mv": {"-v", "-n"}, "mkdir": {"-p", "-v"},
@@ -1853,14 +1857,12 @@ def analyze_argv(words, ctx, ps, depth):
             if not rest:
                 raise Deny("coproc", "coproc without a command is not resolvable")
             _nested_argv(rest, ctx, ps, depth + 1)
-            if len(rest) >= 2:
-                if rest[0] in COPROC_COMPOUND:
-                    _nested_argv(rest[1:], ctx, ps, depth + 1)
-                else:
-                    # Simple-command form has no explicit name: the suffix is
-                    # validated, but taint from the impossible named parse is
-                    # not exported (Piece D, #636).
-                    analyze_argv(rest[1:], ctx.copy(), ps, depth + 1)
+            if len(rest) >= 2 and rest[0] not in COPROC_COMPOUND:
+                # Simple-command form has no explicit name: the suffix is
+                # validated, but taint from the impossible named parse is
+                # not exported (Piece D, #636). A recognised unnamed
+                # compound was already covered once by the primary parse.
+                analyze_argv(rest[1:], ctx.copy(), ps, depth + 1)
             return
         if SUBST in w0:
             raise Deny("command-word", "command substitution in command position")
@@ -1908,9 +1910,21 @@ def analyze_argv(words, ctx, ps, depth):
                 # Plain words and options are commands for the suffix pass, which the grammar narrows to the real command.
                 # String visits are alternative parses of one invocation: each
                 # starts from the wrapper-entry taint and merges back (Piece D, #636).
+                # A plain-word visit exports taint only for the command word
+                # itself: other words are the command's data, validated but
+                # not exported. Explicit code carriers (-c/--command/--x=y)
+                # always export.
+                cmd_word = None
+                if name in WRAPPER_OPTS:
+                    cmd_word = wrapper_command_index(name, words[1:], ctx) + 1
                 for k in range(1, len(words)):
                     if not words[k].startswith("-") and any(ch.isspace() for ch in words[k]):
-                        _nested_text_from(words[k], ctx, wrapper_tainted, ps, depth + 1)
+                        if cmd_word is None or k == cmd_word:
+                            _nested_text_from(words[k], ctx, wrapper_tainted, ps, depth + 1)
+                        else:
+                            sub = ctx.copy()
+                            sub.tainted = wrapper_tainted
+                            analyze_text(words[k], sub, ps, depth + 1)
                     if words[k] in ("-c", "--command") and k + 1 < len(words):
                         _nested_text_from(words[k + 1], ctx, wrapper_tainted, ps, depth + 1)
                     if words[k].startswith("--") and "=" in words[k]:

@@ -33,7 +33,7 @@
 - python の引数が静的に確定しないコマンド: コマンド列に python の語が含まれ、その区間に未展開の glob・`$`・バッククォートなどが含まれる場合、python へ渡る引数を確定できないため拒否する（X1）。既知の過剰拒否（Owner 受容済み、#632 レビュー MEDIUM M2）: `rg` のようなプログラム実行経路（`--pre`）を持つツールは「プログラムを実行しないコマンド」の一覧に入れられないため、`rg python3 *.py` のように python の語がデータ引数でも、展開を含む区間は拒否される。展開を含まない形（`rg python3 README`）と、実行経路を持たないツール（`grep python3 *.py`）は許可される
 - PowerShell の `Remove-Item`/`ri`/`del`/`erase` で `-Recurse`/`-Force` の略記（`-r`、`-fo` など）を含むもの（単一ファイルの場合は rm と同じ規則）
 - `unlink`、`shred`、`rmdir`、`rd`、`dd`、`mkfs`、`truncate`、`cmd`
-- 同一コマンド内の連鎖（chain rule, #636）:ファイルシステムを変えるセグメント（`cp`・`mv`・`mkdir`・`touch`・`tee`・書き込みリダイレクト・`tar -c`・`sort -o`／`--output`・作業ツリーを書き換える `git`）の後に来る `rm`・書き込み・リダイレクト・`tar -c`・`sort -o` は、判定時の状態を信頼せず拒否する。読み取り専用の前段（`git status`、`cd` による起点移動など）は対象外。`ln`・`rmdir` は単体でも拒否、`cd`／`pushd` は追跡中の cwd に反映される
+- 同一コマンド内の連鎖（chain rule, #636):ファイルシステムを変えるセグメント（`cp`・`mv`・`mkdir`・`touch`・`tee`・`rm`・書き込みリダイレクト・`tar -c`・`sort -o`／`--output`・作業ツリーを書き換える `git`（`reset --keep` を含み、index-only の reset と `submodule status` を除く））の後に来る `rm`・書き込み・リダイレクト・`tar -c`・`sort -o` は、判定時の状態を信頼せず拒否する。読み取り専用の前段（`git status`、`cd` による起点移動など）は対象外。`ln`・`rmdir` は単体でも拒否、`cd`／`pushd` は追跡中の cwd に反映される。同一セグメント内の複数リダイレクトは incoming taint を共有し、置換は含むセグメントの順序で解析される
 - コマンド置換 `$(...)` とバッククォートの中身も同じ規則で検査し、一つでも拒否なら全体を拒否。コマンド位置に置換がある場合も拒否
 - 空の引用符の組（`r""m`）は除去してから判定する
 - 解析できない入力（不正な JSON、`tool_input` や `command` の欠落、空文字列、未閉じの引用符、`$'...'`、NUL や CR などの制御文字、UTF-8 として復号できない標準入力など）はすべて拒否

@@ -4130,14 +4130,59 @@ class ChainRulePieceDTests(unittest.TestCase):
         self.assertEqual(verdict, "DENY")
         self.assertTrue(reason.startswith("chain"), reason)
 
+    def test_accepted_removal_taints_later_writes(self):
+        # An accepted rm changes the filesystem: a later write to the same
+        # name is judged against the updated state.
+        verdict, _ = self._decide("rm file.txt")
+        self.assertEqual(verdict, "ALLOW")
+        for cmd in ("rm file.txt && echo hi > f", "rm file.txt && touch g",
+                    "rm file.txt && rm sub/inner.txt"):
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._decide(cmd)
+                self.assertEqual(verdict, "DENY", (cmd, reason))
+                self.assertTrue(reason.startswith("chain"), (cmd, reason))
+
+    def test_reset_pathspec_is_not_a_mode(self):
+        # After --, words are pathspecs: `git reset -- --keep` touches the
+        # index only.
+        verdict, reason = self._decide("git reset -- --keep && rm file.txt")
+        self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_unnamed_compound_coprocess_is_analysed_once(self):
+        # `coproc { touch marker; }` is one command, not a name plus a body.
+        verdict, reason = self._decide("coproc { touch marker; }")
+        self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_wrapper_data_string_does_not_export_taint(self):
+        # `sudo echo 'touch marker'` never executes the string: it is
+        # validated as data. A command-position string still taints.
+        verdict, reason = self._decide("sudo echo 'touch marker'; touch result")
+        self.assertEqual(verdict, "ALLOW", reason)
+        verdict, reason = self._decide("sudo -s 'touch marker'; touch result")
+        self.assertEqual(verdict, "DENY")
+        self.assertTrue(reason.startswith("chain"), reason)
+
+    def test_sort_value_forms_do_not_self_taint(self):
+        # `-t` takes its value from the cluster: `sort -to` writes nothing.
+        verdict, reason = self._decide("sort -to input && touch f")
+        self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_sort_write_after_dashdash_value_still_taints(self):
+        # `--` consumed as an option value does not end option parsing.
+        verdict, reason = self._decide("sort --files0-from -- -o out && touch f")
+        self.assertEqual(verdict, "DENY")
+        self.assertTrue(reason.startswith("chain"), reason)
+
     def test_substitution_taint_follows_its_segment(self):
-        # A later substitution sees earlier taint (the hole), and an earlier
-        # segment never sees a later substitution's taint (the over-taint).
+        # A later substitution sees earlier taint (the hole is closed).
         verdict, reason = self._decide("git checkout x && echo $(rm file.txt)")
         self.assertEqual(verdict, "DENY")
         self.assertTrue(reason.startswith("chain"), reason)
+        # Taint attribution follows execution order: rm runs first, so the
+        # later mkdir is judged under rm's taint (chain: mkdir, not chain: rm).
         verdict, reason = self._decide("rm file.txt && echo $(mkdir d)")
-        self.assertEqual(verdict, "ALLOW", reason)
+        self.assertEqual(verdict, "DENY")
+        self.assertTrue(reason.startswith("chain: mkdir"), reason)
 
     def test_tainted_write_and_redirect_are_refused(self):
         for cmd in ("git checkout x && cp a b",
@@ -4185,21 +4230,30 @@ class ChainRuleMutationTests(unittest.TestCase):
         "tar chain check removed": (
             '    _require_untainted(ctx, "tar")',
             '    pass  # mutant: tar chain check removed'),
-        "sort write publish removed": (
-            '    if _validated_write_present(name, args):\n        _require_untainted(ctx, name)\n        _taint(ctx)',
-            '    if False:\n        pass'),
-        "reset keep taint removed": (
-            '    if sub == "reset" and any(git_long_is(a, ("--keep",)) for a in rest):\n        rewrite = True',
-            '    pass  # mutant: reset keep taint removed'),
+        "sort incoming-taint check removed": (
+            '    if getattr(ctx, "pending_write", False):\n        ctx.pending_write = False\n        _require_untainted(ctx, name)\n        _taint(ctx)',
+            '    if getattr(ctx, "pending_write", False):\n        ctx.pending_write = False\n        _taint(ctx)'),
+        "sort outgoing-taint propagation removed": (
+            '    if getattr(ctx, "pending_write", False):\n        ctx.pending_write = False\n        _require_untainted(ctx, name)\n        _taint(ctx)',
+            '    if getattr(ctx, "pending_write", False):\n        ctx.pending_write = False\n        _require_untainted(ctx, name)'),
+        "rm removal taint removed": (
+            '    _require_untainted(ctx, "rm")\n    # An accepted removal changes the filesystem: later judgments must not\n    # validate against the pre-removal snapshot.\n    _taint(ctx)',
+            '    _require_untainted(ctx, "rm")'),
+        "reset pathspec handling removed": (
+            '    if sub == "reset":\n        # Only the option portion counts: after --, words are pathspecs.\n        for a in rest:\n            if a == "--":\n                break\n            if git_long_is(a, ("--keep",)):\n                rewrite = True\n                break',
+            '    if sub == "reset" and any(git_long_is(a, ("--keep",)) for a in rest):\n        rewrite = True'),
+        "coproc unnamed-compound skip removed": (
+            '            if len(rest) >= 2 and rest[0] not in COPROC_COMPOUND:',
+            '            if len(rest) >= 2:'),
+        "string command-position gating removed": (
+            '                        if cmd_word is None or k == cmd_word:',
+            '                        if True:  # mutant: string command-position gating removed'),
         "submodule status exemption removed": (
             '    if sub == "submodule" and rest and rest[:1] != ["status"]:',
             '    if sub == "submodule" and rest:'),
         "redirect segment snapshot removed": (
             '        incoming, wrote = ctx.tainted, False\n        for op, target in ops:\n            ctx.tainted = incoming\n            check_redirect(target, op, ctx, ps)\n            wrote = wrote or ctx.tainted\n        if wrote:\n            ctx.tainted = True',
             '        for op, target in ops:\n            check_redirect(target, op, ctx, ps)'),
-        "coproc named-form gating removed": (
-            '                if rest[0] in COPROC_COMPOUND:',
-            '                if True:  # mutant: coproc named-form gating removed'),
         "string visit entry snapshot removed": (
             '                        _nested_text_from(words[k + 1], ctx, wrapper_tainted, ps, depth + 1)',
             '                        _nested_text(words[k + 1], ctx, ps, depth + 1)'),
