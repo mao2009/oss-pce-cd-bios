@@ -79,6 +79,15 @@ ALWAYS_DENY = {"unlink", "shred", "rmdir", "rd", "dd", "mkfs", "truncate", "wipe
                # popd and Pop-Location return to a directory the guard cannot know (the stack is not tracked): denied.
                "popd", "pop-location"}
 PY_NAME = re.compile(r"^python(3(\.\d+)?)?$|^py$")
+# A parenthesised group runs in a subshell: its cwd never reaches the
+# parent, but a filesystem change inside it outlives the subshell, so taint
+# still merges. split_segments emits these sentinels for unquoted parens
+# (quoted or escaped parens stay ordinary words); analyze_text keeps a
+# stack of pre-subshell cwds. Control characters are rejected on input, so
+# \x02 can never come from the command text itself.
+SUBSHELL_OPEN = "\x02("
+SUBSHELL_CLOSE = "\x02)"
+
 # Placeholder for a $(...), `...`, <(...) or >(...) body. NUL is rejected on input,
 # so the placeholder can never collide with user text.
 SUBST = "\x00SUBST\x00"
@@ -211,12 +220,20 @@ def _require_untainted(ctx, what):
         raise Deny("chain", what + " after a filesystem change in the same command is not inspected")
 
 
-def _nested_text(text, ctx, ps, depth):
-    """Analyse nested command text, propagating chain taint back to the parent."""
+def _nested_text(text, ctx, ps, depth, merge_cwd=False):
+    """Analyse nested command text, propagating chain taint back to the parent.
+
+    merge_cwd (eval only, #636): the nested text runs in the calling shell,
+    so a cwd change inside it moves the parent too. Every other nested form
+    (sh -c, command/process substitution, wrapper strings) runs in a child
+    process or a subshell, so its cwd is discarded while taint still merges.
+    """
     sub = ctx.copy()
     analyze_text(text, sub, ps, depth)
     if sub.tainted:
         ctx.tainted = True
+    if merge_cwd:
+        ctx.cwd = sub.cwd
 
 
 def _nested_text_from(text, ctx, entry_tainted, ps, depth):
@@ -720,6 +737,15 @@ def split_segments(text, ps=False):
             segs.append("".join(cur))
             redirs.append(rd)
             cur, rd = [], []
+            if c == "(":
+                # Piece D (#636): an unquoted paren opens a subshell.
+                # The sentinel is its own segment so analyze_text can
+                # scope the group without touching word parsing.
+                segs.append(SUBSHELL_OPEN)
+                redirs.append([])
+            elif c == ")":
+                segs.append(SUBSHELL_CLOSE)
+                redirs.append([])
             i += 1
             continue
         cur.append(c)
@@ -893,7 +919,10 @@ def git_rule(args, ctx):
         rewrite = True
     if sub == "submodule" and rest and rest[:1] != ["status"]:
         rewrite = True
-    if sub == "worktree" and rest[:1] == ["add"]:
+    if sub == "worktree" and rest[:1] in (["add"], ["move"]):
+        # Piece D (#636, MAJOR-3): add creates directories and move
+        # relocates them, so later path judgments must not rely on the
+        # hook-time state. list stays read-only; remove/prune are DENY.
         rewrite = True
     if rewrite:
         entry_ctx.tainted = True
@@ -1452,7 +1481,10 @@ def find_rule(args, ps, ctx, depth):
                 j += 1
             if j == i + 1:
                 raise Deny("find", "find -exec without a command")
-            analyze_argv(args[i + 1:j], ctx, ps, depth + 1)
+            # Piece D (#636): -exec runs in a child process, so its cwd
+            # never reaches the parent; taint still merges (a child can
+            # change the filesystem the parent later judges).
+            _nested_argv(args[i + 1:j], ctx, ps, depth + 1)
 
 
 # Commands on this list must not run another program, whatever their options. sort (--compress-program=PROG) and
@@ -1964,7 +1996,11 @@ def analyze_argv(words, ctx, ps, depth):
     if name in ("iex", "invoke-expression"):
         raise Deny("powershell", "Invoke-Expression is not inspected")
     if name == "eval":
-        _nested_text(" ".join(args), ctx, ps, depth + 1)
+        # Piece D (#636, CRITICAL-1): eval runs in the calling shell, so
+        # a cd inside it moves the parent cwd. The nested text is analysed
+        # in a copy and both taint and cwd merge back; a subshell inside
+        # the eval text is still scoped by analyze_text.
+        _nested_text(" ".join(args), ctx, ps, depth + 1, merge_cwd=True)
     elif name in SHELLS:
         shell_rule(args, ctx, depth)
     elif name in PS_HOSTS:
@@ -1974,6 +2010,11 @@ def analyze_argv(words, ctx, ps, depth):
             raise Deny("cd", "cd with option is not inspected")
         if args and any(c in args[0] for c in "*?[") and names_claude(args[0]):
             raise Deny("cd", "cd into a glob that may name .claude/ is not inspected")
+        if args and ("$" in args[0] or "`" in args[0] or SUBST in args[0]):
+            # Piece D (#636): the target is known only after the shell
+            # expands it. Guessing a cwd would misjudge later relative
+            # paths, so it is refused instead of resolved lexically.
+            raise Deny("unexpanded", "cd target with a variable or substitution is not inspected")
         ctx.cwd = resolve(args[0] if args else "~", ctx)[1]
     elif name in ALWAYS_DENY:
         raise Deny("destructive", name + " is denied")
@@ -2018,6 +2059,8 @@ def analyze_text(text, ctx, ps, depth):
     segs, subs, redirs = split_segments(text, ps)
     # A python command whose argv is not certain (unquoted or double-quoted expansion characters) is refused.
     for seg in segs:
+        if seg == SUBSHELL_OPEN or seg == SUBSHELL_CLOSE:
+            continue
         pargs = python_position_args(words_of(seg, ps))
         if pargs is not None:
             if not python_word_certainty(seg):
@@ -2027,7 +2070,22 @@ def analyze_text(text, ctx, ps, depth):
     if sum(len(ops) for ops in redirs) > MAX_REDIRECTS:
         raise Deny("redirect", "more than %d redirections are not inspected" % MAX_REDIRECTS)
     rest_subs = list(subs)
+    # Piece D (#636): subshell cwd scope. A parenthesised group runs in a
+    # subshell: segments inside it share the parent taint (a filesystem
+    # change inside outlives the subshell) but their cwd is restored at the
+    # closing paren. Brace groups, eval and plain sequences run in the
+    # calling shell and keep sharing cwd. A stray close with no open group
+    # is ignored (lenient, as before); an unclosed group is a shell syntax
+    # error, so it is refused instead of guessed.
+    scope_stack = []
     for seg, ops in zip(segs, redirs):
+        if seg == SUBSHELL_OPEN:
+            scope_stack.append(ctx.cwd)
+            continue
+        if seg == SUBSHELL_CLOSE:
+            if scope_stack:
+                ctx.cwd = scope_stack.pop()
+            continue
         # A substitution runs when its containing segment runs: analyse it
         # with this segment's incoming taint, so it taints only this and
         # later segments (Piece D, #636).
@@ -2050,6 +2108,10 @@ def analyze_text(text, ctx, ps, depth):
     for body in rest_subs:
         # Defensive: a body no segment claimed is still analysed, never skipped.
         _nested_text(body, ctx, ps, depth + 1)
+    if scope_stack:
+        # An unclosed subshell never runs in a real shell: refuse instead
+        # of judging later segments against a guessed cwd (fail closed).
+        raise Deny("parse", "unbalanced subshell grouping is not inspected")
 
 
 def load_registry(root):

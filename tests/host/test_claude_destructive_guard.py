@@ -4208,6 +4208,104 @@ class ChainRulePieceDTests(unittest.TestCase):
         self.assertEqual(verdict, "DENY")
         self.assertTrue(reason.startswith("rm-recursive"), reason)
 
+    def test_eval_cd_moves_calling_shell_cwd(self):
+        # CRITICAL-1 (#636): eval runs in the calling shell, so a cd
+        # inside it moves the later rm's resolution base. Decision-only:
+        # nothing is executed; the fixture names exist on both sides.
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        verdict, reason = self._decide("eval 'cd ..' && rm file.txt")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("rm-outside-repo"), reason)
+        # The fixed cwd keeps the in-repo case ALLOW (no over-denial).
+        verdict, reason = self._decide("eval 'cd sub' && rm inner.txt")
+        self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_subshell_cd_does_not_leak_to_parent(self):
+        # CRITICAL-2 (#636): (...) runs in a subshell, so an inner cd
+        # must not move the parent cwd used by a later rm. The outer
+        # ../file.txt is the real target, outside the repository.
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        verdict, reason = self._decide("(cd sub) && rm ../file.txt")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("rm-outside-repo"), reason)
+        # Nested subshells keep their own scope at every level.
+        verdict, reason = self._decide("(cd sub && (cd ..)) && rm file.txt")
+        self.assertEqual(verdict, "ALLOW", reason)
+        # A child shell never moves the parent cwd either.
+        verdict, reason = self._decide("sh -c 'cd sub' && rm file.txt")
+        self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_subshell_filesystem_change_taints_parent(self):
+        # The subshell's cwd is scoped, but a write inside it outlives
+        # the subshell: the later rm is judged under taint (chain), not
+        # against the leaked inner path.
+        verdict, reason = self._decide("(cd sub; touch marker) && rm file.txt")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("chain"), reason)
+
+    def test_brace_group_shares_calling_shell_cwd(self):
+        # { ...; } runs in the calling shell (unlike (...)), so its cd
+        # moves the later rm's resolution base.
+        verdict, reason = self._decide("{ cd sub; } && rm inner.txt")
+        self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_git_worktree_move_taints_later_rm(self):
+        # MAJOR-3 (#636): moving a worktree relocates directories, so a
+        # later path judgment must not rely on the hook-time state.
+        # The move alone stays ALLOW (like add); only the chain is refused.
+        verdict, reason = self._decide("git worktree move from-wt to-wt")
+        self.assertEqual(verdict, "ALLOW", reason)
+        verdict, reason = self._decide("git worktree move from-wt to-wt && rm file.txt")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("chain"), reason)
+
+    def test_cd_with_substitution_is_denied(self):
+        # A cd target known only after expansion would misjudge later
+        # relative paths, so it is refused instead of guessed. The
+        # denial is a clean verdict, never an internal error.
+        for cmd in ("cd $(echo sub) && rm file.txt",
+                    "cd $D && rm file.txt"):
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._decide(cmd)
+                self.assertEqual(verdict, "DENY", (cmd, reason))
+                self.assertFalse(reason.startswith("guard internal error"), (cmd, reason))
+
+    def test_find_exec_cwd_does_not_leak_to_parent(self):
+        # find -exec runs in a child process: an inner cd never moves the
+        # parent cwd, while a real change still taints later judgments.
+        verdict, reason = self._decide("find . -exec cd sub \\; && rm file.txt")
+        self.assertEqual(verdict, "ALLOW", reason)
+        verdict, reason = self._decide("find . -exec mkdir d \\; && rm file.txt")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("chain"), reason)
+
+    def test_command_substitution_cwd_does_not_leak(self):
+        # $(...) runs in a subshell: its cd never moves the parent cwd,
+        # and without a filesystem change nothing is tainted.
+        verdict, reason = self._decide("echo $(cd sub) hi && rm file.txt")
+        self.assertEqual(verdict, "ALLOW", reason)
+        # The parent cwd still applies, so an outside path stays outside.
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        verdict, reason = self._decide("echo $(cd sub) hi && rm ../file.txt")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("rm-outside-repo"), reason)
+
+
+def mutant_detected_by_expected_failure(output, expected_test,
+                                           expected_class="ChainRulePieceDTests"):
+    """True only when expected_test fails with an assertion (FAIL:).
+
+    A fixture, import, or runner ERROR: proves nothing about the mutant,
+    so it fails the mutation check itself and is never detection. A FAIL:
+    of any other test is not detection either.
+    """
+    lines = output.splitlines()
+    if any(ln.startswith("ERROR:") for ln in lines):
+        return False
+    return any(ln.startswith("FAIL: " + expected_test + " (")
+               and expected_class in ln
+               for ln in lines)
+
 
 class ChainRuleMutationTests(unittest.TestCase):
     """Piece D (#636): each chain-rule element must be detected by a named
@@ -4270,9 +4368,74 @@ class ChainRuleMutationTests(unittest.TestCase):
             '    sub = ctx.copy()\n    analyze_argv(words, sub, ps, depth)\n'
             '    if sub.tainted:\n        ctx.tainted = True',
             '    sub = ctx.copy()\n    analyze_argv(words, sub, ps, depth)'),
+        "eval cwd propagation removed": (
+            '        _nested_text(" ".join(args), ctx, ps, depth + 1, merge_cwd=True)',
+            '        _nested_text(" ".join(args), ctx, ps, depth + 1, merge_cwd=False)  # mutant'),
+        "subshell scope open destroyed": (
+            '        if seg == SUBSHELL_OPEN:\n            scope_stack.append(ctx.cwd)\n            continue',
+            '        if seg == SUBSHELL_OPEN:\n            continue  # mutant: subshell scope destroyed'),
+        "subshell cwd restore removed": (
+            '        if seg == SUBSHELL_CLOSE:\n            if scope_stack:\n                ctx.cwd = scope_stack.pop()\n            continue',
+            '        if seg == SUBSHELL_CLOSE:\n            continue  # mutant: subshell cwd leaks'),
+        "subshell taint propagation removed": (
+            '        if seg == SUBSHELL_OPEN:\n            scope_stack.append(ctx.cwd)\n            continue\n'
+            '        if seg == SUBSHELL_CLOSE:\n            if scope_stack:\n                ctx.cwd = scope_stack.pop()\n            continue',
+            '        if seg == SUBSHELL_OPEN:\n            scope_stack.append(ctx.cwd)\n            continue\n'
+            '        if seg == SUBSHELL_CLOSE:\n            if scope_stack:\n                ctx.cwd = scope_stack.pop()\n'
+            '            ctx.tainted = False  # mutant: subshell taint dropped\n            continue'),
+        "cd cwd update removed": (
+            '        ctx.cwd = resolve(args[0] if args else "~", ctx)[1]',
+            '        pass  # mutant: cd cwd update removed'),
+        "worktree move taint removed": (
+            '    if sub == "worktree" and rest[:1] in (["add"], ["move"]):',
+            '    if sub == "worktree" and rest[:1] == ["add"]:  # mutant: move not a producer'),
+        "read-only stash list over-taint": (
+            '    if sub == "stash" and rest[:1] not in (["list"], ["show"]):\n        rewrite = True',
+            '    if sub == "stash":\n        rewrite = True  # mutant: read-only stash list taints'),
     }
 
-    def _run(self, hook_text):
+    # Each hook mutant must turn its expected ChainRulePieceDTests test RED
+    # with an assertion failure. A mutant with no entry here fails the run.
+    MUTANT_EXPECTED_TEST = {
+        "rm chain check removed": "test_filesystem_mutation_taints_later_rm",
+        "safe-write chain check removed": "test_tainted_write_and_redirect_are_refused",
+        "redirect chain check removed": "test_tainted_write_and_redirect_are_refused",
+        "tar chain check removed": "test_tainted_write_and_redirect_are_refused",
+        "sort incoming-taint check removed": "test_tainted_write_and_redirect_are_refused",
+        "sort outgoing-taint propagation removed": "test_filesystem_mutation_taints_later_rm",
+        "rm removal taint removed": "test_accepted_removal_taints_later_writes",
+        "reset pathspec handling removed": "test_reset_pathspec_is_not_a_mode",
+        "coproc unnamed-compound skip removed": "test_unnamed_compound_coprocess_is_analysed_once",
+        "string command-position gating removed": "test_wrapper_data_string_does_not_export_taint",
+        "submodule status exemption removed": "test_readonly_prefixes_do_not_taint",
+        "redirect segment snapshot removed": "test_two_redirects_in_one_segment_share_incoming_taint",
+        "string visit entry snapshot removed": "test_wrapper_string_visit_starts_from_entry_taint",
+        "substitution segment association removed": "test_substitution_taint_follows_its_segment",
+        "safe-write taint removed": "test_filesystem_mutation_taints_later_rm",
+        "git rewrite taint removed": "test_filesystem_mutation_taints_later_rm",
+        "nested taint merge removed": "test_filesystem_mutation_taints_later_rm",
+        "eval cwd propagation removed": "test_eval_cd_moves_calling_shell_cwd",
+        "subshell scope open destroyed": "test_subshell_cd_does_not_leak_to_parent",
+        "subshell cwd restore removed": "test_subshell_cd_does_not_leak_to_parent",
+        "subshell taint propagation removed": "test_subshell_filesystem_change_taints_parent",
+        "cd cwd update removed": "test_brace_group_shares_calling_shell_cwd",
+        "worktree move taint removed": "test_git_worktree_move_taints_later_rm",
+        "read-only stash list over-taint": "test_readonly_prefixes_do_not_taint",
+    }
+
+    # Mutants of the detection helper itself (this test file, not the hook).
+    # Under the mutant, an ERROR: output must still fail the check: the
+    # expected helper test turns RED with an assertion failure.
+    TEST_MUTANTS = {
+        "mutation ERROR accepted as detection": (
+            '    if any(ln.startswith("ERROR:") for ln in lines):\n        return False',
+            '    if any(ln.startswith("ERROR:") for ln in lines):\n        return True  # mutant'),
+    }
+    TEST_MUTANT_EXPECTED_TEST = {
+        "mutation ERROR accepted as detection": "test_mutation_detection_rejects_error_output",
+    }
+
+    def _run(self, hook_text, test_text=None, test_class=None):
         with tempfile.TemporaryDirectory() as td:
             root = os.path.realpath(td)
             hooks = os.path.join(root, ".claude", "hooks")
@@ -4280,16 +4443,22 @@ class ChainRuleMutationTests(unittest.TestCase):
             os.makedirs(hooks)
             os.makedirs(host)
             write_text(os.path.join(hooks, "guard_destructive.py"), hook_text)
-            with open(THIS_FILE, encoding="utf-8") as f:
-                write_text(os.path.join(host, "test_claude_destructive_guard.py"), f.read())
+            if test_text is None:
+                with open(THIS_FILE, encoding="utf-8") as f:
+                    test_text = f.read()
+            write_text(os.path.join(host, "test_claude_destructive_guard.py"), test_text)
             proc = subprocess.run([sys.executable, "-m", "unittest", "-v",
-                                   "test_claude_destructive_guard.ChainRulePieceDTests"],
+                                   "test_claude_destructive_guard." + (test_class or "ChainRulePieceDTests")],
                                   cwd=host, capture_output=True, text=True, timeout=300)
             return proc.returncode, proc.stderr
 
     def test_chain_tests_detect_each_mutant(self):
         with open(HOOK, encoding="utf-8") as f:
             original = f.read()
+        with open(THIS_FILE, encoding="utf-8") as f:
+            original_test = f.read()
+        self.assertEqual(set(self.MUTANTS), set(self.MUTANT_EXPECTED_TEST),
+                         "every hook mutant needs an expected test")
         code, out = self._run(original)
         self.assertEqual(code, 0, "unmutated copy must pass ChainRulePieceDTests:\n" + out[-800:])
         for name, (old, new) in self.MUTANTS.items():
@@ -4299,11 +4468,48 @@ class ChainRuleMutationTests(unittest.TestCase):
                 self.assertEqual(original.count(old), 1,
                                  "mutation target not found exactly once: " + name)
                 code, out = self._run(original.replace(old, new))
-                failing = [ln for ln in out.splitlines() if ln.startswith(("FAIL:", "ERROR:"))]
-                detected = any("ChainRulePieceDTests." in ln for ln in failing)
-                self.assertTrue(detected,
-                                "mutant not detected by a ChainRulePieceDTests test: " + name
-                                + "\n" + "\n".join(failing))
+                expected = self.MUTANT_EXPECTED_TEST[name]
+                self.assertTrue(mutant_detected_by_expected_failure(out, expected),
+                                "mutant not detected by the expected ChainRulePieceDTests failure: " + name
+                                + " (expected " + expected + ")\n" + out[-1500:])
+        code, out = self._run(original, original_test,
+                              "ChainRuleMutationHelperTests")
+        self.assertEqual(code, 0, "unmutated copy must pass ChainRuleMutationHelperTests:\n" + out[-800:])
+        for name, (old, new) in self.TEST_MUTANTS.items():
+            with self.subTest(mutant=name):
+                self.assertEqual(original_test.count(old), 1,
+                                 "mutation target not found exactly once: " + name)
+                code, out = self._run(original, original_test.replace(old, new),
+                                      "ChainRuleMutationHelperTests")
+                expected = self.TEST_MUTANT_EXPECTED_TEST[name]
+                self.assertTrue(mutant_detected_by_expected_failure(
+                    out, expected, "ChainRuleMutationHelperTests"),
+                    "runner mutant not detected by the expected helper failure: " + name
+                    + " (expected " + expected + ")\n" + out[-1500:])
+
+
+class ChainRuleMutationHelperTests(unittest.TestCase):
+    """Unit tests for mutant_detected_by_expected_failure (no subprocess)."""
+
+    def test_mutation_detection_accepts_expected_failure(self):
+        out = ("test_eval_cd_moves_calling_shell_cwd "
+               "(test_claude_destructive_guard.ChainRulePieceDTests) ... FAIL\n"
+               "FAIL: test_eval_cd_moves_calling_shell_cwd "
+               "(test_claude_destructive_guard.ChainRulePieceDTests)\n")
+        self.assertTrue(mutant_detected_by_expected_failure(
+            out, "test_eval_cd_moves_calling_shell_cwd"))
+
+    def test_mutation_detection_rejects_error_output(self):
+        out = ("ERROR: test_eval_cd_moves_calling_shell_cwd "
+               "(test_claude_destructive_guard.ChainRulePieceDTests)\n")
+        self.assertFalse(mutant_detected_by_expected_failure(
+            out, "test_eval_cd_moves_calling_shell_cwd"))
+
+    def test_mutation_detection_rejects_unexpected_test_failure(self):
+        out = ("FAIL: test_some_other "
+               "(test_claude_destructive_guard.ChainRulePieceDTests)\n")
+        self.assertFalse(mutant_detected_by_expected_failure(
+            out, "test_eval_cd_moves_calling_shell_cwd"))
 
 
 if __name__ == "__main__":
