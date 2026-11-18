@@ -60,6 +60,9 @@ EXPR_SYNTAX_RE = re.compile(r"[,()@{}$]")
 # is refused on the raw text before any split. Property access ($_.Name) is not a call and is not refused.
 METHOD_CALL_RE = re.compile(r"(?i)\.\s*(?:\w+\s*\(|['\"(])|-m(?:e|em\w*)?\b")
 CD_NAMES = {"cd", "chdir", "set-location", "sl", "pushd", "push-location"}
+# A coproc name is only a name before a compound command (Piece D, #636).
+COPROC_COMPOUND = frozenset({"{", "(", "((", "[[", "if", "until",
+                                "for", "while", "case", "select", "!"})
 # External commands whose arguments only read data, or name plain files (writes into .claude/ are checked by WRITE_NAMES).
 # None of them runs another program or evaluates its arguments. Any other external command with arguments is DENY.
 SAFE_EXTERNAL = {"cat", "head", "tail", "wc", "ls", "echo", "printf", "pwd", "true", "false", "diff", "stat", "file",
@@ -213,6 +216,41 @@ def _nested_text(text, ctx, ps, depth):
     analyze_text(text, sub, ps, depth)
     if sub.tainted:
         ctx.tainted = True
+
+
+def _nested_text_from(text, ctx, entry_tainted, ps, depth):
+    """Analyse one alternative string from the entry taint snapshot (Piece D, #636).
+
+    Alternative parses of the same invocation (wrapper strings, launcher
+    suffixes) are not sequential commands, so a visit must not see taint added
+    by another visit of the same text. Taint found here still propagates back
+    for later segments."""
+    sub = ctx.copy()
+    sub.tainted = entry_tainted
+    analyze_text(text, sub, ps, depth)
+    if sub.tainted:
+        ctx.tainted = True
+
+
+def _validated_write_present(name, args):
+    """True if validated argv contains a write option (Piece D, #636).
+
+    Runs only after allowlist_rule accepted the invocation, so every option
+    form seen here is legal: a short cluster containing 'o' always gives the
+    write value, and an unambiguous --output prefix always names the write
+    option. A '--' ends option parsing."""
+    if name != "sort":
+        return False
+    for a in args:
+        if a.startswith("--"):
+            if a == "--":
+                return False
+            key = a[2:].split("=", 1)[0]
+            if key and "output".startswith(key):
+                return True
+        elif a.startswith("-") and len(a) > 1 and "o" in a[1:]:
+            return True
+    return False
 
 
 def _nested_argv(words, ctx, ps, depth):
@@ -846,9 +884,11 @@ def git_rule(args, ctx):
     # resolution saw, so later destructive segments must not rely on it.
     rewrite = sub in ("checkout", "switch", "merge", "pull", "apply", "am",
                       "rebase", "cherry-pick", "revert", "mv", "rm", "clone")
+    if sub == "reset" and any(git_long_is(a, ("--keep",)) for a in rest):
+        rewrite = True
     if sub == "stash" and rest[:1] not in (["list"], ["show"]):
         rewrite = True
-    if sub == "submodule" and rest:
+    if sub == "submodule" and rest and rest[:1] != ["status"]:
         rewrite = True
     if sub == "worktree" and rest[:1] == ["add"]:
         rewrite = True
@@ -1101,9 +1141,6 @@ def allowlist_rule(name, args, ctx=None):
                     raise Deny("write", name + " " + opt + " writes a file: DENY in every form (Owner Round 13)")
                 if opt in spec.get("long_writes", ()) and not (ctx is not None and tar_path_ok(value, ctx, "archive")):
                     raise Deny("write", name + " " + opt + " writes outside the repository or a protected path: " + a)
-                if opt in spec.get("long_writes", ()):
-                    _require_untainted(ctx, name + " " + opt)
-                    _taint(ctx)
                 if not eq:
                     i += 1  # the value is the next word
                 if any(value.lower().startswith(p) for p in spec.get("long_arg_deny_prefix", {}).get(opt, ())):
@@ -1132,9 +1169,6 @@ def allowlist_rule(name, args, ctx=None):
                         raise Deny("write", name + " -" + ch + " writes a file: DENY in every form (Owner Round 13)")
                     if ch in spec.get("short_writes", "") and not (ctx is not None and tar_path_ok(value, ctx, "archive")):
                         raise Deny("write", name + " -" + ch + " writes outside the repository or a protected path: " + a)
-                    if ch in spec.get("short_writes", ""):
-                        _require_untainted(ctx, name + " -" + ch)
-                        _taint(ctx)
                     if j == len(a) - 1:
                         i += 1  # the value is the next word
                     if ch in spec.get("short_value_strict", "") and (
@@ -1318,6 +1352,12 @@ def program_option_rule(name, args, ctx=None):
         tar_rule(args, ctx)
         return
     allowlist_rule(name, args, ctx)
+    # Piece D (#636): a validated write option (sort -o/--output) mutates the
+    # filesystem, so later segments must not rely on hook-time state. The
+    # check runs after full argv validation, once per invocation.
+    if _validated_write_present(name, args):
+        _require_untainted(ctx, name)
+        _taint(ctx)
 
 
 SAFE_WRITE_OPTS = {"cp": {"-r", "-R", "-p", "-v", "-n"}, "mv": {"-v", "-n"}, "mkdir": {"-p", "-v"},
@@ -1814,7 +1854,13 @@ def analyze_argv(words, ctx, ps, depth):
                 raise Deny("coproc", "coproc without a command is not resolvable")
             _nested_argv(rest, ctx, ps, depth + 1)
             if len(rest) >= 2:
-                _nested_argv(rest[1:], ctx, ps, depth + 1)
+                if rest[0] in COPROC_COMPOUND:
+                    _nested_argv(rest[1:], ctx, ps, depth + 1)
+                else:
+                    # Simple-command form has no explicit name: the suffix is
+                    # validated, but taint from the impossible named parse is
+                    # not exported (Piece D, #636).
+                    analyze_argv(rest[1:], ctx.copy(), ps, depth + 1)
             return
         if SUBST in w0:
             raise Deny("command-word", "command substitution in command position")
@@ -1845,6 +1891,10 @@ def analyze_argv(words, ctx, ps, depth):
                 _nested_argv(cand, ctx, ps, depth + 1)
             return
         if handoff(name):
+            # String visits below are alternative parses of this same
+            # invocation: they start from the taint inherited here, before
+            # the suffix pass merges its own findings (Piece D, #636).
+            wrapper_tainted = ctx.tainted
             for cand in wrapper_candidates(name, words[1:], ctx):
                 # An option-looking word (-n, --command=...) or a number (timeout 5) cannot be the command a wrapper starts;
                 # the command is a later suffix. Strings are covered by the text analysis below.
@@ -1856,13 +1906,15 @@ def analyze_argv(words, ctx, ps, depth):
                 # A shell string argument is text, whatever its shape: a quoted string with a space (sudo -s "rm -rf x"),
                 # the value after -c or --command (flock -c rm lock), and the value after --name= (flock --command="rm").
                 # Plain words and options are commands for the suffix pass, which the grammar narrows to the real command.
+                # String visits are alternative parses of one invocation: each
+                # starts from the wrapper-entry taint and merges back (Piece D, #636).
                 for k in range(1, len(words)):
                     if not words[k].startswith("-") and any(ch.isspace() for ch in words[k]):
-                        _nested_text(words[k], ctx, ps, depth + 1)
+                        _nested_text_from(words[k], ctx, wrapper_tainted, ps, depth + 1)
                     if words[k] in ("-c", "--command") and k + 1 < len(words):
-                        _nested_text(words[k + 1], ctx, ps, depth + 1)
+                        _nested_text_from(words[k + 1], ctx, wrapper_tainted, ps, depth + 1)
                     if words[k].startswith("--") and "=" in words[k]:
-                        _nested_text(words[k].split("=", 1)[1], ctx, ps, depth + 1)
+                        _nested_text_from(words[k].split("=", 1)[1], ctx, wrapper_tainted, ps, depth + 1)
             return
         break
     args = words[1:]
@@ -1877,8 +1929,9 @@ def analyze_argv(words, ctx, ps, depth):
             raise Deny("launcher", "launcher with too many arguments is not inspected")
         # No candidate is skipped: a path split at its space ("Files\app.exe") is refused like any other command word,
         # so a destructive command after a separator in the same token ("tools\app.exe;rm -rf /") is still analysed.
+        entry_tainted = ctx.tainted
         for k in range(len(tokens)):
-            _nested_text(" ".join(tokens[k:]), ctx, True, depth + 1)
+            _nested_text_from(" ".join(tokens[k:]), ctx, entry_tainted, True, depth + 1)
     if name in (".", "source") and any(("$" in a or "`" in a or SUBST in a) for a in args):
         # Sourcing a path that names a variable (or a substitution) is a file that is not known here (fail closed).
         raise Deny("unexpanded", "sourcing a variable or substitution is not inspected")
@@ -1959,14 +2012,30 @@ def analyze_text(text, ctx, ps, depth):
             python_rule(pargs)
     if sum(len(ops) for ops in redirs) > MAX_REDIRECTS:
         raise Deny("redirect", "more than %d redirections are not inspected" % MAX_REDIRECTS)
-    for body in subs:
-        _nested_text(body, ctx, ps, depth + 1)
+    rest_subs = list(subs)
     for seg, ops in zip(segs, redirs):
+        # A substitution runs when its containing segment runs: analyse it
+        # with this segment's incoming taint, so it taints only this and
+        # later segments (Piece D, #636).
+        n = seg.count(SUBST)
+        bodies, rest_subs = rest_subs[:n], rest_subs[n:]
+        for body in bodies:
+            _nested_text(body, ctx, ps, depth + 1)
         if ops and inside_claude(ctx.cwd, ctx):
             raise Deny("claude-write", "redirect while cwd is inside .claude/ is denied")
+        # Redirects of one segment share its incoming taint for their checks;
+        # a write they perform is still recorded for later segments.
+        incoming, wrote = ctx.tainted, False
         for op, target in ops:
+            ctx.tainted = incoming
             check_redirect(target, op, ctx, ps)
+            wrote = wrote or ctx.tainted
+        if wrote:
+            ctx.tainted = True
         analyze_argv(words_of(seg, ps), ctx, ps, depth)
+    for body in rest_subs:
+        # Defensive: a body no segment claimed is still analysed, never skipped.
+        _nested_text(body, ctx, ps, depth + 1)
 
 
 def load_registry(root):

@@ -4072,13 +4072,72 @@ class ChainRulePieceDTests(unittest.TestCase):
                  ("git stash list", "rm file.txt"),
                  ("git stash show", "rm file.txt"),
                  ("git submodule", "rm file.txt"),
+                 ("git submodule status", "rm file.txt"),
                  ("git worktree list", "rm file.txt"),
+                 ("git reset HEAD", "rm file.txt"),
                  ("cd sub", "rm inner.txt"),
                  ("echo a", "rm file.txt"), ("grep foo file.txt", "rm file.txt")]
         for prefix, tail in cases:
             with self.subTest(prefix=prefix):
                 verdict, reason = self._decide(prefix + " && " + tail)
                 self.assertEqual(verdict, "ALLOW", (prefix, reason))
+
+    def test_reset_keep_rewrites_the_tree(self):
+        # --keep updates working-tree files, so later judgments are tainted;
+        # a mixed reset touches the index only and stays read-only.
+        verdict, reason = self._decide("git reset --keep HEAD && rm file.txt")
+        self.assertEqual(verdict, "DENY")
+        self.assertTrue(reason.startswith("chain"), reason)
+
+    def test_two_redirects_in_one_segment_share_incoming_taint(self):
+        # Both redirects belong to one simple command: the second must not
+        # see taint added by the first.
+        verdict, reason = self._decide("echo ok > a.log 2> b.log")
+        self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_redirect_before_argv_in_one_segment_still_taints(self):
+        # Redirection setup precedes the command, so rm after a write
+        # redirect in the same segment is refused and documented as explicit.
+        verdict, reason = self._decide("rm file.txt > log")
+        self.assertEqual(verdict, "DENY")
+        self.assertTrue(reason.startswith("chain"), reason)
+
+    def test_sort_double_write_option_in_one_invocation(self):
+        # One invocation with two write spellings is one write, not a chain.
+        for cmd in ("sort -o out --output=out input", "sort -o out -- f"):
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._decide(cmd)
+                self.assertEqual(verdict, "ALLOW", (cmd, reason))
+
+    def test_sort_invalid_option_keeps_its_reason_when_tainted(self):
+        # Full argv validation precedes the incoming-taint check.
+        verdict, reason = self._decide("git checkout x && sort --output=out --no-such-option")
+        self.assertEqual(verdict, "DENY")
+        self.assertTrue(reason.startswith("program-option"), reason)
+
+    def test_coproc_simple_command_has_no_name(self):
+        # `coproc echo touch marker` runs echo with arguments: `touch
+        # marker` is not a named coprocess body, so its taint is not exported.
+        verdict, reason = self._decide("coproc echo touch marker; touch result")
+        self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_wrapper_string_visit_starts_from_entry_taint(self):
+        # One string analysed twice must not deny itself: each visit starts
+        # from the wrapper-entry taint and merges back for later segments.
+        verdict, reason = self._decide("sudo sh -c 'touch marker'")
+        self.assertEqual(verdict, "ALLOW", reason)
+        verdict, reason = self._decide("sudo sh -c 'touch marker' && rm file.txt")
+        self.assertEqual(verdict, "DENY")
+        self.assertTrue(reason.startswith("chain"), reason)
+
+    def test_substitution_taint_follows_its_segment(self):
+        # A later substitution sees earlier taint (the hole), and an earlier
+        # segment never sees a later substitution's taint (the over-taint).
+        verdict, reason = self._decide("git checkout x && echo $(rm file.txt)")
+        self.assertEqual(verdict, "DENY")
+        self.assertTrue(reason.startswith("chain"), reason)
+        verdict, reason = self._decide("rm file.txt && echo $(mkdir d)")
+        self.assertEqual(verdict, "ALLOW", reason)
 
     def test_tainted_write_and_redirect_are_refused(self):
         for cmd in ("git checkout x && cp a b",
@@ -4126,9 +4185,27 @@ class ChainRuleMutationTests(unittest.TestCase):
         "tar chain check removed": (
             '    _require_untainted(ctx, "tar")',
             '    pass  # mutant: tar chain check removed'),
-        "sort -o chain check removed": (
-            '                        _require_untainted(ctx, name + " -" + ch)',
-            '                        pass  # mutant: sort chain check removed'),
+        "sort write publish removed": (
+            '    if _validated_write_present(name, args):\n        _require_untainted(ctx, name)\n        _taint(ctx)',
+            '    if False:\n        pass'),
+        "reset keep taint removed": (
+            '    if sub == "reset" and any(git_long_is(a, ("--keep",)) for a in rest):\n        rewrite = True',
+            '    pass  # mutant: reset keep taint removed'),
+        "submodule status exemption removed": (
+            '    if sub == "submodule" and rest and rest[:1] != ["status"]:',
+            '    if sub == "submodule" and rest:'),
+        "redirect segment snapshot removed": (
+            '        incoming, wrote = ctx.tainted, False\n        for op, target in ops:\n            ctx.tainted = incoming\n            check_redirect(target, op, ctx, ps)\n            wrote = wrote or ctx.tainted\n        if wrote:\n            ctx.tainted = True',
+            '        for op, target in ops:\n            check_redirect(target, op, ctx, ps)'),
+        "coproc named-form gating removed": (
+            '                if rest[0] in COPROC_COMPOUND:',
+            '                if True:  # mutant: coproc named-form gating removed'),
+        "string visit entry snapshot removed": (
+            '                        _nested_text_from(words[k + 1], ctx, wrapper_tainted, ps, depth + 1)',
+            '                        _nested_text(words[k + 1], ctx, ps, depth + 1)'),
+        "substitution segment association removed": (
+            '        bodies, rest_subs = rest_subs[:n], rest_subs[n:]',
+            '        bodies, rest_subs = list(rest_subs), []'),
         "safe-write taint removed": (
             '    _require_untainted(ctx, name)\n    _taint(ctx)',
             '    _require_untainted(ctx, name)'),
@@ -4173,3 +4250,7 @@ class ChainRuleMutationTests(unittest.TestCase):
                 self.assertTrue(detected,
                                 "mutant not detected by a ChainRulePieceDTests test: " + name
                                 + "\n" + "\n".join(failing))
+
+
+if __name__ == "__main__":
+    unittest.main()
