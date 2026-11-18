@@ -1507,6 +1507,547 @@ def _python_program(args):
     return 'none'
 
 
+_NODE_CODE_SHORTS = {"e", "p"}
+_NODE_VALUE_SHORTS = {"r", "C"}
+_NODE_FLAG_SHORTS = {"c", "i", "h", "v"}
+_NODE_CODE_LONGS = {"--eval", "--print"}
+_NODE_VALUE_LONGS = {
+    "--allow-fs-read",
+    "--allow-fs-write",
+    "--build-snapshot-config",
+    "--conditions",
+    "--cpu-prof-dir",
+    "--cpu-prof-interval",
+    "--cpu-prof-name",
+    "--diagnostic-dir",
+    "--disable-proto",
+    "--disable-warning",
+    "--dns-result-order",
+    "--env-file",
+    "--env-file-if-exists",
+    "--eval",
+    "--experimental-config-file",
+    "--experimental-default-type",
+    "--experimental-loader",
+    "--experimental-sea-config",
+    "--experimental-test-isolation",
+    "--heap-prof-dir",
+    "--heap-prof-interval",
+    "--heap-prof-name",
+    "--heapsnapshot-near-heap-limit",
+    "--heapsnapshot-signal",
+    "--icu-data-dir",
+    "--import",
+    "--input-type",
+    "--inspect-port",
+    "--inspect-publish-uid",
+    "--localstorage-file",
+    "--max-http-header-size",
+    "--max-old-space-size-percentage",
+    "--network-family-autoselection-attempt-timeout",
+    "--openssl-config",
+    "--redirect-warnings",
+    "--report-dir",
+    "--report-filename",
+    "--report-signal",
+    "--require",
+    "--run",
+    "--secure-heap",
+    "--secure-heap-min",
+    "--snapshot-blob",
+    "--test-concurrency",
+    "--test-coverage-branches",
+    "--test-coverage-exclude",
+    "--test-coverage-functions",
+    "--test-coverage-include",
+    "--test-coverage-lines",
+    "--test-name-pattern",
+    "--test-reporter",
+    "--test-reporter-destination",
+    "--test-shard",
+    "--test-skip-pattern",
+    "--test-timeout",
+    "--title",
+    "--tls-cipher-list",
+    "--tls-keylog",
+    "--trace-event-categories",
+    "--trace-event-file-pattern",
+    "--trace-require-module",
+    "--unhandled-rejections",
+    "--use-largepages",
+    "--v8-pool-size",
+    "--watch-kill-signal",
+    "--watch-path",
+    "--loader",
+    "--report-directory",
+    "--debug-port",
+    "--max-old-space-size",
+}
+_NODE_FLAG_LONGS = {
+    "--abort-on-uncaught-exception",
+    "--allow-addons",
+    "--allow-child-process",
+    "--allow-wasi",
+    "--allow-worker",
+    "--build-snapshot",
+    "--check",
+    "--completion-bash",
+    "--cpu-prof",
+    "--debug-port",
+    "--disable-sigusr1",
+    "--disable-wasm-trap-handler",
+    "--disallow-code-generation-from-strings",
+    "--enable-etw-stack-walking",
+    "--enable-fips",
+    "--enable-network-family-autoselection",
+    "--enable-source-maps",
+    "--entry-url",
+    "--experimental-addon-modules",
+    "--experimental-async-context-frame",
+    "--experimental-default-config-file",
+    "--experimental-eventsource",
+    "--experimental-import-meta-resolve",
+    "--experimental-inspector-network-resource",
+    "--experimental-network-inspection",
+    "--experimental-permission",
+    "--experimental-print-required-tla",
+    "--experimental-require-module",
+    "--experimental-test-coverage",
+    "--experimental-test-module-mocks",
+    "--experimental-transform-types",
+    "--experimental-vm-modules",
+    "--experimental-webstorage",
+    "--experimental-worker-inspection",
+    "--expose-gc",
+    "--force-context-aware",
+    "--force-fips",
+    "--force-node-api-uncaught-exceptions-policy",
+    "--frozen-intrinsics",
+    "--heap-prof",
+    "--help",
+    "--huge-max-old-generation-size",
+    "--insecure-http-parser",
+    "--inspect",
+    "--inspect-brk",
+    "--inspect-wait",
+    "--interactive",
+    "--interpreted-frames-native-stack",
+    "--jitless",
+    "--loader",
+    "--max-old-space-size",
+    "--no-addons",
+    "--no-deprecation",
+    "--no-experimental-detect-module",
+    "--no-experimental-fetch",
+    "--no-experimental-global-customevent",
+    "--no-experimental-global-navigator",
+    "--no-experimental-global-webcrypto",
+    "--no-experimental-repl-await",
+    "--no-experimental-require-module",
+    "--no-experimental-sqlite",
+    "--no-experimental-strip-types",
+    "--no-experimental-websocket",
+    "--no-extra-info-on-fatal-exception",
+    "--no-force-async-hooks-checks",
+    "--no-global-search-paths",
+    "--no-network-family-autoselection",
+    "--no-warnings",
+    "--node-memory-debug",
+    "--openssl-legacy-provider",
+    "--openssl-shared-config",
+    "--pending-deprecation",
+    "--permission",
+    "--preserve-symlinks",
+    "--preserve-symlinks-main",
+    "--print",
+    "--prof",
+    "--prof-process",
+    "--report-compact",
+    "--report-directory",
+    "--report-exclude-env",
+    "--report-exclude-network",
+    "--report-on-fatalerror",
+    "--report-on-signal",
+    "--report-uncaught-exception",
+    "--test",
+    "--test-force-exit",
+    "--test-only",
+    "--test-update-snapshots",
+    "--throw-deprecation",
+    "--tls-max-v1.2",
+    "--tls-max-v1.3",
+    "--tls-min-v1.0",
+    "--tls-min-v1.1",
+    "--tls-min-v1.2",
+    "--tls-min-v1.3",
+    "--trace-atomics-wait",
+    "--trace-deprecation",
+    "--trace-env",
+    "--trace-env-js-stack",
+    "--trace-env-native-stack",
+    "--trace-exit",
+    "--trace-promises",
+    "--trace-sigint",
+    "--trace-sync-io",
+    "--trace-tls",
+    "--trace-uncaught",
+    "--trace-warnings",
+    "--track-heap-objects",
+    "--use-bundled-ca",
+    "--use-env-proxy",
+    "--use-openssl-ca",
+    "--use-system-ca",
+    "--v8-options",
+    "--version",
+    "--watch",
+    "--watch-preserve-output",
+    "--zero-fill-buffers",
+}
+def _node_program(args):
+    """How a node argv selects its program (Issue #637, MAJOR fix).
+
+    Returns 'code' (-e/--eval, -p/--print name code in argv), 'file' (a script
+    file names the program), 'stdin' (a standalone `-` names stdin), 'none'
+    (flags only, no program word), or 'unknown' (an option form the guard does
+    not model: fail-closed, treated like 'none' when stdin is piped or
+    redirected, but never as a file). Only -r/-C take a separate value and only
+    the --xxx=... longs take a value in the same word; every other short/long
+    without a value is a flag. `inspect` after the options is a subcommand, not
+    a file: `node inspect script.js` still names a file, `node inspect` alone
+    names none. Never raises; redirect words are not program words.
+    """
+    args = _drop_redirect_words(args)
+    i, n = 0, len(args)
+    seen_subcommand = False
+    while i < n:
+        a = args[i]
+        if a == '--':
+            rest = args[i + 1:]
+            if not rest:
+                return 'none'
+            return 'stdin' if rest[0] == '-' else 'file'
+        if a == '-':
+            return 'stdin'
+        if a.startswith('--'):
+            key, eq, _val = a.partition('=')
+            if eq:
+                if key in _NODE_CODE_LONGS:
+                    return 'code'
+                if key in _NODE_VALUE_LONGS:
+                    i += 1
+                    continue
+                return 'unknown'
+            if a in _NODE_CODE_LONGS:
+                return 'code'
+            if a in _NODE_VALUE_LONGS:
+                i += 2
+                continue
+            if a in _NODE_FLAG_LONGS:
+                i += 1
+                continue
+            return 'unknown'
+        if a.startswith('-') and len(a) > 1:
+            j = 1
+            while j < len(a):
+                ch = a[j]
+                if ch in _NODE_CODE_SHORTS:
+                    return 'code'
+                if ch in _NODE_VALUE_SHORTS:
+                    if j + 1 == len(a):
+                        i += 1
+                    break
+                if ch in _NODE_FLAG_SHORTS:
+                    j += 1  # flag letter: next cluster letter
+                    continue
+                return 'unknown'
+            i += 1
+            continue
+        if not seen_subcommand and a == 'inspect':
+            seen_subcommand = True
+            i += 1
+            continue
+        return 'file'
+    return 'none'
+
+
+def _perl_program(args):
+    """How a perl argv selects its program: 'code' (-e/-E), 'file', 'stdin' (-),
+    'none' (flags only), or 'unknown' (unmodelled option: fail-closed)."""
+    args = _drop_redirect_words(args)
+    i, n = 0, len(args)
+    while i < n:
+        a = args[i]
+        if a == '--':
+            rest = args[i + 1:]
+            if not rest:
+                return 'none'
+            return 'stdin' if rest[0] == '-' else 'file'
+        if a == '-':
+            return 'stdin'
+        if a.startswith('--'):
+            return 'unknown'
+        if a.startswith('-') and len(a) > 1:
+            j = 1
+            while j < len(a):
+                ch = a[j]
+                if ch in ('e', 'E'):
+                    return 'code'
+                if ch in ('I', 'F', 'D', 'C', '0', 'l', 'i', 'm', 'M', 'd', 'x', 'V'):
+                    if j + 1 == len(a):
+                        i += 1
+                    break
+                if ch in ('a', 'c', 'f', 'g', 'n', 'p', 's', 'S', 't', 'T', 'u', 'U', 'v', 'w', 'W', 'X'):
+                    j += 1  # perl flag: next cluster letter
+                    continue
+                return 'unknown'
+            i += 1
+            continue
+        return 'file'
+    return 'none'
+
+
+def _ruby_program(args):
+    """How a ruby argv selects its program: 'code' (-e), 'file', 'stdin' (-),
+    'none', or 'unknown' (fail-closed). Value-taking shorts consume a separate
+    word when not attached; unknown shorts/longs are unknown."""
+    args = _drop_redirect_words(args)
+    i, n = 0, len(args)
+    while i < n:
+        a = args[i]
+        if a == '--':
+            rest = args[i + 1:]
+            if not rest:
+                return 'none'
+            return 'stdin' if rest[0] == '-' else 'file'
+        if a == '-':
+            return 'stdin'
+        if a.startswith('--'):
+            return 'unknown'
+        if a.startswith('-') and len(a) > 1:
+            j = 1
+            while j < len(a):
+                ch = a[j]
+                if ch == 'e':
+                    return 'code'
+                if ch in ('r', 'I', 'K', 'C', 'E', 'F', '0', 'T', 'W', 'X', 'x', 'i'):
+                    if j + 1 == len(a):
+                        i += 1
+                    break
+                if ch in ('a', 'c', 'd', 'l', 'n', 'p', 's', 'S', 'U', 'v', 'V', 'w', 'y'):
+                    j += 1  # ruby flag: next cluster letter
+                    continue
+                return 'unknown'
+            i += 1
+            continue
+        return 'file'
+    return 'none'
+
+
+def _php_program(args):
+    """How a php argv selects its program: 'code' (-r/-B/-R/-E), 'file' (a script
+    or -f/-F file), 'stdin' (-), 'none', or 'unknown' (fail-closed)."""
+    args = _drop_redirect_words(args)
+    i, n = 0, len(args)
+    while i < n:
+        a = args[i]
+        if a == '--':
+            rest = args[i + 1:]
+            if not rest:
+                return 'none'
+            return 'stdin' if rest[0] == '-' else 'file'
+        if a == '-':
+            return 'stdin'
+        if a.startswith('--'):
+            return 'unknown'
+        if a.startswith('-') and len(a) > 1:
+            # -f/-F name a file: `-f -` reads the program from stdin.
+            if len(a) >= 2 and a[1] in ('f', 'F'):
+                rest = a[2:]
+                if rest:
+                    return 'stdin' if rest == '-' else 'file'
+                if i + 1 >= n:
+                    return 'unknown'
+                nxt = args[i + 1]
+                if nxt == '-':
+                    return 'stdin'
+                if nxt.startswith('-') and nxt != '-':
+                    return 'unknown'
+                return 'file'
+            j = 1
+            while j < len(a):
+                ch = a[j]
+                if ch in ('r', 'B', 'R', 'E'):
+                    return 'code'
+                if ch in ('d', 'c', 'z', 'H', 's'):
+                    if j + 1 == len(a):
+                        i += 1
+                    break
+                if ch in ('a', 'n', 'e', 'h', 'i', 'l', 'm', 'v', 'w', 'q'):
+                    j += 1  # php flag: next cluster letter
+                    continue
+                return 'unknown'
+            i += 1
+            continue
+        return 'file'
+    return 'none'
+
+
+def _lua_program(args):
+    """How a lua argv selects its program: 'code' (-e), 'file', 'stdin' (-),
+    'none', or 'unknown' (fail-closed)."""
+    args = _drop_redirect_words(args)
+    i, n = 0, len(args)
+    while i < n:
+        a = args[i]
+        if a == '--':
+            rest = args[i + 1:]
+            if not rest:
+                return 'none'
+            return 'stdin' if rest[0] == '-' else 'file'
+        if a == '-':
+            return 'stdin'
+        if a.startswith('--'):
+            return 'unknown'
+        if a.startswith('-') and len(a) > 1:
+            j = 1
+            while j < len(a):
+                ch = a[j]
+                if ch == 'e':
+                    return 'code'
+                if ch == 'l':
+                    if j + 1 == len(a):
+                        i += 1
+                    break
+                if ch in ('i', 'v', 'E', 'W'):
+                    j += 1  # lua flag: next cluster letter
+                    continue
+                return 'unknown'
+            i += 1
+            continue
+        return 'file'
+    return 'none'
+
+
+def _awk_program(args):
+    """How an awk/gawk/mawk argv selects its program.
+
+    Returns 'file' when a program is named in argv (a -f file, a -W exec file,
+    or a program-text word), 'stdin' when -f names `-` (program from stdin) or
+    a bare `-` selects stdin with no program text, 'none' (flags only), or
+    'unknown' (unmodelled -W form: fail-closed). A non-option word is program
+    text (stdin is then data, not the program), and a `-` data file after
+    program text does not select stdin as the program.
+    """
+    args = _drop_redirect_words(args)
+    i, n = 0, len(args)
+    seen_program_text = False
+    while i < n:
+        a = args[i]
+        if a == '--':
+            rest = args[i + 1:]
+            if not rest:
+                return 'none' if not seen_program_text else 'file'
+            if rest[0] == '-' and not seen_program_text:
+                return 'stdin'
+            return 'file'
+        if a == '-':
+            if seen_program_text:
+                i += 1
+                continue
+            return 'stdin'
+        if a.startswith('--'):
+            return 'unknown'
+        if a.startswith('-') and len(a) > 1:
+            # -f file, -F sep, -v var=value, -W opt (mawk/gawk).
+            if len(a) >= 2 and a[1] == 'f':
+                rest = a[2:]
+                if rest:
+                    if rest == '-':
+                        return 'stdin'
+                    return 'file'
+                if i + 1 >= n:
+                    return 'unknown'
+                nxt = args[i + 1]
+                if nxt == '-':
+                    return 'stdin'
+                if nxt.startswith('-') and nxt != '-':
+                    return 'unknown'
+                return 'file'
+            if len(a) >= 2 and a[1] in ('F', 'v'):
+                if len(a) == 2:
+                    i += 2
+                    continue
+                i += 1
+                continue
+            if len(a) >= 2 and a[1] == 'W':
+                rest = a[2:]
+                if rest:
+                    if rest == 'exec':
+                        if i + 1 >= n:
+                            return 'unknown'
+                        nxt = args[i + 1]
+                        if nxt == '-':
+                            return 'stdin'
+                        if nxt.startswith('-') and nxt != '-':
+                            return 'unknown'
+                        return 'file'
+                    i += 1
+                    continue
+                if i + 1 >= n:
+                    return 'unknown'
+                nxt = args[i + 1]
+                if nxt == 'exec':
+                    if i + 2 >= n:
+                        return 'unknown'
+                    nxt2 = args[i + 2]
+                    if nxt2 == '-':
+                        return 'stdin'
+                    if nxt2.startswith('-') and nxt2 != '-':
+                        return 'unknown'
+                    return 'file'
+                i += 2
+                continue
+            # Short cluster without f/F/v/W: only flags are expected; any other
+            # letter is unknown (fail-closed).
+            j = 1
+            only_flags = True
+            while j < len(a):
+                ch = a[j]
+                if ch in ('F', 'v', 'W', 'f'):
+                    only_flags = False
+                    break
+                # mawk/gawk have no other single-letter flags that take no value
+                # besides the ones above; treat the rest as unknown.
+                return 'unknown'
+            if only_flags:
+                i += 1
+                continue
+            i += 1
+            continue
+        seen_program_text = True
+        return 'file'
+    if seen_program_text:
+        return 'file'
+    return 'none'
+
+
+def _interp_program(name, args):
+    """Program selection for a non-python interpreter (Issue #637)."""
+    if name == 'node':
+        return _node_program(args)
+    if name == 'perl':
+        return _perl_program(args)
+    if name == 'ruby':
+        return _ruby_program(args)
+    if name == 'php':
+        return _php_program(args)
+    if name in ('lua',):
+        return _lua_program(args)
+    if name in ('awk', 'gawk'):
+        return _awk_program(args)
+    return 'unknown'
+
+
 def _has_input_redirect(seg):
     """True when a raw segment contains an unquoted `<` (input redirect, heredoc `<<`, here-string `<<<`)."""
     quote, i, n = None, 0, len(seg)
@@ -1534,21 +2075,38 @@ def stdin_program_refusal(words, piped, seg):
     """Deny when an interpreter's program comes from stdin and is not visible in argv (Issue #637).
 
     Refused: `python3 -` (explicit stdin program, piped or not; see python_rule), a piped stdin with no
-    program word (`... | python3`, `... | python3 -W ignore`), and a bare perl/node/ruby/php/lua/awk
-    with piped or `<`-redirected stdin (`... | perl`, `perl < code.pl`; these read their program from
-    stdin when no -e/file names one). Returns a Deny, or None when no rule fires.
+    program word (`... | python3`, `... | python3 -W ignore`), an explicit `-` stdin program for any
+    interpreter (`node -`, `perl -`; piped or not), and a bare or flags-only perl/node/ruby/php/lua/awk
+    with piped or `<`-redirected stdin (`... | node --no-warnings`, `node --no-warnings < code.js`;
+    these read their program from stdin when no -e/file names one). Each interpreter has its own
+    option grammar (_node_program, _perl_program, ...): an option and a script-file operand are told
+    apart, an unknown option form is fail-closed (never read as a file), and syntax differences are
+    not ignored with one blanket ALLOW. Returns a Deny, or None when no rule fires.
 
-    Kept as they are (documented): a script file operand (`python3 x.py`, `node x.js`) and `-c`/`-m`
-    with stdin as data (the code or module is named in argv and judged; file content is the X3d
-    residual, out of #637 scope), and unpiped bare interpreters (no delivered code). Pipes through
-    `(...)`, `{...}`, wrappers and `sh -c` strings are still marked (the interpreter shares the
-    pipe-fed segment). Residual: control-keyword branches that start after `;` lose the mark
+    Kept as they are (documented): a script file operand (`python3 x.py`, `node x.js`, including
+    `node --no-warnings script.js` and `node -- script.js`) and `-c`/`-m`/`-e` with stdin as data
+    (the code or module is named in argv and judged; file content is the X3d residual, out of #637
+    scope), and unpiped bare or flags-only interpreters with no delivered code (no stdin taint).
+    Pipes through `(...)`, `{...}`, wrappers and `sh -c` strings are still marked (the interpreter
+    shares the pipe-fed segment; a quoted `sh -c "node --no-warnings"` string is split and judged
+    with the outer pipe mark). Residual: control-keyword branches that start after `;` lose the mark
     (`... | if c; then python3; fi` stays ALLOW; probed, not guessed). Tracking taint into compound
     branches would need control-flow depth in the splitter: follow-up work, not this rule.
     Known overreach (fail-closed, rare): a file operand literally named like an interpreter
     (`... | sort perl`, `... | tee node`) reads as a bare interpreter and is refused; the established
     X1 scan accepts the same trade-off for wrapper-hidden python (`nice python3`).
     """
+    def _check_prog(name, prog, piped_here, seg_here):
+        if prog in ('code', 'file'):
+            return None
+        if prog == 'stdin':
+            return Deny("stdin-program", name + " with `-` runs its program from stdin: not inspected")
+        if prog in ('none', 'unknown'):
+            if piped_here or _has_input_redirect(seg_here):
+                return Deny("stdin-program", name + " with piped or redirected stdin and no program word runs stdin: not inspected")
+            return None
+        return None
+
     i = 0
     while i < len(words) and (words[i] in KEYWORDS or ASSIGN.match(words[i])):
         i += 1
@@ -1557,17 +2115,39 @@ def stdin_program_refusal(words, piped, seg):
     for j in range(i, len(words)):
         name = _cmd_name(words[j])
         if PY_NAME.match(name):
-            # A `-` program is refused in python_rule (every python path is judged there); here only a
-            # piped stdin with no program word at all is refused.
             if piped and _python_program(words[j + 1:]) == 'none':
                 return Deny("stdin-program", "python with piped stdin and no program word runs stdin: not inspected")
             return None
         if name in INTERP:
-            if _drop_redirect_words(words[j + 1:]):
-                return None  # options or a file operand: judged (or refused) downstream.
-            if piped or _has_input_redirect(seg):
-                return Deny("stdin-program", name + " with piped or redirected stdin and no program word runs stdin: not inspected")
+            prog = _interp_program(name, words[j + 1:])
+            hit = _check_prog(name, prog, piped, seg)
+            if hit is not None:
+                return hit
             return None
+    for j in range(i, len(words)):
+        w = words[j]
+        if ' ' not in w and '\t' not in w:
+            continue
+        if '\n' in w or '$' in w or '`' in w or SUBST in w:
+            continue
+        parts = w.split()
+        if not parts:
+            continue
+        for k, part in enumerate(parts):
+            pname = _cmd_name(part)
+            if PY_NAME.match(pname):
+                if piped and _python_program(parts[k + 1:]) == 'none':
+                    return Deny("stdin-program", "python with piped stdin and no program word runs stdin: not inspected")
+                break
+            if pname in INTERP:
+                prog = _interp_program(pname, parts[k + 1:])
+                if prog in ('code', 'file'):
+                    break
+                if prog == 'stdin':
+                    return Deny("stdin-program", pname + " with `-` runs its program from stdin: not inspected")
+                if prog in ('none', 'unknown') and piped:
+                    return Deny("stdin-program", pname + " with piped or redirected stdin and no program word runs stdin: not inspected")
+                break
     return None
 
 

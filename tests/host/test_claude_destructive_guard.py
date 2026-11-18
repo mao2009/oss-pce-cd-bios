@@ -3551,6 +3551,143 @@ class StdinProgramTests(unittest.TestCase):
             with self.subTest(cmd=cmd):
                 self.assertEqual(self._d(cmd)[0], "ALLOW")
 
+    def test_piped_node_options_only_is_refused(self):
+        # MAJOR #814: `node --no-warnings` / `node -` with piped stdin runs stdin
+        # as the program (node is in DEV_TOOLS, so dev_tool_rule does not refuse).
+        # Each DENY must carry the stdin-program reason, not a generic DENY.
+        for cmd in ['echo "hi" | node --no-warnings',
+                    'printf \'console.log("safe")\\n\' | node --no-warnings',
+                    'echo hi | node --no-warnings --no-deprecation',
+                    'echo hi | node -c',
+                    'echo hi | node --check',
+                    'echo hi | node -r mymod',
+                    'echo hi | node --require mymod',
+                    'echo hi | node --require=mymod',
+                    'echo hi | node --unknown-flag',
+                    'echo hi | node --unknown-opt=val',
+                    'echo hi | node -Z',
+                    'echo hi | node --no-warnings < code.js',
+                    'node --no-warnings < code.js',
+                    'echo hi | node inspect']:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertIn("stdin-program", reason)
+
+    def test_node_explicit_dash_is_refused(self):
+        for cmd in ["node -",
+                    "node -- -",
+                    "node --no-warnings -- -",
+                    "node - --no-warnings",
+                    'echo hi | node -',
+                    'printf \'x\\n\' | node -',
+                    "echo x | sudo node -",
+                    "node - < code.js"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertIn("stdin-program", reason)
+
+    def test_node_file_operand_stays_allowed(self):
+        for cmd in ["node script.js",
+                    "echo data | node script.js",
+                    "node script.js < data",
+                    "node --no-warnings script.js",
+                    "echo x | node --no-warnings script.js",
+                    "node --no-warnings script.js < data",
+                    "node -- script.js",
+                    "node --no-warnings -- script.js",
+                    "echo x | node --no-warnings -- script.js",
+                    "node -r mymod script.js",
+                    "echo x | node -r mymod script.js",
+                    "echo x | node --require mymod script.js",
+                    "node -C cond script.js",
+                    "node -c script.js",
+                    "node --check script.js",
+                    "node inspect script.js",
+                    "echo x | node inspect script.js"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self._d(cmd)[0], "ALLOW")
+
+    def test_node_option_forms_classified(self):
+        # Option order, separate vs attached values, `--`, concatenated shorts,
+        # and fail-closed unknown forms. DENY cases must be stdin-program.
+        deny_stdin = ["echo hi | node --no-warnings",
+                      "echo hi | node -r mymod",
+                      "echo hi | node -rmymod",
+                      "echo hi | node --require mymod",
+                      "echo hi | node --require=mymod",
+                      "echo hi | node -C cond",
+                      "echo hi | node -Ccond",
+                      "echo hi | node --conditions=foo",
+                      "node --no-warnings < code.js",
+                      "echo hi | node --unknown-flag",
+                      "echo hi | node --unknown-flag script.js",
+                      "echo hi | node --unknown-opt=val",
+                      "echo hi | node -Z",
+                      "echo hi | node -Z script.js"]
+        for cmd in deny_stdin:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertIn("stdin-program", reason)
+        # Code forms stay DENY downstream (dev-tool), not stdin-program; file
+        # forms stay ALLOW. Only the verdict is locked here.
+        for cmd in ['node -e "x"', 'echo data | node -e "x"',
+                    'node --eval="x"', 'node -p "x"']:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self._d(cmd)[0], "DENY")
+        for cmd in ["node --no-warnings script.js", "node -r mymod script.js"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self._d(cmd)[0], "ALLOW")
+
+    def test_wrapper_stdin_refused(self):
+        for cmd in ["echo hi | sudo node --no-warnings",
+                    "echo hi | nice node --no-warnings",
+                    "echo hi | env node --no-warnings",
+                    "echo hi | sudo node -",
+                    "echo hi | nice perl -W",
+                    'echo hi | sh -c "node --no-warnings"',
+                    'echo hi | sh -c "python3 -W ignore"',
+                    'echo hi | bash -c "perl -W"',
+                    "sudo node --no-warnings < code.js"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertIn("stdin-program", reason)
+
+    def test_other_interpreters_options_only_refused(self):
+        for cmd in ["echo hi | perl -W",
+                    "echo hi | perl -I /tmp -W",
+                    "echo hi | perl -MMod",
+                    "echo hi | ruby -w",
+                    "echo hi | ruby -r lib",
+                    "echo hi | php -n",
+                    "echo hi | php -d foo=bar",
+                    "echo hi | lua -v",
+                    "echo hi | lua -l mod",
+                    "echo hi | awk -F:",
+                    "echo hi | awk -v var=val",
+                    "echo hi | gawk -W interactive",
+                    "perl -W < code.pl",
+                    "ruby -w < x.rb"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertIn("stdin-program", reason)
+
+    def test_powershell_node_stdin_refused(self):
+        for cmd in ["echo hi | node --no-warnings",
+                    "node -",
+                    "node --no-warnings < code.js",
+                    "echo hi | perl -W"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd, tool="PowerShell")
+                self.assertEqual(verdict, "DENY")
+                self.assertIn("stdin-program", reason)
+        for cmd in ["node script.js", "echo x | node --no-warnings script.js"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self._d(cmd, tool="PowerShell")[0], "ALLOW")
 
 class StdinProgramMutationTests(unittest.TestCase):
     """Mutants of the Issue #637 layers. Each must make a named StdinProgramTests method fail (an assertion
@@ -3569,12 +3706,23 @@ class StdinProgramMutationTests(unittest.TestCase):
         "piped-nothing-to-run check removed": (
             "            if piped and _python_program(words[j + 1:]) == 'none':",
             "            if False:"),
-        "bare-interpreter stdin check removed": (
-            "            if piped or _has_input_redirect(seg):",
-            "            if False:"),
+        "node option/file confusion allowed": (
+            "    if name == 'node':\n        return _node_program(args)",
+            "    if name == 'node':\n        return 'file'"),
+        "stdin dash check removed": (
+            "        if prog in ('code', 'file'):\n            return None\n        if prog == 'stdin':",
+            "        if prog in ('code', 'file'):\n            return None\n        if False:"),
+        "piped-or-redirected stdin check removed": (
+            "        if prog in ('none', 'unknown'):",
+            "        if False:"),
+        "string-arg pipe mark lost": (
+            "                if prog in ('none', 'unknown') and piped:",
+            "                if False:"),
     }
     DETECTING = ["test_piped_bare_python_is_refused", "test_dash_names_stdin_program",
-                 "test_bare_other_interpreters_with_piped_or_redirected_stdin_are_refused"]
+                 "test_bare_other_interpreters_with_piped_or_redirected_stdin_are_refused",
+                 "test_piped_node_options_only_is_refused", "test_node_explicit_dash_is_refused",
+                 "test_wrapper_stdin_refused", "test_node_option_forms_classified"]
 
     def _run(self, hook_text):
         with tempfile.TemporaryDirectory() as td:
