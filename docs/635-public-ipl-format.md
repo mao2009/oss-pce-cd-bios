@@ -103,14 +103,15 @@ body byte at the same logical address. That expected value exists only if the bo
 
 ## 4. Residual risk (must be read with the change)
 
-- PUBLIC build: disc-content authenticity is NOT checked. There is no expected reference value for the disc;
-  the only integrity check is that the transferred content reads back identically (the readback sum equals the
-  sum of the bytes seen during the transfer). Any disc content is accepted as long as the copy is faithful,
-  whether or not it preserves the 16-bit additive sum.
-  The test `pub_post_sum_preserving_change_accepted_documented_limit` pins one instance of this property (a
-  sum-preserving post-copy substitution is accepted) so the absence of an authenticity check cannot change
-  silently. It does NOT mean that only sum-preserving changes escape detection: in the PUBLIC format nothing
-  about the disc is verified against a reference.
+- PUBLIC build: disc-content authenticity is NOT checked. There is no expected reference value for
+  the disc. The loader computes a 16-bit additive sum of the bytes read from the disc and compares it with the
+  16-bit additive sum of the destination bytes read back after copying. Equality of those sums does NOT prove
+  that the transferred and read-back byte sequences are identical: sum-preserving post-copy corruption can pass.
+  Any disc content can be accepted without an authenticity reference, whether or not its sum matches any other
+  disc content.
+  The test `pub_post_sum_preserving_change_accepted_documented_limit` demonstrates a sum-preserving post-copy
+  substitution that passes this checksum comparison. It does NOT imply that only sum-preserving changes to
+  disc content are accepted: in the PUBLIC format no disc content is verified against a known reference.
 - PUBLIC build: bytes 14..15 are ignored, because their public meaning is not verified. Treating them as a checksum
   would be wrong for public media.
 - The SCSI transfer and the readback are the only integrity checks in the PUBLIC build.
