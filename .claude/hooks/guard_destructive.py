@@ -538,10 +538,15 @@ def check_redirect(raw, op=">", ctx=None, ps=False):
 def split_segments(text, ps=False):
     """Split on unquoted ; & | ( ) and newlines.
 
-    Returns (segments, substitution bodies, redirect targets per segment). A redirect
-    target is the raw word after each unquoted '>' ("" when there is none).
+    Returns (segments, substitution bodies, redirect targets per segment, pipe-fed flags per segment).
+    A redirect target is the raw word after each unquoted '>' ("" when there is none). A pipe-fed flag
+    is True when the segment's stdin is a pipe from the previous segment: the separator that starts it
+    is a single `|` (not `||`, and `|&` keeps the pipe through the `&`). A whitespace-only segment (a line
+    continuation after `|`) carries the flag over without changing it. Subshell or brace boundaries are
+    not pipes, so taint is not tracked into them (documented residual in stdin_program_refusal).
     """
-    segs, subs, cur, redirs, rd = [], [], [], [], []
+    segs, subs, cur, redirs, rd, pipes = [], [], [], [], [], []
+    fed = False
     quote, i, n = None, 0, len(text)
     while i < n:
         c = text[i]
@@ -646,9 +651,23 @@ def split_segments(text, ps=False):
         # PowerShell scriptblocks ({ ... }) are command bodies wherever they appear (try, ForEach-Object, Invoke-Command,
         # Start-Job -ScriptBlock). Each block boundary starts a segment, so the commands inside are analysed.
         if c in ";&|()\n" or (ps and c in "{},"):
-            segs.append("".join(cur))
+            seg_text = "".join(cur)
+            segs.append(seg_text)
             redirs.append(rd)
+            pipes.append(fed)
             cur, rd = [], []
+            if seg_text.strip():
+                # Only a segment that holds a command ends the pipe: continuations and comments add
+                # whitespace-only segments that carry the flag over to the next segment.
+                if c == "|":
+                    prv = text[i - 1] if i else ""
+                    nxt = text[i + 1] if i + 1 < n else ""
+                    fed = prv != "|" and nxt != "|"
+                elif c == "&" and (text[i - 1] if i else "") == "|" and \
+                        (text[i - 2] if i >= 2 else "") != "|":
+                    pass  # `|&`: the `&` continues the pipe; the flag the `|` set stays.
+                else:
+                    fed = False
             i += 1
             continue
         cur.append(c)
@@ -657,7 +676,8 @@ def split_segments(text, ps=False):
         raise Deny("parse", "unterminated quote")
     segs.append("".join(cur))
     redirs.append(rd)
-    return segs, subs, redirs
+    pipes.append(fed)
+    return segs, subs, redirs, pipes
 
 
 def short_has(arg, letters):
@@ -1432,11 +1452,127 @@ def python_c_codes(args):
     return codes
 
 
+def _drop_redirect_words(args):
+    """argv without redirections: a marked operator and the word after it (its target) select no program."""
+    out, skip = [], False
+    for w in args:
+        if skip:
+            skip = False
+            continue
+        if w.startswith(REDIR_MARK):
+            skip = True
+            continue
+        out.append(w)
+    return out
+
+
+def _python_program(args):
+    """How a python argv selects its program: 'code' (-c), 'module' (-m), 'file' (a script path),
+    'stdin' (a standalone `-`), or 'none' (flags only: interactive). A single left-to-right scan, so
+    `python3 - -c x` is 'stdin' (the `-c` becomes that run's argv, not its program). Only -W/-X take a
+    separate value and only --check-hash-based-pycs does among long options; every other -x is a flag.
+    Never raises; redirect words are not program words."""
+    args = _drop_redirect_words(args)
+    i, n = 0, len(args)
+    while i < n:
+        a = args[i]
+        if a == '--':
+            rest = args[i + 1:]
+            if not rest:
+                return 'none'
+            return 'stdin' if rest[0] == '-' else 'file'
+        if a == '-':
+            return 'stdin'
+        if a.startswith('--'):
+            i += 2 if (a == '--check-hash-based-pycs' and i + 1 < n) else 1
+            continue
+        if a.startswith('-') and len(a) > 1:
+            j = 1
+            while j < len(a):
+                ch = a[j]
+                if ch == 'c':
+                    return 'code'
+                if ch == 'm':
+                    return 'module'
+                if ch in 'WX':
+                    if j + 1 == len(a):
+                        i += 1  # the value is the next word
+                    break
+                j += 1
+            i += 1
+            continue
+        return 'file'
+    return 'none'
+
+
+def _has_input_redirect(seg):
+    """True when a raw segment contains an unquoted `<` (input redirect, heredoc `<<`, here-string `<<<`)."""
+    quote, i, n = None, 0, len(seg)
+    while i < n:
+        c = seg[i]
+        if quote == "'":
+            if c == "'":
+                quote = None
+        elif quote == '"':
+            if c == '"':
+                quote = None
+            elif c == "\\":
+                i += 1
+        elif c == "\\":
+            i += 1  # an escaped `<` is a literal argument, not a redirect
+        elif c in "'\"":
+            quote = c
+        elif c == "<":
+            return True
+        i += 1
+    return False
+
+
+def stdin_program_refusal(words, piped, seg):
+    """Deny when an interpreter's program comes from stdin and is not visible in argv (Issue #637).
+
+    Refused: `python3 -` (explicit stdin program, piped or not; see python_rule), a piped stdin with no
+    program word (`... | python3`, `... | python3 -W ignore`), and a bare perl/node/ruby/php/lua/awk
+    with piped or `<`-redirected stdin (`... | perl`, `perl < code.pl`; these read their program from
+    stdin when no -e/file names one). Returns a Deny, or None when no rule fires.
+
+    Kept as they are (documented): a script file operand (`python3 x.py`, `node x.js`) and `-c`/`-m`
+    with stdin as data (the code or module is named in argv and judged; file content is the X3d
+    residual, out of #637 scope), and unpiped bare interpreters (no delivered code). Subshell or brace
+    boundaries (`... | (python3)`) carry no pipe mark, so taint is not tracked into them: residual.
+    """
+    i = 0
+    while i < len(words) and (words[i] in KEYWORDS or ASSIGN.match(words[i])):
+        i += 1
+    if i < len(words) and _cmd_name(words[i]) in NON_EXEC_COMMANDS:
+        return None
+    for j in range(i, len(words)):
+        name = _cmd_name(words[j])
+        if PY_NAME.match(name):
+            # A `-` program is refused in python_rule (every python path is judged there); here only a
+            # piped stdin with no program word at all is refused.
+            if piped and _python_program(words[j + 1:]) == 'none':
+                return Deny("stdin-program", "python with piped stdin and no program word runs stdin: not inspected")
+            return None
+        if name in INTERP:
+            if _drop_redirect_words(words[j + 1:]):
+                return None  # options or a file operand: judged (or refused) downstream.
+            if piped or _has_input_redirect(seg):
+                return Deny("stdin-program", name + " with piped or redirected stdin and no program word runs stdin: not inspected")
+            return None
+    return None
+
+
 def python_rule(args):
     # A shell variable or substitution in a python argument: its value is not visible here.
     for arg in args:
         if "$" in arg or "`" in arg or SUBST in arg:
             raise Deny("unexpanded", "python argument with an unexpanded variable or substitution is not inspected")
+    # A standalone `-` in program position names stdin as the program (Issue #637): the code is not in
+    # argv, so there is nothing to judge. `python3 -` and `python3 - args` are refused; `x.py -` (a script
+    # with `-` in its own argv) and `-m mod -` select their program from argv and stay as they are.
+    if _python_program(args) == 'stdin':
+        raise Deny("stdin-program", "python with `-` runs its program from stdin: not inspected")
     for code in python_c_codes(args):
         # Python NFKC-normalises identifiers, so ｏｐｅｎ(...) is open(...). Match the raw text (as before) and the
         # normalised text. Normalising alone would let a word with a combining mark (remove + U+0301) through.
@@ -1878,15 +2014,20 @@ def analyze_text(text, ctx, ps, depth):
         raise Deny("powershell", "PowerShell method call is not inspected")
     if ps and PS_PROC_LAUNCH_RE.search(text) and EXPR_SYNTAX_RE.search(text):
         raise Deny("launcher", "PowerShell process launcher with expression syntax is not inspected")
-    segs, subs, redirs = split_segments(text, ps)
+    segs, subs, redirs, piped = split_segments(text, ps)
     # A python command whose argv is not certain (unquoted or double-quoted expansion characters) is refused.
-    for seg in segs:
-        pargs = python_position_args(words_of(seg, ps))
+    for seg, fed in zip(segs, piped):
+        words = words_of(seg, ps)
+        pargs = python_position_args(words)
         if pargs is not None:
             if not python_word_certainty(seg):
                 raise Deny("unexpanded", "python command whose argv depends on shell expansion is not inspected")
             # The python arguments are judged here too, so a wrapper that dispatch does not know cannot hide -c code.
             python_rule(pargs)
+        # Issue #637: an interpreter whose program comes from stdin and is not named in argv is refused.
+        refusal = stdin_program_refusal(words, fed, seg)
+        if refusal is not None:
+            raise refusal
     if sum(len(ops) for ops in redirs) > MAX_REDIRECTS:
         raise Deny("redirect", "more than %d redirections are not inspected" % MAX_REDIRECTS)
     for body in subs:

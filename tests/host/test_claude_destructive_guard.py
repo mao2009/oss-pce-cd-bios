@@ -3468,6 +3468,147 @@ class PythonCommandPositionTests(unittest.TestCase):
                 self.assertEqual(self._d(cmd)[0], "ALLOW")
 
 
+class StdinProgramTests(unittest.TestCase):
+    """Issue #637: an interpreter program fed over stdin is refused (decision-level only; executed never).
+
+    Policy (a): blanket DENY for stdin-as-program forms. The program must be named in argv (-c code,
+    -m module, a script file); otherwise stdin can only be the program and is refused. `|` is a pipe;
+    `<` covers `<`, `<<` and `<<<` (heredoc and here-string are already refused for python by the argv
+    certainty rule; this class locks that and extends it to `-`, pipes and the other interpreters).
+
+    Behavior table (each row is asserted below):
+
+    | command                                  | verdict | rule                                  |
+    |------------------------------------------|---------|---------------------------------------|
+    | `echo ... \| python3`                    | DENY    | piped stdin, no program word (new)    |
+    | `cat x.py \| python3`                     | DENY    | piped stdin, no program word (new)    |
+    | `echo x \| python3 -W ignore`            | DENY    | valued option, still no program (new) |
+    | `echo x \|\\npython3` (continuation)     | DENY    | pipe carries over the newline (new)   |
+    | `python3 -`, `python3 - foo`, `-- -`     | DENY    | `-` names stdin as the program (new)  |
+    | `python3 - -c '...'`                     | DENY    | `-` first: `-c` never runs (new)      |
+    | `echo hi \| perl`, `perl < code.pl`       | DENY    | bare interp, stdin is program (new)   |
+    | `echo hi \| node`, `node < app.js`        | DENY    | bare interp, stdin is program (new)   |
+    | `echo hi \| ruby/php/lua/awk`, `<` forms | DENY    | bare interp, stdin is program (new)   |
+    | `echo x \| nice perl`, `env python3`     | DENY    | wrapper does not hide stdin (new)     |
+    | `python3 < x.py`, `<<<`, `<<EOF` heredoc | DENY    | pre-existing certainty refusal (kept) |
+    | `echo hi \| sh`, `\| bash -s`             | DENY    | pre-existing shell-without--c (kept)  |
+    | `python3 x.py`, `\| python3 x.py`        | ALLOW   | program is a file (X3d residual)      |
+    | `python3 x.py -`, `-m mod -`             | ALLOW   | `-` is that run's argv, not program   |
+    | `... \| python3 -c '...'`                 | ALLOW   | code named in argv and judged         |
+    | `... \| python3 -m mod`                  | ALLOW   | module named in argv                  |
+    | `node x.js`, `\| node x.js`, `< data`    | ALLOW   | program is a file (X3d residual)      |
+    | `python3`, `perl`, `node` (bare, unpiped)| ALLOW   | no delivered code (unchanged)         |
+    | `node "a<b"`, `python3 "a<b"`          | ALLOW   | quoted `<` is an argument, not input  |
+    | `cat x \| grep y`, `echo a \| cat`       | ALLOW   | stdin is data for a non-interpreter   |
+    """
+
+    def _d(self, cmd, tool="Bash"):
+        return guard.decide(json.dumps({"tool_name": tool, "tool_input": {"command": cmd}, "cwd": REPO}),
+                            repo_root=REPO)
+
+    def test_piped_bare_python_is_refused(self):
+        for cmd in ['echo "print(1)" | python3', "cat x.py | python3",
+                    "echo x | python3 -W ignore", "echo x | python3 -Wignore",
+                    "echo x | python3 -X utf8", "echo x |\npython3",
+                    "echo x | sudo python3", "echo x | env python3", "echo x | nice python3"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertIn("stdin-program", reason)
+
+    def test_dash_names_stdin_program(self):
+        for cmd in ["python3 -", "python3 - foo.py", "python3 -- -", "echo x | python3 -- -",
+                    "python3 - -c 'print(1)'", "python3 -Wignore -", "echo x | sudo python3 -"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertIn("stdin-program", reason)
+
+    def test_bare_other_interpreters_with_piped_or_redirected_stdin_are_refused(self):
+        for cmd in ["echo hi | perl", "perl < code.pl", "echo hi | node", "node < app.js",
+                    "echo hi | ruby", "ruby < x.rb", "echo hi | php", "php < x.php",
+                    "echo hi | lua", "lua < x.lua", "echo x | awk", "awk < prog.awk",
+                    "echo x | gawk", "echo hi | perl -", "echo x | nice perl"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+
+    def test_stdin_refusals_hold_under_powershell(self):
+        for cmd in ["echo x | python3", "python3 -", "echo hi | perl", "perl < code.pl"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self._d(cmd, tool="PowerShell")[0], "DENY")
+
+    def test_stdin_data_and_named_programs_stay_allowed(self):
+        for cmd in ["python3 script.py", "echo data | python3 script.py",
+                    "python3 foo.py -", "python3 -m mod -", "python3 -W ignore foo.py",
+                    "python3 -X utf8 foo.py", "python3 -B -E foo.py", "python3 -- foo.py",
+                    "python3 -- foo.py -", "node script.js", "echo x | node script.js",
+                    "node script.js < data", "python3", "perl", "node",
+                    "node \"a<b\"", "python3 \"a<b\"", "cat x | grep y", "echo a | cat",
+                    "echo data | python3 -c 'import sys; print(sys.stdin.read())'",
+                    "echo data | python3 -m json.tool", "python3 -m unittest",
+                    "python3 -c 'print(1)'"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self._d(cmd)[0], "ALLOW")
+
+
+class StdinProgramMutationTests(unittest.TestCase):
+    """Mutants of the Issue #637 layers. Each must make a named StdinProgramTests method fail (an assertion
+    failure, not an import error). Runs on every host (no symlink)."""
+
+    MUTANTS = {
+        "pipe flag never set": (
+            '                    fed = prv != "|" and nxt != "|"',
+            '                    fed = False'),
+        "pipe flag lost across continuations": (
+            "            if seg_text.strip():",
+            "            if True:"),
+        "dash program check removed": (
+            "    if _python_program(args) == 'stdin':",
+            "    if False:"),
+        "piped-nothing-to-run check removed": (
+            "            if piped and _python_program(words[j + 1:]) == 'none':",
+            "            if False:"),
+        "bare-interpreter stdin check removed": (
+            "            if piped or _has_input_redirect(seg):",
+            "            if False:"),
+    }
+    DETECTING = ["test_piped_bare_python_is_refused", "test_dash_names_stdin_program",
+                 "test_bare_other_interpreters_with_piped_or_redirected_stdin_are_refused"]
+
+    def _run(self, hook_text):
+        with tempfile.TemporaryDirectory() as td:
+            root = os.path.realpath(td)
+            hooks = os.path.join(root, ".claude", "hooks")
+            host = os.path.join(root, "tests", "host")
+            os.makedirs(hooks)
+            os.makedirs(host)
+            write_text(os.path.join(hooks, "guard_destructive.py"), hook_text)
+            with open(THIS_FILE, encoding="utf-8") as f:
+                write_text(os.path.join(host, "test_claude_destructive_guard.py"), f.read())
+            names = ["test_claude_destructive_guard.StdinProgramTests"]
+            proc = subprocess.run([sys.executable, "-m", "unittest", "-v"] + names, cwd=host,
+                                  capture_output=True, text=True, timeout=300)
+            return proc.returncode, proc.stderr
+
+    def test_stdin_mutants_are_detected(self):
+        with open(HOOK, encoding="utf-8") as f:
+            original = f.read()
+        code, out = self._run(original)
+        self.assertEqual(code, 0, "unmutated copy must pass StdinProgramTests:\n" + out[-800:])
+        for name, (old, new) in self.MUTANTS.items():
+            if name in KNOWN_UNRESOLVED_MUTANTS:
+                continue
+            with self.subTest(mutant=name):
+                self.assertEqual(original.count(old), 1, "mutation target not found exactly once: " + name)
+                code, out = self._run(original.replace(old, new))
+                failing = [re.match(r"(?:FAIL|ERROR): (\S+) \(", ln) for ln in out.splitlines()
+                           if ln.startswith(("FAIL:", "ERROR:"))]
+                names = [m.group(1) for m in failing if m]
+                detected = any(n in self.DETECTING for n in names)
+                self.assertTrue(detected, "mutant not detected by a StdinProgramTests assertion: " + name)
+
+
 class PythonArgvMutationTests(unittest.TestCase):
     """Mutants of the X1 layers. Each must make a named PythonArgvCertaintyTests method fail (an assertion failure,
     not an import error). Runs on every host (no symlink)."""
