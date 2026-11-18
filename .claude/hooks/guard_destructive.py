@@ -2342,6 +2342,11 @@ def analyze_text(text, ctx, ps, depth):
     # brace-group stage cwd for calling-shell groups used as a stage.
     pipe_scope = []
     bstage = []
+    bg_scope = []
+    # Scope-local background-list start per open group: a `&` backgrounds
+    # the whole in-scope list, so the parent continues from the cwd the
+    # in-scope list started with (after the last in-scope `;`), not from
+    # the outer bg_start.
     for seg, ops in zip(segs, redirs):
         if seg == SUBSHELL_OPEN:
             if not ps:
@@ -2359,12 +2364,15 @@ def analyze_text(text, ctx, ps, depth):
                     scope_entry = ctx.cwd
                     scope_just_closed = False
                 scope_stack.append(ctx.cwd)
+                bg_scope.append(ctx.cwd)
             continue
         if seg == SUBSHELL_CLOSE:
             if not ps and scope_stack:
                 ctx.cwd = scope_stack.pop()
                 if pipe_scope:
                     pipe_entry, prev_was_pipe = pipe_scope.pop()
+                if bg_scope:
+                    bg_scope.pop()
                 if not scope_stack and not bbrace_stack:
                     scope_just_closed = True
             continue
@@ -2384,10 +2392,13 @@ def analyze_text(text, ctx, ps, depth):
                 scope_entry = ctx.cwd
                 scope_just_closed = False
             bbrace_stack.append(ctx.cwd)
+            bg_scope.append(ctx.cwd)
             continue
         if seg == BBRACE_CLOSE:
             if bbrace_stack:
                 bbrace_stack.pop()
+                if bg_scope:
+                    bg_scope.pop()
                 was_stage, stage_cwd = bstage.pop() if bstage else (False, ctx.cwd)
                 if was_stage:
                     # A brace group used as a pipeline stage forked: drop
@@ -2411,10 +2422,13 @@ def analyze_text(text, ctx, ps, depth):
                 scope_entry = ctx.cwd
                 scope_just_closed = False
             scope_stack.append(ctx.cwd)
+            bg_scope.append(ctx.cwd)
             continue
         if seg == COPROC_CLOSE:
             if scope_stack:
                 ctx.cwd = scope_stack.pop()
+                if bg_scope:
+                    bg_scope.pop()
                 if pipe_scope:
                     pipe_entry, prev_was_pipe = pipe_scope.pop()
                 if not scope_stack and not bbrace_stack:
@@ -2432,6 +2446,11 @@ def analyze_text(text, ctx, ps, depth):
             if not scope_stack and not bbrace_stack:
                 run_start = ctx.cwd
                 bg_start = ctx.cwd
+            if bg_scope and (scope_stack or bbrace_stack):
+                # A `;`/newline inside a scope group starts a new list
+                # there: a later `&` restores this scope-local start,
+                # never the stale outer bg_start.
+                bg_scope[-1] = ctx.cwd
             scope_just_closed = False
             continue
         if seg == PIPE_BOUND:
@@ -2454,9 +2473,14 @@ def analyze_text(text, ctx, ps, depth):
             # A `&` backgrounds the whole list in a subshell: the parent
             # (following foreground segments) continues at once from the
             # cwd the list started with, and the list's pipeline state ends
-            # here. A `cd` left of `&` stays in the background job.
+            # here. A `cd` left of `&` stays in the background job. Inside
+            # a scope group the list started at the scope-local `;`
+            # boundary (bg_scope), never at the outer bg_start: without
+            # this a `cd` left of `&` leaks into the in-scope foreground.
             if not ps:
-                if not scope_stack and not bbrace_stack:
+                if (scope_stack or bbrace_stack) and bg_scope:
+                    ctx.cwd = bg_scope[-1]
+                else:
                     ctx.cwd = bg_start
                 pipe_entry = None
                 prev_was_pipe = False
