@@ -30,7 +30,7 @@ host-test separation), #542 / PR #543 (serialize cc65 build with `-j1`).
 - HEAD: `origin/main` = `0f7a3257` (2026-11-18).
 - cc65 pin: `71746c829e77f74c2b601a7d16821170c2610df3`
   (`tools/dependencies.json`, `cc65 V2.19 - Git 71746c829`).
-- Host: Linux x86_64, gcc 13.3.0, GNU Make 4.3.
+- Host: Linux x86_64, gcc 13.3.0, GNU Make 4.3, nproc=8.
 - Shared cache handling: the shared `TOOLS_DIR` was treated as read-only.
   No `make setup` rebuild, no writes to the shared cache. Each trial copied
   the pinned cc65 source to an isolated scratch directory outside the
