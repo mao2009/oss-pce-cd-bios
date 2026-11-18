@@ -26,7 +26,7 @@ and no private `./rom/` input.
 | 6 | host PASS alone never unlocks | `test_gate_has_no_unlock_path`, `test_release_gate_module_never_passes` | NEW runtime read audit (observed via monitored APIs on the executed path): canonically-resolved data reads stay within `spec/`+`Makefile`+`src/`; no test-result reads observed | gate has no `write_text`, no `return "ALLOWED"` |
 | 7 | docs-only update never changes safety judgment | CI docs-only fast path disabled (full CI for every change) | NEW runtime read audit (observed-access closure on the current path, not a universal proof): executed verdict loads show no `docs/` content read via monitored APIs; docs prose claiming ALLOWED still yields BLOCKED | observed reads contain no `docs/` content |
 | 8 | unverified stays UNKNOWN/BLOCKED | `ALLOWED_CONTRACT_STATUSES` + `verification NOT_RUN` + `execution BLOCKED` | NEW `check_unverified_persistence`: hardware ledger validates (no OBSERVED, `callee_abi` UNVERIFIED, BLOCKED/NOT_RUN), c3 allowlist UNDECIDED/DESIGN_ONLY, api_contracts mapping HYPOTHESIS / impl NOT_STARTED / provenance PENDING / confidence UNKNOWN-or-SOURCE_SUPPORTED / verification NOT_RUN | all persist |
-| 9 | negatives/mutations detect intentional destruction | Makefile evaluation-time / `.EXTRA_PREREQS` / dynamic-name mutants, ALLOWED ledger, `require_allowed` | NEW 28 RED mutants (see §4: ledger/marker + audit + Makefile-boundary + bytes-path + symlink/external + sensitivity), all detected fail-closed | RED detected, committed tree GREEN |
+| 9 | negatives/mutations detect intentional destruction | Makefile evaluation-time / `.EXTRA_PREREQS` / dynamic-name mutants, ALLOWED ledger, `require_allowed` | NEW RED mutants (see §4 table: every row RED; committed tree GREEN) | RED detected, committed tree GREEN |
 
 ## 2. What ran (and what did not run)
 
@@ -35,11 +35,11 @@ Ran (host-only, synthetic fixtures only, no cc65 required for this gate):
 * `python3 tools/failclosed_gate.py --check` → exit 0, 8/8 PASS.
 * `python3 tools/failclosed_725p10.py --check` → exit 0, 3/3 PASS.
 * `python3 -m unittest discover -s tests/host -p 'test_725*'` → all PASS
-  (base 23 + P10 22).
+  (base 23 + P10 52).
 * `python3 tools/reference_jsr_gate.py --check` → exit 3 (BLOCKED convention),
   `BLOCKED: reference JSR execution gate closed for 81/81 slots; jsr_count=0`.
 * `python3 tools/build_rom.py --release-gate` → exit 3,
-  `BLOCKED: 63 unimplemented API slots: …` (18 DEV overrides present, 65 stubs).
+  `BLOCKED: 63 unimplemented API slots: …` (18 DEV overrides present, 63 unimplemented).
 * `python3 tools/abi1_reference_review.py --check` → exit 0 (18 DEV, 0 VERIFIED).
 * `python3 tools/hw_observation_ledger.py` (via P10-C) → PASS (1 BLOCKED entry,
   `callee_abi` UNVERIFIED).
@@ -89,7 +89,7 @@ ledger writes, no unlock input):
   UNKNOWN/SOURCE_SUPPORTED, verification NOT_RUN, contract statuses
   UNKNOWN/HYPOTHESIS/BLOCKED.
 
-New tests `tests/host/test_725_p10_failclosed.py` (48 tests, host-only):
+New tests `tests/host/test_725_p10_failclosed.py` (52 tests, host-only):
 
 * GREEN on the committed tree for all three P10 checks plus base-gate
   regression and CLI `--check` (exit 0).
@@ -134,6 +134,10 @@ committed tree is GREEN (all gates pass). Mutants are never committed.
 | `spec/evil.json` symlink → outside secret (patched-ROOT classifier) | escape refused (outside allowlist) | RED detected |
 | repo `CONTRIBUTING.md` real content read | `non-allowlisted input 'CONTRIBUTING.md'` | RED detected |
 | unresolvable path `\x00` content read | refused, never silently allowed | RED detected |
+| relative `spec/approval.json` read after CWD change to external dir | recorded at read-time location; `content read outside repository allowlist` (old: false GREEN) | RED detected |
+| `os.open('spec/approval.json', dir_fd=external)` | `<dir_fd-relative-path>` refused (old: accepted as repo `spec/`) | RED detected |
+| `tools/__pycache__/approval.json` content read | refused (old: exempted as code) | RED detected |
+| exception carrying an absolute temp path | finding keeps type only; no path leaks | RED detected |
 | api_contracts slot 05 `mapping_status=VERIFIED` | production `check_unverified_persistence(contracts_raw=…)` reports `slot 05: mapping_status must stay HYPOTHESIS` | RED detected |
 | `Makefile.approval.json` / `.backup` / `.policy` / `Makefile/approval.json` (old startswith allowed) | `non-allowlisted input 'Makefile.…'` (exact-file allowlist only) | RED detected |
 | bytes-path `os.open` / `builtins.open` / `io.open` on temp approval.json (old `_record` dropped bytes) | recorded + `content read outside repository allowlist` | RED detected (3 APIs) |
@@ -142,7 +146,7 @@ committed tree is GREEN (all gates pass). Mutants are never committed.
 | neutered detector (always-[]) | RED mutant tests FAIL | load-bearing proven (sensitivity test) |
 | `is_execution_permitted("SYNTHETIC PASS" / "host PASS" / "DOC_ONLY" / …)` | `False` for every look-alike | RED detected (all refused) |
 | Makefile `release:` stub broken (covered by base gate) | `release_makefile_guard` reports reasons | RED detected (base gate, not duplicated here) |
-| Committed tree: base 8/8 + P10 3/3 + host 71 tests (P10 48 + base 23) | exit 0, `release_eligible=false`, JSR 0/81 | GREEN |
+| Committed tree: base 8/8 + P10 3/3 + host 75 tests (P10 52 + base 23) | exit 0, `release_eligible=false`, JSR 0/81 | GREEN |
 
 ## 5. Future unlock procedure (independent review + Owner re-approval required)
 

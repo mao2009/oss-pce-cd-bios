@@ -381,12 +381,19 @@ class P10InputClosureMutants(unittest.TestCase):
             self.assertEqual(target.read_text(encoding="utf-8"), "ok")
 
     def test_audit_crash_is_fail_closed(self):
-        # If the audited loader itself raises, the check reports a finding.
+        # If the audited loader itself raises, the check reports a finding
+        # that carries the exception type but no filesystem path.
         from unittest import mock
-        with mock.patch.object(p10, "_run_verdict_loads_for_audit",
-                               side_effect=RuntimeError("synthetic")):
-            problems = p10.check_synthetic_host_docs_non_promotion()
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            probe = str(Path(tmp) / "secret" / "load.json")
+            with mock.patch.object(p10, "_run_verdict_loads_for_audit",
+                                   side_effect=OSError(5, "I/O error", probe)):
+                problems = p10.check_synthetic_host_docs_non_promotion()
         self.assertTrue(any("audit crashed" in p for p in problems), problems)
+        for message in problems:
+            self.assertNotIn(tmp, message, message)
+        self.assertTrue(any("OSError" in p for p in problems), problems)
 
     def test_forbidden_py_docs_policy(self):
         # Suffix alone never exempts: docs/*.py is a forbidden data read.
@@ -618,6 +625,102 @@ class P10InputClosureMutants(unittest.TestCase):
         forbidden, non_allowlisted = p10._classify_verdict_reads(records)
         self.assertTrue(forbidden or non_allowlisted,
                         "undecodable path must be refused")
+
+    def test_cwd_change_relative_path_detected(self):
+        # MAJOR-1: a relative read under a changed CWD must be judged by the
+        # read-time location. The loader reads spec/approval.json while CWD
+        # points at an external temp dir, then restores CWD; the old code
+        # classified the raw string after restore (false GREEN).
+        import os as _os
+        import tempfile
+        with tempfile.TemporaryDirectory() as ext:
+            (Path(ext) / "spec").mkdir()
+            (Path(ext) / "spec" / "approval.json").write_text('{"evil": true}\n')
+            orig = _os.getcwd()
+
+            def mutant():
+                _os.chdir(ext)
+                try:
+                    Path("spec/approval.json").read_text(encoding="utf-8")
+                finally:
+                    _os.chdir(orig)
+
+            forbidden, non_allowlisted = self._audit_with_mutant(mutant)
+        self.assertTrue(non_allowlisted or forbidden,
+                        "CWD-changed relative read must be refused")
+        self.assertEqual(_os.getcwd(), orig)
+
+    def test_dir_fd_refused(self):
+        # MAJOR-2: os.open with a non-default dir_fd cannot be resolved to a
+        # repo path from the recorded string, so it is fail-closed even when
+        # the string looks allowlisted (spec/approval.json via external FD).
+        import os as _os
+        import tempfile
+        with tempfile.TemporaryDirectory() as ext:
+            (Path(ext) / "spec").mkdir()
+            (Path(ext) / "spec" / "approval.json").write_text('{"evil": true}\n')
+            fd = _os.open(ext, _os.O_RDONLY | getattr(_os, "O_DIRECTORY", 0))
+            try:
+
+                def mutant():
+                    opened = _os.open("spec/approval.json", _os.O_RDONLY, dir_fd=fd)
+                    _os.close(opened)
+
+                forbidden, non_allowlisted = self._audit_with_mutant(mutant)
+            finally:
+                _os.close(fd)
+        self.assertTrue(
+            any("dir_fd" in n for n in non_allowlisted),
+            (forbidden, non_allowlisted))
+
+    def test_pycache_data_refused_patched_root(self):
+        # MEDIUM-1: __pycache__ alone never exempts. A real read of
+        # tools/__pycache__/approval.json under a temp patched ROOT is
+        # refused, while a genuine tools/mod.py read stays GREEN.
+        from unittest import mock
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_root = Path(tmp) / "fakeroot"
+            cached = fake_root / "tools" / "__pycache__"
+            cached.mkdir(parents=True)
+            bad = cached / "approval.json"
+            bad.write_text("{}\n")
+            good = fake_root / "tools" / "mod.py"
+            good.write_text("X = 1\n")
+            with mock.patch.object(p10, "ROOT", fake_root):
+                records = p10._audit_verdict_reads(good.read_text)
+                self.assertEqual(p10._classify_verdict_reads(records), ([], []))
+                records = p10._audit_verdict_reads(
+                    lambda: bad.read_text(encoding="utf-8"))
+                forbidden, non_allowlisted = p10._classify_verdict_reads(records)
+        self.assertTrue(non_allowlisted and not forbidden,
+                        (forbidden, non_allowlisted))
+
+    def test_exception_messages_hide_paths(self):
+        # MEDIUM-2: fail-closed findings carry the exception type only;
+        # absolute temp paths must not leak into findings.
+        from unittest import mock
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            probe = str(Path(tmp) / "secret" / "approval.json")
+            with mock.patch.object(
+                    p10, "dev_load_ledger",
+                    side_effect=FileNotFoundError(2, "No such file", probe)):
+                problems = p10.check_dev_success_without_promotion()
+            self.assertTrue(problems)
+            for message in problems:
+                self.assertNotIn(tmp, message, message)
+                self.assertNotIn("secret", message, message)
+            self.assertTrue(any("FileNotFoundError" in m for m in problems),
+                            problems)
+            with mock.patch.object(
+                    p10, "check_dev_success_without_promotion",
+                    side_effect=OSError("synthetic-denied")):
+                ok, results = p10.run_all()
+            self.assertFalse(ok)
+            blob = json.dumps(results)
+            self.assertNotIn(tmp, blob)
+            self.assertIn("OSError", blob)
 
     def test_no_absolute_paths_in_messages(self):
         # Findings must not leak absolute filesystem paths (tmpdirs, homes).

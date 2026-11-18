@@ -95,10 +95,22 @@ FORBIDDEN_INPUT_PATTERNS = ("docs/", "build/", "./rom/", "rom/", ".log",
 # flagged while "build/" outputs, "docs/" files and "rom/" inputs are.
 FORBIDDEN_PATH_COMPONENTS = ("docs", "build", "rom", "test-results",
                              "test_results", "junit")
+# Genuine cache/module file names. Anything else under __pycache__ (or a
+# non-module name) is data, never trusted code.
+_VALID_PYC_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\.cpython-\d+\.pyc")
+_VALID_MOD_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\.(py|pyc)")
 
 
 def _fail(message: str) -> str:
     return message
+
+
+def _safe_failure(context: str, exc: BaseException) -> str:
+    """Fail-closed finding that never leaks paths or values from exc.
+
+    Only the exception type and a fixed context label are reported.
+    """
+    return f"{context} ({type(exc).__name__}; details withheld)"
 
 
 def check_dev_success_without_promotion() -> list[str]:
@@ -108,11 +120,11 @@ def check_dev_success_without_promotion() -> list[str]:
         ledger = dev_load_ledger()
         slots = dev_load_slots()
     except Exception as exc:  # noqa: BLE001 -- any load failure fails closed
-        return [f"dev ledger unreadable ({type(exc).__name__}: {exc})"]
+        return [_safe_failure("dev ledger unreadable", exc)]
     try:
         chosen = set(build_rom.overrides())
     except Exception as exc:  # noqa: BLE001
-        return [f"dev overrides unreadable ({type(exc).__name__}: {exc})"]
+        return [_safe_failure("dev overrides unreadable", exc)]
     # Precondition: DEV success exists on the committed tree (overrides
     # present with DEV evidence). Without this the non-promotion claim would
     # be vacuous. The exact count is informational; the invariant is that
@@ -122,7 +134,7 @@ def check_dev_success_without_promotion() -> list[str]:
     try:
         summ = dev_summary(ledger, chosen)
     except Exception as exc:  # noqa: BLE001
-        return problems + [f"dev summary failed ({type(exc).__name__}: {exc})"]
+        return problems + [_safe_failure("dev summary failed", exc)]
     if summ.get("abi_verified") != 0:
         problems.append(f"DEV ledger: abi_verified must stay 0 (got {summ.get('abi_verified')})")
     if summ.get("dev_callable_approved") != 0:
@@ -245,8 +257,14 @@ def _is_known_module_source(canonical_repo_rel: str | None) -> bool:
     if not parts or parts[0] != "tools":
         return False
     if "__pycache__" in parts:
-        return True
-    return canonical_repo_rel.endswith(".py") or canonical_repo_rel.endswith(".pyc")
+        # Only genuine cache entries: <mod>.cpython-<ver>.pyc directly under
+        # __pycache__. Arbitrary descendants (e.g. approval.json) are data.
+        rest = parts[parts.index("__pycache__") + 1:]
+        return (len(rest) == 1
+                and _VALID_PYC_RE.fullmatch(rest[0]) is not None)
+    # Only direct module files: <mod>.py / <mod>.pyc directly under tools/.
+    # Nested paths are not known module sources.
+    return len(parts) == 2 and _VALID_MOD_RE.fullmatch(parts[1]) is not None
 
 
 def _repo_relative(path_str: str) -> str | None:
@@ -278,6 +296,9 @@ def _audit_verdict_reads(loader) -> list[tuple[str, str]]:
     before the window, so test-runner/import/stdlib traffic is excluded.
     """
     records: list[tuple[str, str]] = []
+    # While set, wrappers skip recording: used while resolving the effective
+    # path itself, so the audit never records its own canonicalization I/O.
+    quiet = False
 
     orig_read_text = Path.read_text
     orig_read_bytes = Path.read_bytes
@@ -291,21 +312,41 @@ def _audit_verdict_reads(loader) -> list[tuple[str, str]]:
     orig_is_file = Path.is_file
     orig_stat = Path.stat
 
+    def _effective_at_record(text: str) -> str:
+        # Call-time canonical path: absolute + symlink-resolved while the
+        # reading CWD still applies, so a later chdir cannot re-target the
+        # record. Internal stat calls run under quiet and leave no trace.
+        nonlocal quiet
+        prev = quiet
+        quiet = True
+        try:
+            return os.path.realpath(os.path.abspath(text))
+        except (OSError, ValueError, TypeError):
+            return "<unresolvable-path>"
+        finally:
+            quiet = prev
+
     def _record(kind: str, value) -> None:
         # bytes paths (accepted by os.open/builtins.open/io.open) are decoded
         # here so they can never bypass the audit. Undecodable or otherwise
         # unusable values become an explicit placeholder that downstream
         # classification refuses (fail closed, never silently allowed).
+        if quiet:
+            return
         if isinstance(value, (bytes, bytearray)):
             try:
                 value = os.fsdecode(value)
             except (UnicodeDecodeError, ValueError):
                 value = "<undecodable-bytes-path>"
-        if isinstance(value, (str, os.PathLike)):
-            try:
-                records.append((kind, os.fspath(value)))
-            except (TypeError, ValueError):
-                records.append((kind, "<unrecordable-path>"))
+        if not isinstance(value, (str, os.PathLike)):
+            return
+        try:
+            text = os.fspath(value)
+        except (TypeError, ValueError):
+            text = "<unrecordable-path>"
+        if not isinstance(text, str):
+            text = "<unrecordable-path>"
+        records.append((kind, _effective_at_record(text)))
 
     def _read_text(self, *args, **kwargs):
         _record("read", str(self))
@@ -320,14 +361,28 @@ def _audit_verdict_reads(loader) -> list[tuple[str, str]]:
         return orig_path_open(self, *args, **kwargs)
 
     def _builtin_open(file, *args, **kwargs):
+        # A custom opener can redirect the read independently of the path
+        # string; it cannot be resolved safely here, so fail closed.
+        if kwargs.get("opener", None) is not None:
+            records.append(("read", "<custom-opener>"))
         _record("read", file)
         return orig_builtin_open(file, *args, **kwargs)
 
     def _io_open(file, *args, **kwargs):
+        if kwargs.get("opener", None) is not None:
+            records.append(("read", "<custom-opener>"))
         _record("read", file)
         return orig_io_open(file, *args, **kwargs)
 
     def _os_open(path, *args, **kwargs):
+        # dir_fd redirects relative paths to another directory; the recorded
+        # path string alone cannot identify the real target (FD lifetime,
+        # reuse and platform differences make safe resolution unreliable
+        # here), so any non-default dir_fd is fail-closed. The call itself
+        # still delegates unchanged: behavior is observed, never altered,
+        # and no extra file is opened for classification.
+        if kwargs.get("dir_fd", None) is not None:
+            records.append(("read", "<dir_fd-relative-path>"))
         _record("read", path)
         return orig_os_open(path, *args, **kwargs)
 
@@ -488,7 +543,7 @@ def check_synthetic_host_docs_non_promotion() -> list[str]:
     try:
         records = _audit_verdict_reads(_run_verdict_loads_for_audit)
     except Exception as exc:  # noqa: BLE001 -- any audit failure fails closed
-        return [f"input-closure audit crashed ({type(exc).__name__}: {exc})"]
+        return [_safe_failure("input-closure audit crashed", exc)]
     forbidden, non_allowlisted = _classify_verdict_reads(records)
     for item in forbidden:
         problems.append(f"input closure: {item}")
@@ -547,7 +602,7 @@ def check_unverified_persistence(hardware_raw=None, c3_raw=None, contracts_raw=N
     try:
         hw_observation_ledger.validate_ledger(raw)
     except ValueError as exc:
-        problems.append(f"hardware_observations: {exc}")
+        problems.append(_safe_failure("hardware_observations refused", exc))
     except Exception as exc:  # noqa: BLE001
         problems.append(f"hardware_observations validator crashed ({type(exc).__name__})")
     if raw.get("release_eligible") is not False:
@@ -626,7 +681,7 @@ def run_all() -> tuple[bool, dict]:
         try:
             failures = func()
         except Exception as exc:  # noqa: BLE001 -- any crash fails closed
-            failures = [f"{name} crashed: {type(exc).__name__}: {exc}"]
+            failures = [_safe_failure(f"{name} failed", exc)]
         results[name] = failures
         if failures:
             ok = False
@@ -642,7 +697,7 @@ def main(argv=None) -> int:
     try:
         ok, results = run_all()
     except Exception as exc:  # noqa: BLE001
-        print(f"FAIL: P10 invariant gate crashed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        print(_safe_failure("FAIL: P10 invariant gate crashed", exc), file=sys.stderr)
         return 1
     for name, failures in results.items():
         if not failures:
