@@ -1540,6 +1540,9 @@ def stdin_program_refusal(words, piped, seg):
     with stdin as data (the code or module is named in argv and judged; file content is the X3d
     residual, out of #637 scope), and unpiped bare interpreters (no delivered code). Subshell or brace
     boundaries (`... | (python3)`) carry no pipe mark, so taint is not tracked into them: residual.
+    Known overreach (fail-closed, rare): a file operand literally named like an interpreter
+    (`... | sort perl`, `... | tee node`) reads as a bare interpreter and is refused; the established
+    X1 scan accepts the same trade-off for wrapper-hidden python (`nice python3`).
     """
     i = 0
     while i < len(words) and (words[i] in KEYWORDS or ASSIGN.match(words[i])):
