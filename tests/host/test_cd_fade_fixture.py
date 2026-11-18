@@ -4,7 +4,10 @@ Synthetic only: the playback context and every expected value are author-defined
 expectations, not measured device or System Card behaviour. The grounded request is a
 caller-defined value-domain membership check (``$00``/``$08``/``$0A``/``$0C``/``$0E``,
 contract F06 as a caller-side list only): a POSITIVE verdict means the request is a
-well-formed caller request inside that list with no semantic claim attached. Target
+well-formed caller request inside that list with no semantic claim attached. The
+synthetic mode step (``$08`` -> ``$0A``) is author-defined HYPOTHESIS model
+bookkeeping only: F06 lists caller-side values, not a documented fade transition,
+and no public source supports a specific fade-mode transition. Target
 semantics (PCM/ADPCM note vs CD-DA contradiction, F11/F13), timing (F09/F10), the
 ``$00`` cancel effect (F08/F37) and stopped-context behaviour (F32-F34) are unmodelled
 and stay UNKNOWN, never a refusal or an acceptance. Callee-dependent questions stay
@@ -33,7 +36,7 @@ FIXTURE_REL = "tests/fixtures/cdfade-slot0f-cases.json"
 FIXTURE = ROOT / FIXTURE_REL
 SELF_REL = "tests/host/test_cd_fade_fixture.py"
 # sha256 of the canonical JSON (sort_keys, compact separators, UTF-8). Editing the fixture requires updating it here.
-FIXTURE_SHA256 = "e572c4ce81b5e9a16c7e4399cc27337c2a9dfc6dea29eca925e18c0a50de9d54"
+FIXTURE_SHA256 = "b415bbb7be3ad65d3aef59eaf40169ff5ea6700ca8b171891493e560f4af8c4f"
 POSITIVE, NEGATIVE, UNKNOWN, BLOCKED = "POSITIVE", "NEGATIVE", "UNKNOWN", "BLOCKED"
 TOP_LEVEL_KEYS = {"schema", "issue", "parent_issue", "slot", "entry_candidate", "candidate_name", "abi_status",
                   "release_eligible", "execution", "provenance", "callee_abi", "context", "request_model",
@@ -76,8 +79,9 @@ def _well_formed(context):
 
 
 def synthetic_mode_after(verdict, current, requested):
-    """Author-defined synthetic mode step: an accepted request makes the requested mode current,
-    anything else leaves the synthetic mode unchanged. Pure model bookkeeping, not device behavior."""
+    """Author-defined synthetic mode step (HYPOTHESIS, not a documented transition): an accepted
+    request makes the requested mode current, anything else leaves the synthetic mode
+    unchanged. Pure model bookkeeping, not device behavior."""
     return requested if verdict == POSITIVE else current
 
 
@@ -85,12 +89,14 @@ def judge(context, query, present=True, needs_callee=False):
     """Reference judge: (verdict, detail, result). Never a PASS/VERIFIED verdict; ABI stays BLOCKED_ABI.
 
     Precedence (first matching rule decides): malformed control flag -> callee dependence ->
-    no context -> malformed context -> malformed type value -> out-of-domain value ->
-    unmodelled starting mode -> unmodelled target -> unmodelled effect claim -> stopped
-    context -> POSITIVE. Control flags must be plain bool; any other type is UNKNOWN, never
-    POSITIVE. UNKNOWN is not a refusal: unmodelled semantics stay UNKNOWN even when the value
-    is in-domain. When the query states a current_mode, an accepted request records mode_after
-    (the synthetic mode step); a refused or unmodelled request records nothing (result is None).
+    no context -> malformed context -> malformed query (non-dict) -> malformed type value ->
+    out-of-domain value -> unmodelled starting mode (absent allowed; explicit null, bool,
+    float, str, or out-of-domain int is UNKNOWN) -> unmodelled target ->
+    unmodelled effect claim -> stopped context -> POSITIVE. Control flags must be plain bool;
+    any other type is UNKNOWN, never POSITIVE. UNKNOWN is not a refusal: unmodelled semantics
+    stay UNKNOWN even when the value is in-domain. When the query states a current_mode,
+    an accepted request records mode_after (the synthetic HYPOTHESIS step); a refused or
+    unmodelled request records nothing (result is None).
     """
     if type(present) is not bool or type(needs_callee) is not bool:
         return UNKNOWN, "malformed control flag: present and needs_callee must be plain bool", None
@@ -100,14 +106,19 @@ def judge(context, query, present=True, needs_callee=False):
         return NEGATIVE, "no playback context present", None
     if not _well_formed(context):
         return UNKNOWN, "context is outside the synthetic model", None
+    if not isinstance(query, dict):
+        return UNKNOWN, "malformed query: query must be a dict", None
     type_value = query.get("type_value")
     if type(type_value) is not int:
         return NEGATIVE, "malformed: type_value must be a plain int (bool, float, str, None refused)", None
     if type_value not in GROUNDED_DOMAIN:
         return NEGATIVE, "type value outside the caller-defined domain", None
-    current = query.get("current_mode", None)
-    if current is not None and (type(current) is not int or current not in GROUNDED_DOMAIN):
-        return UNKNOWN, "unmodelled starting mode: current_mode must be a domain member or absent", None
+    if "current_mode" not in query:
+        current = None
+    else:
+        current = query["current_mode"]
+        if type(current) is not int or current not in GROUNDED_DOMAIN:
+            return UNKNOWN, "unmodelled starting mode: current_mode must be a domain member or absent (explicit null is UNKNOWN)", None
     if query.get("target", "unspecified") != "unspecified":
         return UNKNOWN, "unmodelled target semantics: PCM/ADPCM note and CD-DA are undecided", None
     asserts_effect = query.get("asserts_effect", False)
@@ -181,6 +192,11 @@ class CdFadeSlot0fFixtureTests(unittest.TestCase):
                     "unmodelled_cancel_effect"):
             self.assertEqual(model[key], "UNKNOWN")
         self.assertEqual(model["callee_dependent"], "BLOCKED_ABI")
+        # The $08->$0A step is an author-defined HYPOTHESIS, not a grounded transition:
+        # F06 lists caller-side values only; no public source documents a fade-mode transition.
+        self.assertEqual(model["transition_model"], "HYPOTHESIS")
+        self.assertIn("HYPOTHESIS", model["transition_provenance"])
+        self.assertIn("$08->$0A", model["transition_provenance"])
 
     def test_every_case_matches_its_expected_verdict_and_result(self):
         for case in self.cases:
@@ -240,9 +256,9 @@ class CdFadeSlot0fFixtureTests(unittest.TestCase):
         self.assertTrue(detail)
         # The rejected request leaves the synthetic mode unchanged (pure model step, no device claim).
         self.assertEqual(synthetic_mode_after(verdict, neg["current_mode"], neg["type_value"]), 0x08)
-        # An unmodelled starting mode is UNKNOWN, never POSITIVE.
+        # An unmodelled starting mode is UNKNOWN, never POSITIVE (explicit null included).
         base = {"type_value": 0x0A, "target": "unspecified", "playing": True, "asserts_effect": False}
-        for bad_start in (0x09, "08", True, 8.0):
+        for bad_start in (0x09, "08", True, 8.0, None):
             verdict, _, result = judge(self.context, dict(base, current_mode=bad_start))
             self.assertEqual(verdict, UNKNOWN)
             self.assertIsNone(result)
@@ -304,6 +320,78 @@ class CdFadeSlot0fFixtureTests(unittest.TestCase):
                 self.assertEqual(verdict, UNKNOWN)
                 self.assertIsNone(result)
                 self.assertTrue(detail)
+
+    def test_malformed_query_shape_is_unknown_and_never_positive(self):
+        # Non-dict query shapes must stay fail-closed (UNKNOWN), never crash and never POSITIVE.
+        bad_queries = [None, [], "08", "", "true", 0, 1, 8, -1, True, False, 0.0, 8.0, b"08"]
+        for bad in bad_queries:
+            with self.subTest(query=repr(bad)):
+                verdict, detail, result = judge(self.context, bad)
+                self.assertEqual(verdict, UNKNOWN)
+                self.assertIsNone(result)
+                self.assertTrue(detail)
+                self.assertNotEqual(verdict, POSITIVE)
+        # Precedence is preserved: callee dependence outranks a malformed query.
+        for bad in (None, [], "08", 8, True):
+            with self.subTest(needs_callee=repr(bad)):
+                verdict, _, result = judge(self.context, bad, present=True, needs_callee=True)
+                self.assertEqual(verdict, BLOCKED)
+                self.assertIsNone(result)
+        # No-context outranks a malformed query (NEGATIVE, not UNKNOWN, not a crash).
+        for bad in (None, [], "08", 8, False):
+            with self.subTest(present=repr(bad)):
+                verdict, _, result = judge(self.context, bad, present=False, needs_callee=False)
+                self.assertEqual(verdict, NEGATIVE)
+                self.assertIsNone(result)
+        # Malformed context combined with a malformed query stays UNKNOWN without crashing.
+        for bad_context in ({"synthetic": False}, "not-a-context", None, [], {"synthetic": 1}):
+            for bad in (None, [], "08", 8, True):
+                with self.subTest(context=repr(bad_context), query=repr(bad)):
+                    verdict, detail, result = judge(bad_context, bad)
+                    self.assertEqual(verdict, UNKNOWN)
+                    self.assertIsNone(result)
+                    self.assertTrue(detail)
+        # Malformed control flags outrank even a malformed query.
+        verdict, _, result = judge(self.context, None, present="true", needs_callee=False)
+        self.assertEqual(verdict, UNKNOWN)
+        self.assertIsNone(result)
+        verdict, _, result = judge(self.context, None, present=True, needs_callee="true")
+        self.assertEqual(verdict, UNKNOWN)
+        self.assertIsNone(result)
+
+    def test_explicit_null_starting_mode_is_unknown(self):
+        base = {"type_value": 0x0A, "target": "unspecified", "playing": True, "asserts_effect": False}
+        # Omitted current_mode is allowed and stays POSITIVE with no mode_after pin.
+        verdict, _, result = judge(self.context, dict(base))
+        self.assertEqual(verdict, POSITIVE)
+        self.assertIsNotNone(result)
+        self.assertNotIn("mode_after", result)
+        # Explicit null is malformed starting-mode input: UNKNOWN, never POSITIVE.
+        verdict, detail, result = judge(self.context, dict(base, current_mode=None))
+        self.assertEqual(verdict, UNKNOWN)
+        self.assertIsNone(result)
+        self.assertTrue(detail)
+        # Out-of-domain ints, bool, float, and str are UNKNOWN, never POSITIVE.
+        for bad_start in (0x01, 0x09, 0xFF, -1, True, False, 8.0, "08", "", [], {}):
+            with self.subTest(current_mode=repr(bad_start)):
+                verdict, detail, result = judge(self.context, dict(base, current_mode=bad_start))
+                self.assertEqual(verdict, UNKNOWN)
+                self.assertIsNone(result)
+                self.assertTrue(detail)
+                self.assertNotEqual(verdict, POSITIVE)
+        # A valid domain member stays POSITIVE and pins mode_after (synthetic HYPOTHESIS step).
+        verdict, _, result = judge(self.context, dict(base, current_mode=0x08))
+        self.assertEqual(verdict, POSITIVE)
+        self.assertEqual(result["mode_after"], 0x0A)
+        # Precedence: callee dependence and no-context outrank a malformed starting mode.
+        verdict, _, result = judge(self.context, dict(base, current_mode=None),
+                                   present=False, needs_callee=True)
+        self.assertEqual(verdict, BLOCKED)
+        self.assertIsNone(result)
+        verdict, _, result = judge(self.context, dict(base, current_mode=None),
+                                   present=False, needs_callee=False)
+        self.assertEqual(verdict, NEGATIVE)
+        self.assertIsNone(result)
 
     def test_no_negative_case_is_accepted_and_lenient_judge_is_caught(self):
         accepted = [c["id"] for c in self.cases if c["expected"] != POSITIVE
