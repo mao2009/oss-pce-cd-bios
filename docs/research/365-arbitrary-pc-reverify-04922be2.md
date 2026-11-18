@@ -10,7 +10,9 @@
 
 | 項目 | 値 |
 |---|---|
-| 開始HEAD / 終了HEAD | `04922be2` / `04922be2`（コード無変更、検証のみ） |
+| 測定対象コードHEAD | `04922be2`（測定時のmain。コード無変更で検証） |
+| 測定時のコード変更 | なし（`tests/`・`spec/`・`src/` 無改変） |
+| 初回記録文書コミット | `01dd8392`（初版記録時点のPR HEADであり、修正後の現PR HEADを示すものではない） |
 | pinned core | `b49ae82a012eade566d72e9d61c9d95a5caa4da3`（debugger ビルド、独立 `/tmp` checkout を直接改変せず） |
 | BIOS | SYNTHETIC（MPR0=$00、$FF ではない。純正BIOS JSRなし） |
 | 実行様式 | debug single-step。各命令境界で `Memory::TryPeek(PC)` により opcode `0x03/0x13/0x23` を実行前に検査。先頭命令を含む全境界が対象。PC ヒントなし |
