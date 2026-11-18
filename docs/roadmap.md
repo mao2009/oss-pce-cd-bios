@@ -36,7 +36,7 @@ Current DEV implementation count: 18/81; current stubs: 63/81; owner-approved DE
 - [ ] **G5 retail title screen observed**: still **NOT_OBSERVED**. Prioritize opt-in, read-only local commercial measurement and classify the actual first IPL/API blocker before selecting the next genuine implementation; no proprietary inputs in source, CI or reports.
 - [ ] Validate genuine reference caller ABI and production stack/MPR/IRQ/return/error semantics; JSR allowed `0/81`, ABI VERIFIED `0/81`, DEV_CALLABLE `0`, release gated off.
 
-See [dated G5 evidence and limits](g5-progress-2026-11-13.md) and the [2026-11-18 addendum](g5-evidence-2026-11-18.md) (merges #799/#801/#803/#805, open Draft #806, #789 closed, #802 commercial observations HISTORICALLY_OBSERVED). These experimental checks do not complete M2's **firmware-mediated original-disc boot** or M3 retail compatibility.
+See [dated G5 evidence and limits](g5-progress-2026-11-13.md) and the [2026-11-18 addendum](g5-evidence-2026-11-18.md) (merges #799/#801/#803/#805/#806, #789 closed, #802 commercial observations HISTORICALLY_OBSERVED). These experimental checks do not complete M2's **firmware-mediated original-disc boot** or M3 retail compatibility.
 
 ## M2 — Self-authored CD program boot
 
