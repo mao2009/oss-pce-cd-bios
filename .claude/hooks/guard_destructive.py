@@ -888,6 +888,22 @@ def split_segments(text, ps=False):
                 # A top-level command boundary ends a background list and
                 # a pipeline. No scope effect; analyze_text restores the
                 # pipeline-entry cwd and refreshes entry snapshots here.
+                # A newline right after `|`/`|&` continues the pipeline
+                # (verified on Bash): it splits words but ends nothing.
+                if c == "\n":
+                    j = i - 1
+                    while j >= 0 and text[j] in " \t":
+                        j -= 1
+                    if j >= 0 and text[j] == "|":
+                        k = j - 1
+                        while k >= 0 and text[k] in " \t":
+                            k -= 1
+                        if k < 0 or text[k] != "|":
+                            i += 1
+                            continue
+                    elif j >= 0 and text[j] == "&" and j - 1 >= 0 and text[j - 1] == "|":
+                        i += 1
+                        continue
                 segs.append(CMD_BOUND)
                 redirs.append([])
             i += 1
@@ -2322,9 +2338,21 @@ def analyze_text(text, ctx, ps, depth):
     scope_entry = ctx.cwd
     scope_just_closed = False
     prev_was_pipe = False
+    # Saved (pipe_entry, prev_was_pipe) per open Bash scope, plus the
+    # brace-group stage cwd for calling-shell groups used as a stage.
+    pipe_scope = []
+    bstage = []
     for seg, ops in zip(segs, redirs):
         if seg == SUBSHELL_OPEN:
             if not ps:
+                if prev_was_pipe and pipe_entry is not None:
+                    # A group right after `|` is the next stage: it forks
+                    # from the entry, and inner commands must not see or
+                    # move the outer pipeline state.
+                    ctx.cwd = pipe_entry
+                pipe_scope.append((pipe_entry, prev_was_pipe))
+                pipe_entry = None
+                prev_was_pipe = False
                 if not scope_stack and not bbrace_stack:
                     # A top-level `( ... )` may be the whole first pipeline
                     # stage: remember the pre-group cwd for the entry.
@@ -2335,17 +2363,23 @@ def analyze_text(text, ctx, ps, depth):
         if seg == SUBSHELL_CLOSE:
             if not ps and scope_stack:
                 ctx.cwd = scope_stack.pop()
+                if pipe_scope:
+                    pipe_entry, prev_was_pipe = pipe_scope.pop()
                 if not scope_stack and not bbrace_stack:
                     scope_just_closed = True
-                    # NOTE: no pipe_entry reset is needed here: `)` always
-                    # flushes a segment first, and that segment already
-                    # ended the inner entry lifetime (or reuses it as a
-                    # stage) before any outer `|` is read.
             continue
         if seg == BBRACE_OPEN:
             # Calling-shell group: cwd is shared, so nothing is restored
-            # at the close. The pre-group cwd is still the pipeline entry
-            # when the whole group is the first stage.
+            # at the close -- unless the group itself is a pipeline stage,
+            # which forks like any other stage. The pre-group cwd is still
+            # the pipeline entry when the whole group is the first stage.
+            is_stage = bool(prev_was_pipe and pipe_entry is not None)
+            if is_stage:
+                ctx.cwd = pipe_entry
+            pipe_scope.append((pipe_entry, prev_was_pipe))
+            pipe_entry = None
+            prev_was_pipe = False
+            bstage.append((is_stage, ctx.cwd))
             if not scope_stack and not bbrace_stack:
                 scope_entry = ctx.cwd
                 scope_just_closed = False
@@ -2354,6 +2388,13 @@ def analyze_text(text, ctx, ps, depth):
         if seg == BBRACE_CLOSE:
             if bbrace_stack:
                 bbrace_stack.pop()
+                was_stage, stage_cwd = bstage.pop() if bstage else (False, ctx.cwd)
+                if was_stage:
+                    # A brace group used as a pipeline stage forked: drop
+                    # the body-local cwd instead of leaking it.
+                    ctx.cwd = stage_cwd
+                if pipe_scope:
+                    pipe_entry, prev_was_pipe = pipe_scope.pop()
                 if not scope_stack and not bbrace_stack:
                     scope_just_closed = True
             continue
@@ -2361,6 +2402,11 @@ def analyze_text(text, ctx, ps, depth):
             # A `coproc { ... }` compound body runs in a subshell: same
             # scope handling as `( ... )`. The `coproc ...` segment itself
             # is still dispatched (in a taint-only copy) by analyze_argv.
+            if prev_was_pipe and pipe_entry is not None:
+                ctx.cwd = pipe_entry
+            pipe_scope.append((pipe_entry, prev_was_pipe))
+            pipe_entry = None
+            prev_was_pipe = False
             if not scope_stack and not bbrace_stack:
                 scope_entry = ctx.cwd
                 scope_just_closed = False
@@ -2369,6 +2415,8 @@ def analyze_text(text, ctx, ps, depth):
         if seg == COPROC_CLOSE:
             if scope_stack:
                 ctx.cwd = scope_stack.pop()
+                if pipe_scope:
+                    pipe_entry, prev_was_pipe = pipe_scope.pop()
                 if not scope_stack and not bbrace_stack:
                     scope_just_closed = True
             continue
@@ -2380,6 +2428,7 @@ def analyze_text(text, ctx, ps, depth):
             if not ps and pipe_entry is not None:
                 ctx.cwd = pipe_entry
                 pipe_entry = None
+            prev_was_pipe = False
             if not scope_stack and not bbrace_stack:
                 run_start = ctx.cwd
                 bg_start = ctx.cwd
@@ -2403,22 +2452,32 @@ def analyze_text(text, ctx, ps, depth):
             continue
         if seg == BG_BOUND:
             # A `&` backgrounds the whole list in a subshell: the parent
-            # (following foreground segments) continues from the cwd the
-            # list started with (bg_start tracks `;`-separated lists).
+            # (following foreground segments) continues at once from the
+            # cwd the list started with, and the list's pipeline state ends
+            # here. A `cd` left of `&` stays in the background job.
             if not ps:
-                if pipe_entry is not None:
-                    ctx.cwd = pipe_entry
-                pipe_entry = bg_start
-                prev_was_pipe = True
+                if not scope_stack and not bbrace_stack:
+                    ctx.cwd = bg_start
+                pipe_entry = None
+                prev_was_pipe = False
+                scope_just_closed = False
             continue
-        if prev_was_pipe and not ps:
+        seg_words = words_of(seg, ps)
+        if not seg_words and not ops:
+            # A boundary flush with no words and no redirects (e.g. the
+            # empty segment before `{` in `| { ...`): consumes no pipeline
+            # state at all -- not even the stage reset. The next real
+            # segment (or scope open) is still the stage.
+            continue
+        if prev_was_pipe and not ps and pipe_entry is not None:
             ctx.cwd = pipe_entry
         # Refresh the pipeline-entry candidate only at a top-level segment
         # with a real command word, so a compound body or an empty/keyword
         # segment never moves it (Piece D, #636 CRITICAL-1). A scope that
         # just closed stays the entry source until a real segment (or a
         # `;` boundary) starts a new run: empty segments never clear it.
-        seg_words = words_of(seg, ps)
+        # A scope group owns its inner pipeline state on pipe_scope, so an
+        # inner command never ends the enclosing entry lifetime.
         if not scope_stack and not bbrace_stack and seg_words:
             scope_just_closed = False
         if (not prev_was_pipe and not scope_stack and not bbrace_stack
@@ -2426,10 +2485,10 @@ def analyze_text(text, ctx, ps, depth):
                     w not in KEYWORDS and not ASSIGN.match(w)
                     for w in seg_words)):
             run_start = ctx.cwd
-        if not prev_was_pipe:
-            # The entry outlives every stage of its pipeline (or
-            # background list) so a later `;` boundary or `&` can restore
-            # it; a non-stage segment ends that lifetime.
+        if not prev_was_pipe and not scope_stack and not bbrace_stack:
+            # A top-level non-stage segment ends the pipeline entry
+            # lifetime. Segments inside a scope group must not end the
+            # enclosing entry: the group owns a saved copy on pipe_scope.
             pipe_entry = None
         prev_was_pipe = False
         # A substitution runs when its containing segment runs: analyse it

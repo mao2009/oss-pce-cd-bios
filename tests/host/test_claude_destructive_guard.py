@@ -4396,6 +4396,31 @@ class ChainRulePieceDTests(unittest.TestCase):
         verdict, reason = self._decide("echo hi | cd sub; rm file.txt")
         self.assertEqual(verdict, "ALLOW", reason)
 
+    def test_pipeline_continuation_newline_stays_in_pipeline(self):
+        # CodeRabbit #815 (MAJOR): a newline right after `|` continues the
+        # pipeline (verified on Bash): no CMD_BOUND is emitted, so the
+        # entry survives and the next line is a stage, not a new command.
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        verdict, reason = self._decide("true |\ncd sub; rm ../file.txt")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("rm-outside-repo"), reason)
+        # A newline after `&&` still ends nothing either: `&&` never emits
+        # a boundary, so sequential sharing is unchanged.
+        verdict, reason = self._decide("cd sub &&\nrm inner.txt")
+        self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_brace_group_stage_forks_from_entry(self):
+        # CodeRabbit #815 (MAJOR): a brace group used as a pipeline stage
+        # forks from the entry: the body's cd never reaches later
+        # segments, and the enclosing entry survives the group.
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        verdict, reason = self._decide("true | { cd sub; pwd; }; rm ../file.txt")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("rm-outside-repo"), reason)
+        # A body-local rm is judged from the entry, not the body cwd.
+        verdict, reason = self._decide("cd sub | { rm inner.txt; }")
+        self.assertEqual(verdict, "DENY", reason)
+
     def test_nested_pipeline_entry_does_not_leak(self):
         # An inner pipeline's entry ends at its subshell boundary: an
         # outer pipeline re-derives its own entry instead of inheriting
@@ -4435,6 +4460,9 @@ class ChainRulePieceDTests(unittest.TestCase):
         # A pipeline inside the background list still ends at `&`: the
         # foreground continues from the list start.
         verdict, reason = self._decide("echo hi | cd sub & rm file.txt")
+        self.assertEqual(verdict, "ALLOW", reason)
+        # The foreground after `&` is sequential: its own `cd` persists.
+        verdict, reason = self._decide("true & cd sub; rm inner.txt")
         self.assertEqual(verdict, "ALLOW", reason)
         # A `;`-separated foreground prefix persists into the bg list.
         verdict, reason = self._decide("cd sub; pwd & rm ../file.txt")
@@ -4533,9 +4561,11 @@ class ChainRulePieceDTests(unittest.TestCase):
         # `& { ... }` is explicitly refused (fail closed): a runtime
         # check on Windows/pwsh is NOT_RUN here, so the uncertain form is
         # denied rather than guessed.
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
         verdict, reason = self._decide("& { Set-Location .. }; Remove-Item file.txt",
                                        tool="PowerShell")
         self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("powershell"), reason)
 
 
 def mutant_detected_by_expected_failure(output, expected_test,
@@ -4624,14 +4654,14 @@ class ChainRuleMutationTests(unittest.TestCase):
             '                if not scope_stack and not bbrace_stack:\n                    # A top-level `( ... )` may be the whole first pipeline\n                    # stage: remember the pre-group cwd for the entry.\n                    scope_entry = ctx.cwd\n                    scope_just_closed = False\n                scope_stack.append(ctx.cwd)',
             '                if not scope_stack and not bbrace_stack:\n                    # A top-level `( ... )` may be the whole first pipeline\n                    # stage: remember the pre-group cwd for the entry.\n                    scope_entry = ctx.cwd\n                    scope_just_closed = False\n                pass  # mutant: subshell scope destroyed'),
         "subshell cwd restore removed": (
-            '        if seg == SUBSHELL_CLOSE:\n            if not ps and scope_stack:\n                ctx.cwd = scope_stack.pop()\n'
+            '        if seg == SUBSHELL_CLOSE:\n            if not ps and scope_stack:\n                ctx.cwd = scope_stack.pop()\n                if pipe_scope:\n                    pipe_entry, prev_was_pipe = pipe_scope.pop()\n'
             '                if not scope_stack and not bbrace_stack:',
-            '        if seg == SUBSHELL_CLOSE:\n            if not ps and scope_stack:\n                scope_stack.pop()  # mutant: subshell cwd leaks\n'
+            '        if seg == SUBSHELL_CLOSE:\n            if not ps and scope_stack:\n                scope_stack.pop()  # mutant: subshell cwd leaks\n                if pipe_scope:\n                    pipe_entry, prev_was_pipe = pipe_scope.pop()\n'
             '                if not scope_stack and not bbrace_stack:'),
         "subshell taint propagation removed": (
-            '        if seg == SUBSHELL_CLOSE:\n            if not ps and scope_stack:\n                ctx.cwd = scope_stack.pop()\n'
+            '        if seg == SUBSHELL_CLOSE:\n            if not ps and scope_stack:\n                ctx.cwd = scope_stack.pop()\n                if pipe_scope:\n                    pipe_entry, prev_was_pipe = pipe_scope.pop()\n'
             '                if not scope_stack and not bbrace_stack:',
-            '        if seg == SUBSHELL_CLOSE:\n            if not ps and scope_stack:\n                ctx.cwd = scope_stack.pop()\n'
+            '        if seg == SUBSHELL_CLOSE:\n            if not ps and scope_stack:\n                ctx.cwd = scope_stack.pop()\n                if pipe_scope:\n                    pipe_entry, prev_was_pipe = pipe_scope.pop()\n'
             '                ctx.tainted = False  # mutant: subshell taint dropped\n'
             '                if not scope_stack and not bbrace_stack:'),
         "cd cwd update removed": (
@@ -4644,7 +4674,7 @@ class ChainRuleMutationTests(unittest.TestCase):
             '    if sub == "stash" and rest[:1] not in (["list"], ["show"]):\n        rewrite = True',
             '    if sub == "stash":\n        rewrite = True  # mutant: read-only stash list taints'),
         "pipeline stage cwd reset removed": (
-            '        if prev_was_pipe and not ps:\n            ctx.cwd = pipe_entry',
+            '        if prev_was_pipe and not ps and pipe_entry is not None:\n            ctx.cwd = pipe_entry',
             '        pass  # mutant: pipe stage cwd not reset'),
         "pipeline taint cleared at boundary": (
             '                if pipe_entry is None:\n                    if scope_just_closed:',
@@ -4662,38 +4692,40 @@ class ChainRuleMutationTests(unittest.TestCase):
             'SAME_SHELL_NAMES = frozenset({"command", "builtin", "eval"}) | CD_NAMES',
             'SAME_SHELL_NAMES = frozenset({"command", "builtin"}) | CD_NAMES  # mutant: eval cwd lost'),
         "powershell paren cwd wrongly restored": (
-            '        if seg == SUBSHELL_OPEN:\n            if not ps:',
-            '        if seg == SUBSHELL_OPEN:\n            if True:  # mutant: ps paren wrongly scoped'),
-        "bash subshell restore confused off": (
-            '            if not ps and scope_stack:\n                ctx.cwd = scope_stack.pop()\n'
-            '                if not scope_stack and not bbrace_stack:',
-            '            if not ps and scope_stack:\n                scope_stack.pop()  # mutant: subshell never restored\n'
-            '                if not scope_stack and not bbrace_stack:'),
+            '        if seg == SUBSHELL_OPEN:\n            if not ps:\n                if prev_was_pipe and pipe_entry is not None:\n                    # A group right after `|` is the next stage: it forks\n                    # from the entry, and inner commands must not see or\n                    # move the outer pipeline state.\n                    ctx.cwd = pipe_entry\n                pipe_scope.append((pipe_entry, prev_was_pipe))\n                pipe_entry = None\n                prev_was_pipe = False\n                if not scope_stack and not bbrace_stack:\n                    # A top-level `( ... )` may be the whole first pipeline\n                    # stage: remember the pre-group cwd for the entry.\n                    scope_entry = ctx.cwd\n                    scope_just_closed = False\n                scope_stack.append(ctx.cwd)\n            continue\n        if seg == SUBSHELL_CLOSE:\n            if not ps and scope_stack:\n',
+            '        if seg == SUBSHELL_OPEN:\n            if True:  # mutant: ps paren wrongly scoped\n                if prev_was_pipe and pipe_entry is not None:\n                    # A group right after `|` is the next stage: it forks\n                    # from the entry, and inner commands must not see or\n                    # move the outer pipeline state.\n                    ctx.cwd = pipe_entry\n                pipe_scope.append((pipe_entry, prev_was_pipe))\n                pipe_entry = None\n                prev_was_pipe = False\n                if not scope_stack and not bbrace_stack:\n                    # A top-level `( ... )` may be the whole first pipeline\n                    # stage: remember the pre-group cwd for the entry.\n                    scope_entry = ctx.cwd\n                    scope_just_closed = False\n                scope_stack.append(ctx.cwd)\n            continue\n        if seg == SUBSHELL_CLOSE:\n            if scope_stack:  # mutant\n'),
+
         "pipeline over-taint": (
-            '        if prev_was_pipe and not ps:\n            ctx.cwd = pipe_entry',
-            '        if prev_was_pipe and not ps:\n            ctx.cwd = pipe_entry\n            ctx.tainted = True  # mutant: pipe over-taint'),
+            '        if prev_was_pipe and not ps and pipe_entry is not None:\n            ctx.cwd = pipe_entry',
+            '        if prev_was_pipe and not ps and pipe_entry is not None:\n            ctx.cwd = pipe_entry\n            ctx.tainted = True  # mutant: pipe over-taint'),
         "or-list treated as pipeline": (
             '                if nxt == "|":\n                    i += 1  # consume ||: no scope boundary',
             '                if nxt == "|":\n                    segs.append(PIPE_BOUND)  # mutant: || as pipeline\n                    redirs.append([])\n                    i += 1'),
         "bash brace open token boundary removed": (
             '            if cur_blank:',
             '            if True:  # mutant: any { opens a group'),
-        "background entry leaks sequential cwd": (
-            '                pipe_entry = bg_start',
-            '                pipe_entry = run_start  # mutant: background entry leaks sequential cwd'),
+        "background parent restore removed": (
+            '                if not scope_stack and not bbrace_stack:\n                    ctx.cwd = bg_start',
+            '                pass  # mutant: background parent cwd not restored'),
         "pipeline end restore removed": (
             '            if not ps and pipe_entry is not None:\n                ctx.cwd = pipe_entry\n                pipe_entry = None',
             '            if False:  # mutant: pipeline-end entry not restored\n                pass'),
-        "scope entry falls back to stale run": (
+
+        "pipeline continuation newline treated as boundary": (
+            '                        if k < 0 or text[k] != "|":\n                            i += 1\n                            continue',
+            '                        if k < 0 or text[k] != "|":\n                            i += 1\n                            pass  # mutant: pipeline continuation ends the list'),
+        "brace group stage does not fork": (
+            '            is_stage = bool(prev_was_pipe and pipe_entry is not None)\n            if is_stage:\n                ctx.cwd = pipe_entry',
+            '            is_stage = False  # mutant: brace stage does not fork\n            if is_stage:\n                ctx.cwd = pipe_entry'),        "scope entry falls back to stale run": (
             '                    if scope_just_closed:\n                        pipe_entry = scope_entry',
             '                    if False:  # mutant: scope entry ignored\n                        pass'),
         "command-boundary snapshots removed": (
             '            if not scope_stack and not bbrace_stack:\n                run_start = ctx.cwd\n                bg_start = ctx.cwd',
             '            pass  # mutant: boundary snapshots not refreshed'),
         "coproc compound scope removed": (
-            '        if seg == COPROC_CLOSE:\n            if scope_stack:\n                ctx.cwd = scope_stack.pop()\n'
+            '        if seg == COPROC_CLOSE:\n            if scope_stack:\n                ctx.cwd = scope_stack.pop()\n                if pipe_scope:\n                    pipe_entry, prev_was_pipe = pipe_scope.pop()\n'
             '                if not scope_stack and not bbrace_stack:',
-            '        if seg == COPROC_CLOSE:\n            if scope_stack:\n                scope_stack.pop()  # mutant: coproc body leaks cwd\n'
+            '        if seg == COPROC_CLOSE:\n            if scope_stack:\n                scope_stack.pop()  # mutant: coproc body leaks cwd\n                if pipe_scope:\n                    pipe_entry, prev_was_pipe = pipe_scope.pop()\n'
             '                if not scope_stack and not bbrace_stack:'),
         "command double-dash handling removed": (
             '        if i < len(args) and args[i] == "--":',
@@ -4701,9 +4733,9 @@ class ChainRuleMutationTests(unittest.TestCase):
         "same-shell duplicate validation restored": (
             '                if same_shell_consumed is not None and cand == same_shell_consumed:',
             '                if False:  # mutant: same-shell target revalidated against its taint'),
-        "powershell brace restores repo root": (
-            '            elif ps and c == "}":\n                if ps_bdepth > 0:\n                    ps_bdepth -= 1',
-            '            elif ps and c == "}":\n                if ps_bdepth > 0:\n                    ps_bdepth -= 1\n                ctx.cwd = ctx.root  # mutant: ps brace restores repo root'),
+                "powershell call operator refusal removed": (
+            '                if k < n and text[k] in "\\"\'$({":',
+            '                if False and k < n and text[k] in "\\"\'$({":  # mutant: call operator with string allowed'),
         "brace close token boundary removed": (
             '        if c == "}" and not ps and cur_blank:',
             '        if c == "}" and not ps:  # mutant: any } closes the group'),
@@ -4743,18 +4775,19 @@ class ChainRuleMutationTests(unittest.TestCase):
         "builtin same-shell gating removed": "test_command_builtin_same_shell_cd",
         "command eval same-shell removed": "test_command_builtin_eval_same_shell",
         "powershell paren cwd wrongly restored": "test_powershell_grouping_shares_runspace",
-        "bash subshell restore confused off": "test_subshell_cd_does_not_leak_to_parent",
         "pipeline over-taint": "test_pipeline_clean_stages_keep_allow",
         "or-list treated as pipeline": "test_or_list_keeps_calling_shell_cwd",
         "bash brace open token boundary removed": "test_brace_expansion_word_does_not_close_group",
-        "background entry leaks sequential cwd": "test_background_list_entry_is_list_start",
+        "background parent restore removed": "test_background_list_entry_is_list_start",
         "pipeline end restore removed": "test_pipeline_end_restores_entry",
+        "pipeline continuation newline treated as boundary": "test_pipeline_continuation_newline_stays_in_pipeline",
+        "brace group stage does not fork": "test_brace_group_stage_forks_from_entry",
         "scope entry falls back to stale run": "test_pipeline_entry_after_sequential_cd",
         "command-boundary snapshots removed": "test_background_list_entry_is_list_start",
         "coproc compound scope removed": "test_coproc_compound_body_is_subshell_scoped",
         "command double-dash handling removed": "test_command_double_dash_merges_cwd",
         "same-shell duplicate validation restored": "test_same_shell_target_does_not_self_deny",
-        "powershell brace restores repo root": "test_powershell_grouping_shares_runspace",
+        "powershell call operator refusal removed": "test_powershell_call_scriptblock_stays_refused",
         "brace close token boundary removed": "test_brace_expansion_word_does_not_close_group",
     }
 
