@@ -1,58 +1,60 @@
-# Documentation hub / ドキュメント索引
+# Documentation hub
 
-[← README](../README.md) · [初めて読む](project-guide.md) · [現在の実装状況](status.md)
+[← English README](../README.md) · [日本語README](../readme.jp.md) · [Project guide](project-guide.md) · [Implementation status](status.md)
 
-> **研究・診断段階です。** 文書内のPASSは明記された実験条件に限ります。DEV実装、System Card真正ABI、商用タイトル起動、release適格性は別の評価軸です。
+> **Research / diagnostics only.** A PASS applies only to its stated evidence scope. DEV routine count, genuine System Card ABI parity, retail boot, and release eligibility are separate axes.
 
-## まず読む / Start here
+## Start here
 
-| 資料 | 何が分かる？ |
+| Document | Purpose |
 | --- | --- |
-| [プロジェクトガイド](project-guide.md) | 目的、現在できること、DEV・実験・互換の違い、用語 |
-| [Status](status.md) | 18/81 DEV、0/81 ABI、開発・リリースの状態 |
-| [Roadmap](roadmap.md) | 段階別の目標・未達条件 |
-| [Project review（11/18）](project-review-2026-11-18.md) | 外部向け視点からの強み・弱み・優先改善 |
-| [Compatibility](compatibility.md) | 何をもってゲーム互換性と言えるか |
+| [Project guide](project-guide.md) · [日本語版](project-guide.jp.md) | Goals, capabilities, and distinctions between DEV, experimental, and compatible firmware |
+| [Status](status.md) | DEV 18/81, ABI VERIFIED 0/81, release gate |
+| [Roadmap](roadmap.md) | Evidence-based milestones and remaining blockers |
+| [Project review (2026-11-18)](project-review-2026-11-18.md) | Strengths, gaps, and recommended next actions |
+| [Compatibility](compatibility.md) | Requirements for demonstrating actual game compatibility |
 
-## 開発 / Build, run, architecture
+## Build, run, and architecture
 
-| テーマ | 資料 |
+| Topic | Documents |
 | --- | --- |
-| ビルド・再現性 | [Building](building.md) · [Toolchain](toolchain.md) |
-| 実装構造 | [Architecture](architecture.md) · [System Card ROM](system-card-rom.md) |
-| 実機相当コアでの検証 | [Geargrafx](emulator-geargrafx.md) · [Tests](testing.md) |
-| 実験用ローダー | [PUBLIC IPL](g5-commercial-ipl-path-800.md) · [DEV IPL](dev-ipl-boot.md) |
-| ビジュアル運用 | [README visualization maintenance](readme-visuals.md) |
+| Reproducible builds | [Building](building.md) · [Toolchain](toolchain.md) |
+| Firmware architecture | [Architecture](architecture.md) · [System Card ROM](system-card-rom.md) |
+| Emulator and test harness | [Geargrafx](emulator-geargrafx.md) · [Testing](testing.md) |
+| IPL experiments | [PUBLIC IPL](g5-commercial-ipl-path-800.md) · [DEV IPL](dev-ipl-boot.md) |
+| Visual design and localization | [README visual maintenance](readme-visuals.md) |
 
-## ABI / APIs
+## APIs and ABI
 
-| テーマ | 資料 |
+| Topic | Documents |
 | --- | --- |
-| 81スロットの候補 | [API inventory](api-inventory.md) |
-| 契約と承認 | [ABI contracts](abi-contracts.md) · [Verification tiers](abi-verification-tiers.md) |
-| CD関連の実験 | [CD_BASE](cd-base-contract.md) · [CD_READ](cd-read-contract.md) · [FIRST](cd-read-commercial-first-mode.md) |
-| 部分的なDEV実装 | [EX_DSPOFF](ex-dspoff-real-cpu-g5.md) · [EX_GETVER](abi2-getver-observation.md) |
+| Candidate services | [81-slot API inventory](api-inventory.md) |
+| Verification policy | [ABI contracts](abi-contracts.md) · [Verification tiers](abi-verification-tiers.md) |
+| CD experiments | [CD_BASE](cd-base-contract.md) · [CD_READ](cd-read-contract.md) · [Commercial FIRST](cd-read-commercial-first-mode.md) |
+| Development implementation examples | [EX_DSPOFF](ex-dspoff-real-cpu-g5.md) · [EX_GETVER](abi2-getver-observation.md) |
 
-## 観測・証拠 / Evidence
+## Observations and evidence
 
-| テーマ | 資料 |
+| Topic | Documents |
 | --- | --- |
-| **最新商用実測（2026-11-18）** | [G5 FIRST-mode再観測](g5-commercial-reobservation-2026-11-18.md) |
-| 実験の経緯 | [G5 addendum](g5-evidence-2026-11-18.md) · [G5 11/13 snapshot](g5-progress-2026-11-13.md) |
-| 結果の読み方 | [Verdict schema](verdict-schema.md) · [Compatibility evidence](compat-evidence-schema.md) |
-| コア・割込み・スタック | [Geargrafx contracts](geargrafx-contract-evidence.md) · [MPR/stack](497-mpr1-stack-contract.md) |
+| **2026-11-18 local commercial observations** | [G5 FIRST-mode re-observation](g5-commercial-reobservation-2026-11-18.md) |
+| Earlier experiments | [G5 addendum](g5-evidence-2026-11-18.md) · [2026-11-13 snapshot](g5-progress-2026-11-13.md) |
+| Evidence conventions | [Verdict schema](verdict-schema.md) · [Compatibility evidence](compat-evidence-schema.md) |
+| Core, IRQ, and stack | [Geargrafx contract evidence](geargrafx-contract-evidence.md) · [MPR/stack](497-mpr1-stack-contract.md) |
 
-## 安全性・来歴 / Safety & provenance
+## Safety and provenance
 
-| テーマ | 資料 |
+| Topic | Documents |
 | --- | --- |
-| 参照コード・ライセンス | [Provenance](provenance.md) · [OSS audit](oss-audit-systemcard.md) |
-| リリースゲート | [Fail-closed invariants](725-failclosed-invariants.md) · [P10 gate verification](725-p10-release-gate-verification.md) |
-| エージェントコマンドガード | [Destructive guard](claude-destructive-guard.md) |
-| その他の詳細 | `docs/contracts/` · `docs/design/` · `docs/evidence/` · `docs/research/` |
+| Licensing and independent implementation | [Provenance](provenance.md) · [OSS audit](oss-audit-systemcard.md) |
+| Release controls | [Fail-closed invariants](725-failclosed-invariants.md) · [P10 verification](725-p10-release-gate-verification.md) |
+| Agent command safety | [Destructive command guard](claude-destructive-guard.md) |
+| Advanced / archival material | `docs/contracts/` · `docs/design/` · `docs/evidence/` · `docs/research/` |
 
-### Snapshot policy
+### Documentation and translation policy
 
-- 「2026-11-06」「2026-11-13」の記録は**過去の固定スナップショット**。上書きして現在の証拠にしません。
-- 商用媒体の識別情報、画像、バイト、逆アセンブル、生トレースはGit/PR/公開資料に掲載しません。
-- 新たな実装・マージがあれば、まず [status](status.md)、次に [README](../README.md) と [visuals](readme-visuals.md) の静的数値を同期します。
+- **English `README.md` is canonical.** `readme.jp.md` is its Japanese translation. Keep both updated in the same PR when status, badges, images, limitations, or links change.
+- The image assets under `assets/readme/` are shared between languages; do not generate a second set of conflicting factual infographics.
+- Dated 2026-11-06 and 2026-11-13 reports are **historical snapshots**, not evidence from the latest build.
+- Do not publish commercial media identifiers, contents, hashes, raw traces, or proprietary disassembly.
+- When implementation/evidence changes, update [Status](status.md), both READMEs, and [visuals](readme-visuals.md) together.
