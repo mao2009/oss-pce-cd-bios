@@ -54,6 +54,14 @@ class BuildMemopen4AHostTests(unittest.TestCase):
             self.assertEqual(tuple(tab), (0x4C, fb & 0xFF, (fb >> 8) & 0xFF))
             self.assertEqual(data[3 * 0x4A:3 * 0x4A + 3],
                              self.normal[3 * 0x4A:3 * 0x4A + 3])
+            # MAJOR-1: stub default must not link the experimental body.
+            # Table identity alone is insufficient; check the whole ROM.
+            self.assertNotIn("ex_memopen_entry", syms)
+            want = bytes((0x08, 0x48, 0xDA, 0x5A, 0x43, 0x02, 0xC9, 0xF8,
+                            0xD0, 0x05, 0x7A, 0xFA, 0x68, 0x28, 0x60,
+                            0x7A, 0xFA, 0x68, 0x28, 0x38, 0x60))
+            self.assertNotIn(want, data,
+                             "stub default ROM must not contain the experimental body")
             import json
             man = json.loads((Path(td) / "manifest-host-stub-g5.json").read_text())
             self.assertEqual(man["cd_4a"], "stub")

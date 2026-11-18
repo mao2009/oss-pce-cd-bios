@@ -394,11 +394,19 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
         raise ValueError("cd_4a must be 'stub' or 'experimental'")
     link_source = LINK_SOURCE_COMMERCIAL if cd_read == "commercial" else LINK_SOURCE_V1
     link_entry = LINK_ENTRY_COMMERCIAL if cd_read == "commercial" else LINK_ENTRY_V1
-    exp_labels = ("api_slot_02", "api_unimplemented", "cd_base_2base_entry",
+    # MAJOR-1: experimental $4A body is opt-in only. Stub default must not
+    # require, assemble, link, or expect its label/symbol; otherwise BOOT
+    # gains 21 bytes and the default image is no longer byte-identical.
+    exp_labels = (("api_slot_02", "api_unimplemented", "cd_base_2base_entry",
+                   "api_slot_03", link_entry,
+                   "api_slot_33", "experimental_slot_33",
+                   "api_slot_4A", "experimental_selection")
+                  if cd_4a == "stub" else
+                  ("api_slot_02", "api_unimplemented", "cd_base_2base_entry",
                    "api_slot_03", link_entry,
                    "api_slot_33", "experimental_slot_33",
                    "api_slot_4A", MEMOPEN_ENTRY,
-                   "experimental_selection")
+                   "experimental_selection"))
     all_labels = tuple(dict.fromkeys(list(LOADER_REQUIRED) + list(exp_labels)))
     if mode not in ("debug", "release"):
         raise ValueError("MODE must be debug or release")
@@ -408,7 +416,11 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
         raise ValueError("EXP_SELECTED_TRACK must be 1..99")
     _refuse_unsafe_variant(variant)
     canon_defines, _ = _normalize_defines(defines)  # is_public unused: manifest derives it
-    for src in (PROTO_SOURCE, link_source, GLUE_SOURCE, MEMOPEN_SOURCE):
+    # MAJOR-1: stub default must not require the experimental source.
+    required_sources = ((PROTO_SOURCE, link_source, GLUE_SOURCE)
+                        if cd_4a == "stub" else
+                        (PROTO_SOURCE, link_source, GLUE_SOURCE, MEMOPEN_SOURCE))
+    for src in required_sources:
         if not src.is_file():
             raise ValueError(f"experimental source missing: {src}")
     original = Path(original_path).read_bytes()
@@ -451,8 +463,12 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
     g5_debug_flags = ["-g"]
     objects = assemble_api_objects(output, mode)
     exp_defs = _exp_defines(sel, track)
-    for src, extra in ((PROTO_SOURCE, exp_defs), (link_source, []),
-                       (MEMOPEN_SOURCE, []), (GLUE_SOURCE, exp_defs)):
+    # MAJOR-1: link the experimental body only for cd_4a="experimental".
+    g5_sources = ([(PROTO_SOURCE, exp_defs), (link_source, []), (GLUE_SOURCE, exp_defs)]
+                  if cd_4a == "stub" else
+                  [(PROTO_SOURCE, exp_defs), (link_source, []),
+                   (MEMOPEN_SOURCE, []), (GLUE_SOURCE, exp_defs)])
+    for src, extra in g5_sources:
         obj = output / f"{src.stem}_{variant}.o"
         subprocess.run([ca65, str(src), *extra, "-o", str(obj), *g5_debug_flags],
                        check=True)
@@ -574,7 +590,6 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
         "api_unimplemented": symbols["api_unimplemented"],
         "cd_base_2base_entry": symbols["cd_base_2base_entry"],
         "experimental_slot_33": symbols["experimental_slot_33"],
-        MEMOPEN_ENTRY: symbols[MEMOPEN_ENTRY],
         link_entry: symbols[link_entry],
         "experimental_selection": symbols["experimental_selection"],
         "slot_02_table_entry": 0xE000 + 3 * 0x02,
@@ -582,6 +597,9 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
         "slot_33_table_entry": 0xE000 + 3 * 0x33,
         "slot_4a_table_entry": 0xE000 + 3 * 0x4A,
     }
+    # MAJOR-1: record the experimental entry only when linked.
+    if cd_4a == "experimental":
+        link_labels[MEMOPEN_ENTRY] = symbols[MEMOPEN_ENTRY]
     manifest = g5_manifest(sel, track, mode, variant, canon_defines, data, symbols,
                            link_labels, rom.name, private_input=private_input,
                            cd_read=cd_read, cd_4a=cd_4a)

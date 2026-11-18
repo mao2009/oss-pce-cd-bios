@@ -50,8 +50,8 @@ Because behavior is UNKNOWN, the DEV_EXPERIMENTAL `$4A` body is scoped to
 what is grounded:
 
 - Real table entry via JSR `$E0DE` (DOCUMENTED mapping S1/S2/S3).
-- Entry discipline: require MPR1=`$F8` (OBSERVED S7 + DOCUMENTED S2); anything else is fail-closed refusal, never executed blindly.
-- Zero side effects: no TAM/MPR change, no memory write, no bus access. Preservation of A/X/Y/P/MPR/SP is the only "effect", proved load-bearing by mutants.
+- Entry discipline: caller must ensure MPR1=`$F8` (OBSERVED S7 + DOCUMENTED S2) as a precondition; MPR1!=`$F8` is BLOCKED (unproven, never executed blindly). The JSR return push plus PHP/PHA/PHX/PHY already write 6 stack bytes before the gate, so refusal cannot be side-effect-free for non-RAM mappings.
+- Side effects: no TAM/MPR change, no bus access beyond the caller stack. Only stack pushes (JSR + saves) plus preservation of A/X/Y/P/MPR/SP; proved load-bearing by mutants. "Zero memory write" is NOT claimed (stack writes are real).
 - Return: RTS resumption only. No invented success code in A, no flag fabrication beyond entry preservation. Preservation is latch-exact: on the pinned core the P latch has no B bit (`SetP` masks with `$EF`), so plain PHP/PLP restores every latch bit and no stacked-byte surgery is used. Refusal path sets Carry (project-experimental convention, documented as NOT genuine) and still preserves everything else.
 - Applicability is limited to the observed input classes (S7); anything beyond preservation is BLOCKED, and the service is never presented as genuine, callable, or release-eligible.
 
