@@ -542,8 +542,10 @@ def split_segments(text, ps=False):
     A redirect target is the raw word after each unquoted '>' ("" when there is none). A pipe-fed flag
     is True when the segment's stdin is a pipe from the previous segment: the separator that starts it
     is a single `|` (not `||`, and `|&` keeps the pipe through the `&`). A whitespace-only segment (a line
-    continuation after `|`) carries the flag over without changing it. Subshell or brace boundaries are
-    not pipes, so taint is not tracked into them (documented residual in stdin_program_refusal).
+    continuation after `|`, or `(`/`{` directly after a pipe) carries the flag over without changing it.
+    A `;` (or newline, `(`/`)`, ...) after a command ends the pipe for the next segment, so a branch that
+    starts after `;` is unmarked even inside a pipe-fed compound (`... | if c; then python3; fi`: residual,
+    see stdin_program_refusal).
     """
     segs, subs, cur, redirs, rd, pipes = [], [], [], [], [], []
     fed = False
@@ -1538,8 +1540,11 @@ def stdin_program_refusal(words, piped, seg):
 
     Kept as they are (documented): a script file operand (`python3 x.py`, `node x.js`) and `-c`/`-m`
     with stdin as data (the code or module is named in argv and judged; file content is the X3d
-    residual, out of #637 scope), and unpiped bare interpreters (no delivered code). Subshell or brace
-    boundaries (`... | (python3)`) carry no pipe mark, so taint is not tracked into them: residual.
+    residual, out of #637 scope), and unpiped bare interpreters (no delivered code). Pipes through
+    `(...)`, `{...}`, wrappers and `sh -c` strings are still marked (the interpreter shares the
+    pipe-fed segment). Residual: control-keyword branches that start after `;` lose the mark
+    (`... | if c; then python3; fi` stays ALLOW; probed, not guessed). Tracking taint into compound
+    branches would need control-flow depth in the splitter: follow-up work, not this rule.
     Known overreach (fail-closed, rare): a file operand literally named like an interpreter
     (`... | sort perl`, `... | tee node`) reads as a bare interpreter and is refused; the established
     X1 scan accepts the same trade-off for wrapper-hidden python (`nice python3`).
