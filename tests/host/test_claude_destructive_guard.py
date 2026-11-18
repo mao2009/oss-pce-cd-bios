@@ -3994,5 +3994,182 @@ class RoundBReviewRegressionTests(unittest.TestCase):
 
 
 
-if __name__ == "__main__":
-    unittest.main()
+class ChainRulePieceDTests(unittest.TestCase):
+    """Piece D (#636): a segment that changes the filesystem taints later
+
+    destructive-path judgments in the same command. A later rm, write or
+    redirect must not rely on hook-time filesystem state (symlink targets,
+    existence, cwd-relative resolution) once an earlier segment may have
+    changed it. Read-only prefixes (git status, cd with tracked cwd) stay
+    ALLOW. Decision-only tests; the filesystem is real but nothing is
+    executed: every command is only judged, and all paths stay inside a
+    temporary directory that the test owns.
+    """
+
+    def setUp(self):
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        self.tmp = os.path.realpath(td.name)
+        self.repo = os.path.join(self.tmp, "repo")
+        os.makedirs(os.path.join(self.repo, "sub"))
+        os.makedirs(os.path.join(self.repo, ".git"))
+        os.makedirs(os.path.join(self.repo, ".claude"))
+        write_text(os.path.join(self.repo, "sub", "inner.txt"), "x\n")
+        write_text(os.path.join(self.repo, "file.txt"), "x\n")
+        self.has_link = True
+        try:
+            os.symlink(os.path.join(self.repo, "sub"),
+                       os.path.join(self.repo, "lnk"), target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.has_link = False
+
+    def _decide(self, cmd, tool="Bash"):
+        payload = json.dumps({"tool_name": tool,
+                              "tool_input": {"command": cmd},
+                              "cwd": self.repo})
+        return guard.decide(payload, repo_root=self.repo)
+
+    def _link(self):
+        if not self.has_link:
+            self.skipTest("symlink creation not permitted here: NOT_RUN")
+
+    def test_baseline_dotdot_through_existing_link_is_allowed(self):
+        # The hook-time resolution is trusted only with no earlier change:
+        # lnk points inside, so lnk/../file.txt reaches repo/file.txt.
+        self._link()
+        verdict, _ = self._decide("rm lnk/../file.txt")
+        self.assertEqual(verdict, "ALLOW")
+        verdict, _ = self._decide("rm sub/../file.txt")
+        self.assertEqual(verdict, "ALLOW")
+
+    def test_filesystem_mutation_taints_later_rm(self):
+        for prefix in ("mkdir -p sub", "cp file.txt sub/c.txt",
+                       "mv file.txt sub/m.txt", "touch f",
+                       "echo hi | tee f", "echo hi > f",
+                       "tar -cf out.tar file.txt", "git checkout other",
+                       "git stash", "git stash pop", "git merge main",
+                       "git pull", "git apply fix.patch",
+                       "sudo mkdir d", "sh -c 'mkdir d'",
+                       "echo $(mkdir d) hi", "sort -o out seed"):
+            with self.subTest(prefix=prefix):
+                verdict, reason = self._decide(prefix + " && rm sub/inner.txt")
+                self.assertEqual(verdict, "DENY", (prefix, reason))
+                self.assertTrue(reason.startswith("chain"), (prefix, reason))
+
+    def test_git_swap_bypass_demo(self):
+        # The true bypass: hook-time lnk points inside, so the bare rm is
+        # judged on that state; after a tree rewrite the same judgment is
+        # refused instead of trusted.
+        self._link()
+        verdict, _ = self._decide("rm lnk/../file.txt")
+        self.assertEqual(verdict, "ALLOW")
+        verdict, reason = self._decide("git checkout other && rm lnk/../file.txt")
+        self.assertEqual(verdict, "DENY")
+        self.assertTrue(reason.startswith("chain"), reason)
+
+    def test_readonly_prefixes_do_not_taint(self):
+        cases = [("git status", "rm file.txt"), ("git fetch", "rm file.txt"),
+                 ("git stash list", "rm file.txt"),
+                 ("git stash show", "rm file.txt"),
+                 ("git submodule", "rm file.txt"),
+                 ("git worktree list", "rm file.txt"),
+                 ("cd sub", "rm inner.txt"),
+                 ("echo a", "rm file.txt"), ("grep foo file.txt", "rm file.txt")]
+        for prefix, tail in cases:
+            with self.subTest(prefix=prefix):
+                verdict, reason = self._decide(prefix + " && " + tail)
+                self.assertEqual(verdict, "ALLOW", (prefix, reason))
+
+    def test_tainted_write_and_redirect_are_refused(self):
+        for cmd in ("git checkout x && cp a b",
+                    "git checkout x && echo hi > f",
+                    "git checkout x && tar -cf o.tar file.txt",
+                    "git checkout x && sort -o o f",
+                    "echo a > f && echo b >> f"):
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._decide(cmd)
+                self.assertEqual(verdict, "DENY", (cmd, reason))
+                self.assertTrue(reason.startswith("chain"), (cmd, reason))
+
+    def test_powershell_mkdir_taints_remove_item(self):
+        verdict, reason = self._decide("mkdir d; Remove-Item sub/inner.txt",
+                                       tool="PowerShell")
+        self.assertEqual(verdict, "DENY")
+        self.assertTrue(reason.startswith("chain"), reason)
+
+    def test_tainted_but_already_refused_keeps_its_reason(self):
+        # The chain check runs after the hook-state checks, so a tainted rm
+        # that hook-state already refuses keeps its original reason.
+        verdict, reason = self._decide("mkdir d && rm -rf sub")
+        self.assertEqual(verdict, "DENY")
+        self.assertTrue(reason.startswith("rm-recursive"), reason)
+
+
+class ChainRuleMutationTests(unittest.TestCase):
+    """Piece D (#636): each chain-rule element must be detected by a named
+
+    ChainRulePieceDTests failure. Each mutant is a temporary copy of the hook
+    and this test module in a temporary folder. No repository file and no
+    remote branch is changed.
+    """
+
+    MUTANTS = {
+        "rm chain check removed": (
+            '    _require_untainted(ctx, "rm")',
+            '    pass  # mutant: rm chain check removed'),
+        "safe-write chain check removed": (
+            '    _require_untainted(ctx, name)\n    _taint(ctx)',
+            '    _taint(ctx)'),
+        "redirect chain check removed": (
+            '        _require_untainted(ctx, "redirect")',
+            '        pass  # mutant: redirect chain check removed'),
+        "tar chain check removed": (
+            '    _require_untainted(ctx, "tar")',
+            '    pass  # mutant: tar chain check removed'),
+        "sort -o chain check removed": (
+            '                        _require_untainted(ctx, name + " -" + ch)',
+            '                        pass  # mutant: sort chain check removed'),
+        "safe-write taint removed": (
+            '    _require_untainted(ctx, name)\n    _taint(ctx)',
+            '    _require_untainted(ctx, name)'),
+        "git rewrite taint removed": (
+            '    if rewrite:\n        entry_ctx.tainted = True',
+            '    if False:\n        pass'),
+        "nested taint merge removed": (
+            '    sub = ctx.copy()\n    analyze_argv(words, sub, ps, depth)\n'
+            '    if sub.tainted:\n        ctx.tainted = True',
+            '    sub = ctx.copy()\n    analyze_argv(words, sub, ps, depth)'),
+    }
+
+    def _run(self, hook_text):
+        with tempfile.TemporaryDirectory() as td:
+            root = os.path.realpath(td)
+            hooks = os.path.join(root, ".claude", "hooks")
+            host = os.path.join(root, "tests", "host")
+            os.makedirs(hooks)
+            os.makedirs(host)
+            write_text(os.path.join(hooks, "guard_destructive.py"), hook_text)
+            with open(THIS_FILE, encoding="utf-8") as f:
+                write_text(os.path.join(host, "test_claude_destructive_guard.py"), f.read())
+            proc = subprocess.run([sys.executable, "-m", "unittest", "-v",
+                                   "test_claude_destructive_guard.ChainRulePieceDTests"],
+                                  cwd=host, capture_output=True, text=True, timeout=300)
+            return proc.returncode, proc.stderr
+
+    def test_chain_tests_detect_each_mutant(self):
+        with open(HOOK, encoding="utf-8") as f:
+            original = f.read()
+        code, out = self._run(original)
+        self.assertEqual(code, 0, "unmutated copy must pass ChainRulePieceDTests:\n" + out[-800:])
+        for name, (old, new) in self.MUTANTS.items():
+            if name in KNOWN_UNRESOLVED_MUTANTS:
+                continue
+            with self.subTest(mutant=name):
+                self.assertEqual(original.count(old), 1,
+                                 "mutation target not found exactly once: " + name)
+                code, out = self._run(original.replace(old, new))
+                failing = [ln for ln in out.splitlines() if ln.startswith(("FAIL:", "ERROR:"))]
+                detected = any("ChainRulePieceDTests." in ln for ln in failing)
+                self.assertTrue(detected,
+                                "mutant not detected by a ChainRulePieceDTests test: " + name
+                                + "\n" + "\n".join(failing))

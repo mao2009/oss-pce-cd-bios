@@ -173,19 +173,54 @@ class Deny(Exception):
         self.reason = reason
 
 
+# Piece D (#636) chain rule. A segment that changes the filesystem invalidates
+# the hook-time filesystem state (symlink targets, existence, cwd-relative
+# resolution) that later destructive-path judgments rely on. The taint is set
+# by an earlier segment in the same command and read by rm, write and redirect
+# judgments for later segments. The taint never clears within one command.
+# ln and rmdir are already DENY in every form; cd/pushd move the tracked cwd.
 class Ctx:
-    def __init__(self, cwd, root, git, registry, protected):
+    def __init__(self, cwd, root, git, registry, protected, tainted=False):
         self.cwd = cwd            # canonical absolute path
         self.root = root          # case-folded canonical repo root
         self.git = git            # case-folded canonical .git directory
         self.registry = registry  # case-folded worktree paths with a recorded owner
         self.protected = protected
+        self.tainted = tainted    # Piece D (#636): an earlier segment changed the filesystem
 
     def copy(self, **kw):
-        c = Ctx(self.cwd, self.root, self.git, self.registry, self.protected)
+        c = Ctx(self.cwd, self.root, self.git, self.registry, self.protected, self.tainted)
         for k, v in kw.items():
             setattr(c, k, v)
         return c
+
+
+def _taint(ctx):
+    """Mark that this command already changed the filesystem (Piece D, #636)."""
+    if ctx is not None:
+        ctx.tainted = True
+
+
+def _require_untainted(ctx, what):
+    """Refuse a destructive path judgment after a same-command filesystem change."""
+    if ctx is not None and ctx.tainted:
+        raise Deny("chain", what + " after a filesystem change in the same command is not inspected")
+
+
+def _nested_text(text, ctx, ps, depth):
+    """Analyse nested command text, propagating chain taint back to the parent."""
+    sub = ctx.copy()
+    analyze_text(text, sub, ps, depth)
+    if sub.tainted:
+        ctx.tainted = True
+
+
+def _nested_argv(words, ctx, ps, depth):
+    """Analyse nested argv, propagating chain taint back to the parent."""
+    sub = ctx.copy()
+    analyze_argv(words, sub, ps, depth)
+    if sub.tainted:
+        ctx.tainted = True
 
 
 def canon(path, normalize=True):
@@ -531,6 +566,10 @@ def check_redirect(raw, op=">", ctx=None, ps=False):
     if target.casefold() in ("/dev/null", "nul"):
         return
     if ctx is not None and tar_path_ok(target, ctx, "archive"):
+        # Piece D (#636): after the path check, so a tainted bad target keeps
+        # its original reason and only a would-be ALLOW is refused and taints.
+        _require_untainted(ctx, "redirect")
+        _taint(ctx)
         return
     raise Deny("redirect", "redirect writes outside the repository or to a protected path: " + raw)
 
@@ -713,6 +752,9 @@ def rm_rule(args, ps, ctx):
         raise Deny("rm-protected", "rm target is or contains a protected path")
     if not os.path.isfile(real):
         raise Deny("rm", "rm target is not a regular file")
+    # Piece D (#636): last, so a tainted rm that hook-state already refuses
+    # keeps its original reason and only a would-be ALLOW is refused here.
+    _require_untainted(ctx, "rm")
 
 
 def worktree_remove(args, ctx):
@@ -734,6 +776,7 @@ def git_long_is(a, names):
 
 
 def git_rule(args, ctx):
+    entry_ctx = ctx
     i = 0
     while i < len(args) and args[i].startswith("-"):
         if args[i] == "--config-env" or args[i].startswith("--config-env="):
@@ -798,6 +841,19 @@ def git_rule(args, ctx):
         if rest[0] == "remove":
             worktree_remove(rest[1:], ctx)
             raise Deny("git-worktree-remove", "git worktree remove is DENY (Owner, Round A)")
+    # Piece D (#636) chain rule: a subcommand that can rewrite the working tree
+    # (checkout, merge, stash push or pop, ...) swaps what hook-time symlink
+    # resolution saw, so later destructive segments must not rely on it.
+    rewrite = sub in ("checkout", "switch", "merge", "pull", "apply", "am",
+                      "rebase", "cherry-pick", "revert", "mv", "rm", "clone")
+    if sub == "stash" and rest[:1] not in (["list"], ["show"]):
+        rewrite = True
+    if sub == "submodule" and rest:
+        rewrite = True
+    if sub == "worktree" and rest[:1] == ["add"]:
+        rewrite = True
+    if rewrite:
+        entry_ctx.tainted = True
 
 
 # X3b (Issue #640): program-naming options. An option whose value names a program that the tool starts is an
@@ -1045,6 +1101,9 @@ def allowlist_rule(name, args, ctx=None):
                     raise Deny("write", name + " " + opt + " writes a file: DENY in every form (Owner Round 13)")
                 if opt in spec.get("long_writes", ()) and not (ctx is not None and tar_path_ok(value, ctx, "archive")):
                     raise Deny("write", name + " " + opt + " writes outside the repository or a protected path: " + a)
+                if opt in spec.get("long_writes", ()):
+                    _require_untainted(ctx, name + " " + opt)
+                    _taint(ctx)
                 if not eq:
                     i += 1  # the value is the next word
                 if any(value.lower().startswith(p) for p in spec.get("long_arg_deny_prefix", {}).get(opt, ())):
@@ -1073,6 +1132,9 @@ def allowlist_rule(name, args, ctx=None):
                         raise Deny("write", name + " -" + ch + " writes a file: DENY in every form (Owner Round 13)")
                     if ch in spec.get("short_writes", "") and not (ctx is not None and tar_path_ok(value, ctx, "archive")):
                         raise Deny("write", name + " -" + ch + " writes outside the repository or a protected path: " + a)
+                    if ch in spec.get("short_writes", ""):
+                        _require_untainted(ctx, name + " -" + ch)
+                        _taint(ctx)
                     if j == len(a) - 1:
                         i += 1  # the value is the next word
                     if ch in spec.get("short_value_strict", "") and (
@@ -1224,6 +1286,10 @@ def tar_rule(args, ctx):
     for m in members:
         if not tar_path_ok(m, ctx, "member"):
             raise Deny("tar", "tar member name is not an inspectable repository path")
+    # Piece D (#636): after the operand checks, so a tainted bad operand keeps
+    # its original reason and only a would-be ALLOW is refused and taints.
+    _require_untainted(ctx, "tar")
+    _taint(ctx)
 
 
 def program_option_rule(name, args, ctx=None):
@@ -1275,6 +1341,10 @@ def safe_write_rule(name, args, ctx):
             continue
         if not tar_path_ok(a, ctx, "dir"):
             raise Deny("program-option", name + " operand is not a plain repository path: " + a)
+    # Piece D (#636): after the operand checks, so a tainted malformed write
+    # keeps its original reason and only a would-be ALLOW is refused and taints.
+    _require_untainted(ctx, name)
+    _taint(ctx)
 
 
 def dev_tool_opt_denied(name, a):
@@ -1449,7 +1519,7 @@ def shell_rule(args, ctx, depth):
         if short_has(a, "c"):
             if i + 1 >= len(args):
                 raise Deny("shell", "shell -c without code")
-            analyze_text(args[i + 1], ctx.copy(), False, depth + 1)
+            _nested_text(args[i + 1], ctx, False, depth + 1)
             return
     raise Deny("shell", "shell without -c is not inspected")
 
@@ -1463,7 +1533,7 @@ def pwsh_rule(args, ctx, depth):
             raise Deny("powershell", "-File script is not inspected")
     for i, a in enumerate(low):
         if a == "-c" or (len(a) > 2 and "-command".startswith(a)):
-            analyze_text(" ".join(args[i + 1:]), ctx.copy(), True, depth + 1)
+            _nested_text(" ".join(args[i + 1:]), ctx, True, depth + 1)
             return
 
 
@@ -1742,9 +1812,9 @@ def analyze_argv(words, ctx, ps, depth):
             rest = words[1:]
             if not rest:
                 raise Deny("coproc", "coproc without a command is not resolvable")
-            analyze_argv(rest, ctx.copy(), ps, depth + 1)
+            _nested_argv(rest, ctx, ps, depth + 1)
             if len(rest) >= 2:
-                analyze_argv(rest[1:], ctx.copy(), ps, depth + 1)
+                _nested_argv(rest[1:], ctx, ps, depth + 1)
             return
         if SUBST in w0:
             raise Deny("command-word", "command substitution in command position")
@@ -1772,7 +1842,7 @@ def analyze_argv(words, ctx, ps, depth):
             # timeout's option grammar (long options with a separate value, non-integer durations) is not parsed, so
             # the command it runs is taken from its grammar (timeout_candidates), with conservative extra candidates.
             for cand in timeout_candidates(words[1:]):
-                analyze_argv(cand, ctx.copy(), ps, depth + 1)
+                _nested_argv(cand, ctx, ps, depth + 1)
             return
         if handoff(name):
             for cand in wrapper_candidates(name, words[1:], ctx):
@@ -1781,18 +1851,18 @@ def analyze_argv(words, ctx, ps, depth):
                 # For a wrapper with a grammar the command word is exact, so it is analysed even when it looks like an option.
                 if name not in WRAPPER_OPTS and cand and (cand[0].startswith("-") or cand[0].isdigit()):
                     continue
-                analyze_argv(cand, ctx.copy(), ps, depth + 1)
+                _nested_argv(cand, ctx, ps, depth + 1)
             if name in STRING_LAUNCHERS:
                 # A shell string argument is text, whatever its shape: a quoted string with a space (sudo -s "rm -rf x"),
                 # the value after -c or --command (flock -c rm lock), and the value after --name= (flock --command="rm").
                 # Plain words and options are commands for the suffix pass, which the grammar narrows to the real command.
                 for k in range(1, len(words)):
                     if not words[k].startswith("-") and any(ch.isspace() for ch in words[k]):
-                        analyze_text(words[k], ctx.copy(), ps, depth + 1)
+                        _nested_text(words[k], ctx, ps, depth + 1)
                     if words[k] in ("-c", "--command") and k + 1 < len(words):
-                        analyze_text(words[k + 1], ctx.copy(), ps, depth + 1)
+                        _nested_text(words[k + 1], ctx, ps, depth + 1)
                     if words[k].startswith("--") and "=" in words[k]:
-                        analyze_text(words[k].split("=", 1)[1], ctx.copy(), ps, depth + 1)
+                        _nested_text(words[k].split("=", 1)[1], ctx, ps, depth + 1)
             return
         break
     args = words[1:]
@@ -1808,7 +1878,7 @@ def analyze_argv(words, ctx, ps, depth):
         # No candidate is skipped: a path split at its space ("Files\app.exe") is refused like any other command word,
         # so a destructive command after a separator in the same token ("tools\app.exe;rm -rf /") is still analysed.
         for k in range(len(tokens)):
-            analyze_text(" ".join(tokens[k:]), ctx.copy(), True, depth + 1)
+            _nested_text(" ".join(tokens[k:]), ctx, True, depth + 1)
     if name in (".", "source") and any(("$" in a or "`" in a or SUBST in a) for a in args):
         # Sourcing a path that names a variable (or a substitution) is a file that is not known here (fail closed).
         raise Deny("unexpanded", "sourcing a variable or substitution is not inspected")
@@ -1827,7 +1897,7 @@ def analyze_argv(words, ctx, ps, depth):
     if name in ("iex", "invoke-expression"):
         raise Deny("powershell", "Invoke-Expression is not inspected")
     if name == "eval":
-        analyze_text(" ".join(args), ctx.copy(), ps, depth + 1)
+        _nested_text(" ".join(args), ctx, ps, depth + 1)
     elif name in SHELLS:
         shell_rule(args, ctx, depth)
     elif name in PS_HOSTS:
@@ -1890,7 +1960,7 @@ def analyze_text(text, ctx, ps, depth):
     if sum(len(ops) for ops in redirs) > MAX_REDIRECTS:
         raise Deny("redirect", "more than %d redirections are not inspected" % MAX_REDIRECTS)
     for body in subs:
-        analyze_text(body, ctx.copy(), ps, depth + 1)
+        _nested_text(body, ctx, ps, depth + 1)
     for seg, ops in zip(segs, redirs):
         if ops and inside_claude(ctx.cwd, ctx):
             raise Deny("claude-write", "redirect while cwd is inside .claude/ is denied")
