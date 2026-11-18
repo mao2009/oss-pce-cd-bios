@@ -20,8 +20,10 @@ not repeated here: $0F/$E02D/CD_FADE already have legitimate pre-existing refere
 below pin the fixture filename (only this test may reference it) and the absence of
 build/ROM/callable markers.
 """
+import fnmatch
 import hashlib
 import json
+import re
 import subprocess
 import unittest
 from pathlib import Path
@@ -31,7 +33,7 @@ FIXTURE_REL = "tests/fixtures/cdfade-slot0f-cases.json"
 FIXTURE = ROOT / FIXTURE_REL
 SELF_REL = "tests/host/test_cd_fade_fixture.py"
 # sha256 of the canonical JSON (sort_keys, compact separators, UTF-8). Editing the fixture requires updating it here.
-FIXTURE_SHA256 = "da29a4fa9479804d17f505e98f74ac269977928a91f73910e14ddca3e3d792bb"
+FIXTURE_SHA256 = "e572c4ce81b5e9a16c7e4399cc27337c2a9dfc6dea29eca925e18c0a50de9d54"
 POSITIVE, NEGATIVE, UNKNOWN, BLOCKED = "POSITIVE", "NEGATIVE", "UNKNOWN", "BLOCKED"
 TOP_LEVEL_KEYS = {"schema", "issue", "parent_issue", "slot", "entry_candidate", "candidate_name", "abi_status",
                   "release_eligible", "execution", "provenance", "callee_abi", "context", "request_model",
@@ -39,21 +41,23 @@ TOP_LEVEL_KEYS = {"schema", "issue", "parent_issue", "slot", "entry_candidate", 
 APPROVED_PROVENANCE = ("synthetic: author-defined playback context and cases only; no System Card BIOS byte, "
                        "disassembly, retail data, or ./rom/ content; no reference callee is executed")
 GROUNDED_DOMAIN = (0x00, 0x08, 0x0A, 0x0C, 0x0E)
-POSITIVE_IDS = {"pos_type_00", "pos_type_08", "pos_type_0a", "pos_type_0c", "pos_type_0e"}
+POSITIVE_IDS = {"pos_type_00", "pos_type_08", "pos_type_0a", "pos_type_0c", "pos_type_0e",
+                "pos_transition_08_to_0a"}
 NEGATIVE_IDS = {"neg_nocontext", "neg_type_01", "neg_type_09", "neg_type_ff", "neg_negative",
-                "neg_bool_type", "neg_float_type", "neg_string_type", "neg_none_type"}
+                "neg_bool_type", "neg_false_type", "neg_float_type", "neg_string_type",
+                "neg_none_type", "neg_transition_stays_08"}
 UNKNOWN_IDS = {"unk_target_cdda", "unk_target_pcm_adpcm", "unk_stopped", "unk_cancel_effect",
                "unk_bad_effect_flag"}
 BLOCKED_IDS = {"blocked_callee_args", "blocked_callee_nocontext"}
 # Negatives/unknowns/blocked that the deliberately lenient judge wrongly accepts (must be exactly these).
 # The lenient judge ignores the caller-defined domain, so every in-byte-range out-of-domain
-# value slips through, as do the playing-context unknowns and the callee-blocked case that
-# still claims a present context. Out-of-byte-range, absent-context, None-type and stopped
-# cases do not slip through.
+# value slips through (including bool False as 0), as do the playing-context unknowns and the
+# callee-blocked case that still claims a present context. Out-of-byte-range, absent-context,
+# None-type and stopped cases do not slip through.
 LENIENT_CAUGHT_IDS = {"neg_type_01", "neg_type_09", "neg_type_ff", "neg_bool_type",
-                      "neg_float_type", "neg_string_type", "unk_target_cdda",
+                      "neg_false_type", "neg_float_type", "neg_string_type", "unk_target_cdda",
                       "unk_target_pcm_adpcm", "unk_cancel_effect", "unk_bad_effect_flag",
-                      "blocked_callee_args"}
+                      "blocked_callee_args", "neg_transition_stays_08"}
 
 
 def canonical_sha256(data):
@@ -71,14 +75,22 @@ def _well_formed(context):
     return context.get("synthetic") is True
 
 
+def synthetic_mode_after(verdict, current, requested):
+    """Author-defined synthetic mode step: an accepted request makes the requested mode current,
+    anything else leaves the synthetic mode unchanged. Pure model bookkeeping, not device behavior."""
+    return requested if verdict == POSITIVE else current
+
+
 def judge(context, query, present=True, needs_callee=False):
     """Reference judge: (verdict, detail, result). Never a PASS/VERIFIED verdict; ABI stays BLOCKED_ABI.
 
     Precedence (first matching rule decides): malformed control flag -> callee dependence ->
     no context -> malformed context -> malformed type value -> out-of-domain value ->
-    unmodelled target -> unmodelled effect claim -> stopped context -> POSITIVE. Control
-    flags must be plain bool; any other type is UNKNOWN, never POSITIVE. UNKNOWN is not a
-    refusal: unmodelled semantics stay UNKNOWN even when the value is in-domain.
+    unmodelled starting mode -> unmodelled target -> unmodelled effect claim -> stopped
+    context -> POSITIVE. Control flags must be plain bool; any other type is UNKNOWN, never
+    POSITIVE. UNKNOWN is not a refusal: unmodelled semantics stay UNKNOWN even when the value
+    is in-domain. When the query states a current_mode, an accepted request records mode_after
+    (the synthetic mode step); a refused or unmodelled request records nothing (result is None).
     """
     if type(present) is not bool or type(needs_callee) is not bool:
         return UNKNOWN, "malformed control flag: present and needs_callee must be plain bool", None
@@ -93,6 +105,9 @@ def judge(context, query, present=True, needs_callee=False):
         return NEGATIVE, "malformed: type_value must be a plain int (bool, float, str, None refused)", None
     if type_value not in GROUNDED_DOMAIN:
         return NEGATIVE, "type value outside the caller-defined domain", None
+    current = query.get("current_mode", None)
+    if current is not None and (type(current) is not int or current not in GROUNDED_DOMAIN):
+        return UNKNOWN, "unmodelled starting mode: current_mode must be a domain member or absent", None
     if query.get("target", "unspecified") != "unspecified":
         return UNKNOWN, "unmodelled target semantics: PCM/ADPCM note and CD-DA are undecided", None
     asserts_effect = query.get("asserts_effect", False)
@@ -104,8 +119,10 @@ def judge(context, query, present=True, needs_callee=False):
         if type(query.get("playing")) is not bool:
             return UNKNOWN, "malformed playing flag: playing must be plain bool", None
         return UNKNOWN, "stopped-context behavior undecided; not a refusal", None
-    return POSITIVE, "well-formed caller request inside the caller-defined domain", {
-        "type_value": type_value, "domain": "caller-defined", "return": "void-ignored"}
+    result = {"type_value": type_value, "domain": "caller-defined", "return": "void-ignored"}
+    if current is not None:
+        result["mode_after"] = synthetic_mode_after(POSITIVE, current, type_value)
+    return POSITIVE, "well-formed caller request inside the caller-defined domain", result
 
 
 def lenient_judge(context, query, present=True, needs_callee=False):
@@ -189,7 +206,46 @@ class CdFadeSlot0fFixtureTests(unittest.TestCase):
             self.assertEqual(by_id[boundary], POSITIVE)
         for boundary in ("neg_nocontext", "neg_type_01", "neg_type_09", "neg_type_ff"):
             self.assertEqual(by_id[boundary], NEGATIVE)
-        self.assertEqual(len(self.cases), 21)
+        # Pin the boundary inputs together with their verdicts: editing a case's type_value
+        # (and refreshing the hash) must still fail here, so no grounded value can silently vanish.
+        by_case = {c["id"]: c for c in self.cases}
+        self.assertEqual([(by_case[cid]["type_value"], by_case[cid]["expected"]) for cid in
+                          ("pos_type_00", "pos_type_08", "pos_type_0a", "pos_type_0c", "pos_type_0e")],
+                         [(0x00, POSITIVE), (0x08, POSITIVE), (0x0A, POSITIVE),
+                          (0x0C, POSITIVE), (0x0E, POSITIVE)])
+        self.assertEqual([(by_case[cid]["type_value"], by_case[cid]["expected"]) for cid in
+                          ("neg_type_01", "neg_type_09", "neg_type_ff", "neg_negative")],
+                         [(0x01, NEGATIVE), (0x09, NEGATIVE), (0xFF, NEGATIVE), (-1, NEGATIVE)])
+        self.assertIs(by_case["neg_false_type"]["type_value"], False)
+        self.assertEqual(by_case["neg_false_type"]["expected"], NEGATIVE)
+        self.assertEqual([(by_case[cid]["current_mode"], by_case[cid]["type_value"],
+                           by_case[cid]["expected"]) for cid in
+                          ("pos_transition_08_to_0a", "neg_transition_stays_08")],
+                         [(0x08, 0x0A, POSITIVE), (0x08, 0x09, NEGATIVE)])
+        self.assertEqual(len(self.cases), 24)
+
+    def test_synthetic_transition_moves_or_holds_the_mode(self):
+        by_case = {c["id"]: c for c in self.cases}
+        pos = by_case["pos_transition_08_to_0a"]
+        verdict, _, result = judge(self.context, pos, pos.get("present", True),
+                                    pos.get("needs_callee", False))
+        self.assertEqual(verdict, POSITIVE)
+        self.assertEqual(result["mode_after"], 0x0A)
+        self.assertEqual(synthetic_mode_after(verdict, pos["current_mode"], pos["type_value"]), 0x0A)
+        neg = by_case["neg_transition_stays_08"]
+        verdict, detail, result = judge(self.context, neg, neg.get("present", True),
+                                        neg.get("needs_callee", False))
+        self.assertEqual(verdict, NEGATIVE)
+        self.assertIsNone(result)
+        self.assertTrue(detail)
+        # The rejected request leaves the synthetic mode unchanged (pure model step, no device claim).
+        self.assertEqual(synthetic_mode_after(verdict, neg["current_mode"], neg["type_value"]), 0x08)
+        # An unmodelled starting mode is UNKNOWN, never POSITIVE.
+        base = {"type_value": 0x0A, "target": "unspecified", "playing": True, "asserts_effect": False}
+        for bad_start in (0x09, "08", True, 8.0):
+            verdict, _, result = judge(self.context, dict(base, current_mode=bad_start))
+            self.assertEqual(verdict, UNKNOWN)
+            self.assertIsNone(result)
 
     def test_callee_dependence_outranks_everything_and_unknown_is_not_a_refusal(self):
         query = {"type_value": 0x08, "target": "unspecified", "playing": True, "asserts_effect": False}
@@ -278,6 +334,27 @@ class CdFadeSlot0fFixtureTests(unittest.TestCase):
         self.assertIn(out.returncode, (0, 1))
         hits = {p for p in out.stdout.splitlines() if p not in (FIXTURE_REL, SELF_REL)}
         self.assertEqual(sorted(hits), [], "fixture referenced outside its test")
+
+    def test_fixture_is_not_pulled_in_by_wildcard_selectors(self):
+        # A build/ROM/release selector that includes the fixture through a glob (e.g. a wildcard
+        # over tests/fixtures) would not name it literally. Fail closed on any wildcard token in the
+        # build selectors that fnmatch-matches this fixture path. Comment lines are ignored.
+        wildcard = re.compile(r"[\w./\-]*[*?\[][\w./*?\-]*")
+        hits = []
+        scan = [ROOT / "Makefile"] + sorted((ROOT / "tools").glob("*.py")) \
+            + sorted((ROOT / ".github" / "workflows").glob("*.yml"))
+        for path in scan:
+            for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+                if not line.strip() or line.lstrip().startswith("#"):
+                    continue
+                for tok in wildcard.findall(line):
+                    t = tok[2:] if tok.startswith("./") else tok
+                    if "/" in t and fnmatch.fnmatchcase(FIXTURE_REL, t):
+                        hits.append((path.name, tok))
+                    elif "/" not in t and t[:1].isalpha() \
+                            and fnmatch.fnmatchcase(FIXTURE_REL.rsplit("/", 1)[1], t):
+                        hits.append((path.name, tok))
+        self.assertEqual(hits, [], "wildcard selector would pull in the fixture")
 
 
 if __name__ == "__main__":
