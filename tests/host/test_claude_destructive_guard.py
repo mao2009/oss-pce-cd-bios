@@ -4121,6 +4121,44 @@ class ChainRulePieceDTests(unittest.TestCase):
         verdict, reason = self._decide("coproc echo touch marker; touch result")
         self.assertEqual(verdict, "ALLOW", reason)
 
+    def test_coproc_compound_body_is_subshell_scoped(self):
+        # CodeRabbit #815 (MAJOR): `coproc { ...; }` runs its body in a
+        # subshell (verified on Bash), so a body `cd` never moves the
+        # parent cwd, while a body write still taints later judgments.
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        verdict, reason = self._decide("coproc { true; cd sub; } && rm ../file.txt")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("rm-outside-repo"), reason)
+        verdict, reason = self._decide("coproc { true; cd sub; } && rm file.txt")
+        self.assertEqual(verdict, "ALLOW", reason)
+        verdict, reason = self._decide("coproc { touch marker; } && rm file.txt")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("chain"), reason)
+        # Mid-command placement scopes the same way.
+        verdict, reason = self._decide("echo ok; coproc { cd sub; } && rm ../file.txt")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("rm-outside-repo"), reason)
+
+    def test_same_shell_target_does_not_self_deny(self):
+        # CodeRabbit #815 (MINOR): the exact same-shell target is analysed
+        # once; re-validating it against its own taint self-denied a clean
+        # `command eval 'touch marker'`. A genuinely earlier mutation
+        # still chains.
+        verdict, reason = self._decide("command eval 'touch marker'")
+        self.assertEqual(verdict, "ALLOW", reason)
+        verdict, reason = self._decide("touch m; command eval 'touch marker2'; rm file.txt")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("chain"), reason)
+
+    def test_brace_expansion_word_does_not_close_group(self):
+        # CodeRabbit #815 (MINOR): a `}` inside a word (`item{a,b}`) never
+        # closes the brace group; only a standalone `}` does. The same
+        # token boundary opens groups: a mid-word `{` stays literal.
+        verdict, reason = self._decide("{ echo item{a,b} suffix end; }")
+        self.assertEqual(verdict, "ALLOW", reason)
+        verdict, reason = self._decide("echo x{a,b} | cat; rm file.txt")
+        self.assertEqual(verdict, "ALLOW", reason)
+
     def test_wrapper_string_visit_starts_from_entry_taint(self):
         # One string analysed twice must not deny itself: each visit starts
         # from the wrapper-entry taint and merges back for later segments.
@@ -4158,6 +4196,13 @@ class ChainRulePieceDTests(unittest.TestCase):
         # validated as data. A command-position string still taints.
         verdict, reason = self._decide("sudo echo 'touch marker'; touch result")
         self.assertEqual(verdict, "ALLOW", reason)
+        # Positive case through a carrier that really runs a shell.
+        verdict, reason = self._decide("sudo sh -c 'touch marker'; touch result")
+        self.assertEqual(verdict, "DENY")
+        self.assertTrue(reason.startswith("chain"), reason)
+        # `sudo -s 'touch marker'` stays conservatively refused as a
+        # command-position string (fail closed), pinned separately from
+        # the data-string rule above.
         verdict, reason = self._decide("sudo -s 'touch marker'; touch result")
         self.assertEqual(verdict, "DENY")
         self.assertTrue(reason.startswith("chain"), reason)
@@ -4297,7 +4342,9 @@ class ChainRulePieceDTests(unittest.TestCase):
         write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
         for cmd in ("cd sub | cat; rm ../file.txt",
                     "{ cd sub; } | cat; rm ../file.txt",
-                    "eval 'cd sub' | cat; rm ../file.txt"):
+                    "eval 'cd sub' | cat; rm ../file.txt",
+                    "cd sub | cat && rm ../file.txt",
+                    "(cd sub) | cat && rm ../file.txt"):
             with self.subTest(cmd=cmd):
                 verdict, reason = self._decide(cmd)
                 self.assertEqual(verdict, "DENY", (cmd, reason))
@@ -4319,6 +4366,52 @@ class ChainRulePieceDTests(unittest.TestCase):
         self.assertEqual(verdict, "DENY", reason)
         self.assertTrue(reason.startswith("chain"), reason)
 
+    def test_pipeline_entry_after_sequential_cd(self):
+        # CodeRabbit #815 (MAJOR): the pipeline entry is the cwd after the
+        # sequential prefix, so a compound first stage does not reset it.
+        # Real Bash forks every stage; the entry stays `sub` here.
+        verdict, reason = self._decide("cd sub; { echo hi; } | cat; rm ../file.txt")
+        self.assertEqual(verdict, "ALLOW", reason)
+        # `&&` binds looser than `|`: the sequential `cd` still sets the
+        # entry for a group-led pipeline (scope_entry, not stale run_start).
+        verdict, reason = self._decide("cd sub && { echo hi; } | cat; rm ../file.txt")
+        self.assertEqual(verdict, "ALLOW", reason)
+        # A brace group alone as the first stage forks too: the parent
+        # stays in the repo, so `../file.txt` is outside it.
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        for cmd in ("{ cd sub; } | cat; rm ../file.txt",
+                    "(cd sub) | cat; rm ../file.txt"):
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._decide(cmd)
+                self.assertEqual(verdict, "DENY", (cmd, reason))
+                self.assertTrue(reason.startswith("rm-outside-repo"), (cmd, reason))
+
+    def test_pipeline_end_restores_entry(self):
+        # CodeRabbit #815 (MAJOR): a `;` boundary ends the pipeline, so a
+        # stage-local `cd` never leaks into following foreground segments.
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        verdict, reason = self._decide("echo hi | cd sub; rm ../file.txt")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("rm-"), reason)
+        verdict, reason = self._decide("echo hi | cd sub; rm file.txt")
+        self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_nested_pipeline_entry_does_not_leak(self):
+        # An inner pipeline's entry ends at its subshell boundary: an
+        # outer pipeline re-derives its own entry instead of inheriting
+        # the inner one. A calling-shell group stays transparent.
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        verdict, reason = self._decide("(cd sub | cat) | cat; rm ../file.txt")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("rm-"), reason)
+        verdict, reason = self._decide("cd sub; { echo hi | cat; } | cat; rm inner.txt")
+        self.assertEqual(verdict, "ALLOW", reason)
+        # `&&` binds looser than subshell grouping too: the outer entry
+        # is the pre-subshell cwd, not the inner pipeline's entry (no
+        # space between `)` and `|`: no empty segment clears the leak).
+        verdict, reason = self._decide("cd sub && (echo hi | cat)|cat; rm ../file.txt")
+        self.assertEqual(verdict, "ALLOW", reason)
+
     def test_background_cwd_does_not_leak_to_parent(self):
         # A backgrounded `&` command runs in a subshell like a pipeline
         # stage; `&&` stays sequential (same shell, covered elsewhere).
@@ -4327,6 +4420,24 @@ class ChainRulePieceDTests(unittest.TestCase):
         self.assertEqual(verdict, "DENY", reason)
         self.assertTrue(reason.startswith("rm-outside-repo"), reason)
         verdict, reason = self._decide("cd sub & rm file.txt")
+        self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_background_list_entry_is_list_start(self):
+        # CodeRabbit #815 (MAJOR): `&` backgrounds the whole `&&` list in
+        # a subshell, so the parent continues from the list-start cwd
+        # (before `cd sub`), never from inside the backgrounded list.
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        verdict, reason = self._decide("cd sub && pwd & rm ../file.txt")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("rm-outside-repo"), reason)
+        verdict, reason = self._decide("cd sub && pwd & rm file.txt")
+        self.assertEqual(verdict, "ALLOW", reason)
+        # A pipeline inside the background list still ends at `&`: the
+        # foreground continues from the list start.
+        verdict, reason = self._decide("echo hi | cd sub & rm file.txt")
+        self.assertEqual(verdict, "ALLOW", reason)
+        # A `;`-separated foreground prefix persists into the bg list.
+        verdict, reason = self._decide("cd sub; pwd & rm ../file.txt")
         self.assertEqual(verdict, "ALLOW", reason)
 
     def test_or_list_keeps_calling_shell_cwd(self):
@@ -4348,6 +4459,24 @@ class ChainRulePieceDTests(unittest.TestCase):
         for cmd in ("command cd sub && rm inner.txt",
                     "builtin cd sub && rm inner.txt",
                     "command -p cd sub && rm inner.txt"):
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._decide(cmd)
+                self.assertEqual(verdict, "ALLOW", (cmd, reason))
+
+    def test_command_double_dash_merges_cwd(self):
+        # CodeRabbit #815 (MAJOR): `command --` / `builtin --` consume one
+        # option terminator (verified on Bash), so the wrapped builtin
+        # still runs in the calling shell and merges cwd.
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        for cmd in ("command -- cd .. && rm file.txt",
+                    "builtin -- cd .. && rm file.txt",
+                    "command -p -- cd .. && rm file.txt"):
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._decide(cmd)
+                self.assertEqual(verdict, "DENY", (cmd, reason))
+                self.assertTrue(reason.startswith("rm-outside-repo"), (cmd, reason))
+        for cmd in ("command -- cd sub && rm inner.txt",
+                    "builtin -- cd sub && rm inner.txt"):
             with self.subTest(cmd=cmd):
                 verdict, reason = self._decide(cmd)
                 self.assertEqual(verdict, "ALLOW", (cmd, reason))
@@ -4385,14 +4514,20 @@ class ChainRulePieceDTests(unittest.TestCase):
                                        tool="PowerShell")
         self.assertEqual(verdict, "DENY", reason)
         self.assertTrue(reason.startswith("rm-outside-repo"), reason)
-        # A scriptblock body is a child scope: the location change never
-        # reaches the caller, so the later removal is judged in the repo.
-        # `if` bodies are conservatively scoped too (fail closed when the
-        # branch is conditional).
-        verdict, reason = self._decide("if ($c) { Set-Location sub }; Remove-Item ../file.txt",
+        # A `{ ... }` group runs in the calling scope (like a Bash
+        # brace group): `if`/`while`/`foreach` bodies execute in the
+        # current runspace, so a Set-Location inside persists. The body is
+        # analysed as taken; a condition the guard cannot resolve is
+        # documented residual risk (same approximation as Bash `if`).
+        # Restoring the entry cwd here would judge from the repo while a
+        # taken branch deleted outside it, so sharing is the sound side.
+        verdict, reason = self._decide("if ($c) { Set-Location .. }; Remove-Item file.txt",
                                        tool="PowerShell")
         self.assertEqual(verdict, "DENY", reason)
         self.assertTrue(reason.startswith("rm-outside-repo"), reason)
+        verdict, reason = self._decide("if ($c) { Set-Location sub }; Remove-Item ../file.txt",
+                                       tool="PowerShell")
+        self.assertEqual(verdict, "ALLOW", reason)
 
     def test_powershell_call_scriptblock_stays_refused(self):
         # `& { ... }` is explicitly refused (fail closed): a runtime
@@ -4486,17 +4621,19 @@ class ChainRuleMutationTests(unittest.TestCase):
             '        _nested_text(" ".join(args), ctx, ps, depth + 1, merge_cwd=True)',
             '        _nested_text(" ".join(args), ctx, ps, depth + 1, merge_cwd=False)  # mutant'),
         "subshell scope open destroyed": (
-            '        if seg == SUBSHELL_OPEN:\n            if not ps:\n                scope_stack.append(ctx.cwd)\n            continue',
-            '        if seg == SUBSHELL_OPEN:\n            continue  # mutant: subshell scope destroyed'),
+            '                if not scope_stack and not bbrace_stack:\n                    # A top-level `( ... )` may be the whole first pipeline\n                    # stage: remember the pre-group cwd for the entry.\n                    scope_entry = ctx.cwd\n                    scope_just_closed = False\n                scope_stack.append(ctx.cwd)',
+            '                if not scope_stack and not bbrace_stack:\n                    # A top-level `( ... )` may be the whole first pipeline\n                    # stage: remember the pre-group cwd for the entry.\n                    scope_entry = ctx.cwd\n                    scope_just_closed = False\n                pass  # mutant: subshell scope destroyed'),
         "subshell cwd restore removed": (
-            '        if seg == SUBSHELL_CLOSE:\n            if not ps and scope_stack:\n                ctx.cwd = scope_stack.pop()\n            continue',
-            '        if seg == SUBSHELL_CLOSE:\n            continue  # mutant: subshell cwd leaks'),
-        "subshell taint propagation removed": (
-            '        if seg == SUBSHELL_OPEN:\n            if not ps:\n                scope_stack.append(ctx.cwd)\n            continue\n'
-            '        if seg == SUBSHELL_CLOSE:\n            if not ps and scope_stack:\n                ctx.cwd = scope_stack.pop()\n            continue',
-            '        if seg == SUBSHELL_OPEN:\n            if not ps:\n                scope_stack.append(ctx.cwd)\n            continue\n'
             '        if seg == SUBSHELL_CLOSE:\n            if not ps and scope_stack:\n                ctx.cwd = scope_stack.pop()\n'
-            '            ctx.tainted = False  # mutant: subshell taint dropped\n            continue'),
+            '                if not scope_stack and not bbrace_stack:',
+            '        if seg == SUBSHELL_CLOSE:\n            if not ps and scope_stack:\n                scope_stack.pop()  # mutant: subshell cwd leaks\n'
+            '                if not scope_stack and not bbrace_stack:'),
+        "subshell taint propagation removed": (
+            '        if seg == SUBSHELL_CLOSE:\n            if not ps and scope_stack:\n                ctx.cwd = scope_stack.pop()\n'
+            '                if not scope_stack and not bbrace_stack:',
+            '        if seg == SUBSHELL_CLOSE:\n            if not ps and scope_stack:\n                ctx.cwd = scope_stack.pop()\n'
+            '                ctx.tainted = False  # mutant: subshell taint dropped\n'
+            '                if not scope_stack and not bbrace_stack:'),
         "cd cwd update removed": (
             '        ctx.cwd = resolve(args[0] if args else "~", ctx)[1]',
             '        pass  # mutant: cd cwd update removed'),
@@ -4510,11 +4647,11 @@ class ChainRuleMutationTests(unittest.TestCase):
             '        if prev_was_pipe and not ps:\n            ctx.cwd = pipe_entry',
             '        pass  # mutant: pipe stage cwd not reset'),
         "pipeline taint cleared at boundary": (
-            '                    pipe_entry = last_seg_start\n                prev_was_pipe = True',
-            '                    pipe_entry = last_seg_start\n                prev_was_pipe = True\n                ctx.tainted = False  # mutant: pipe taint cleared'),
+            '                if pipe_entry is None:\n                    if scope_just_closed:',
+            '                if pipe_entry is None:  # mutant: pipe taint cleared\n                    ctx.tainted = False\n                    if scope_just_closed:'),
         "pipeline entry leaks stage cwd": (
-            '                if pipe_entry is None:\n                    pipe_entry = last_seg_start',
-            '                pipe_entry = ctx.cwd  # mutant: pipe entry leaks stage cwd'),
+            '                    if scope_just_closed:\n                        pipe_entry = scope_entry\n                    else:\n                        pipe_entry = run_start',
+            '                    if scope_just_closed:\n                        pipe_entry = scope_entry\n                    else:\n                        pipe_entry = ctx.cwd  # mutant: pipe entry leaks stage cwd'),
         "command same-shell gating removed": (
             '            if name in ("command", "builtin", "time"):',
             '            if name in ("builtin", "time"):  # mutant: command cwd lost'),
@@ -4525,22 +4662,51 @@ class ChainRuleMutationTests(unittest.TestCase):
             'SAME_SHELL_NAMES = frozenset({"command", "builtin", "eval"}) | CD_NAMES',
             'SAME_SHELL_NAMES = frozenset({"command", "builtin"}) | CD_NAMES  # mutant: eval cwd lost'),
         "powershell paren cwd wrongly restored": (
-            '        if seg == SUBSHELL_OPEN:\n            if not ps:\n                scope_stack.append(ctx.cwd)\n            continue\n'
-            '        if seg == SUBSHELL_CLOSE:\n            if not ps and scope_stack:\n                ctx.cwd = scope_stack.pop()\n            continue',
-            '        if seg == SUBSHELL_OPEN:\n            scope_stack.append(ctx.cwd)  # mutant: ps paren wrongly scoped\n            continue\n'
-            '        if seg == SUBSHELL_CLOSE:\n            if scope_stack:\n                ctx.cwd = scope_stack.pop()\n            continue'),
+            '        if seg == SUBSHELL_OPEN:\n            if not ps:',
+            '        if seg == SUBSHELL_OPEN:\n            if True:  # mutant: ps paren wrongly scoped'),
         "bash subshell restore confused off": (
-            '            if not ps and scope_stack:\n                ctx.cwd = scope_stack.pop()',
-            '            if False:  # mutant: subshell never scoped\n                ctx.cwd = scope_stack.pop()'),
+            '            if not ps and scope_stack:\n                ctx.cwd = scope_stack.pop()\n'
+            '                if not scope_stack and not bbrace_stack:',
+            '            if not ps and scope_stack:\n                scope_stack.pop()  # mutant: subshell never restored\n'
+            '                if not scope_stack and not bbrace_stack:'),
         "pipeline over-taint": (
             '        if prev_was_pipe and not ps:\n            ctx.cwd = pipe_entry',
             '        if prev_was_pipe and not ps:\n            ctx.cwd = pipe_entry\n            ctx.tainted = True  # mutant: pipe over-taint'),
         "or-list treated as pipeline": (
             '                if nxt == "|":\n                    i += 1  # consume ||: no scope boundary',
             '                if nxt == "|":\n                    segs.append(PIPE_BOUND)  # mutant: || as pipeline\n                    redirs.append([])\n                    i += 1'),
-        "bash brace sentinel collides with ps": (
-            'BBRACE_OPEN = "\\x02b{"\nBBRACE_CLOSE = "\\x02b}"',
-            'BBRACE_OPEN = "\\x02{"\nBBRACE_CLOSE = "\\x02}"  # mutant: brace sentinels collide'),
+        "bash brace open token boundary removed": (
+            '            if cur_blank:',
+            '            if True:  # mutant: any { opens a group'),
+        "background entry leaks sequential cwd": (
+            '                pipe_entry = bg_start',
+            '                pipe_entry = run_start  # mutant: background entry leaks sequential cwd'),
+        "pipeline end restore removed": (
+            '            if not ps and pipe_entry is not None:\n                ctx.cwd = pipe_entry\n                pipe_entry = None',
+            '            if False:  # mutant: pipeline-end entry not restored\n                pass'),
+        "scope entry falls back to stale run": (
+            '                    if scope_just_closed:\n                        pipe_entry = scope_entry',
+            '                    if False:  # mutant: scope entry ignored\n                        pass'),
+        "command-boundary snapshots removed": (
+            '            if not scope_stack and not bbrace_stack:\n                run_start = ctx.cwd\n                bg_start = ctx.cwd',
+            '            pass  # mutant: boundary snapshots not refreshed'),
+        "coproc compound scope removed": (
+            '        if seg == COPROC_CLOSE:\n            if scope_stack:\n                ctx.cwd = scope_stack.pop()\n'
+            '                if not scope_stack and not bbrace_stack:',
+            '        if seg == COPROC_CLOSE:\n            if scope_stack:\n                scope_stack.pop()  # mutant: coproc body leaks cwd\n'
+            '                if not scope_stack and not bbrace_stack:'),
+        "command double-dash handling removed": (
+            '        if i < len(args) and args[i] == "--":',
+            '        if False:  # mutant: command -- not consumed'),
+        "same-shell duplicate validation restored": (
+            '                if same_shell_consumed is not None and cand == same_shell_consumed:',
+            '                if False:  # mutant: same-shell target revalidated against its taint'),
+        "powershell brace restores repo root": (
+            '            elif ps and c == "}":\n                if ps_bdepth > 0:\n                    ps_bdepth -= 1',
+            '            elif ps and c == "}":\n                if ps_bdepth > 0:\n                    ps_bdepth -= 1\n                ctx.cwd = ctx.root  # mutant: ps brace restores repo root'),
+        "brace close token boundary removed": (
+            '        if c == "}" and not ps and cur_blank:',
+            '        if c == "}" and not ps:  # mutant: any } closes the group'),
     }
 
     # Each hook mutant must turn its expected ChainRulePieceDTests test RED
@@ -4580,7 +4746,16 @@ class ChainRuleMutationTests(unittest.TestCase):
         "bash subshell restore confused off": "test_subshell_cd_does_not_leak_to_parent",
         "pipeline over-taint": "test_pipeline_clean_stages_keep_allow",
         "or-list treated as pipeline": "test_or_list_keeps_calling_shell_cwd",
-        "bash brace sentinel collides with ps": "test_powershell_grouping_shares_runspace",
+        "bash brace open token boundary removed": "test_brace_expansion_word_does_not_close_group",
+        "background entry leaks sequential cwd": "test_background_list_entry_is_list_start",
+        "pipeline end restore removed": "test_pipeline_end_restores_entry",
+        "scope entry falls back to stale run": "test_pipeline_entry_after_sequential_cd",
+        "command-boundary snapshots removed": "test_background_list_entry_is_list_start",
+        "coproc compound scope removed": "test_coproc_compound_body_is_subshell_scoped",
+        "command double-dash handling removed": "test_command_double_dash_merges_cwd",
+        "same-shell duplicate validation restored": "test_same_shell_target_does_not_self_deny",
+        "powershell brace restores repo root": "test_powershell_grouping_shares_runspace",
+        "brace close token boundary removed": "test_brace_expansion_word_does_not_close_group",
     }
 
     # Mutants of the detection helper itself (this test file, not the hook).
@@ -4607,9 +4782,11 @@ class ChainRuleMutationTests(unittest.TestCase):
                 with open(THIS_FILE, encoding="utf-8") as f:
                     test_text = f.read()
             write_text(os.path.join(host, "test_claude_destructive_guard.py"), test_text)
+            env = dict(os.environ, PYTHON_COLORS="0")
             proc = subprocess.run([sys.executable, "-m", "unittest", "-v",
                                    "test_claude_destructive_guard." + (test_class or "ChainRulePieceDTests")],
-                                  cwd=host, capture_output=True, text=True, timeout=300)
+                                  cwd=host, capture_output=True, text=True, timeout=300,
+                                  env=env)
             return proc.returncode, proc.stderr
 
     def test_chain_tests_detect_each_mutant(self):

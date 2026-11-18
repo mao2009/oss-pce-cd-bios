@@ -87,28 +87,46 @@ PY_NAME = re.compile(r"^python(3(\.\d+)?)?$|^py$")
 # \x02 can never come from the command text itself.
 SUBSHELL_OPEN = "\x02("
 SUBSHELL_CLOSE = "\x02)"
-# A pipeline or background stage boundary (Bash only): each stage of `a | b`
-# or `a & b` runs in a subshell, so its cwd never reaches the parent, while
-# a filesystem change inside it still taints later judgments. `||` and `&&`
-# are sequential (same shell) and never emit this. Control characters are
+# A pipeline stage boundary (Bash only): each stage of `a | b` runs in
+# a subshell, so its cwd never reaches the parent, while a filesystem
+# change inside it still taints later judgments. `||` and `&&` are
+# sequential (same shell) and never emit this. Control characters are
 # rejected on input, so \x02 can never come from the command text itself.
 PIPE_BOUND = "\x02|"
+# A background-list boundary (Bash only): `a & b` backgrounds the whole
+# `a` list in a subshell. The parent continues from the cwd the list
+# started with (bg_start), while taint still propagates. Same \x02
+# safety as PIPE_BOUND.
+BG_BOUND = "\x02&"
+# A top-level command boundary (Bash `;` or newline): no scope effect, but
+# it ends a background list and a pipeline, so analyze_text restores the
+# pipeline-entry cwd here and refreshes the entry snapshots. Same \x02
+# safety as PIPE_BOUND. `&&`/`||` are sequential inside a list and never
+# emit this.
+CMD_BOUND = "\x02;"
+# A Bash coprocess-compound boundary: `coproc { ...; }` runs its body in a
+# subshell (like `( ... )`), so the body shares the parent taint but its
+# cwd is restored at the close. The `{` stays a literal word of the
+# `coproc ...` segment (so coproc dispatch sees exactly what it saw
+# before); only the scope is new. Same \x02 safety as PIPE_BOUND.
+COPROC_OPEN = "\x02c{"
+COPROC_CLOSE = "\x02c}"
 # A Bash brace-group boundary: `{ ...; }` runs in the calling shell, so it
 # shares cwd like a plain sequence — but as a pipeline stage the whole
 # group still runs in one subshell. Scoping it lets pipeline entries stay
 # exact when the first stage spans several segments. Only a command-
 # position `{` opens a group (mid-word `{a,b}` stays literal, so brace
-# expansion words keep their current validation). A stray `}` with no open
-# group stays an ordinary word, as before.
+# expansion words keep their current validation). A `}` closes a group
+# only as a standalone word (a `}` inside a word stays literal). A stray
+# `}` with no open group stays an ordinary word, as before.
 BBRACE_OPEN = "\x02b{"
 BBRACE_CLOSE = "\x02b}"
-# A PowerShell scriptblock boundary: `& { ... }` and other `{ ... }` groups
-# run their location-changing commands in a child scope, so the caller cwd
-# is restored at the close. PowerShell `(...)` grouping is the opposite:
-# it runs in the same runspace, so it never scopes cwd (Bash subshell
-# handling is not applied when ps=True).
-PSBRACE_OPEN = "\x02{"
-PSBRACE_CLOSE = "\x02}"
+# PowerShell `{ ... }` groups (statement bodies, scriptblocks, hashtables)
+# run in the calling scope for cwd purposes: `if`/`while`/`foreach` bodies
+# execute in the current scope, so a Set-Location inside persists like a
+# Bash brace group. Only `& { ... }` (child scope, uncertain) stays
+# refused elsewhere. Brace depth is still tracked so an unclosed `{`
+# (a shell syntax error) is refused instead of guessed.
 
 # Placeholder for a $(...), `...`, <(...) or >(...) body. NUL is rejected on input,
 # so the placeholder can never collide with user text.
@@ -310,7 +328,12 @@ def same_shell_target_index(name, args, ctx):
     if name == "command":
         while i < len(args) and args[i] == "-p":
             i += 1
-        if i < len(args) and args[i].startswith("-"):
+        if i < len(args) and args[i] == "--":
+            # Piece D (#636): `command -- cd sub` runs cd in the calling
+            # shell (verified on Bash): consume one terminator so the
+            # wrapped builtin merges cwd. Other dash forms still describe.
+            i += 1
+        elif i < len(args) and args[i].startswith("-"):
             return None
     elif name == "time":
         # Exact grammar (may DENY, e.g. time -o); side-effect free here.
@@ -318,7 +341,12 @@ def same_shell_target_index(name, args, ctx):
     if i >= len(args):
         return None
     if name == "builtin" and args[i].startswith("-"):
-        return None
+        # Piece D (#636): `builtin -- cd sub` runs cd in the calling
+        # shell (verified on Bash): consume one terminator.
+        if args[i] == "--" and i + 1 < len(args):
+            i += 1
+        else:
+            return None
     return i
 
 
@@ -690,11 +718,16 @@ def split_segments(text, ps=False):
     """
     segs, subs, cur, redirs, rd = [], [], [], [], []
     bdepth = 0  # open Bash brace groups (command-position `{` only)
+    coproc_depth = 0  # open `coproc { ... }` compound bodies (subshell scope)
+    ps_bdepth = 0  # open PowerShell `{ ... }` groups (calling scope; only balance is tracked)
+    cur_blank = True  # no non-whitespace appended since the last flush
     quote, i, n = None, 0, len(text)
     while i < n:
         c = text[i]
         if quote == "'":
             cur.append(c)
+            if not c.isspace():
+                cur_blank = False
             if c == "'":
                 quote = None
             i += 1
@@ -704,17 +737,20 @@ def split_segments(text, ps=False):
                 i += 2
                 continue
             cur.append(text[i:i + 2])
+            cur_blank = False
             i += 2
             continue
         if c == "$" and i + 1 < n and text[i + 1] == "(":
             body, i = _matched(text, i + 2)
             subs.append(body)
             cur.append(SUBST)
+            cur_blank = False
             continue
         if c in "<>" and quote is None and i + 1 < n and text[i + 1] == "(":
             body, i = _matched(text, i + 2)  # process substitution
             subs.append(body)
             cur.append(SUBST)
+            cur_blank = False
             continue
         if c == "`":
             j = text.find("`", i + 1)
@@ -722,6 +758,7 @@ def split_segments(text, ps=False):
                 raise Deny("parse", "unterminated backtick")
             subs.append(text[i + 1:j])
             cur.append(SUBST)
+            cur_blank = False
             i = j + 1
             continue
         if c == "$" and quote is None and i + 1 < n and text[i + 1] in "'\"":
@@ -730,6 +767,8 @@ def split_segments(text, ps=False):
             if c == '"':
                 quote = None
             cur.append(c)
+            if not c.isspace():
+                cur_blank = False
             i += 1
             continue
         if ps and quote is None and text.startswith("<#", i):
@@ -749,6 +788,7 @@ def split_segments(text, ps=False):
                 continue
             quote = c
             cur.append(c)
+            cur_blank = False
             i += 1
             continue
         if c in "<>":
@@ -767,10 +807,12 @@ def split_segments(text, ps=False):
             start = i
             if k and (i - k == 0 or text[i - k - 1] in " \t\n;&|(){},") and "".join(cur[-k:]) == text[i - k:i]:
                 del cur[-k:]
+                cur_blank = not any(not ch.isspace() for ch in cur)
                 start = i - k
             if c == ">":
                 rd.append((text[i:j], _redir_target(text, j)))
             cur.append(" " + REDIR_MARK + text[start:j] + " ")
+            cur_blank = False
             i = j
             continue
         if quote is None and c == "&" and i + 1 < n and text[i + 1] == ">":
@@ -779,6 +821,7 @@ def split_segments(text, ps=False):
                 j += 1
             rd.append((text[i:j], _redir_target(text, j)))
             cur.append(" " + REDIR_MARK + text[i:j] + " ")
+            cur_blank = False
             i = j
             continue
         if ps and c == "&" and quote is None:
@@ -797,6 +840,7 @@ def split_segments(text, ps=False):
             segs.append("".join(cur))
             redirs.append(rd)
             cur, rd = [], []
+            cur_blank = True
             if c == "|" and not ps:
                 # Piece D (#636, CRITICAL-1): each Bash pipeline stage runs
                 # in a subshell. `||` is sequential (same shell); `|&`
@@ -810,13 +854,14 @@ def split_segments(text, ps=False):
                     if nxt == "&":
                         i += 1  # consume |&: still a pipeline boundary
             elif c == "&" and not ps:
-                # A single & backgrounds (subshell); && is sequential.
-                # &> is consumed as a redirect before reaching here.
+                # A single & backgrounds the whole list in a subshell;
+                # && is sequential. &> is consumed as a redirect before
+                # reaching here.
                 nxt = text[i + 1] if i + 1 < n else ""
                 if nxt == "&":
                     i += 1  # consume &&: no scope boundary
                 elif nxt != ">":
-                    segs.append(PIPE_BOUND)
+                    segs.append(BG_BOUND)
                     redirs.append([])
             elif c == "(":
                 # Piece D (#636): an unquoted paren opens a subshell.
@@ -828,43 +873,91 @@ def split_segments(text, ps=False):
                 segs.append(SUBSHELL_CLOSE)
                 redirs.append([])
             elif ps and c == "{":
-                # Piece D (#636, CRITICAL-3): a PowerShell scriptblock
-                # runs in a child scope, so its location change never
-                # reaches the caller (cwd only; taint still propagates).
-                segs.append(PSBRACE_OPEN)
-                redirs.append([])
+                # Piece D (#636): a PowerShell `{ ... }` group (statement
+                # body, scriptblock, hashtable) runs in the calling scope
+                # for cwd purposes, like a Bash brace group, so no scope
+                # marker is emitted. Only balance is tracked for the
+                # fail-closed unclosed-group check. `& { ... }` stays
+                # refused by the call-operator rule above.
+                ps_bdepth += 1
             elif ps and c == "}":
-                segs.append(PSBRACE_CLOSE)
+                if ps_bdepth > 0:
+                    ps_bdepth -= 1
+                # A stray `}` stays an ordinary word, as before.
+            if c == ";" or c == "\n":
+                # A top-level command boundary ends a background list and
+                # a pipeline. No scope effect; analyze_text restores the
+                # pipeline-entry cwd and refreshes entry snapshots here.
+                segs.append(CMD_BOUND)
                 redirs.append([])
             i += 1
             continue
-        if c == "{" and not ps and "".join(cur).strip() == "":
-            # Piece D (#636, CRITICAL-1): a command-position `{` opens a
-            # brace group (calling shell). Mid-word braces (`{a,b}`)
-            # stay literal words with their current validation.
-            segs.append("".join(cur))
-            redirs.append(rd)
-            cur, rd = [], []
-            segs.append(BBRACE_OPEN)
-            redirs.append([])
-            bdepth += 1
-            i += 1
-            continue
-        if c == "}" and not ps and bdepth > 0:
-            # Only a group opened above closes here; a stray `}` stays
-            # an ordinary word (KEYWORD-skipped), as before.
-            segs.append("".join(cur))
-            redirs.append(rd)
-            cur, rd = [], []
-            segs.append(BBRACE_CLOSE)
-            redirs.append([])
-            bdepth -= 1
-            i += 1
-            continue
+        if c == "{" and not ps:
+            # A `{` right after a `coproc` header (`coproc [NAME]`,
+            # optionally led by `VAR=x` assignments) opens a
+            # coprocess-compound subshell scope. The `{` stays a literal
+            # word of the `coproc ...` segment (so coproc dispatch sees
+            # exactly what it saw before); only the scope is new. This
+            # applies mid-command too (`echo ok; coproc { ...; }`).
+            parts = [w for w in "".join(cur).split() if not ASSIGN.match(w)]
+            if (parts and parts[0].lower() == "coproc" and len(parts) <= 2
+                    and "{" not in "".join(cur)):
+                segs.append(COPROC_OPEN)
+                redirs.append([])
+                coproc_depth += 1
+                cur.append(c)
+                cur_blank = False
+                i += 1
+                continue
+            if cur_blank:
+                # Piece D (#636, CRITICAL-1): a command-position `{`
+                # opens a brace group (calling shell). Mid-word braces
+                # (`{a,b}`) stay literal words with their current
+                # validation. cur_blank tracks the blank-buffer rule
+                # without rebuilding the segment on every `{`.
+                segs.append("".join(cur))
+                redirs.append(rd)
+                cur, rd = [], []
+                cur_blank = True
+                segs.append(BBRACE_OPEN)
+                redirs.append([])
+                bdepth += 1
+                i += 1
+                continue
+        if c == "}" and not ps and cur_blank:
+            if bdepth > 0:
+                # Only a group opened above closes here.
+                segs.append("".join(cur))
+                redirs.append(rd)
+                cur, rd = [], []
+                cur_blank = True
+                segs.append(BBRACE_CLOSE)
+                redirs.append([])
+                bdepth -= 1
+                i += 1
+                continue
+            if coproc_depth > 0:
+                # Close of a `coproc { ... }` compound body (subshell
+                # scope). A stray `}` with no open group stays an
+                # ordinary word (KEYWORD-skipped), as before.
+                segs.append("".join(cur))
+                redirs.append(rd)
+                cur, rd = [], []
+                cur_blank = True
+                segs.append(COPROC_CLOSE)
+                redirs.append([])
+                coproc_depth -= 1
+                i += 1
+                continue
+            # A stray `}` stays an ordinary word (KEYWORD-skipped).
         cur.append(c)
+        if not c.isspace():
+            cur_blank = False
         i += 1
     if quote:
         raise Deny("parse", "unterminated quote")
+    if ps_bdepth:
+        raise Deny("parse", "unbalanced PowerShell grouping is not inspected")
     segs.append("".join(cur))
     redirs.append(rd)
     return segs, subs, redirs
@@ -2042,6 +2135,7 @@ def analyze_argv(words, ctx, ps, depth):
             # invocation: they start from the taint inherited here, before
             # the suffix pass merges its own findings (Piece D, #636).
             wrapper_tainted = ctx.tainted
+            same_shell_consumed = None
             if name in ("command", "builtin", "time"):
                 # Piece D (#636, CRITICAL-2): command/builtin/time run a
                 # shell builtin in the calling shell, so its cwd change
@@ -2051,8 +2145,14 @@ def analyze_argv(words, ctx, ps, depth):
                 # so no current validation is dropped.
                 idx = same_shell_target_index(name, words[1:], ctx)
                 if idx is not None and command_name(words[1:][idx]) in SAME_SHELL_NAMES:
-                    _nested_argv_same_shell(words[1:][idx:], ctx, ps, depth + 1)
+                    same_shell_consumed = words[1:][idx:]
+                    _nested_argv_same_shell(same_shell_consumed, ctx, ps, depth + 1)
             for cand in wrapper_candidates(name, words[1:], ctx):
+                if same_shell_consumed is not None and cand == same_shell_consumed:
+                    # Already validated above (its taint/cwd merged once):
+                    # re-validating the exact target against its own taint
+                    # self-denies a clean same-shell invocation.
+                    continue
                 # An option-looking word (-n, --command=...) or a number (timeout 5) cannot be the command a wrapper starts;
                 # the command is a later suffix. Strings are covered by the text analysis below.
                 # For a wrapper with a grammar the command word is exact, so it is analysed even when it looks like an option.
@@ -2184,7 +2284,9 @@ def analyze_text(text, ctx, ps, depth):
     for seg in segs:
         if seg == SUBSHELL_OPEN or seg == SUBSHELL_CLOSE:
             continue
-        if seg == PIPE_BOUND or seg == PSBRACE_OPEN or seg == PSBRACE_CLOSE:
+        if seg == PIPE_BOUND or seg == BG_BOUND or seg == CMD_BOUND:
+            continue
+        if seg == COPROC_OPEN or seg == COPROC_CLOSE:
             continue
         if seg == BBRACE_OPEN or seg == BBRACE_CLOSE:
             continue
@@ -2205,64 +2307,131 @@ def analyze_text(text, ctx, ps, depth):
     # groups, eval and plain sequences run in the calling shell and keep
     # sharing cwd. A stray close with no open group is ignored (lenient,
     # as before); an unclosed Bash group is a shell syntax error, so it is
-    # refused instead of guessed. PowerShell differs: `(...)` grouping runs
-    # in the same runspace (no cwd scope), while a `{ ... }` scriptblock
-    # runs in a child scope (cwd restored, taint kept).
+    # refused instead of guessed. PowerShell `{ ... }` groups run in the
+    # calling scope for cwd purposes (like Bash brace groups): `if`/`while`
+    # /`foreach` bodies execute in the current scope. Only `& { ... }`
+    # (child scope, uncertain) stays refused by the call-operator rule. A
+    # conditional branch taken or not taken cannot be told apart statically
+    # (same as Bash `if`), which is documented residual risk: the body is
+    # analysed as taken.
     scope_stack = []
     bbrace_stack = []
-    ps_scope = []
     pipe_entry = None
-    last_seg_start = ctx.cwd
+    run_start = ctx.cwd
+    bg_start = ctx.cwd
+    scope_entry = ctx.cwd
+    scope_just_closed = False
     prev_was_pipe = False
     for seg, ops in zip(segs, redirs):
         if seg == SUBSHELL_OPEN:
             if not ps:
+                if not scope_stack and not bbrace_stack:
+                    # A top-level `( ... )` may be the whole first pipeline
+                    # stage: remember the pre-group cwd for the entry.
+                    scope_entry = ctx.cwd
+                    scope_just_closed = False
                 scope_stack.append(ctx.cwd)
             continue
         if seg == SUBSHELL_CLOSE:
             if not ps and scope_stack:
                 ctx.cwd = scope_stack.pop()
+                if not scope_stack and not bbrace_stack:
+                    scope_just_closed = True
+                    # NOTE: no pipe_entry reset is needed here: `)` always
+                    # flushes a segment first, and that segment already
+                    # ended the inner entry lifetime (or reuses it as a
+                    # stage) before any outer `|` is read.
             continue
         if seg == BBRACE_OPEN:
             # Calling-shell group: cwd is shared, so nothing is restored
-            # at the close. The depth only lets the pipeline entry ignore
-            # `;` inside the group (CRITICAL-1).
+            # at the close. The pre-group cwd is still the pipeline entry
+            # when the whole group is the first stage.
+            if not scope_stack and not bbrace_stack:
+                scope_entry = ctx.cwd
+                scope_just_closed = False
             bbrace_stack.append(ctx.cwd)
             continue
         if seg == BBRACE_CLOSE:
             if bbrace_stack:
                 bbrace_stack.pop()
+                if not scope_stack and not bbrace_stack:
+                    scope_just_closed = True
             continue
-        if seg == PSBRACE_OPEN:
-            if ps:
-                ps_scope.append(ctx.cwd)
+        if seg == COPROC_OPEN:
+            # A `coproc { ... }` compound body runs in a subshell: same
+            # scope handling as `( ... )`. The `coproc ...` segment itself
+            # is still dispatched (in a taint-only copy) by analyze_argv.
+            if not scope_stack and not bbrace_stack:
+                scope_entry = ctx.cwd
+                scope_just_closed = False
+            scope_stack.append(ctx.cwd)
             continue
-        if seg == PSBRACE_CLOSE:
-            if ps and ps_scope:
-                ctx.cwd = ps_scope.pop()
+        if seg == COPROC_CLOSE:
+            if scope_stack:
+                ctx.cwd = scope_stack.pop()
+                if not scope_stack and not bbrace_stack:
+                    scope_just_closed = True
+            continue
+        if seg == CMD_BOUND:
+            # A `;`/newline ends a pipeline and a background list: later
+            # foreground segments are judged from the pipeline-entry cwd,
+            # never from a finished stage's cwd. Entry snapshots restart
+            # after the boundary for the next list.
+            if not ps and pipe_entry is not None:
+                ctx.cwd = pipe_entry
+                pipe_entry = None
+            if not scope_stack and not bbrace_stack:
+                run_start = ctx.cwd
+                bg_start = ctx.cwd
+            scope_just_closed = False
             continue
         if seg == PIPE_BOUND:
             # Piece D (#636, CRITICAL-1): the next stage starts from the
             # pipeline-entry cwd, never from a sibling stage's cwd. The
-            # entry is recorded here; the reset happens at stage start.
+            # entry is the pre-execution cwd of the first stage's run
+            # (run_start tracks sequential `cd`, but never a stage body or
+            # a keyword/empty segment; a scope that is itself the first
+            # stage contributes its pre-group cwd via scope_entry).
             if not ps:
                 if pipe_entry is None:
-                    pipe_entry = last_seg_start
+                    if scope_just_closed:
+                        pipe_entry = scope_entry
+                    else:
+                        pipe_entry = run_start
+                prev_was_pipe = True
+                scope_just_closed = False
+            continue
+        if seg == BG_BOUND:
+            # A `&` backgrounds the whole list in a subshell: the parent
+            # (following foreground segments) continues from the cwd the
+            # list started with (bg_start tracks `;`-separated lists).
+            if not ps:
+                if pipe_entry is not None:
+                    ctx.cwd = pipe_entry
+                pipe_entry = bg_start
                 prev_was_pipe = True
             continue
         if prev_was_pipe and not ps:
             ctx.cwd = pipe_entry
-        # The pipeline entry is the cwd before the first stage: refresh it
-        # only at a top-level segment with a real command word, so `;`
-        # inside a subshell/brace group (or an empty/keyword segment) never
-        # moves it (Piece D, #636 CRITICAL-1).
+        # Refresh the pipeline-entry candidate only at a top-level segment
+        # with a real command word, so a compound body or an empty/keyword
+        # segment never moves it (Piece D, #636 CRITICAL-1). A scope that
+        # just closed stays the entry source until a real segment (or a
+        # `;` boundary) starts a new run: empty segments never clear it.
+        seg_words = words_of(seg, ps)
+        if not scope_stack and not bbrace_stack and seg_words:
+            scope_just_closed = False
         if (not prev_was_pipe and not scope_stack and not bbrace_stack
-                and not ps_scope and any(
+                and any(
                     w not in KEYWORDS and not ASSIGN.match(w)
-                    for w in words_of(seg, ps))):
-            last_seg_start = ctx.cwd
+                    for w in seg_words)):
+            run_start = ctx.cwd
+        if not prev_was_pipe:
+            # The entry outlives every stage of its pipeline (or
+            # background list) so a later `;` boundary or `&` can restore
+            # it; a non-stage segment ends that lifetime.
+            pipe_entry = None
         prev_was_pipe = False
-        pipe_entry = None
         # A substitution runs when its containing segment runs: analyse it
         # with this segment's incoming taint, so it taints only this and
         # later segments (Piece D, #636).
@@ -2289,9 +2458,6 @@ def analyze_text(text, ctx, ps, depth):
         # An unclosed subshell never runs in a real shell: refuse instead
         # of judging later segments against a guessed cwd (fail closed).
         raise Deny("parse", "unbalanced subshell grouping is not inspected")
-    if ps and ps_scope:
-        # An unclosed PowerShell block is likewise a syntax error here.
-        raise Deny("parse", "unbalanced PowerShell block is not inspected")
     if bbrace_stack:
         # An unclosed Bash brace group never runs either (fail closed).
         raise Deny("parse", "unbalanced brace grouping is not inspected")
