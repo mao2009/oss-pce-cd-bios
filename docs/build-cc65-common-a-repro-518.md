@@ -30,7 +30,7 @@ host-test separation), #542 / PR #543 (serialize cc65 build with `-j1`).
 - HEAD: `origin/main` = `0f7a3257` (2026-11-18).
 - cc65 pin: `71746c829e77f74c2b601a7d16821170c2610df3`
   (`tools/dependencies.json`, `cc65 V2.19 - Git 71746c829`).
-- Host: Linux x86_64, gcc, GNU Make 4.4.1.
+- Host: Linux x86_64, gcc 13.3.0, GNU Make 4.3.
 - Shared cache handling: the shared `TOOLS_DIR` was treated as read-only.
   No `make setup` rebuild, no writes to the shared cache. Each trial copied
   the pinned cc65 source to an isolated scratch directory outside the
@@ -41,7 +41,7 @@ host-test separation), #542 / PR #543 (serialize cc65 build with `-j1`).
 ## Results
 
 Prior runs (W09, wave26, HEAD `ec496e9`, WSL2, gcc 15.2.0, nproc=20,
-scratch `/home/loach/w09-518/`, same clean-build command):
+isolated scratch directory outside the repository, same clean-build command):
 
 | condition | run | exit | error lines (`error adding symbols` / `file format not recognized` / `***`) |
 |---|---|---:|---:|
@@ -56,8 +56,8 @@ All 6 produced identical `bin/ca65`, `bin/ld65`, `bin/da65`, `bin/cc65`
 SHA-256. Each run linked `ld65` against `common.a` exactly once, after the
 archive was created.
 
-This-record runs (HEAD `0f7a3257`, scratch `/tmp/pce-518-work/`,
-same clean-build command, `bin`/`wrk` removed before each run):
+This-record runs (HEAD `0f7a3257`, isolated scratch directory outside the
+repository, same clean-build command, `bin`/`wrk` removed before each run):
 
 | condition | exit | error lines | binaries |
 |---|---:|---:|---|
