@@ -1,6 +1,8 @@
 # #800: 商用IPL起動経路への実験API統合（G5 P0、親 #635）
 
-**状態: DEV-only / 合成媒体のみ / NOT a compatible System Card BIOS。** System Card互換性、BIOS ABI、CD_BOOT/CD_READのVERIFIEDを主張しない。`release_eligible=false`を維持。商用媒体はNOT_RUN（`./rom`の存在確認・列挙・読取りなし）。
+**状態: DEV-only / 合成媒体のみ / NOT a compatible System Card BIOS。** System Card互換性、BIOS ABI、CD_BOOT/CD_READのVERIFIEDを主張しない。`release_eligible=false`を維持。商用媒体は本PR範囲ではNOT_RUN（`./rom`の存在確認・列挙・読取りなし）。
+
+> 2026-11-18注記: 上記のNOT_RUNはPR #801の範囲の記述であり、後続のIssue #802上でOwner許可の商用観測（標準G5イメージおよび#803 SIMULATED診断の記録）がHISTORICALLY_OBSERVEDとして別途残されている。本書の合成証拠・契約記述は当時の事実として維持し、詳細は[2026-11-18 addendum](g5-evidence-2026-11-18.md)を参照。
 
 基準: PR #799統合後の最新main `43e86002`。子Issue #800、1 Issue = 1 PR。
 
@@ -71,7 +73,7 @@ G5 DEVプロファイル（合成PCEX IPLで動作確認済み）を、市販CD�
 
 ## 商用媒体
 
-NOT_RUN。`./rom`の存在確認・列挙・読取りなし（タスク厳守）。`commercial_media`をimportしない。opt-in機構（`--commercial`、safe CUE選択、read-only、合成PASS receipt gate、出力サニタイズ）は再利用可能だが本PRでは実行しない。公開物に実名・パス・ハッシュ・CUE/BIN内容・生トレース・ダンプ・IPL命令列・ゲーム資産なし。公開はAPI番号・停止分類・最小状態要約のみ。
+NOT_RUN。`./rom`の存在確認・列挙・読取りなし（タスク厳守）。（2026-11-18注記: 本PR範囲の記録。後続のIssue #802上のOwner許可観測は[2026-11-18 addendum](g5-evidence-2026-11-18.md)参照。）`commercial_media`をimportしない。opt-in機構（`--commercial`、safe CUE選択、read-only、合成PASS receipt gate、出力サニタイズ）は再利用可能だが本PRでは実行しない。公開物に実名・パス・ハッシュ・CUE/BIN内容・生トレース・ダンプ・IPL命令列・ゲーム資産なし。公開はAPI番号・停止分類・最小状態要約のみ。
 
 ## 次に実装すべきAPIまたは起動処理
 
