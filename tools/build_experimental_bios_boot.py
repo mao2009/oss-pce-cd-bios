@@ -77,6 +77,16 @@ _SLOT33_PATCH_LABELS = ("api_slot_33", "experimental_slot_33")
 # stays False, and cd_read_api_slot_03 stays NOT_IMPLEMENTED).
 _SLOT03_TABLE = 3 * 0x03
 _SLOT03_PATCH_LABELS = ("api_slot_03", "cd_read_link_entry")
+# Experimental slot-$4A wiring (Issue #84; this image only when selected; normal
+# ROM keeps its nonreturning $4A fallback stub, and the 2-base builder default
+# keeps the table on the stub). The $E0DE table entry (file offset 3*$4A,
+# table starts at $E000) is redirected from the linked $4A fallback stub to the
+# BOOT-region ex_memopen_entry body (src/ex_memopen.s, preservation-only
+# experimental service). NOT the genuine KEY_BIOS/EX_MEMOPEN ABI (genuine
+# slot/entry/return semantics stay UNKNOWN/BLOCKED, release_eligible stays
+# False).
+_SLOT4A_TABLE = 3 * 0x4A
+_SLOT4A_PATCH_LABELS = ("api_slot_4A", "ex_memopen_entry")
 # Merged input branches whose heads are recorded (never hardcoded) in the manifest.
 _MERGED_REFS = ("origin/agent-a/cd-base-proto-g5", "origin/agent-b/ex-dspoff-real-cpu-g5",
                 "origin/agent-b/cd-read-link-g5")
@@ -178,6 +188,34 @@ def _redirect_slot03_to_link(bank: bytes, slot03_stub: int, link_entry: int) -> 
     return bytes(out)
 
 
+def _redirect_slot4a_to_body(bank: bytes, slot4a_stub: int, memopen_entry: int) -> bytes:
+    """Return bank with the $E0DE table entry redirected from stub to body. Fail-closed.
+
+    The table must still hold the linked fallback stub (nothing else may be
+    redirected), and the body must sit in BOOT and start with the body's
+    PHP/PHA prologue (guards against silent body drift). The wired entry keeps
+    the EXPERIMENTAL preservation contract only; it never claims the genuine
+    $4A ABI (genuine KEY_BIOS/EX_MEMOPEN semantics stay UNKNOWN/BLOCKED).
+    """
+    for name, addr in (("api_slot_4A", slot4a_stub), ("ex_memopen_entry", memopen_entry)):
+        if type(addr) is not int or not 0xE000 <= addr <= 0xFFFF:
+            raise ValueError(f"{name} address {addr!r} outside BIOS window $E000-$FFFF")
+    if not 0xE100 <= slot4a_stub < 0xFFF6:
+        raise ValueError(f"slot $4A fallback stub ${slot4a_stub:04X} outside bank0 body")
+    if not 0xF000 <= memopen_entry < 0xFFF6:
+        raise ValueError(f"experimental slot $4A body ${memopen_entry:04X} outside the BOOT region")
+    out = bytearray(bank)
+    want_stub = bytes((0x4C, slot4a_stub & 0xFF, slot4a_stub >> 8))
+    if bytes(out[_SLOT4A_TABLE:_SLOT4A_TABLE + 3]) != want_stub:
+        raise ValueError("slot $4A table entry is not the linked fallback stub; "
+                         "refusing to redirect an unexpected table")
+    out[_SLOT4A_TABLE:_SLOT4A_TABLE + 3] = bytes((0x4C, memopen_entry & 0xFF, memopen_entry >> 8))
+    body_off = memopen_entry - 0xE000
+    if bytes(out[body_off:body_off + 2]) != bytes((0x08, 0x48)):  # PHP, PHA
+        raise ValueError("experimental slot $4A body does not start with the body prologue")
+    return bytes(out)
+
+
 def unified_api_windows(slot02_addr: int) -> set:
     """File offsets in the first 4 KiB allowed to differ from the normal DEV ROM.
 
@@ -192,6 +230,20 @@ def unified_api_windows(slot02_addr: int) -> set:
     windows |= set(range(_SLOT03_TABLE, _SLOT03_TABLE + 3))
     if len(windows) != SLOT02_PATCH_LEN + 3 + 3:
         raise ValueError("slot-$02/slot-$33/slot-$03 patch windows overlap; refusing ambiguous wiring")
+    return windows
+
+
+def unified_api_windows_4a(slot02_addr: int) -> set:
+    """File offsets allowed to differ when the experimental $4A body is wired.
+
+    Base three-window set plus the slot-$4A 3-byte table redirect. Pure and
+    fail-closed like the base set; the default unified_api_windows() is
+    untouched so existing stub-default images keep their exact contract.
+    """
+    windows = set(unified_api_windows(slot02_addr))
+    windows |= set(range(_SLOT4A_TABLE, _SLOT4A_TABLE + 3))
+    if len(windows) != SLOT02_PATCH_LEN + 3 + 3 + 3:
+        raise ValueError("slot-$02/slot-$33/slot-$03/slot-$4A patch windows overlap; refusing ambiguous wiring")
     return windows
 
 
