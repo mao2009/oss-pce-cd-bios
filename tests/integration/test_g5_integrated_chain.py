@@ -419,11 +419,31 @@ class G5IntegratedChainSynthetic(unittest.TestCase):
         return rec, res_base
 
     def _buf(self, rec):
+        # Fail-closed gate (P2): both cycles must have ended at the
+        # recognized payload halt. A budget-exhausted or unconfirmed run
+        # must never pass on buffer contents alone.
+        self.assertIn("RUN", rec)
         runs = rec["RUN"]
         self.assertEqual(len(runs), 2)
-        by_cycle = {r["cycle"]: bytes.fromhex(r["buffer_hex"]) for r in runs}
-        self.assertEqual(sorted(by_cycle), ["cold", "warm"])
-        return by_cycle["cold"], by_cycle["warm"]
+        cycles = [r.get("cycle") for r in runs]
+        self.assertEqual(sorted(cycles), ["cold", "warm"])
+        bufs = {}
+        for r in runs:
+            self.assertEqual(r.get("reason"), "cd_halt_ok")
+            self.assertIs(r.get("halt_confirmed"), True)
+            self.assertIn("buffer_hex", r)
+            try:
+                buf = bytes.fromhex(r["buffer_hex"])
+            except (TypeError, ValueError):
+                self.fail("buffer_hex is not valid hex")
+            self.assertGreaterEqual(len(buf), 2048)
+            bufs[r["cycle"]] = buf
+        return bufs["cold"], bufs["warm"]
+
+    def _assert_window_untouched(self, buf, tag):
+        # Refusal path (P3): the whole 2048-byte destination must still
+        # be canary, not just the first 16 bytes.
+        self.assertEqual(buf[:2048], bytes([0xAA]) * 2048, tag)
 
     def _expected_frame(self, lba):
         raw = self._last_bin.read_bytes()
@@ -487,7 +507,7 @@ class G5IntegratedChainSynthetic(unittest.TestCase):
         self.assertEqual(r[base + 1], 0)  # $02 2-base still returns on control ROM
         self.assertNotEqual(r[base + 28], 0)  # link V1 refuses the $FFFFFF block
         self.assertEqual(list(r[base + 42:base + 52]), [0] * 10)  # no CRES writes
-        self.assertEqual(list(r[0:16]), [0xAA] * 16)  # transfer window untouched
+        self._assert_window_untouched(r, "control transfer window untouched")
         self.assertEqual([r[base + 3], r[base + 31], r[base + 73]], [0x02, 0x03, 0x33])
         # Review regression: the control probe must use the control ROM's own
         # halt labels (loader CODE shifts with the BOOT body size; exp and ctrl
@@ -511,7 +531,7 @@ class G5IntegratedChainSynthetic(unittest.TestCase):
         self.assertEqual(r[base], 0xAA)
         self.assertEqual(r[base + 28], 0x65)  # _dh=1 refused
         self.assertEqual(list(r[base + 42:base + 52]), [0] * 10)  # no CRES writes
-        self.assertEqual(list(r[0:16]), [0xAA] * 16)  # canary intact
+        self._assert_window_untouched(r, "badmode canary intact")
 
     def test_chain_mutants_detected(self):
         rec, base = self._run("mutant", CHAIN_ASM, self._chain_defines())
@@ -528,6 +548,69 @@ class G5IntegratedChainSynthetic(unittest.TestCase):
         tampered_pre = bytearray(cold[base + 20:base + 28])
         tampered_pre[3] ^= 0xFF
         self.assertNotEqual(list(tampered_pre), list(cold[base + 34:base + 42]))
+
+    def _neg_rec(self, cold_reason="cd_halt_ok", warm_reason="cd_halt_ok",
+                 cold_conf=True, warm_conf=True, cold_hex=None, warm_hex=None,
+                 cycles=("cold", "warm"), drop_key=None):
+        # Host-side factory for _buf() gate negatives (no core needed).
+        good = "aa" * 2048
+        runs = []
+        for cycle, reason, conf, hexval in (
+                (cycles[0] if len(cycles) > 0 else "cold", cold_reason, cold_conf,
+                 cold_hex if cold_hex is not None else good),
+                (cycles[1] if len(cycles) > 1 else "warm", warm_reason, warm_conf,
+                 warm_hex if warm_hex is not None else good)):
+            row = {"cycle": cycle, "reason": reason,
+                   "halt_confirmed": conf, "buffer_hex": hexval}
+            if drop_key is not None and cycle == "cold":
+                del row[drop_key]
+            runs.append(row)
+        return {"RUN": runs}
+
+    def test_buf_rejects_bad_runs(self):
+        # P2 RED: every malformed/unfinished observer record must fail the
+        # gate instead of passing on buffer contents.
+        good = self._neg_rec()
+        cold, warm = self._buf(good)  # positive control stays GREEN
+        self.assertEqual(cold, warm)
+        self.assertEqual(cold, bytes([0xAA]) * 2048)
+        bad_cases = {
+            "cold-budget": self._neg_rec(cold_reason="budget", cold_conf=True),
+            "warm-budget": self._neg_rec(warm_reason="budget", warm_conf=True),
+            "unconfirmed": self._neg_rec(cold_conf=False, warm_conf=False),
+            "duplicated-cold": self._neg_rec(cycles=("cold", "cold")),
+            "short-hex": self._neg_rec(cold_hex="aa" * 100),
+            "bad-hex": self._neg_rec(cold_hex="zz"),
+            "missing-buffer": self._neg_rec(drop_key="buffer_hex"),
+        }
+        for tag, rec in bad_cases.items():
+            with self.subTest(tag=tag):
+                with self.assertRaises(AssertionError, msg=tag):
+                    self._buf(rec)
+        with self.subTest(tag="single-run"):
+            with self.assertRaises(AssertionError, msg="single-run"):
+                self._buf({"RUN": [self._neg_rec()["RUN"][0]]})
+        with self.subTest(tag="missing-run-key"):
+            with self.assertRaises(AssertionError, msg="missing-run-key"):
+                self._buf({})
+
+    def test_refusal_window_full_coverage(self):
+        # P3 RED: the old 16-byte check is blind past offset 15; the new
+        # full-window check catches corruption at head/middle/tail.
+        intact = bytes([0xAA]) * 2048
+        self._assert_window_untouched(intact, "intact window")
+        for tag, pos in (("head", 0), ("middle", 1000), ("tail", 2047)):
+            bad = bytearray(intact)
+            bad[pos] ^= 0xFF
+            with self.subTest(tag=tag):
+                if pos == 0:
+                    # Only head corruption was visible to the old check.
+                    self.assertNotEqual(list(bytes(bad)[0:16]), [0xAA] * 16)
+                else:
+                    # Middle/tail corruption passed the old check: the gap.
+                    self.assertEqual(list(bytes(bad)[0:16]), [0xAA] * 16)
+                with self.assertRaises(AssertionError, msg=f"detect {tag}"):
+                    self._assert_window_untouched(bytes(bad), f"corrupt {tag}")
 
     def test_chain_unimplemented_slot_traps(self):
         rec, base = self._run("unimpl", UNIMPL_ASM, [])
