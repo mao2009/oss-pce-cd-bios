@@ -328,9 +328,17 @@ class CallerLedgerTests(unittest.TestCase):
         expected = {
             "C03": (("500", "509"), "HYPOTHESIS"),
             "C12": (("436", "438"), "HYPOTHESIS"),
-            "C16": (("594", "595"), "HYPOTHESIS"),
+            "C16": (("594", "595", "601"), "HYPOTHESIS"),
             "C19": (("503", "506"), "HYPOTHESIS"),
             "C27": (("448", "449", "450"), "HYPOTHESIS"),
+        }
+        # CodeRabbit review on PR #810: C03 must describe L500 as storing Y into the
+        # JSR operand (not "writing Y") with the effective $E000+Y target; C16 must
+        # cover the conditional _cl increment at L600-601 (a plain "_cl not written"
+        # claim would be false: L601 is `inc <_cl`).
+        wording = {
+            "C03": ("operand", "E009"),
+            "C16": ("600",),
         }
         for rid, (lines, status) in expected.items():
             with self.subTest(row=rid):
@@ -338,6 +346,8 @@ class CallerLedgerTests(unittest.TestCase):
                 self.assertEqual(row["status"], status)
                 for line in lines:
                     self.assertIn(line, row["note"], f"{rid} note must cite line {line}")
+                for word in wording.get(rid, ()):
+                    self.assertIn(word, row["note"], f"{rid} note must mention {word}")
 
     def test_unobserved_rows_are_unknown_and_callee_abi_stays_unpromoted(self):
         for row in CALLER_LEDGER:

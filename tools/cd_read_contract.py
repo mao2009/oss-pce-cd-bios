@@ -74,7 +74,7 @@ SCENARIO_KIND = {
 # The human-readable twin table lives in 撤去済み文書 section 2; tests/host/
 # test_cd_read_contract.py checks both against this module and spec/api_contracts.json.
 #583: the `line` anchors keep the §2.1 values (PR #571 §2.4 precedent: joint listing);
-# the notes cite the confirmed joint references (L500/L509, L436/L438, L594-599,
+# the notes cite the confirmed joint references (L500/L509, L436/L438, L594-601,
 # L503-506, L448-450). Statuses are unchanged. The §2.1 table itself was removed by #596.
 HUC_REV = "54f5c73606c1e7142e8095c727cab2767e2b3cb3"
 HUC_INC = "huc:include/hucc/pcengine.inc"
@@ -90,7 +90,7 @@ CALLER_LEDGER = (
     {"id": "C02", "source": HUC_CORE, "revision": HUC_REV, "line": 42, "slot": "Y", "direction": "CALLER_IN", "status": "HYPOTHESIS",
      "note": "system macro loads Y with the vector lo-byte: Y is the $E000 jump-table selector, not a CD_READ argument"},
     {"id": "C03", "source": HUC_KERNEL, "revision": HUC_REV, "line": 509, "slot": "Y", "direction": "CALLER_IN", "status": "HYPOTHESIS",
-     "note": "call_bios JSRs $E000 with Y=selector: L509 is the jsr instruction (not a comment) and Y is written at L500 (sty .self_mod_func + 1); the dispatcher is BIOS code, unobserved here"},
+     "note": "call_bios patches the JSR target with the selector: the system macro loads Y with the vector lo-byte (C02) and L500 stores Y into the JSR operand (sty .self_mod_func + 1), so L509 jumps to $E000+Y (e.g. $E009 for cd_read); the dispatcher is BIOS code, unobserved here"},
     {"id": "C04", "source": HUC_INC, "revision": HUC_REV, "line": 329, "slot": "$20F8-$20FF", "direction": "CALLER_DECLARATION", "status": "HYPOTHESIS",
      "note": "pcengine.inc equates _ax/_bx/_cx/_dx at $F8:20F8-$20FF: SDK declaration/alias, not a runtime caller write before the call"},
     {"id": "C05", "source": HUC_H, "revision": HUC_REV, "line": 95, "slot": "$20F8-$20FF", "direction": "CALLER_DECLARATION", "status": "HYPOTHESIS",
@@ -116,7 +116,7 @@ CALLER_LEDGER = (
     {"id": "C15", "source": HUC_KERNEL, "revision": HUC_REV, "line": 539, "slot": "_cl/_ch/_dl", "direction": "CALLER_IN", "status": "HYPOTHESIS",
      "note": "get_file_lba fills the 3-byte LBA triple; _cl is the record-base high byte and also carried the overlay index"},
     {"id": "C16", "source": HUC_ASM, "revision": HUC_REV, "line": 594, "slot": "_dl/_ch/_cl", "direction": "CALLER_IN", "status": "HYPOTHESIS",
-     "note": "_add_sectors adds the sector offset into the LBA triple _dl/_ch/_cl: L594 is the entry (clc) and the _dl/_ch reads and writes are L595-599 (_cl is not written here)"},
+     "note": "_add_sectors adds the sector offset into the LBA triple _dl/_ch/_cl: L594 is the entry (clc), the _dl/_ch reads and writes are L595-599, and _cl is conditionally incremented at L600-601 (bcc !+ / inc <_cl)"},
     {"id": "C17", "source": HUC_KERNEL, "revision": HUC_REV, "line": 585, "slot": "P.I", "direction": "CALLER_IN", "status": "HYPOTHESIS",
      "note": "exec_overlay executes CLI before cd_read; no caller deliberately sets the other P bits"},
     {"id": "C18", "source": HUC_STARTUP, "revision": HUC_REV, "line": 125, "slot": "MPR0/MPR1", "direction": "CALLER_IN", "status": "HYPOTHESIS",
