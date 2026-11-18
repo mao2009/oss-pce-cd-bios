@@ -15,15 +15,26 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
 import cd_read_commercial as C
 
 
-def base_args(base=0x109, block=0, win=0x109, mode=0,
-              size_lo=0, size_hi=8, dst_lo=0, dst_hi=0x28, last=0):
+def xsel_bytes(index=0x109, magic=b"XSEL", version=1, fmt=1, kind=1,
+                 track=2):
+    return (bytes(magic) + bytes((version, fmt, kind, track))
+            + bytes(((index >> 16) & 0xFF, (index >> 8) & 0xFF,
+                     index & 0xFF)))
+
+
+def base_args(base=0x109, block=0, index=0x109, mode=0,
+              size_lo=0, size_hi=8, dst_lo=0, dst_hi=0x28, last=0,
+              magic=0xA5, valid=0x01, xsel_magic=None, xsel_ver=None):
     return {
         "base_hi": (base >> 16) & 0xFF, "base_mid": (base >> 8) & 0xFF,
         "base_lo": base & 0xFF, "gen": 1, "last": last,
+        "magic": magic, "valid": valid,
         "cblk_hi": (block >> 16) & 0xFF, "cblk_mid": (block >> 8) & 0xFF,
         "cblk_lo": block & 0xFF,
-        "win_lo": win & 0xFF, "win_mid": (win >> 8) & 0xFF,
-        "win_hi": (win >> 16) & 0xFF,
+        "xsel": xsel_bytes(index,
+                           magic=(b"XSEL" if xsel_magic is None
+                                  else xsel_magic),
+                           version=(1 if xsel_ver is None else xsel_ver)),
         "mode": mode, "size_lo": size_lo, "size_hi": size_hi,
         "dst_lo": dst_lo, "dst_hi": dst_hi,
     }
@@ -53,7 +64,7 @@ class ComputeTests(unittest.TestCase):
 
 class RefusalTests(unittest.TestCase):
     def test_block_zero_valid(self):
-        out = C.link(**base_args(base=0x109, block=0, win=0x109))
+        out = C.link(**base_args(base=0x109, block=0, index=0x109))
         self.assertEqual((out["a"], out["c"], out["z"]), (0, 0, 1))
         self.assertTrue(out["issued"])
         self.assertEqual(out["lba"], 0x109)
@@ -64,28 +75,28 @@ class RefusalTests(unittest.TestCase):
 
     def test_window_end_plus16_no_after(self):
         # Link V1 reports $64 here; commercial first-mode accepts (no window end).
-        out = C.link(**base_args(base=0x109, block=16, win=0x109))
+        out = C.link(**base_args(base=0x109, block=16, index=0x109))
         self.assertEqual(out["a"], 0)
         self.assertTrue(out["issued"])
         self.assertEqual(out["lba"], 0x119)
 
     def test_after_never_returned(self):
         for block in (0, 1, 15, 16, 17, 100, 0xFFFF):
-            out = C.link(**base_args(base=0x109, block=block, win=0x109))
+            out = C.link(**base_args(base=0x109, block=block, index=0x109))
             self.assertNotEqual(out["a"], C.ERR_AFTER,
                                 f"block {block:#x} returned reserved $64")
 
     def test_before_pregap_guard(self):
-        out = C.link(**base_args(base=0, block=5, win=0x109))
+        out = C.link(**base_args(base=0, block=5, index=0x109))
         self.assertEqual(out["a"], C.ERR_BEFORE)
         self.assertFalse(out["issued"])
         self.assertEqual(out["stage"], 1)
 
     def test_21bit_cap(self):
-        out = C.link(**base_args(base=0x1FFFFF, block=0, win=0x109))
+        out = C.link(**base_args(base=0x1FFFFF, block=0, index=0x109))
         # base itself is in range; LBA == $1FFFFF is the last valid address.
         self.assertEqual(out["a"], 0)
-        out = C.link(**base_args(base=0x1FFFFF, block=1, win=0x109))
+        out = C.link(**base_args(base=0x1FFFFF, block=1, index=0x109))
         self.assertEqual(out["a"], C.ERR_OVER_CAP)
         self.assertFalse(out["issued"])
 
@@ -114,9 +125,9 @@ class FirstModeGuardTests(unittest.TestCase):
             self.assertFalse(out["issued"])
 
     def test_20f2_independence(self):
-        want = C.link(**base_args(base=0x109, block=3, win=0x109))
+        want = C.link(**base_args(base=0x109, block=3, index=0x109))
         for ignored in (0, 1, 0x7F, 0xFF, 0x1234, -1, 1 << 24):
-            out = C.link(**base_args(base=0x109, block=3, win=0x109),
+            out = C.link(**base_args(base=0x109, block=3, index=0x109),
                          blk_lo_ignored=ignored)
             self.assertEqual((out["a"], out["lba"], out["issued"]),
                              (want["a"], want["lba"], want["issued"]),
@@ -126,9 +137,42 @@ class FirstModeGuardTests(unittest.TestCase):
         out = C.link(**base_args(last=0xFF))
         self.assertEqual(out["a"], C.ERR_INVALID_STATE)
         self.assertEqual((out["lhi"], out["lmid"], out["llo"]), (0, 0, 0))
-        out = C.link(**base_args(win=0x200000))
+        out = C.link(**base_args(index=0x200000))
         self.assertEqual(out["a"], C.ERR_INVALID_WINDOW)
         self.assertFalse(out["issued"])
+
+    def test_untrusted_win_has_no_param(self):
+        # $20F5-$20F7 are not model inputs at all: the mirror signature has
+        # no WIN bytes (trusted bound is XSEL). Structural proof: any WIN
+        # value the old contract accepted is unrepresentable here.
+        import inspect as _inspect
+        params = set(_inspect.signature(C.link).parameters)
+        self.assertNotIn("win_lo", params)
+        self.assertNotIn("win_mid", params)
+        self.assertNotIn("win_hi", params)
+        self.assertIn("xsel", params)
+
+    def test_bad_xsel_refused(self):
+        out = C.link(**base_args(xsel_magic=b"\x00\x00\x00\x00"))
+        self.assertEqual(out["a"], C.ERR_INVALID_WINDOW)
+        self.assertFalse(out["issued"])
+        out = C.link(**base_args(xsel_ver=2))
+        self.assertEqual(out["a"], C.ERR_INVALID_WINDOW)
+        self.assertFalse(out["issued"])
+
+    def test_magic_and_valid_gate(self):
+        out = C.link(**base_args(magic=0x00))
+        self.assertEqual(out["a"], C.ERR_INVALID_STATE)
+        self.assertFalse(out["issued"])
+        out = C.link(**base_args(valid=0x00))
+        self.assertEqual(out["a"], C.ERR_INVALID_STATE)
+        self.assertFalse(out["issued"])
+        out = C.link(**base_args(valid=0x02))
+        self.assertEqual(out["a"], C.ERR_INVALID_STATE)
+        self.assertFalse(out["issued"])
+        out = C.link(**base_args(valid=0x03))
+        self.assertEqual(out["a"], 0)
+        self.assertTrue(out["issued"])
 
 
 class DriveOutcomeTests(unittest.TestCase):

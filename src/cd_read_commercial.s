@@ -17,6 +17,9 @@
 ;       state; updated only by CD_BASE on success, never by this routine).
 ;     $2403 generation, $2404 last (base state; last must be $00/DATA else INVALID_STATE).
 ;       $2405-$2407 preserved, never read by this routine.
+;       $240B ST_MAGIC must be $A5 and $240C ST_VALID bit0 set (recbase0 valid)
+;       else INVALID_STATE; other VALID bits follow the #805 contract and are
+;       not over-constrained here.
 ;     Commercial block (big-endian _cl:_ch:_dl per docs/cd-read-contract.md R2,
 ;       HYPOTHESIS from HuCC callers): $20FC block HI, $20FD block MID,
 ;       $20FE block LO. NOTE: $20F2/$20F3/$20F4 (the synthetic link V1 operand)
@@ -34,8 +37,18 @@
 ;     $20FA/$20FB destination LO/HI (_bl/_bh logical address; must be $00/$28 =
 ;       $2800 here: the single-sector fixed destination whose end $3000 exactly
 ;       meets, but never overlaps, payload/code at $3000+; see dest safety below).
-;     $20F5/$20F6/$20F7 window start LO/MID/HI (24-bit little-endian INDEX 01 of
-;       the selected data track; synthetic-only, host-derived, 21-bit).
+;     $20F5/$20F6/$20F7 are caller RAM and are NEVER trusted: this routine
+;       does not read them (mutation-proven; any values leave the INDEX01
+;       bound unchanged). The trusted lower bound is the host-determined
+;       XSEL selection record (experimental_selection) below.
+;     Trusted INDEX 01 (host-determined, NOT caller RAM): experimental_selection
+;       11-byte XSEL record (magic "XSEL", version 1, format 1, KIND, TRACK,
+;       INDEX01 HI/MID/LO big-endian). Magic/version/format are validated;
+;       KIND/TRACK are not interpreted here (positional guard only). Invalid
+;       XSEL, INDEX01 HI >= $20, or LBA below XSEL INDEX01 is refused before
+;       any $1800 access ($61/$61/$63). XSEL travels with this routine in both
+;       links (ROM BOOT via the glue object; test payload via its own record),
+;       so the synthetic fixture exercises the identical boundary path.
 ;       No WINDOW_LEN: unlike CD_READ_LINK_V1 there is NO 16-sector exclusive end.
 ;       Grounds for lifting the 16-window (not lifted without grounds): the pinned
 ;       2-base commit observes commercial CUE[1] reaching $03 $64 AFTER past the
@@ -124,6 +137,7 @@
 .setcpu "huc6280"
 .segment "BOOT"
 .export cd_read_commercial_entry
+.import experimental_selection
 
 ; --- owned / caller-owned addresses ---
 ST_HI   = $2400
@@ -131,6 +145,10 @@ ST_MID  = $2401
 ST_LO   = $2402
 ST_GEN  = $2403
 ST_LAST = $2404
+ST_MAGIC = $240B
+ST_VALID = $240C
+VALID_RB0 = $01
+MAGIC_A5  = $A5
 
 ; Commercial block: big-endian _cl:_ch:_dl (R2 HYPOTHESIS). $20F2-$20F4 ignored.
 CBLK_HI = $20FC
@@ -144,10 +162,8 @@ CSZ_HI  = $20F9
 ; Destination _bl/_bh (logical address, must be $00/$28).
 CDST_LO = $20FA
 CDST_HI = $20FB
-; INDEX 01 window start (little-endian, lower bound only).
-WIN_LO  = $20F5
-WIN_MID = $20F6
-WIN_HI  = $20F7
+; NOTE: $20F5/$20F6/$20F7 are untrusted caller RAM and are never read.
+; The trusted INDEX01 bound is experimental_selection+8/9/10 (XSEL).
 
 CRES = $2330
 CR_CODE  = $2330
@@ -238,16 +254,63 @@ cd_read_commercial_entry:
     phy
     cld
     SAVE_TEMPS
-    ; --- invalid-state: base never established (last != $00/DATA) ---
+    ; --- invalid-state: base never established ---
+    ; ST_LAST == $00/DATA alone is NOT enough (P2): also require the #805
+    ; seed contract ST_MAGIC == $A5 and ST_VALID bit0 (recbase0 valid).
+    ; Other VALID bits follow the #805 contract and are not over-constrained.
     ; (read-only: input/state are only read here; first writes happen at
     ; @do_read after all validation passes. Temp save above makes ZP temps
     ; free scratch with observable net-zero at every exit.)
     lda ST_LAST
-    beq @have_base
+    beq @st_ok1
+    jmp @ref_state
+@st_ok1:
+    lda ST_MAGIC
+    cmp #MAGIC_A5
+    beq @st_ok2
+    jmp @ref_state
+@st_ok2:
+    lda ST_VALID
+    and #VALID_RB0
+    bne @have_base
     jmp @ref_state
 @have_base:
-    ; --- invalid-window: INDEX 01 start must fit READ(6) 21 bits ---
-    lda WIN_HI
+    ; --- trusted INDEX 01: XSEL record validation (P1) ---
+    ; experimental_selection 11 bytes: "XSEL",1,1,KIND,TRACK,HI,MID,LO.
+    ; Magic/version/format are validated; KIND/TRACK not interpreted.
+    ; $20F5-$20F7 are never read (untrusted caller RAM).
+    lda experimental_selection+0
+    cmp #'X'
+    beq @x0_ok
+    jmp @ref_window
+@x0_ok:
+    lda experimental_selection+1
+    cmp #'S'
+    beq @x1_ok
+    jmp @ref_window
+@x1_ok:
+    lda experimental_selection+2
+    cmp #'E'
+    beq @x2_ok
+    jmp @ref_window
+@x2_ok:
+    lda experimental_selection+3
+    cmp #'L'
+    beq @x3_ok
+    jmp @ref_window
+@x3_ok:
+    lda experimental_selection+4
+    cmp #$01
+    beq @x4_ok
+    jmp @ref_window
+@x4_ok:
+    lda experimental_selection+5
+    cmp #$01
+    beq @x5_ok
+    jmp @ref_window
+@x5_ok:
+    ; --- trusted INDEX 01 HI must fit READ(6) 21 bits ---
+    lda experimental_selection+8
     cmp #$20
     bcc @win_ok
     jmp @ref_window
@@ -275,22 +338,22 @@ cd_read_commercial_entry:
     bcc @cap_ok
     jmp @ref_cap
 @cap_ok:
-    ; --- lower bound: LBA < INDEX01 start => BEFORE (pregap/audio guard) ---
+    ; --- lower bound: LBA < trusted XSEL INDEX01 => BEFORE (pregap/audio guard) ---
     ; (far refusal targets: use short-skip + JMP trampolines for 6502 range)
     lda lhi
-    cmp WIN_HI
+    cmp experimental_selection+8
     bcs @hi_ge_win
     jmp @ref_before
 @hi_ge_win:
     bne @ge_win
     lda lmid
-    cmp WIN_MID
+    cmp experimental_selection+9
     bcs @mid_ge_win
     jmp @ref_before
 @mid_ge_win:
     bne @ge_win
     lda llo
-    cmp WIN_LO
+    cmp experimental_selection+10
     bcs @lo_ge_win
     jmp @ref_before
 @lo_ge_win:

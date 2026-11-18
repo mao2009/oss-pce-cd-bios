@@ -264,10 +264,13 @@ int main(int argc, char** argv) {
                 if (slot == 3 && memory->GetMpr(1) == 0xF8) {
                     const u8* w3 = memory->GetWorkingRAM();
                     unsigned dh = w3[0xFF];
-                    if (dh == 0x01) addr_mode = "LOCAL";
+                    // P2: _dh=0 is the only implemented mode (FIRST/LOCAL
+                    // bytes); _dh=1 has no verified meaning (the routine
+                    // refuses it $65), so it must not read as confirmed
+                    // LOCAL. Unknown/unverified modes stay OTHER.
+                    if (dh == 0x00) addr_mode = "LOCAL_BYTES";
                     else if (dh >= 0x02 && dh <= 0x06) addr_mode = "BANK";
                     else if (dh == 0xFE || dh == 0xFF) addr_mode = "VRAM";
-                    else if (dh == 0x00) addr_mode = "ZERO";
                     else addr_mode = "OTHER";
                     unsigned sz_lo = w3[0xF8], sz_hi = w3[0xF9];
                     unsigned sz = (sz_hi << 8) | sz_lo;

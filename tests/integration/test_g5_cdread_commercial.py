@@ -90,12 +90,20 @@ class CdReadCommercialSynthetic(unittest.TestCase):
 
     def _run(self, name, setup_lines, via_slot03=False, slot03_block=0,
              poke_base=None, skip_base_call=False, rom_kind="exp",
-             via_table=False, tamper_mpr3=False):
+             via_table=False, tamper_mpr3=False, mock_magic=0xA5,
+             mock_valid=0x01, base_cl=1, xsel_lba=None, xsel_magic=None):
         """Assemble payload CODE ($3000) + commercial BOOT ($3800); run cold+warm.
 
         rom_kind selects the Experimental (commercial $03) or Control (link V1
         $03) ROM; via_table=True issues the call through the $E009 table entry
-        instead of a direct JSR, proving table routing on real hardware."""
+        instead of a direct JSR, proving table routing on real hardware.
+        The payload defines its own trusted XSEL selection record
+        (experimental_selection; default INDEX01 = sel, magic "XSEL"/1/1)
+        so the synthetic fixture exercises the identical boundary path as the
+        ROM link (glue XSEL) with no test-only fallback. xsel_lba overrides
+        the XSEL INDEX01; xsel_magic overrides the 4 magic bytes (None = valid).
+        skip_base_call installs an explicit initialized mock base state
+        (ST_LAST=0, ST_MAGIC, ST_VALID) instead of running $E006."""
         import geargrafx_api_entry as Eentry
         if rom_kind == "exp":
             rom, labels = self.rom, self.labels
@@ -117,6 +125,8 @@ class CdReadCommercialSynthetic(unittest.TestCase):
             phi, pmi, plo = _blk_be(poke_base)
             base_call = (f" lda #${plo:02X}\n sta $2402\n lda #${pmi:02X}\n sta $2401\n"
                          f" lda #${phi:02X}\n sta $2400\n lda #$00\n sta $2404\n"
+                         f" lda #${mock_magic:02X}\n sta $240B\n"
+                         f" lda #${mock_valid:02X}\n sta $240C\n"
                          " sta $2403\n tsx\n stx $F1\n")
             base_pull = ""
         else:
@@ -125,13 +135,14 @@ class CdReadCommercialSynthetic(unittest.TestCase):
                 " lda #$FF\n sta $2404\n"
                 f" lda #${self.track_sel:02X}\n sta $20F8\n"
                 " lda #$00\n sta $20F9\n sta $20FA\n sta $20FD\n sta $20FE\n sta $20FF\n"
-                " lda #$80\n sta $20FB\n lda #$01\n sta $20FC\n"
+                " lda #$80\n sta $20FB\n"
+                f" lda #${base_cl:02X}\n sta $20FC\n"
                 " jsr $E006\n tsx\n stx $F1\n pha\n php\n"
                 " ; base A/P stashed on stack; stored after the transfer\n"
                 " ; ($2F80+ lies inside the [$2800,$3000) transfer window)\n")
-            base_pull = (" pla\n sta $2FBB\n pla\n sta $2FBA\n"
-                         " lda $2400\n sta $2FBC\n lda $2401\n sta $2FBD\n"
-                         " lda $2402\n sta $2FBE\n lda $2404\n sta $2FBF\n")
+            base_pull = (" pla\n sta res_base+59\n pla\n sta res_base+58\n"
+                         " lda $2400\n sta res_base+60\n lda $2401\n sta res_base+61\n"
+                         " lda $2402\n sta res_base+62\n lda $2404\n sta res_base+63\n")
         if via_slot03:
             blo = slot03_block & 0xFF
             bmi = (slot03_block >> 8) & 0xFF
@@ -146,7 +157,7 @@ class CdReadCommercialSynthetic(unittest.TestCase):
         else:
             call = " jsr cd_read_commercial_entry\n"
         asm = (
-            ".setcpu \"huc6280\"\n.import cd_read_commercial_entry\n.segment \"CODE\"\n"
+            ".setcpu \"huc6280\"\n.import cd_read_commercial_entry\n.export experimental_selection\n.segment \"CODE\"\n"
             "payload_entry:\n"
             # canary $2800-$2FFF = $AA
             " lda #$AA\n ldx #$00\ncan: sta $2800,x\n sta $2900,x\n sta $2A00,x\n sta $2B00,x\n"
@@ -163,27 +174,36 @@ class CdReadCommercialSynthetic(unittest.TestCase):
             " tma #$10\n pha\n tma #$20\n pha\n tma #$40\n pha\n tma #$80\n pha\n"
             " ldx #$12\n ldy #$34\n"  # X/Y canaries (routine must preserve)
             + call +
-            " sta $2F80\n php\n pla\n sta $2F81\n stx $2FDE\n sty $2FDF\n"
+            " sta res_base+0\n php\n pla\n sta res_base+1\n stx res_base+94\n sty res_base+95\n"
             + (" lda #$42\n tam #$08\n" if tamper_mpr3 else "") +
-            " tma #$01\n sta $2FD0\n tma #$02\n sta $2FD1\n tma #$04\n sta $2FD2\n"
-            " tma #$08\n sta $2FD3\n tma #$10\n sta $2FD4\n tma #$20\n sta $2FD5\n"
-            " tma #$40\n sta $2FD6\n tma #$80\n sta $2FD7\n"
-            " tma #$01\n sta $2F8C\n tma #$02\n sta $2F8D\n tma #$04\n sta $2F8E\n"
-            " tma #$08\n sta $2F8F\n tma #$10\n sta $2F90\n tma #$20\n sta $2F91\n"
-            " tma #$40\n sta $2F92\n tma #$80\n sta $2F93\n"
+            " tma #$01\n sta res_base+80\n tma #$02\n sta res_base+81\n tma #$04\n sta res_base+82\n"
+            " tma #$08\n sta res_base+83\n tma #$10\n sta res_base+84\n tma #$20\n sta res_base+85\n"
+            " tma #$40\n sta res_base+86\n tma #$80\n sta res_base+87\n"
+            " tma #$01\n sta res_base+12\n tma #$02\n sta res_base+13\n tma #$04\n sta res_base+14\n"
+            " tma #$08\n sta res_base+15\n tma #$10\n sta res_base+16\n tma #$20\n sta res_base+17\n"
+            " tma #$40\n sta res_base+18\n tma #$80\n sta res_base+19\n"
             # pull before-snapshot in exact reverse push order: M7..M0
-            " pla\n sta $2F93\n pla\n sta $2F92\n pla\n sta $2F91\n pla\n sta $2F90\n"
-            " pla\n sta $2F8F\n pla\n sta $2F8E\n pla\n sta $2F8D\n pla\n sta $2F8C\n"
+            " pla\n sta res_base+19\n pla\n sta res_base+18\n pla\n sta res_base+17\n pla\n sta res_base+16\n"
+            " pla\n sta res_base+15\n pla\n sta res_base+14\n pla\n sta res_base+13\n pla\n sta res_base+12\n"
             + base_pull +
             # post-call legacy-input snapshot (proves save/restore net-zero).
-            " lda $20F2\n sta $2FD8\n lda $20F3\n sta $2FD9\n lda $20F4\n sta $2FDA\n"
+            " lda $20F2\n sta res_base+88\n lda $20F3\n sta res_base+89\n lda $20F4\n sta res_base+90\n"
             # SP baseline (pre-stash) vs final SP (all pulls done): must match
-            " lda $F1\n sta $2F82\n tsx\n stx $2F83\n"
-            " ldx #$09\nrc: lda $2330,x\n sta $2F94,x\n lda $2320,x\n sta $2F9E,x\n dex\n bpl rc\n"
-            " ldx #$0F\nrb: lda $2800,x\n sta $2FA8,x\n dex\n bpl rb\n"
-            " ldx #$07\nrs: lda $2400,x\n sta $2FC0,x\n"
-            " lda $20F8,x\n sta $2FC8,x\n dex\n bpl rs\n"
-            "payload_halt:\n bra payload_halt\n")
+            " lda $F1\n sta res_base+2\n tsx\n stx res_base+3\n"
+            # ST_MAGIC/ST_VALID post-call snapshot (P2 state-preservation)
+            " lda $240B\n sta res_base+96\n lda $240C\n sta res_base+97\n"
+            " ldx #$09\nrc: lda $2330,x\n sta res_base+20,x\n lda $2320,x\n sta res_base+30,x\n dex\n bpl rc\n"
+            " ldx #$0F\nrb: lda $2800,x\n sta res_base+40,x\n dex\n bpl rb\n"
+            " ldx #$07\nrs: lda $2400,x\n sta res_base+64,x\n"
+            " lda $20F8,x\n sta res_base+72,x\n dex\n bpl rs\n"
+            "payload_halt:\n bra payload_halt\n"
+            "experimental_selection:\n"
+            f" .byte {xsel_magic if xsel_magic is not None else '\"XSEL\"'}\n"
+            f" .byte $01, $01, $01, ${self.track_sel:02X}\n"
+            f" .byte ${((xsel_lba if xsel_lba is not None else self.sel) >> 16) & 0xFF:02X},"
+            f" ${((xsel_lba if xsel_lba is not None else self.sel) >> 8) & 0xFF:02X},"
+            f" ${(xsel_lba if xsel_lba is not None else self.sel) & 0xFF:02X}\n"
+            "res_base:\n .res 100\n")
         o = self.out / name
         o.mkdir(exist_ok=True)
         src = o / (name + ".s")
@@ -207,6 +227,8 @@ class CdReadCommercialSynthetic(unittest.TestCase):
             if m:
                 syms[m.group(2)] = int(m.group(1), 16)
         assert syms.get("cd_read_commercial_entry") == 0x3800, syms
+        assert syms.get("res_base", 0) < 0x3800, syms
+        self._res_base = syms["res_base"] - 0x2800
         assert syms.get("payload_halt", 0) < 0x3800, syms
         code = binp.read_bytes()
         assert len(code) <= 2 * 2048, len(code)
@@ -236,7 +258,7 @@ class CdReadCommercialSynthetic(unittest.TestCase):
         return by_cycle["cold"], by_cycle["warm"]
 
     def _res(self, buf):
-        base = 0x780  # $2F80 - $2800 (dump starts at $2800)
+        base = self._res_base  # res_base block offset in dump (was 0x780)
         return {
             "a": buf[base], "p": buf[base + 1],
             "sp0": buf[base + 2], "sp1": buf[base + 3],
@@ -249,6 +271,7 @@ class CdReadCommercialSynthetic(unittest.TestCase):
             "base_a": buf[base + 58], "base_p": buf[base + 59],
             "rb0": tuple(buf[base + 60:base + 63]), "stlast": buf[base + 63],
             "x_after": buf[base + 94], "y_after": buf[base + 95],
+            "magic": buf[base + 96], "valid": buf[base + 97],
             "state8": list(buf[base + 64:base + 72]),
             "in8": list(buf[base + 72:base + 80]),
         }
@@ -297,10 +320,9 @@ class CdReadCommercialSynthetic(unittest.TestCase):
         self.assertEqual((r["x_after"], r["y_after"]), (0x12, 0x34))  # X/Y
         exp = self._expected_frame("c01", 0x109)
         got = list(cold[0x000:0x800])[:2048]
-        # $2F80..$2FDF (offsets 1920..2015) hold post-transfer result stores;
-        # verify transfer data outside that window.
-        self.assertEqual(got[0:1920], exp[0:1920])
-        self.assertEqual(got[2016:2048], exp[2016:2048])
+        # Full 2048B memcmp: the transfer window [$2800,$3000) is pristine
+        # (all result recording moved to the linker res_base block).
+        self.assertEqual(list(got[0:2048]), list(exp[0:2048]))
 
     def test_c02_valid_block1_distinct(self):
         rec = self._run("c02", self._comm_regs(1))
@@ -310,8 +332,7 @@ class CdReadCommercialSynthetic(unittest.TestCase):
         self.assertEqual(tuple(r["cres"][7:10]), (0, 1, 10))
         exp = self._expected_frame("c02", 0x10A)
         got2 = list(cold[0:2048])
-        self.assertEqual(got2[0:1920], exp[0:1920])
-        self.assertEqual(got2[2016:2048], exp[2016:2048])
+        self.assertEqual(list(got2[0:2048]), list(exp[0:2048]))
         exp0 = self._expected_frame("c02", 0x109)
         self.assertNotEqual(exp, exp0)  # distinct sectors
 
@@ -325,8 +346,7 @@ class CdReadCommercialSynthetic(unittest.TestCase):
         self.assertEqual(r["mpr_pre"], r["mpr_post"])
         exp = self._expected_frame("c03", 0x119)
         got3 = list(cold[0:2048])
-        self.assertEqual(got3[0:1920], exp[0:1920])
-        self.assertEqual(got3[2016:2048], exp[2016:2048])
+        self.assertEqual(list(got3[0:2048]), list(exp[0:2048]))
 
     def test_c03ctrl_control_reports_after(self):
         # Control ROM (link V1 $03, $20F2 block): win+16 is AFTER ($64),
@@ -411,8 +431,7 @@ class CdReadCommercialSynthetic(unittest.TestCase):
         self.assertEqual(tuple(r["cres"][7:10]), (0, 1, 9))
         exp = self._expected_frame("c09", 0x109)
         got9 = list(cold[0:2048])
-        self.assertEqual(got9[0:1920], exp[0:1920])
-        self.assertEqual(got9[2016:2048], exp[2016:2048])
+        self.assertEqual(list(got9[0:2048]), list(exp[0:2048]))
 
     def test_c10_cold_warm_and_2base_link(self):
         rec = self._run("c10", self._comm_regs(2))
@@ -477,8 +496,7 @@ class CdReadCommercialSynthetic(unittest.TestCase):
         self.assertEqual(r["mpr_pre"], r["mpr_post"])
         exp = self._expected_frame("c14", 0x109)
         got = list(cold[0:2048])
-        self.assertEqual(got[0:1920], exp[0:1920])
-        self.assertEqual(got[2016:2048], exp[2016:2048])
+        self.assertEqual(list(got[0:2048]), list(exp[0:2048]))
 
     def test_c15_mpr_tamper_detected(self):
         # Mutant: tamper MPR3 after the call but before the post-call snapshot
@@ -509,3 +527,136 @@ class CdReadCommercialSynthetic(unittest.TestCase):
         self.assertEqual(list(cold[0:16]), [0xAA] * 16)
         self.assertEqual(r["sentinel"], [0x11, 0x22, 0x33])
         self.assertEqual(r["in8"], [0, 8, 0, 0x28, 0, 0, 0, 1])
+
+    # --- P1: trusted XSEL INDEX01 (untrusted $20F5-$20F7 ignored) ---
+    def test_c17_win_mutation_ignored(self):
+        # $20F5-$20F7 garbage (even HI>=$20, which the old code refused as
+        # $61) must not change the boundary: XSEL INDEX01 rules. RED on old
+        # code ($61), GREEN on trusted-XSEL code ($00 + correct LBA).
+        lines = self._comm_regs(0) + [
+            " lda #$FF\n sta $20F5", " lda #$FF\n sta $20F6",
+            " lda #$FF\n sta $20F7",
+        ]
+        rec = self._run("c17", lines)
+        cold, warm = self._buf(rec)
+        self.assertEqual(cold, warm)
+        r = self._res(cold)
+        self.assertEqual(r["a"], 0)
+        self.assertEqual(tuple(r["cres"][7:10]), (0, 1, 9))
+        self.assertEqual(r["mpr_pre"], r["mpr_post"])
+
+    def test_c18_bad_xsel_magic_refused(self):
+        # Corrupted XSEL magic: no trusted bound exists -> $61, no CRES,
+        # canary intact, no transfer. NOT a BEFORE ($63): the bound itself
+        # is unusable.
+        rec = self._run("c18", self._comm_regs(0),
+                        xsel_magic='"$00,$00,$00,$00"')
+        cold, warm = self._buf(rec)
+        self.assertEqual(cold, warm)
+        r = self._res(cold)
+        self.assertEqual(r["a"], 0x61)
+        self.assertEqual(list(r["cres"]), [0] * 10)
+        self.assertEqual(list(cold[0:16]), [0xAA] * 16)
+        self.assertEqual(cold[0x7FF], 0xAA)
+        self.assertEqual(r["mpr_pre"], r["mpr_post"])
+
+    def test_c19_custom_xsel_boundary(self):
+        # XSEL INDEX01 = 0x10A drives the bound (not hardcoded 0x109):
+        # LBA 0x109 < 0x10A -> $63; LBA 0x10A -> success (frame exists).
+        rec = self._run("c19a", self._comm_regs(0), xsel_lba=0x10A)
+        cold, _ = self._buf(rec)
+        r = self._res(cold)
+        self.assertEqual(r["a"], 0x63)
+        self.assertEqual(list(r["cres"]), [0] * 10)
+        rec = self._run("c19b", self._comm_regs(1), xsel_lba=0x10A)
+        cold, _ = self._buf(rec)
+        r = self._res(cold)
+        self.assertEqual(r["a"], 0)
+        self.assertEqual(tuple(r["cres"][7:10]), (0, 1, 10))
+
+    # --- P2: CD_BASE initialization gate (ST_LAST + MAGIC + VALID bit0) ---
+    def test_c20_uninit_state_last_zero(self):
+        # Cleared RAM, ST_LAST=0, but no seed (magic/valid zero) -> $60.
+        rec = self._run("c20", self._comm_regs(0), poke_base=0x109,
+                        skip_base_call=True, mock_magic=0x00, mock_valid=0x00)
+        cold, warm = self._buf(rec)
+        self.assertEqual(cold, warm)
+        r = self._res(cold)
+        self.assertEqual(r["a"], 0x60)
+        self.assertEqual(list(r["cres"]), [0] * 10)
+        self.assertEqual(list(cold[0:16]), [0xAA] * 16)
+        self.assertEqual(r["mpr_pre"], r["mpr_post"])
+        self.assertEqual((r["magic"], r["valid"]), (0x00, 0x00))
+
+    def test_c21_magic_mismatch(self):
+        rec = self._run("c21", self._comm_regs(0), poke_base=0x109,
+                        skip_base_call=True, mock_magic=0x5A, mock_valid=0x01)
+        cold, _ = self._buf(rec)
+        r = self._res(cold)
+        self.assertEqual(r["a"], 0x60)
+        self.assertEqual(list(r["cres"]), [0] * 10)
+        self.assertEqual(list(cold[0:16]), [0xAA] * 16)
+        self.assertEqual((r["magic"], r["valid"]), (0x5A, 0x01))
+
+    def test_c22_valid_bit_missing(self):
+        # VALID=0 and VALID=$02 (bit1 only, no recbase0 bit) both refuse;
+        # VALID=$03 (both bits) must still succeed (no over-constraint).
+        for nm, valid, want in (("c22a", 0x00, 0x60), ("c22b", 0x02, 0x60)):
+            rec = self._run(nm, self._comm_regs(0), poke_base=0x109,
+                            skip_base_call=True, mock_valid=valid)
+            cold, _ = self._buf(rec)
+            r = self._res(cold)
+            self.assertEqual(r["a"], want, nm)
+            self.assertEqual(list(r["cres"]), [0] * 10, nm)
+            self.assertEqual((r["magic"], r["valid"]), (0xA5, valid), nm)
+        rec = self._run("c22c", self._comm_regs(0), poke_base=0x109,
+                        skip_base_call=True, mock_valid=0x03)
+        cold, _ = self._buf(rec)
+        r = self._res(cold)
+        self.assertEqual(r["a"], 0)
+        self.assertEqual(tuple(r["cres"][7:10]), (0, 1, 9))
+
+    def test_c23_second_update_keeps_recbase0(self):
+        # $E006 with _cl=2 (SECOND): recbase0 stays seeded INDEX01 and valid;
+        # a following $03 block 0 reads recbase0 -> success, LBA 0x109.
+        rec = self._run("c23", self._comm_regs(0), base_cl=2)
+        cold, warm = self._buf(rec)
+        self.assertEqual(cold, warm)
+        r = self._res(cold)
+        self.assertEqual(r["a"], 0)
+        self.assertEqual(r["rb0"], (0, 1, 9))
+        self.assertEqual(tuple(r["cres"][7:10]), (0, 1, 9))
+        self.assertEqual(r["stlast"], 0)
+
+    def test_c24_full_memcmp_detects_corruption(self):
+        # P2: the full 2048B transfer window is compared (no exclusions).
+        # Corrupting head/middle/old-excluded-range/tail must each be detected
+        # (proves the old $2F80-$2FDF exclusion is gone, not just moved).
+        rec = self._run("c24", self._comm_regs(0))
+        cold, _ = self._buf(rec)
+        r = self._res(cold)
+        self.assertEqual(r["a"], 0)
+        exp = self._expected_frame("c24", 0x109)
+        got = list(cold[0:2048])
+        self.assertEqual(got, exp)
+        for pos, tag in ((0, "head"), (1000, "middle"),
+                         (1950, "old-excluded"), (2047, "tail")):
+            bad = list(exp)
+            bad[pos] ^= 0xFF
+            self.assertNotEqual(got, bad, tag)
+
+    def test_c25_dh_classifier_local_bytes(self):
+        # P2: probe classifies slot-3 _dh=0 as LOCAL_BYTES (was ZERO,
+        # contradicting the implemented FIRST/LOCAL-bytes mode) and
+        # unverified _dh=1 as OTHER (was LOCAL, implying a confirmed mode
+        # the routine actually refuses $65).
+        rec = self._run("c25a", self._comm_regs(0), via_table=True)
+        calls = [c for c in rec["APICALL"]
+                 if c["cycle"] == "cold" and c["slot"] == 3]
+        self.assertTrue(calls)
+        self.assertEqual(calls[0]["addr_mode"], "LOCAL_BYTES")
+        rec = self._run("c25b", self._comm_regs(0, mode=1), via_table=True)
+        calls = [c for c in rec["APICALL"]
+                 if c["cycle"] == "cold" and c["slot"] == 3]
+        self.assertTrue(calls)
+        self.assertEqual(calls[0]["addr_mode"], "OTHER")

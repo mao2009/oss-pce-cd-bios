@@ -56,17 +56,21 @@ PH_COMMAND = 0xD0
 PH_FREE = 0x00
 
 
-def link(base_hi, base_mid, base_lo, gen, last,
-         cblk_hi, cblk_mid, cblk_lo, win_lo, win_mid, win_hi,
+def link(base_hi, base_mid, base_lo, gen, last, magic, valid,
+         cblk_hi, cblk_mid, cblk_lo, xsel,
          mode, size_lo, size_hi, dst_lo, dst_hi, blk_lo_ignored=0,
          scsi="ok", state=None, partial=0, scsi_status=2, msg=0,
          timeout_stage=5, timeout_bytes=0, timeout_last=PH_COMMAND):
     """Mirror of the guest commercial first-mode routine.
 
     base_hi/mid/lo: recbase0 $2400/$2401/$2402 (HI/MID/LO, preserved).
-    gen/last: state $2403/$2404 (preserved; last must be 0/DATA else INVALID_STATE).
+    gen/last/magic/valid: state $2403/$2404/$240B/$240C (preserved; last must
+      be 0/DATA, magic must be $A5, valid bit0 (recbase0) must be set, else
+      INVALID_STATE; other VALID bits are not over-constrained).
     cblk_hi/mid/lo: commercial block $20FC/$20FD/$20FE (HI/MID/LO, preserved).
-    win_lo/mid/hi: INDEX 01 lower bound $20F5/$20F6/$20F7 (LO/MID/HI, preserved).
+    xsel: 11-byte trusted XSEL selection record (magic "XSEL", version 1,
+      format 1, KIND, TRACK, INDEX01 HI/MID/LO). Magic/version/format are
+      validated (else INVALID_WINDOW); $20F5-$20F7 are never read (no param).
     mode/size/dst: _dh $20FF, _ax $20F8/$20F9, _bx $20FA/$20FB (preserved).
     blk_lo_ignored: accepted and IGNORED (proves $20F2 independence; any value,
       including out-of-range ints, never changes the result -- validated loosely).
@@ -81,13 +85,17 @@ def link(base_hi, base_mid, base_lo, gen, last,
     """
     for val, name in ((base_hi, "base_hi"), (base_mid, "base_mid"),
                       (base_lo, "base_lo"), (gen, "gen"), (last, "last"),
+                      (magic, "magic"), (valid, "valid"),
                       (cblk_hi, "cblk_hi"), (cblk_mid, "cblk_mid"),
-                      (cblk_lo, "cblk_lo"), (win_lo, "win_lo"),
-                      (win_mid, "win_mid"), (win_hi, "win_hi"),
+                      (cblk_lo, "cblk_lo"),
                       (mode, "mode"), (size_lo, "size_lo"),
                       (size_hi, "size_hi"), (dst_lo, "dst_lo"),
                       (dst_hi, "dst_hi")):
         _u8(val, name)
+    if (not isinstance(xsel, (bytes, bytearray, list, tuple))
+            or len(xsel) != 11):
+        raise ValueError("xsel must be an 11-byte XSEL record")
+    xsel = bytes(xsel)
     if scsi == "fail":
         raise ValueError("scsi='fail' is ambiguous; use 'premature' or 'tail_bad'")
     if scsi not in ("ok", "premature", "tail_bad", "timeout"):
@@ -110,6 +118,15 @@ def link(base_hi, base_mid, base_lo, gen, last,
 
     if last != 0:
         return refusal(ERR_INVALID_STATE)
+    if magic != 0xA5:
+        return refusal(ERR_INVALID_STATE)
+    if not (valid & 0x01):
+        return refusal(ERR_INVALID_STATE)
+    if bytes(xsel[0:4]) != b"XSEL" or xsel[4] != 1 or xsel[5] != 1:
+        lba, _, hi, mid, lo = compute_lba(
+            base_hi, base_mid, base_lo, cblk_hi, cblk_mid, cblk_lo)
+        return refusal(ERR_INVALID_WINDOW, (hi, mid, lo))
+    win_hi, win_mid, win_lo = xsel[8], xsel[9], xsel[10]
     if win_hi >= 0x20:
         lba, _, hi, mid, lo = compute_lba(
             base_hi, base_mid, base_lo, cblk_hi, cblk_mid, cblk_lo)
