@@ -3750,6 +3750,39 @@ class StdinProgramTests(unittest.TestCase):
         self.assertNotIn("unknown", reason)
         self.assertNotIn("external command", reason)
 
+    def test_command_substitution_inherits_pipe(self):
+        # MAJOR subs: "$(...)" in a pipe-fed segment inherits outer pipe-fed stdin.
+        for cmd in ['printf \'console.log(123)\' | echo "$(node)"',
+                    'printf \'print(42)\' | echo "$(python3)"',
+                    'printf \'console.log(123)\' | echo "$(sh -c \'node\')"',
+                    'printf \'console.log(123)\' | (echo "$(node)")',
+                    'printf \'console.log(123)\' | { echo "$(node)"; }',
+                    'echo x | echo "$(node)" "$(python3)"',
+                    'printf "x" | echo "$(echo "$(node)")"',
+                    'printf "x" | echo "`node`"',
+                    'printf "x" | if true; then echo "$(node)"; fi']:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertTrue("stdin-program" in reason or "compound" in reason or "depth" in reason or "parse" in reason, reason)
+                self.assertNotIn("external command", reason)
+                # Generic unknown without stdin-program is not counted as fixed.
+                if "unknown" in reason:
+                    self.assertIn("stdin-program", reason)
+
+    def test_command_substitution_independent_stays_allowed(self):
+        for cmd in ["echo data | node script.js",
+                    "echo data | sh -c 'cat'",
+                    "echo data | sh -c 'node script.js'",
+                    'echo hi | cat; echo "$(node)"',
+                    "node script.js",
+                    "python3 -m unittest",
+                    'echo "$(node)"',
+                    'echo data | echo "$(cat)"',
+                    'echo hi | echo "$(node script.js)"']:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self._d(cmd)[0], "ALLOW")
+
 class StdinProgramMutationTests(unittest.TestCase):
     """Mutants of the Issue #637 layers. Each must make a named StdinProgramTests method fail (an assertion
     failure, not an import error). Runs on every host (no symlink)."""
@@ -3791,12 +3824,29 @@ class StdinProgramMutationTests(unittest.TestCase):
         "case compound ignored": (
             "                        elif first == \"case\":",
             "                        elif False:"),
+        "subs parent not propagated": (
+            "            sub_fed = fed_list[parent_idx]",
+            "            sub_fed = inherited_fed"),
+        "subs always untainted": (
+            "            sub_fed = fed_list[parent_idx]",
+            "            sub_fed = False"),
+        "subs parent always first segment": (
+            "    for body, parent_idx in zip(subs, sub_parents):",
+            "    for body, parent_idx in zip(subs, [0]*len(subs)):"),
+        "nested subs inheritance disabled": (
+            "        analyze_text(body, ctx.copy(), ps, depth + 1, inherited_fed=sub_fed)",
+            "        analyze_text(body, ctx.copy(), ps, depth + 1, inherited_fed=False)"),
+        "subs global taint over-approximation": (
+            "            sub_fed = fed_list[parent_idx]",
+            "            sub_fed = any(fed_list)"),
     }
     DETECTING = ["test_piped_bare_python_is_refused", "test_dash_names_stdin_program",
                  "test_bare_other_interpreters_with_piped_or_redirected_stdin_are_refused",
                  "test_piped_node_options_only_is_refused", "test_node_explicit_dash_is_refused",
                  "test_wrapper_stdin_refused", "test_node_option_forms_classified",
-                 "test_compound_pipe_inherits_across_semicolons", "test_nested_shell_inherits_pipe"]
+                 "test_compound_pipe_inherits_across_semicolons", "test_nested_shell_inherits_pipe",
+                 "test_command_substitution_inherits_pipe",
+                 "test_command_substitution_independent_stays_allowed"]
 
     def _run(self, hook_text):
         with tempfile.TemporaryDirectory() as td:

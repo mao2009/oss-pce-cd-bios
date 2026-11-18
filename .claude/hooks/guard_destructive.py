@@ -538,7 +538,11 @@ def check_redirect(raw, op=">", ctx=None, ps=False):
 def split_segments(text, ps=False):
     """Split on unquoted ; & | ( ) and newlines (plus "{}," for PowerShell).
 
-    Returns (segments, substitution bodies, redirect targets per segment, pipe-fed flags per segment).
+    Returns (segments, substitution bodies, redirect targets per segment, pipe-fed flags per segment,
+    substitution parent segment indices parallel to substitution bodies). Each substitution body
+    belongs to the segment being built when "$(...)", backticks or "<(...)"/">(...)" was seen
+    (parent index = len(segments) at extraction, i.e. the segment that will hold its SUBST placeholder).
+    A redirect target is the raw word after each unquoted '>' ("" when there is none).
     A redirect target is the raw word after each unquoted '>' ("" when there is none). A pipe-fed flag
     is True when the segment's stdin is a pipe from the previous segment: the separator that starts it
     is a single `|` (not `||`, and `|&` keeps the pipe through the `&`). A whitespace-only segment (a line
@@ -550,6 +554,7 @@ def split_segments(text, ps=False):
     Too deep compound nesting is fail-closed DENY (depth limit).
     """
     segs, subs, cur, redirs, rd, pipes = [], [], [], [], [], []
+    sub_parents = []  # parallel to subs: parent segment index for each substitution body (MAJOR subs fix).
     fed = False
     # MAJOR-1: pipe-fed inheritance through compounds (if/while/until/for/case/select/function, (...), {...}).
     # Stack of (kind, entered-fed); too deep is fail-closed DENY (same limit as MAX_DEPTH).
@@ -573,11 +578,13 @@ def split_segments(text, ps=False):
         if c == "$" and i + 1 < n and text[i + 1] == "(":
             body, i = _matched(text, i + 2)
             subs.append(body)
+            sub_parents.append(len(segs))
             cur.append(SUBST)
             continue
         if c in "<>" and quote is None and i + 1 < n and text[i + 1] == "(":
             body, i = _matched(text, i + 2)  # process substitution
             subs.append(body)
+            sub_parents.append(len(segs))
             cur.append(SUBST)
             continue
         if c == "`":
@@ -585,6 +592,7 @@ def split_segments(text, ps=False):
             if j < 0:
                 raise Deny("parse", "unterminated backtick")
             subs.append(text[i + 1:j])
+            sub_parents.append(len(segs))
             cur.append(SUBST)
             i = j + 1
             continue
@@ -813,7 +821,7 @@ def split_segments(text, ps=False):
     segs.append("".join(cur))
     redirs.append(rd)
     pipes.append(fed)
-    return segs, subs, redirs, pipes
+    return segs, subs, redirs, pipes, sub_parents
 
 
 def short_has(arg, letters):
@@ -2739,7 +2747,7 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False):
         raise Deny("powershell", "PowerShell method call is not inspected")
     if ps and PS_PROC_LAUNCH_RE.search(text) and EXPR_SYNTAX_RE.search(text):
         raise Deny("launcher", "PowerShell process launcher with expression syntax is not inspected")
-    segs, subs, redirs, piped = split_segments(text, ps)
+    segs, subs, redirs, piped, sub_parents = split_segments(text, ps)
     # MAJOR-1/2: split_segments already tracks compound inheritance; nested shells
     # (sh -c, wrappers, eval, subs) inherit outer pipe-fed stdin (fail-closed OR).
     fed_list = [p or inherited_fed for p in piped]
@@ -2758,8 +2766,19 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False):
             raise refusal
     if sum(len(ops) for ops in redirs) > MAX_REDIRECTS:
         raise Deny("redirect", "more than %d redirections are not inspected" % MAX_REDIRECTS)
-    for body in subs:
-        analyze_text(body, ctx.copy(), ps, depth + 1, inherited_fed=inherited_fed)
+    for body, parent_idx in zip(subs, sub_parents):
+        # MAJOR subs fix: each substitution belongs to its parent segment.
+        # Inherit the parent segment's pipe-fed state (already ORed with outer
+        # inherited_fed in fed_list) instead of only the global inherited_fed.
+        # This avoids over-tainting independent later commands (e.g. "| cat;
+        # echo \"$(node)\"" stays ALLOW for the second sub) while closing the
+        # "| echo \"$(node)\"" bypass (parent seg pipe-fed True -> inner DENY).
+        # Unidentifiable belonging is fail-closed tainted (never guessed ALLOW).
+        if 0 <= parent_idx < len(fed_list):
+            sub_fed = fed_list[parent_idx]
+        else:
+            sub_fed = True
+        analyze_text(body, ctx.copy(), ps, depth + 1, inherited_fed=sub_fed)
     for seg, ops, fed_seg in zip(segs, redirs, fed_list):
         if ops and inside_claude(ctx.cwd, ctx):
             raise Deny("claude-write", "redirect while cwd is inside .claude/ is denied")
