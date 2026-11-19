@@ -1,0 +1,63 @@
+{
+  "schema": "oss-pce-cd-bios/cdfade-slot0f-fixture/v1",
+  "issue": 283,
+  "parent_issue": 24,
+  "slot": "$0F",
+  "entry_candidate": "$E02D",
+  "candidate_name": "CD_FADE",
+  "abi_status": "BLOCKED_ABI",
+  "release_eligible": false,
+  "execution": "NOT_RUN",
+  "provenance": "synthetic: author-defined playback context and cases only; no System Card BIOS byte, disassembly, retail data, or ./rom/ content; no reference callee is executed",
+  "callee_abi": {
+    "arguments": "UNKNOWN",
+    "returns": "UNKNOWN",
+    "registers": "UNKNOWN",
+    "timing": "UNKNOWN",
+    "target_effect": "UNKNOWN",
+    "reference_jsr": "NOT_CALLED",
+    "reference_jsr_count": 0
+  },
+  "context": {
+    "synthetic": true,
+    "context_note": "author-defined: a claimed playback context for the synthetic judgment only; playing/stopped is an input flag, not a measured device state"
+  },
+  "request_model": {
+    "grounded_domain": [0, 8, 10, 12, 14],
+    "grounded_domain_hex": ["$00", "$08", "$0A", "$0C", "$0E"],
+    "domain_provenance": "author-defined from the caller-side value list (contract F06 SOURCE_FACT as a caller-side list only); membership is caller-request well-formedness, not a BIOS behavior claim",
+    "transition_model": "HYPOTHESIS",
+    "transition_provenance": "HYPOTHESIS: author-defined synthetic step $08->$0A for model bookkeeping only; F06 lists caller-side values, not a documented fade transition; no public source supports a specific fade-mode transition, and no device effect, timing, or ABI compatibility is claimed",
+    "unmodelled_target": "UNKNOWN",
+    "unmodelled_timing": "UNKNOWN",
+    "unmodelled_stopped_behavior": "UNKNOWN",
+    "unmodelled_cancel_effect": "UNKNOWN",
+    "callee_dependent": "BLOCKED_ABI"
+  },
+  "cases": [
+    {"id": "pos_type_00", "type_value": 0, "target": "unspecified", "playing": true, "asserts_effect": false, "present": true, "needs_callee": false, "expected": "POSITIVE", "result": {"type_value": 0, "domain": "caller-defined", "return": "void-ignored"}, "reason": "作者定義: caller-defined domain member, no semantic claim, context playing"},
+    {"id": "pos_type_08", "type_value": 8, "target": "unspecified", "playing": true, "asserts_effect": false, "present": true, "needs_callee": false, "expected": "POSITIVE", "result": {"type_value": 8, "domain": "caller-defined", "return": "void-ignored"}, "reason": "作者定義: caller-defined domain member, no semantic claim, context playing"},
+    {"id": "pos_type_0a", "type_value": 10, "target": "unspecified", "playing": true, "asserts_effect": false, "present": true, "needs_callee": false, "expected": "POSITIVE", "result": {"type_value": 10, "domain": "caller-defined", "return": "void-ignored"}, "reason": "作者定義: caller-defined domain member, no semantic claim, context playing"},
+    {"id": "pos_type_0c", "type_value": 12, "target": "unspecified", "playing": true, "asserts_effect": false, "present": true, "needs_callee": false, "expected": "POSITIVE", "result": {"type_value": 12, "domain": "caller-defined", "return": "void-ignored"}, "reason": "作者定義: caller-defined domain member, no semantic claim, context playing"},
+    {"id": "pos_type_0e", "type_value": 14, "target": "unspecified", "playing": true, "asserts_effect": false, "present": true, "needs_callee": false, "expected": "POSITIVE", "result": {"type_value": 14, "domain": "caller-defined", "return": "void-ignored"}, "reason": "作者定義: caller-defined domain member, no semantic claim, context playing"},
+    {"id": "neg_nocontext", "type_value": 8, "target": "unspecified", "playing": true, "asserts_effect": false, "present": false, "needs_callee": false, "expected": "NEGATIVE", "reason": "no playback context present: no fade request exists"},
+    {"id": "neg_type_01", "type_value": 1, "target": "unspecified", "playing": true, "asserts_effect": false, "present": true, "needs_callee": false, "expected": "NEGATIVE", "reason": "value adjacent to $00 but outside the caller-defined domain"},
+    {"id": "neg_type_09", "type_value": 9, "target": "unspecified", "playing": true, "asserts_effect": false, "present": true, "needs_callee": false, "expected": "NEGATIVE", "reason": "value between grounded $08 and $0A but outside the caller-defined domain"},
+    {"id": "neg_type_ff", "type_value": 255, "target": "unspecified", "playing": true, "asserts_effect": false, "present": true, "needs_callee": false, "expected": "NEGATIVE", "reason": "maximum byte value, outside the caller-defined domain"},
+    {"id": "neg_negative", "type_value": -1, "target": "unspecified", "playing": true, "asserts_effect": false, "present": true, "needs_callee": false, "expected": "NEGATIVE", "reason": "negative value, outside the caller-defined domain"},
+    {"id": "neg_bool_type", "type_value": true, "target": "unspecified", "playing": true, "asserts_effect": false, "present": true, "needs_callee": false, "expected": "NEGATIVE", "reason": "bool is not an int type value (malformed)"},
+    {"id": "neg_false_type", "type_value": false, "target": "unspecified", "playing": true, "asserts_effect": false, "present": true, "needs_callee": false, "expected": "NEGATIVE", "reason": "false is not an int type value (exact-type guard, not isinstance)"},
+    {"id": "neg_float_type", "type_value": 8.0, "target": "unspecified", "playing": true, "asserts_effect": false, "present": true, "needs_callee": false, "expected": "NEGATIVE", "reason": "non-integer type value (malformed)"},
+    {"id": "neg_string_type", "type_value": "08", "target": "unspecified", "playing": true, "asserts_effect": false, "present": true, "needs_callee": false, "expected": "NEGATIVE", "reason": "string type value (malformed)"},
+    {"id": "neg_none_type", "type_value": null, "target": "unspecified", "playing": true, "asserts_effect": false, "present": true, "needs_callee": false, "expected": "NEGATIVE", "reason": "None is not a type value (malformed)"},
+    {"id": "unk_target_cdda", "type_value": 8, "target": "cd_da", "playing": true, "asserts_effect": false, "present": true, "needs_callee": false, "expected": "UNKNOWN", "reason": "CD-DA target undecided (contract F13 UNKNOWN); target semantics are unmodelled"},
+    {"id": "unk_target_pcm_adpcm", "type_value": 12, "target": "pcm_adpcm", "playing": true, "asserts_effect": false, "present": true, "needs_callee": false, "expected": "UNKNOWN", "reason": "PCM/ADPCM target is a caller note only (contract F11 HYPOTHESIS); target semantics are unmodelled"},
+    {"id": "unk_stopped", "type_value": 10, "target": "unspecified", "playing": false, "asserts_effect": false, "present": true, "needs_callee": false, "expected": "UNKNOWN", "reason": "stopped-context behavior undecided (contract F32-F34 UNKNOWN); not a refusal"},
+    {"id": "unk_cancel_effect", "type_value": 0, "target": "unspecified", "playing": true, "asserts_effect": true, "present": true, "needs_callee": false, "expected": "UNKNOWN", "reason": "$00 cancel effect unmeasured (contract F08 HYPOTHESIS / F37 UNKNOWN); effect claims stay UNKNOWN"},
+    {"id": "unk_bad_effect_flag", "type_value": 8, "target": "unspecified", "playing": true, "asserts_effect": "yes", "present": true, "needs_callee": false, "expected": "UNKNOWN", "reason": "malformed effect flag: asserts_effect must be plain bool, never POSITIVE"},
+    {"id": "pos_transition_08_to_0a", "current_mode": 8, "type_value": 10, "target": "unspecified", "playing": true, "asserts_effect": false, "present": true, "needs_callee": false, "expected": "POSITIVE", "result": {"type_value": 10, "domain": "caller-defined", "return": "void-ignored", "mode_after": 10}, "reason": "作者定義(HYPOTHESIS): accepted synthetic transition $08->$0A; mode_after is model bookkeeping only, device effect UNKNOWN"},
+    {"id": "blocked_callee_args", "type_value": 8, "target": "unspecified", "playing": true, "asserts_effect": false, "present": true, "needs_callee": true, "expected": "BLOCKED", "reason": "BLOCKED_ABI: the answer would need the callee ABI; reference JSR not called"},
+    {"id": "neg_transition_stays_08", "current_mode": 8, "type_value": 9, "target": "unspecified", "playing": true, "asserts_effect": false, "present": true, "needs_callee": false, "expected": "NEGATIVE", "reason": "作者定義(HYPOTHESIS): rejected request leaves the synthetic mode at $08; domain refusal outranks transition"},
+    {"id": "blocked_callee_nocontext", "type_value": 8, "target": "unspecified", "playing": true, "asserts_effect": false, "present": false, "needs_callee": true, "expected": "BLOCKED", "reason": "BLOCKED_ABI first: callee dependence outranks the no-context refusal"}
+  ]
+}
