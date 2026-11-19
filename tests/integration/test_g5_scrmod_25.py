@@ -16,13 +16,14 @@ preservation -> RTS resumption -> payload halt. Companion coverage:
   VDC invariance on the real core (dedicated probe: AR unchanged for several
   entry AR values, all 20 VDC regs unchanged, MPRs/IDR/IRR unchanged);
   work-RAM scope (256-byte canary + full-buffer cold/warm equality);
-  MPR1=$F8 precondition validated by the harness BEFORE JSR (T13: MPR1!=$F8
-  refuses without executing JSR, never reaches $25);
+  MPR1=$F8 precondition validated by the harness BEFORE JSR (T13: a $FF
+  candidate refuses at refused_halt without executing JSR, never reaches
+  $25, and never remaps first);
   SP depth (SP=$FF and boundary SP=$06 GREEN and balanced; below-minimum is
   out of contract and never run);
   synthetic chain $33->$4A->$23->$25 through the real table entries with
-  per-call APICALL/APIRETURN evidence (the $02 leg is the PUBLIC boot
-  itself; the observed $25 entry state is labeled SIMULATED-entry);
+  per-call APICALL evidence (the $02 leg is the PUBLIC boot itself; the
+  observed $25 entry state is labeled SIMULATED-entry);
   refusal-path absence (B1 defines no refusal: T04/T08/T09 NOT_APPLICABLE),
   routing, 9-byte structural pin, and buffer negatives.
 
@@ -244,7 +245,8 @@ res_base:
 # Synthetic G5 chain leg: $33 -> $4A -> $23 -> $25 through the real table
 # entries (the $02 leg is the PUBLIC boot that loads this payload). Entry
 # regs are set once; every body preserves them, so the final record equals
-# the entry state and each APICALL/APIRETURN pair proves per-call return.
+# the entry state and each APICALL (return_matches_caller + MATCH +
+# SP balance) proves per-call return (APIRETURN is not collected).
 CHAIN_ASM = r"""
 .setcpu "huc6280"
 .segment "CODE"
@@ -816,7 +818,7 @@ class Scrmod25Synthetic(unittest.TestCase):
     def test_chain_33_4a_23_25(self):
         # Synthetic G5 chain leg: the PUBLIC boot ($02 leg) loads this
         # payload, which then calls $33 -> $4A -> $23 -> $25 through the real
-        # table entries. Each APICALL/APIRETURN pair proves per-call entry,
+        # table entries. Each APICALL (return_matches_caller + MATCH) proves per-call entry,
         # return-PC resumption (caller+3), MPR and SP integrity. The observed
         # $25 entry state is SIMULATED-entry (conditional on the fabricated
         # $25 return's predecessors), never genuine $25 input evidence.
