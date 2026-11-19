@@ -1308,8 +1308,8 @@ class LauncherMutationTests(unittest.TestCase):
         "method call whitespace rule removed": (r'''(?:\w+\s*\(|['\"(])''', r'''(?:\w+\(|['\"(])'''),
         "iwmi removed from the expression launcher pattern": (r'''|iwmi|icim|''', r'''|icim|'''),
         "iwmi removed from the launcher names": ('"invoke-cimmethod", "iwmi", "icim"}', '"invoke-cimmethod"}'),
-        "while keyword removed": ('"while", "until"', '"until"'),
-        "until keyword removed": ('"while", "until"', '"while"'),
+        "while keyword removed": ('"while", "until", "(", ")"', '"until", "(", ")"'),
+        "until keyword removed": ('"while", "until", "(", ")"', '"while", "(", ")"'),
         "elif keyword removed": ('"then", "else", "elif"', '"then", "else"'),
         "fi keyword removed": ('"elif", "fi", "do"', '"elif", "do"'),
         "bang keyword removed": ('KEYWORDS = {"{", "}", "!",', 'KEYWORDS = {"{", "}",'),
@@ -3992,6 +3992,1346 @@ class RoundBReviewRegressionTests(unittest.TestCase):
 
     DENY_PS_MARK = set(['echo a\\|Remove-Item -Recurse C:\\Users\\prague\\x', 'echo a\\;Remove-Item -Recurse C:\\Users\\prague\\x', 'echo hi\\>C:\\Users\\prague\\evil.txt', 'echo hi > ..\\evil.txt', 'echo hi > ..\\..\\evil.txt', 'echo hi > "..\\evil.txt"', 'echo hi > \\Users\\prague\\evil.txt', 'echo x > .git.\\hooks\\zz-review-probe'])
 
+
+
+class ChainRulePieceDTests(unittest.TestCase):
+    """Piece D (#636): a segment that changes the filesystem taints later
+
+    destructive-path judgments in the same command. A later rm, write or
+    redirect must not rely on hook-time filesystem state (symlink targets,
+    existence, cwd-relative resolution) once an earlier segment may have
+    changed it. Read-only prefixes (git status, cd with tracked cwd) stay
+    ALLOW. Decision-only tests; the filesystem is real but nothing is
+    executed: every command is only judged, and all paths stay inside a
+    temporary directory that the test owns.
+    """
+
+    def setUp(self):
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        self.tmp = os.path.realpath(td.name)
+        self.repo = os.path.join(self.tmp, "repo")
+        os.makedirs(os.path.join(self.repo, "sub"))
+        os.makedirs(os.path.join(self.repo, ".git"))
+        os.makedirs(os.path.join(self.repo, ".claude"))
+        write_text(os.path.join(self.repo, "sub", "inner.txt"), "x\n")
+        write_text(os.path.join(self.repo, "file.txt"), "x\n")
+        self.has_link = True
+        try:
+            os.symlink(os.path.join(self.repo, "sub"),
+                       os.path.join(self.repo, "lnk"), target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.has_link = False
+
+    def _decide(self, cmd, tool="Bash"):
+        payload = json.dumps({"tool_name": tool,
+                              "tool_input": {"command": cmd},
+                              "cwd": self.repo})
+        return guard.decide(payload, repo_root=self.repo)
+
+    def _link(self):
+        if not self.has_link:
+            self.skipTest("symlink creation not permitted here: NOT_RUN")
+
+    def test_baseline_dotdot_through_existing_link_is_allowed(self):
+        # The hook-time resolution is trusted only with no earlier change:
+        # lnk points inside, so lnk/../file.txt reaches repo/file.txt.
+        self._link()
+        verdict, _ = self._decide("rm lnk/../file.txt")
+        self.assertEqual(verdict, "ALLOW")
+        verdict, _ = self._decide("rm sub/../file.txt")
+        self.assertEqual(verdict, "ALLOW")
+
+    def test_filesystem_mutation_taints_later_rm(self):
+        for prefix in ("mkdir -p sub", "cp file.txt sub/c.txt",
+                       "mv file.txt sub/m.txt", "touch f",
+                       "echo hi | tee f", "echo hi > f",
+                       "tar -cf out.tar file.txt", "git checkout other",
+                       "git stash", "git stash pop", "git merge main",
+                       "git pull", "git apply fix.patch",
+                       "sudo mkdir d", "sh -c 'mkdir d'",
+                       "echo $(mkdir d) hi", "sort -o out seed"):
+            with self.subTest(prefix=prefix):
+                verdict, reason = self._decide(prefix + " && rm sub/inner.txt")
+                self.assertEqual(verdict, "DENY", (prefix, reason))
+                self.assertTrue(reason.startswith("chain"), (prefix, reason))
+
+    def test_git_swap_bypass_demo(self):
+        # The true bypass: hook-time lnk points inside, so the bare rm is
+        # judged on that state; after a tree rewrite the same judgment is
+        # refused instead of trusted.
+        self._link()
+        verdict, _ = self._decide("rm lnk/../file.txt")
+        self.assertEqual(verdict, "ALLOW")
+        verdict, reason = self._decide("git checkout other && rm lnk/../file.txt")
+        self.assertEqual(verdict, "DENY")
+        self.assertTrue(reason.startswith("chain"), reason)
+
+    def test_readonly_prefixes_do_not_taint(self):
+        cases = [("git status", "rm file.txt"), ("git fetch", "rm file.txt"),
+                 ("git stash list", "rm file.txt"),
+                 ("git stash show", "rm file.txt"),
+                 ("git submodule", "rm file.txt"),
+                 ("git submodule status", "rm file.txt"),
+                 ("git worktree list", "rm file.txt"),
+                 ("git reset HEAD", "rm file.txt"),
+                 ("cd sub", "rm inner.txt"),
+                 ("echo a", "rm file.txt"), ("grep foo file.txt", "rm file.txt")]
+        for prefix, tail in cases:
+            with self.subTest(prefix=prefix):
+                verdict, reason = self._decide(prefix + " && " + tail)
+                self.assertEqual(verdict, "ALLOW", (prefix, reason))
+
+    def test_reset_keep_rewrites_the_tree(self):
+        # --keep updates working-tree files, so later judgments are tainted;
+        # a mixed reset touches the index only and stays read-only.
+        verdict, reason = self._decide("git reset --keep HEAD && rm file.txt")
+        self.assertEqual(verdict, "DENY")
+        self.assertTrue(reason.startswith("chain"), reason)
+
+    def test_two_redirects_in_one_segment_share_incoming_taint(self):
+        # Both redirects belong to one simple command: the second must not
+        # see taint added by the first.
+        verdict, reason = self._decide("echo ok > a.log 2> b.log")
+        self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_redirect_before_argv_in_one_segment_still_taints(self):
+        # Redirection setup precedes the command, so rm after a write
+        # redirect in the same segment is refused and documented as explicit.
+        verdict, reason = self._decide("rm file.txt > log")
+        self.assertEqual(verdict, "DENY")
+        self.assertTrue(reason.startswith("chain"), reason)
+
+    def test_sort_double_write_option_in_one_invocation(self):
+        # One invocation with two write spellings is one write, not a chain.
+        for cmd in ("sort -o out --output=out input", "sort -o out -- f"):
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._decide(cmd)
+                self.assertEqual(verdict, "ALLOW", (cmd, reason))
+
+    def test_sort_invalid_option_keeps_its_reason_when_tainted(self):
+        # Full argv validation precedes the incoming-taint check.
+        verdict, reason = self._decide("git checkout x && sort --output=out --no-such-option")
+        self.assertEqual(verdict, "DENY")
+        self.assertTrue(reason.startswith("program-option"), reason)
+
+    def test_coproc_simple_command_has_no_name(self):
+        # `coproc echo touch marker` runs echo with arguments: `touch
+        # marker` is not a named coprocess body, so its taint is not exported.
+        verdict, reason = self._decide("coproc echo touch marker; touch result")
+        self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_coproc_compound_body_is_subshell_scoped(self):
+        # CodeRabbit #815 (MAJOR): `coproc { ...; }` runs its body in a
+        # subshell (verified on Bash), so a body `cd` never moves the
+        # parent cwd, while a body write still taints later judgments.
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        verdict, reason = self._decide("coproc { true; cd sub; } && rm ../file.txt")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("rm-outside-repo"), reason)
+        verdict, reason = self._decide("coproc { true; cd sub; } && rm file.txt")
+        self.assertEqual(verdict, "ALLOW", reason)
+        verdict, reason = self._decide("coproc { touch marker; } && rm file.txt")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("chain"), reason)
+        # Mid-command placement scopes the same way.
+        verdict, reason = self._decide("echo ok; coproc { cd sub; } && rm ../file.txt")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("rm-outside-repo"), reason)
+
+    def test_same_shell_target_does_not_self_deny(self):
+        # CodeRabbit #815 (MINOR): the exact same-shell target is analysed
+        # once; re-validating it against its own taint self-denied a clean
+        # `command eval 'touch marker'`. A genuinely earlier mutation
+        # still chains.
+        verdict, reason = self._decide("command eval 'touch marker'")
+        self.assertEqual(verdict, "ALLOW", reason)
+        verdict, reason = self._decide("touch m; command eval 'touch marker2'; rm file.txt")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("chain"), reason)
+
+    def test_brace_expansion_word_does_not_close_group(self):
+        # CodeRabbit #815 (MINOR): a `}` inside a word (`item{a,b}`) never
+        # closes the brace group; only a standalone `}` does. The same
+        # token boundary opens groups: a mid-word `{` stays literal.
+        verdict, reason = self._decide("{ echo item{a,b} suffix end; }")
+        self.assertEqual(verdict, "ALLOW", reason)
+        verdict, reason = self._decide("echo x{a,b} | cat; rm file.txt")
+        self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_wrapper_string_visit_starts_from_entry_taint(self):
+        # One string analysed twice must not deny itself: each visit starts
+        # from the wrapper-entry taint and merges back for later segments.
+        verdict, reason = self._decide("sudo sh -c 'touch marker'")
+        self.assertEqual(verdict, "ALLOW", reason)
+        verdict, reason = self._decide("sudo sh -c 'touch marker' && rm file.txt")
+        self.assertEqual(verdict, "DENY")
+        self.assertTrue(reason.startswith("chain"), reason)
+
+    def test_accepted_removal_taints_later_writes(self):
+        # An accepted rm changes the filesystem: a later write to the same
+        # name is judged against the updated state.
+        verdict, _ = self._decide("rm file.txt")
+        self.assertEqual(verdict, "ALLOW")
+        for cmd in ("rm file.txt && echo hi > f", "rm file.txt && touch g",
+                    "rm file.txt && rm sub/inner.txt"):
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._decide(cmd)
+                self.assertEqual(verdict, "DENY", (cmd, reason))
+                self.assertTrue(reason.startswith("chain"), (cmd, reason))
+
+    def test_reset_pathspec_is_not_a_mode(self):
+        # After --, words are pathspecs: `git reset -- --keep` touches the
+        # index only.
+        verdict, reason = self._decide("git reset -- --keep && rm file.txt")
+        self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_unnamed_compound_coprocess_is_analysed_once(self):
+        # `coproc { touch marker; }` is one command, not a name plus a body.
+        verdict, reason = self._decide("coproc { touch marker; }")
+        self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_wrapper_data_string_does_not_export_taint(self):
+        # `sudo echo 'touch marker'` never executes the string: it is
+        # validated as data. A command-position string still taints.
+        verdict, reason = self._decide("sudo echo 'touch marker'; touch result")
+        self.assertEqual(verdict, "ALLOW", reason)
+        # Positive case through a carrier that really runs a shell.
+        verdict, reason = self._decide("sudo sh -c 'touch marker'; touch result")
+        self.assertEqual(verdict, "DENY")
+        self.assertTrue(reason.startswith("chain"), reason)
+        # `sudo -s 'touch marker'` stays conservatively refused as a
+        # command-position string (fail closed), pinned separately from
+        # the data-string rule above.
+        verdict, reason = self._decide("sudo -s 'touch marker'; touch result")
+        self.assertEqual(verdict, "DENY")
+        self.assertTrue(reason.startswith("chain"), reason)
+
+    def test_sort_value_forms_do_not_self_taint(self):
+        # `-t` takes its value from the cluster: `sort -to` writes nothing.
+        verdict, reason = self._decide("sort -to input && touch f")
+        self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_sort_write_after_dashdash_value_still_taints(self):
+        # `--` consumed as an option value does not end option parsing.
+        verdict, reason = self._decide("sort --files0-from -- -o out && touch f")
+        self.assertEqual(verdict, "DENY")
+        self.assertTrue(reason.startswith("chain"), reason)
+
+    def test_substitution_taint_follows_its_segment(self):
+        # A later substitution sees earlier taint (the hole is closed).
+        verdict, reason = self._decide("git checkout x && echo $(rm file.txt)")
+        self.assertEqual(verdict, "DENY")
+        self.assertTrue(reason.startswith("chain"), reason)
+        # Taint attribution follows execution order: rm runs first, so the
+        # later mkdir is judged under rm's taint (chain: mkdir, not chain: rm).
+        verdict, reason = self._decide("rm file.txt && echo $(mkdir d)")
+        self.assertEqual(verdict, "DENY")
+        self.assertTrue(reason.startswith("chain: mkdir"), reason)
+
+    def test_tainted_write_and_redirect_are_refused(self):
+        for cmd in ("git checkout x && cp a b",
+                    "git checkout x && echo hi > f",
+                    "git checkout x && tar -cf o.tar file.txt",
+                    "git checkout x && sort -o o f",
+                    "echo a > f && echo b >> f"):
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._decide(cmd)
+                self.assertEqual(verdict, "DENY", (cmd, reason))
+                self.assertTrue(reason.startswith("chain"), (cmd, reason))
+
+    def test_powershell_mkdir_taints_remove_item(self):
+        verdict, reason = self._decide("mkdir d; Remove-Item sub/inner.txt",
+                                       tool="PowerShell")
+        self.assertEqual(verdict, "DENY")
+        self.assertTrue(reason.startswith("chain"), reason)
+
+    def test_tainted_but_already_refused_keeps_its_reason(self):
+        # The chain check runs after the hook-state checks, so a tainted rm
+        # that hook-state already refuses keeps its original reason.
+        verdict, reason = self._decide("mkdir d && rm -rf sub")
+        self.assertEqual(verdict, "DENY")
+        self.assertTrue(reason.startswith("rm-recursive"), reason)
+
+    def test_eval_cd_moves_calling_shell_cwd(self):
+        # CRITICAL-1 (#636): eval runs in the calling shell, so a cd
+        # inside it moves the later rm's resolution base. Decision-only:
+        # nothing is executed; the fixture names exist on both sides.
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        verdict, reason = self._decide("eval 'cd ..' && rm file.txt")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("rm-outside-repo"), reason)
+        # The fixed cwd keeps the in-repo case ALLOW (no over-denial).
+        verdict, reason = self._decide("eval 'cd sub' && rm inner.txt")
+        self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_subshell_cd_does_not_leak_to_parent(self):
+        # CRITICAL-2 (#636): (...) runs in a subshell, so an inner cd
+        # must not move the parent cwd used by a later rm. The outer
+        # ../file.txt is the real target, outside the repository.
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        verdict, reason = self._decide("(cd sub) && rm ../file.txt")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("rm-outside-repo"), reason)
+        # Nested subshells keep their own scope at every level.
+        verdict, reason = self._decide("(cd sub && (cd ..)) && rm file.txt")
+        self.assertEqual(verdict, "ALLOW", reason)
+        # A child shell never moves the parent cwd either.
+        verdict, reason = self._decide("sh -c 'cd sub' && rm file.txt")
+        self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_subshell_filesystem_change_taints_parent(self):
+        # The subshell's cwd is scoped, but a write inside it outlives
+        # the subshell: the later rm is judged under taint (chain), not
+        # against the leaked inner path.
+        verdict, reason = self._decide("(cd sub; touch marker) && rm file.txt")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("chain"), reason)
+
+    def test_brace_group_shares_calling_shell_cwd(self):
+        # { ...; } runs in the calling shell (unlike (...)), so its cd
+        # moves the later rm's resolution base.
+        verdict, reason = self._decide("{ cd sub; } && rm inner.txt")
+        self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_git_worktree_move_taints_later_rm(self):
+        # MAJOR-3 (#636): moving a worktree relocates directories, so a
+        # later path judgment must not rely on the hook-time state.
+        # The move alone stays ALLOW (like add); only the chain is refused.
+        verdict, reason = self._decide("git worktree move from-wt to-wt")
+        self.assertEqual(verdict, "ALLOW", reason)
+        verdict, reason = self._decide("git worktree move from-wt to-wt && rm file.txt")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("chain"), reason)
+
+    def test_cd_with_substitution_is_denied(self):
+        # A cd target known only after expansion would misjudge later
+        # relative paths, so it is refused instead of guessed. The
+        # denial is a clean verdict, never an internal error.
+        for cmd in ("cd $(echo sub) && rm file.txt",
+                    "cd $D && rm file.txt"):
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._decide(cmd)
+                self.assertEqual(verdict, "DENY", (cmd, reason))
+                self.assertFalse(reason.startswith("guard internal error"), (cmd, reason))
+
+    def test_find_exec_cwd_does_not_leak_to_parent(self):
+        # find -exec runs in a child process: an inner cd never moves the
+        # parent cwd, while a real change still taints later judgments.
+        verdict, reason = self._decide("find . -exec cd sub \\; && rm file.txt")
+        self.assertEqual(verdict, "ALLOW", reason)
+        verdict, reason = self._decide("find . -exec mkdir d \\; && rm file.txt")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("chain"), reason)
+
+    def test_command_substitution_cwd_does_not_leak(self):
+        # $(...) runs in a subshell: its cd never moves the parent cwd,
+        # and without a filesystem change nothing is tainted.
+        verdict, reason = self._decide("echo $(cd sub) hi && rm file.txt")
+        self.assertEqual(verdict, "ALLOW", reason)
+        # The parent cwd still applies, so an outside path stays outside.
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        verdict, reason = self._decide("echo $(cd sub) hi && rm ../file.txt")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("rm-outside-repo"), reason)
+
+    def test_pipeline_stage_cwd_does_not_leak_to_parent(self):
+        # CRITICAL-1 (#636): every Bash pipeline stage runs in a subshell,
+        # so a stage cd never moves the later rm's resolution base.
+        # Decision-only; the fixture names exist on both sides.
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        for cmd in ("cd sub | cat; rm ../file.txt",
+                    "{ cd sub; } | cat; rm ../file.txt",
+                    "eval 'cd sub' | cat; rm ../file.txt",
+                    "cd sub | cat && rm ../file.txt",
+                    "(cd sub) | cat && rm ../file.txt",
+                    "cd sub | rm ../file.txt"):
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._decide(cmd)
+                self.assertEqual(verdict, "DENY", (cmd, reason))
+                self.assertTrue(reason.startswith("rm-outside-repo"), (cmd, reason))
+
+    def test_pipeline_clean_stages_keep_allow(self):
+        # No filesystem change in the pipeline: later judgments stay valid.
+        for cmd in ("cd sub | cat; rm file.txt",
+                    "(cd sub) | cat; rm file.txt",
+                    "sh -c 'cd sub' | cat; rm file.txt"):
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._decide(cmd)
+                self.assertEqual(verdict, "ALLOW", (cmd, reason))
+
+    def test_pipeline_taint_propagates_to_parent(self):
+        # A filesystem change inside a stage outlives the subshell: the
+        # later rm is judged under taint (chain), not against hook state.
+        verdict, reason = self._decide("touch m | cat; rm file.txt")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("chain"), reason)
+
+    def test_pipeline_entry_after_sequential_cd(self):
+        # CodeRabbit #815 (MAJOR): the pipeline entry is the cwd after the
+        # sequential prefix, so a compound first stage does not reset it.
+        # Real Bash forks every stage; the entry stays `sub` here.
+        verdict, reason = self._decide("cd sub; { echo hi; } | cat; rm ../file.txt")
+        self.assertEqual(verdict, "ALLOW", reason)
+        # `&&` binds looser than `|`: the sequential `cd` still sets the
+        # entry for a group-led pipeline (scope_entry, not stale run_start).
+        verdict, reason = self._decide("cd sub && { echo hi; } | cat; rm ../file.txt")
+        self.assertEqual(verdict, "ALLOW", reason)
+        # A brace group alone as the first stage forks too: the parent
+        # stays in the repo, so `../file.txt` is outside it.
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        for cmd in ("{ cd sub; } | cat; rm ../file.txt",
+                    "(cd sub) | cat; rm ../file.txt"):
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._decide(cmd)
+                self.assertEqual(verdict, "DENY", (cmd, reason))
+                self.assertTrue(reason.startswith("rm-outside-repo"), (cmd, reason))
+
+    def test_pipeline_end_restores_entry(self):
+        # CodeRabbit #815 (MAJOR): a `;` boundary ends the pipeline, so a
+        # stage-local `cd` never leaks into following foreground segments.
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        verdict, reason = self._decide("echo hi | cd sub; rm ../file.txt")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("rm-"), reason)
+        verdict, reason = self._decide("echo hi | cd sub; rm file.txt")
+        self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_pipeline_continuation_newline_stays_in_pipeline(self):
+        # CodeRabbit #815 (MAJOR): a newline right after `|` continues the
+        # pipeline (verified on Bash): no CMD_BOUND is emitted, so the
+        # entry survives and the next line is a stage, not a new command.
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        verdict, reason = self._decide("true |\ncd sub; rm ../file.txt")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("rm-outside-repo"), reason)
+        # A newline after `&&` still ends nothing either: `&&` never emits
+        # a boundary, so sequential sharing is unchanged.
+        verdict, reason = self._decide("cd sub &&\nrm inner.txt")
+        self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_brace_group_stage_forks_from_entry(self):
+        # CodeRabbit #815 (MAJOR): a brace group used as a pipeline stage
+        # forks from the entry: the body's cd never reaches later
+        # segments, and the enclosing entry survives the group.
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        verdict, reason = self._decide("true | { cd sub; pwd; }; rm ../file.txt")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("rm-outside-repo"), reason)
+        # A body-local rm is judged from the entry, not the body cwd.
+        verdict, reason = self._decide("cd sub | { rm inner.txt; }")
+        self.assertEqual(verdict, "DENY", reason)
+
+    def test_nested_pipeline_entry_does_not_leak(self):
+        # An inner pipeline's entry ends at its subshell boundary: an
+        # outer pipeline re-derives its own entry instead of inheriting
+        # the inner one. A calling-shell group stays transparent.
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        verdict, reason = self._decide("(cd sub | cat) | cat; rm ../file.txt")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("rm-"), reason)
+        verdict, reason = self._decide("cd sub; { echo hi | cat; } | cat; rm inner.txt")
+        self.assertEqual(verdict, "ALLOW", reason)
+        # `&&` binds looser than subshell grouping too: the outer entry
+        # is the pre-subshell cwd, not the inner pipeline's entry (no
+        # space between `)` and `|`: no empty segment clears the leak).
+        verdict, reason = self._decide("cd sub && (echo hi | cat)|cat; rm ../file.txt")
+        self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_background_cwd_does_not_leak_to_parent(self):
+        # A backgrounded `&` command runs in a subshell like a pipeline
+        # stage; `&&` stays sequential (same shell, covered elsewhere).
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        verdict, reason = self._decide("cd sub & rm ../file.txt")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("rm-outside-repo"), reason)
+        verdict, reason = self._decide("cd sub & rm file.txt")
+        self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_background_list_entry_is_list_start(self):
+        # CodeRabbit #815 (MAJOR): `&` backgrounds the whole `&&` list in
+        # a subshell, so the parent continues from the list-start cwd
+        # (before `cd sub`), never from inside the backgrounded list.
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        verdict, reason = self._decide("cd sub && pwd & rm ../file.txt")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("rm-outside-repo"), reason)
+        verdict, reason = self._decide("cd sub && pwd & rm file.txt")
+        self.assertEqual(verdict, "ALLOW", reason)
+        # A pipeline inside the background list still ends at `&`: the
+        # foreground continues from the list start.
+        verdict, reason = self._decide("echo hi | cd sub & rm file.txt")
+        self.assertEqual(verdict, "ALLOW", reason)
+        # The foreground after `&` is sequential: its own `cd` persists.
+        verdict, reason = self._decide("true & cd sub; rm inner.txt")
+        self.assertEqual(verdict, "ALLOW", reason)
+        # A `;`-separated foreground prefix persists into the bg list.
+        verdict, reason = self._decide("cd sub; pwd & rm ../file.txt")
+        self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_nested_coproc_body_is_subshell_scoped(self):
+        # CodeRabbit #815 (MAJOR, run-12 Gu02): a `}` closes the innermost
+        # open scope. `{ coproc { true; cd sub; }; cd ..; }` runs the
+        # coprocess body in a subshell (its cd is restored) while the
+        # brace group shares the calling shell (its cd persists), so the
+        # final rm targets the parent directory and is refused. Verified
+        # on Bash with harmless pwd probes; nothing is executed here.
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        verdict, reason = self._decide("{ coproc { true; cd sub; }; cd ..; }; rm file.txt")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("rm-outside-repo"), reason)
+
+    def test_brace_boundaries_need_standalone_words(self):
+        # CodeRabbit #815 (MINOR, run-12 Gu1A): `{` opens a group only
+        # before a blank and `}` closes one only as a standalone word
+        # (verified on Bash: `{echo`, `}echo`, `}#c` never group). A glued
+        # `}` stays an ordinary word, so the unknown command it starts is
+        # refused instead of analysed as the command it resembles.
+        verdict, reason = self._decide("{ echo ok; }echo harmless; }")
+        self.assertEqual(verdict, "DENY", reason)
+        verdict, reason = self._decide("{echo hi; }")
+        self.assertEqual(verdict, "DENY", reason)
+
+    def test_failed_cd_keeps_old_cwd(self):
+        # CodeRabbit #815 (MAJOR, run-12 Gu1P/OQwR): `cd` into an absent
+        # directory fails and keeps the old cwd (verified on Bash with
+        # harmless pwd probes), so a later `cd ..` leaves the repository
+        # and the rm outside it is refused. Both plain and eval-wrapped
+        # forms are covered (eval merges cwd into the caller). A bare
+        # name may still resolve through CDPATH, so it keeps the cwd but
+        # marks the result uncertain; an explicit path (`./x`, `a/b`)
+        # cannot come from CDPATH and stays certain. An existing
+        # directory still moves the cwd (no over-denial).
+        write_text(os.path.join(self.tmp, "README.md"), "outside\n")
+        verdict, reason = self._decide("cd missing; cd ..; rm README.md")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("cwd-uncertain"), reason)
+        verdict, reason = self._decide("eval 'cd missing'; cd ..; rm README.md")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("cwd-uncertain"), reason)
+        verdict, reason = self._decide("cd ./missing; cd ..; rm README.md")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("rm-outside-repo"), reason)
+        verdict, reason = self._decide("cd sub; rm inner.txt")
+        self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_if_pipeline_stage_does_not_leak_cwd(self):
+        # CodeRabbit #815 (MAJOR, run-12 Gu1Y): an `if` compound used as
+        # a pipeline stage runs in a subshell (verified on Bash), so its
+        # `cd` moves neither the entry nor later segments. The branch
+        # outcome is uncertain anyway, so the later relative rm is
+        # refused instead of trusting one branch.
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        verdict, reason = self._decide("if true; then cd sub; fi | cat; rm ../file.txt")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("cwd-uncertain"), reason)
+
+    def test_pipeline_continuation_blank_line_and_comment(self):
+        # CodeRabbit #815 (MAJOR, run-12 GuIir8): a blank line or a
+        # comment after `|` still continues the pipeline (verified on
+        # Bash), so `cd sub` runs in the stage subshell and the later rm
+        # outside the repository is refused.
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        verdict, reason = self._decide("true |\n\ncd sub; rm ../file.txt")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("rm-outside-repo"), reason)
+        verdict, reason = self._decide("true | # comment\ncd sub; rm ../file.txt")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("rm-outside-repo"), reason)
+
+    def test_powershell_uncertain_branch_denies_relative_rm(self):
+        # CodeRabbit #815 (MAJOR, run-12 Gu1n): the taken-branch location
+        # is one outcome of several. When the condition is uncertain, a
+        # later relative-path judgment is refused. A newline may precede
+        # the brace-delimited body (valid PowerShell).
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        verdict, reason = self._decide("if ($c) { Set-Location sub }; Remove-Item ../file.txt",
+                                       tool="PowerShell")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("cwd-uncertain"), reason)
+        verdict, reason = self._decide("if ($c)\n{ Set-Location sub }; Remove-Item ../file.txt",
+                                       tool="PowerShell")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("cwd-uncertain"), reason)
+
+    def test_powershell_if_else_branch_denies_relative_rm(self):
+        # CodeRabbit #815 (run-12 Gu1n): with `else` the first arm entry
+        # is already replaced when the boundary runs, so only the braced
+        # close marks the move uncertain. Either branch may run, so the
+        # later relative rm is refused.
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        verdict, reason = self._decide("if ($a) { Set-Location sub } else { echo hi }; Remove-Item ../file.txt",
+                                       tool="PowerShell")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("cwd-uncertain"), reason)
+
+    def test_powershell_elseif_condition_taint_reaches_else(self):
+        # CodeRabbit #815 (MAJOR, run-12 RZ4V): an `elseif` condition's own
+        # writes must reach a later `else` arm. Replacing the live arm
+        # snapshot with stale then-arm state would judge the else body
+        # clean after the condition wrote a file.
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        verdict, reason = self._decide("if ($a) { Set-Location sub } elseif (echo hi > f) { echo yo } else { Remove-Item file.txt }",
+                                       tool="PowerShell")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("chain"), reason)
+
+    def test_powershell_elseif_condition_taint_reaches_else(self):
+        # CodeRabbit #815 (MAJOR, run-12 RZ4V): an `elseif` condition's own
+        # writes must reach a later `else` arm. Replacing the live arm
+        # snapshot with stale then-arm state would judge the else body
+        # clean after the condition wrote a file.
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        verdict, reason = self._decide("if ($a) { Set-Location sub } elseif (echo hi > f) { echo yo } else { Remove-Item file.txt }",
+                                       tool="PowerShell")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("chain"), reason)
+
+    def test_pipeline_inside_conditional_uses_arm_entry(self):
+        # CodeRabbit #815 (MAJOR, run-12 RZ4Y): a pipeline opened inside
+        # a conditional body forks from the active arm's cwd, not from
+        # the stale saved run start. The `rm` below runs from the
+        # parent directory and is refused as outside the repository.
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        verdict, reason = self._decide("if true; then cd ..; if true; then echo hi; fi; true | rm file.txt; fi")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("rm-outside-repo"), reason)
+
+    def test_and_or_end_pipeline(self):
+        # CodeRabbit #815 (MAJOR, run-12 OQwd): `&&`/`||` terminate the
+        # pipeline like `;` (verified on Bash: the next command runs in
+        # the enclosing cwd), but they do not start a new background
+        # list. A stage `cd` must not reach the later relative rm.
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        verdict, reason = self._decide("true | cd sub && rm ../file.txt")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("rm-outside-repo"), reason)
+        verdict, reason = self._decide("true | cd sub || rm ../file.txt")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("rm-outside-repo"), reason)
+        # Without a pipeline, `&&` stays sequential (no over-denial).
+        verdict, reason = self._decide("cd sub && rm inner.txt")
+        self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_group_local_pipeline_entry(self):
+        # CodeRabbit #815 (MAJOR, run-12 OQwm): a brace group runs the
+        # calling shell, so an inner `;` advances a group-local pipeline
+        # start. `{ cd sub; true | cat; }` stages fork from the in-group
+        # cwd, and the outer start is restored at the close.
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        verdict, reason = self._decide("{ cd sub; true | cat; }; rm ../file.txt")
+        self.assertEqual(verdict, "ALLOW", reason)
+        verdict, reason = self._decide("{ cd ..; true | cat; }; rm file.txt")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("rm-outside-repo"), reason)
+
+    def test_nested_opener_after_then(self):
+        # CodeRabbit #815 (MAJOR, run-12 OQwq): `then if true` opens a
+        # nested scope of its own, so the inner `fi` must not pop (and
+        # blindly trust) the outer entry. A later body move still marks
+        # the outcome uncertain, and the pipeline entry stays clean.
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        verdict, reason = self._decide("if true; then if true; then echo hi; fi; cd sub; fi | cat; rm ../file.txt")
+        self.assertEqual(verdict, "DENY", reason)
+
+    def test_else_arm_runs_from_entry(self):
+        # CodeRabbit #815 (MAJOR, run-12 OQww): each arm runs from the
+        # conditional entry, not from the previous arm's end. The `else`
+        # rm below targets the parent (DENY) instead of trusting the
+        # `then` cwd (which would ALLOW an in-repo path).
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        verdict, reason = self._decide("if grep -q x file.txt; then cd sub; else rm ../file.txt; fi")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("rm-outside-repo"), reason)
+        # Sequential-equality trap: both arms run in sequence would end
+        # at the entry, but the real outcomes diverge, so the later
+        # relative rm is refused.
+        verdict, reason = self._decide("if grep -q x file.txt; then cd sub; else cd ..; fi; rm file.txt")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("cwd-uncertain"), reason)
+
+    def test_subshell_abs_cd_keeps_outer_uncertainty(self):
+        # CodeRabbit #815 (MAJOR, run-12 OQwj): a subshell exit restores
+        # the caller's cwd *and* its certainty. An absolute cd inside
+        # must not launder outer uncertainty into a certain judgment.
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        verdict, reason = self._decide("if true; then cd sub; fi; (cd /); rm file.txt")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("cwd-uncertain"), reason)
+        # The fail-open shape: the taken branch targets the parent file.
+        verdict, reason = self._decide("if true; then cd ..; fi; (cd /); rm file.txt")
+        self.assertEqual(verdict, "DENY", reason)
+
+    def test_subshell_pipeline_uses_inner_cwd(self):
+        # Review #815 (MAJOR, run-13 M1): the pipeline/list start is
+        # scope-local, so an inner `cd` moves the subshell's run. The
+        # later rm resolves from the subshell cwd (outside the repo),
+        # never from the stale outer cwd (which would ALLOW in-repo).
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        verdict, reason = self._decide("(cd ..; true | cat; rm file.txt)")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("rm-outside-repo"), reason)
+        # An in-repo removal through the same shape stays ALLOW.
+        verdict, reason = self._decide("(cd sub; true | cat; rm inner.txt)")
+        self.assertEqual(verdict, "ALLOW", reason)
+        # The outer list start survives the subshell: an inner `;` must
+        # not rewrite the start the parent `&` resumes from (no healing
+        # boundary sits between the close and the background operator).
+        verdict, reason = self._decide("cd sub; (cd ..; true &) & rm inner.txt")
+        self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_pipe_entry_keeps_snapshot_certainty(self):
+        # Review #815 (MAJOR, run-13 M2): cwd and certainty form the
+        # same-instant pair, so a first stage that clears the certainty
+        # cannot launder a stale cwd into certain. The later relative
+        # rm is refused instead of trusting the stale certain cwd.
+        verdict, reason = self._decide("if false; then cd sub; fi; cd / | cat; rm file.txt")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("cwd-uncertain"), reason)
+        # Without a prior conditional the entry is certain and an
+        # in-repo removal through the same pipeline stays ALLOW.
+        verdict, reason = self._decide("cd / | cat; rm file.txt")
+        self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_conditional_close_refreshes_run_for_pipe(self):
+        # Review #815 (MAJOR, run-13 M2): the run start is refreshed when
+        # a conditional closes, so a pipeline directly after `fi` keeps
+        # the uncertainty instead of the stale pre-`if` certainty.
+        verdict, reason = self._decide("if false; then cd sub; fi | cat; rm file.txt")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("cwd-uncertain"), reason)
+
+    def test_else_arm_restores_entry_certainty(self):
+        # Review #815 (MAJOR, run-13 M3): each arm restarts from the full
+        # entry snapshot (cwd, certainty, taint). A previous arm's
+        # absolute cd cannot clear an uncertain entry for the else arm.
+        verdict, reason = self._decide("if false; then cd sub; fi; if false; then cd /tmp; else rm file.txt; fi")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("cwd-uncertain"), reason)
+        # A certain entry still judges the else arm as certain (no
+        # over-denial): no earlier branch left the cwd uncertain.
+        verdict, reason = self._decide("if false; then cd /tmp; else rm file.txt; fi")
+        self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_powershell_nested_else_keeps_outer_taint(self):
+        # Review #815 (MAJOR, run-13 M3): a PowerShell else arm restarts
+        # from the stashed pre-conditional snapshot, never from an outer
+        # entry. The outer then-arm write still taints the later rm.
+        write_text(os.path.join(self.repo, "g"), "x\n")
+        verdict, reason = self._decide("if ($a) { echo hi > f; if ($b) { } else { rm g } }",
+                                       tool="PowerShell")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("chain"), reason)
+        # Mutually exclusive arms share no taint: with no write before
+        # the inner conditional the else-arm rm stays ALLOW.
+        verdict, reason = self._decide("if ($a) { if ($b) { echo hi > f } else { rm g } }",
+                                       tool="PowerShell")
+        self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_powershell_elseif_arm_joins_then_taint(self):
+        # Review #815 (MAJOR, run-13 M3): an elseif arm also restarts from
+        # the stashed base, and the then-arm outcome joins at its close,
+        # so a later rm still sees the earlier write.
+        verdict, reason = self._decide("if ($a) { echo hi > f } elseif ($b) { echo bye }; rm file.txt",
+                                       tool="PowerShell")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("chain"), reason)
+
+    def test_eval_abs_cd_restores_certainty(self):
+        # CodeRabbit #815 (MINOR, run-12 OQwI/P7k4): a nested call that
+        # establishes a certain cwd publishes it (assign, not OR), while
+        # a nested call that leaves cwd unchanged preserves uncertainty.
+        # An absolute `cd` through `eval` clears the fuzz, so a later
+        # in-repo rm is judged on the certain cwd (no over-denial). The
+        # nested path is quoted so a repository path with spaces stays
+        # one argument.
+        verdict, reason = self._decide("if true; then cd sub; fi; eval 'cd \"%s\"'; rm file.txt" % self.repo)
+        self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_skipped_body_keeps_uncertainty(self):
+        # CodeRabbit #815 (MAJOR, run-12 P7kz): joining covers the skipped
+        # body too. The second `if` is never taken, so its absolute `cd`
+        # to the already-current cwd must not launder the earlier
+        # uncertainty into a certain judgment.
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        verdict, reason = self._decide("if true; then cd sub; fi; cd ..; if false; then cd \"%s\"; fi; rm file.txt" % self.repo)
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("cwd-uncertain"), reason)
+
+    def test_condition_taint_reaches_else_arm(self):
+        # CodeRabbit #815 (MAJOR, run-12 P7k3): the condition always
+        # executes, so its filesystem change taints every arm. Dropping
+        # to the entry taint at `else` would judge the rm against the
+        # pre-checkout state.
+        self._link()
+        verdict, reason = self._decide("if git checkout other && false; then true; else rm lnk/../file.txt; fi")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("chain"), reason)
+
+    def test_condition_cwd_moves_else_arm(self):
+        # CodeRabbit #815 (MAJOR, run-12 RZ4R): each arm runs from the
+        # condition-end state, not the pre-conditional entry. The `else`
+        # below runs from `sub` (the `cd` in the condition succeeded),
+        # so `rm file.txt` targets the in-sub symlink and is refused as
+        # a symlink delete instead of being judged against repo/file.txt.
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        os.symlink(os.path.join(self.tmp, "file.txt"),
+                     os.path.join(self.repo, "sub", "file.txt"))
+        verdict, reason = self._decide("if cd ./sub && false; then true; else rm file.txt; fi")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("rm-symlink"), reason)
+
+    def test_condition_taint_snapshot_keeps_else_clean(self):
+        # run-12 P7k3 (mutant direction): a tainted then-arm must not
+        # leak into the else arm — only the condition's own taint
+        # carries over. The else `rm` of an existing in-repo file stays
+        # ALLOW here, while removing the snapshot makes it chain-DENY.
+        verdict, reason = self._decide("if true; then mkdir d; else rm file.txt; fi")
+        self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_bg_list_in_scope_restores_parent(self):
+        # `&` backgrounds the whole in-scope list in a subshell: the
+        # foreground continues from the scope cwd, never from a `cd` left
+        # of `&` (verified on Bash: `(cd sub & pwd)` prints the subshell
+        # cwd, and `{ cd sub & pwd; }` prints the calling-shell cwd).
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        verdict, reason = self._decide("(cd sub & rm ../file.txt)")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("rm-"), reason)
+        verdict, reason = self._decide("{ cd sub & rm ../file.txt; }")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("rm-"), reason)
+        # An in-repo ordinary removal through the same shape stays ALLOW.
+        verdict, reason = self._decide("(cd sub & rm file.txt)")
+        self.assertEqual(verdict, "ALLOW", reason)
+        verdict, reason = self._decide("{ cd sub & rm file.txt; }")
+        self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_bg_list_scope_local_semicolon_refresh(self):
+        # A `;` inside a scope starts a new in-scope list: `&` restores
+        # the post-`;` cwd, not the scope entry and not the leaked `cd`
+        # (verified on Bash: `(cd sub; cd .. & pwd)` prints sub, while
+        # `(cd sub & pwd)` prints the subshell cwd).
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        verdict, reason = self._decide("(cd sub; cd .. & rm file.txt)")
+        self.assertEqual(verdict, "DENY", reason)
+        verdict, reason = self._decide("{ cd sub; cd .. & rm file.txt; }")
+        self.assertEqual(verdict, "DENY", reason)
+
+    def test_or_list_keeps_calling_shell_cwd(self):
+        # `||` is sequential (same shell), never a pipeline boundary.
+        verdict, reason = self._decide("cd sub || cat; rm inner.txt")
+        self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_command_builtin_same_shell_cd(self):
+        # CRITICAL-2 (#636): command/builtin run a shell builtin in the
+        # calling shell, so its cd moves the later rm's resolution base.
+        # A child-process launcher (sh -c, env ...) never does.
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        for cmd in ("command cd .. && rm file.txt",
+                    "builtin cd .. && rm file.txt"):
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._decide(cmd)
+                self.assertEqual(verdict, "DENY", (cmd, reason))
+                self.assertTrue(reason.startswith("rm-outside-repo"), (cmd, reason))
+        for cmd in ("command cd sub && rm inner.txt",
+                    "builtin cd sub && rm inner.txt",
+                    "command -p cd sub && rm inner.txt"):
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._decide(cmd)
+                self.assertEqual(verdict, "ALLOW", (cmd, reason))
+
+    def test_command_double_dash_merges_cwd(self):
+        # CodeRabbit #815 (MAJOR): `command --` / `builtin --` consume one
+        # option terminator (verified on Bash), so the wrapped builtin
+        # still runs in the calling shell and merges cwd.
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        for cmd in ("command -- cd .. && rm file.txt",
+                    "builtin -- cd .. && rm file.txt",
+                    "command -p -- cd .. && rm file.txt"):
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._decide(cmd)
+                self.assertEqual(verdict, "DENY", (cmd, reason))
+                self.assertTrue(reason.startswith("rm-outside-repo"), (cmd, reason))
+        for cmd in ("command -- cd sub && rm inner.txt",
+                    "builtin -- cd sub && rm inner.txt"):
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._decide(cmd)
+                self.assertEqual(verdict, "ALLOW", (cmd, reason))
+        for cmd in ("sh -c 'cd ..' && rm file.txt",
+                    "env sh -c 'cd ..' && rm file.txt"):
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._decide(cmd)
+                self.assertEqual(verdict, "ALLOW", (cmd, reason))
+
+    def test_command_builtin_eval_same_shell(self):
+        # command/builtin eval runs in the calling shell too (nested).
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        for cmd in ("command eval 'cd ..' && rm file.txt",
+                    "builtin eval 'cd ..' && rm file.txt"):
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._decide(cmd)
+                self.assertEqual(verdict, "DENY", (cmd, reason))
+                self.assertTrue(reason.startswith("rm-outside-repo"), (cmd, reason))
+
+    def test_powershell_grouping_shares_runspace(self):
+        # CRITICAL-3 (#636): PowerShell `(...)` is grouping in the same
+        # runspace, not a Bash-style subshell: the location change stays.
+        # Verified by decision-level tests (no pwsh/Windows runtime here:
+        # NOT_RUN for real-shell confirmation; grouping semantics follow
+        # the Microsoft operator documentation).
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        verdict, reason = self._decide("(Set-Location ..); Remove-Item file.txt",
+                                       tool="PowerShell")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("rm-outside-repo"), reason)
+        verdict, reason = self._decide("(Set-Location sub); Remove-Item inner.txt",
+                                       tool="PowerShell")
+        self.assertEqual(verdict, "ALLOW", reason)
+        verdict, reason = self._decide("Set-Location ..; Remove-Item file.txt",
+                                       tool="PowerShell")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("rm-outside-repo"), reason)
+        # A `{ ... }` group runs in the calling scope (like a Bash
+        # brace group): `if`/`while`/`foreach` bodies execute in the
+        # current runspace, so a Set-Location inside persists when the
+        # branch runs. But the branch outcome is uncertain (run-12 Gu1n):
+        # a later relative-path judgment is refused instead of trusting
+        # the taken branch. The `..` case stays DENY (now for uncertainty
+        # rather than the taken-branch location).
+        verdict, reason = self._decide("if ($c) { Set-Location .. }; Remove-Item file.txt",
+                                       tool="PowerShell")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("cwd-uncertain"), reason)
+        verdict, reason = self._decide("if ($c) { Set-Location sub }; Remove-Item ../file.txt",
+                                       tool="PowerShell")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("cwd-uncertain"), reason)
+
+    def test_powershell_call_scriptblock_stays_refused(self):
+        # `& { ... }` is explicitly refused (fail closed): a runtime
+        # check on Windows/pwsh is NOT_RUN here, so the uncertain form is
+        # denied rather than guessed.
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        verdict, reason = self._decide("& { Set-Location .. }; Remove-Item file.txt",
+                                       tool="PowerShell")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("powershell"), reason)
+
+
+def mutant_detected_by_expected_failure(output, expected_test,
+                                           expected_class="ChainRulePieceDTests"):
+    """True only when expected_test fails with an assertion (FAIL:).
+
+    A fixture, import, or runner ERROR: proves nothing about the mutant,
+    so it fails the mutation check itself and is never detection. A FAIL:
+    of any other test is not detection either. A FAIL caused by an internal
+    exception ("guard internal error" DENY) is also not detection: it proves
+    a crash, not the intended semantic misjudgment, so verdict/reason must
+    be checked, not just the test name.
+    """
+    lines = output.splitlines()
+    if any(ln.startswith("ERROR:") for ln in lines):
+        return False
+    if "guard internal error" in output:
+        return False
+    return any(ln.startswith("FAIL: " + expected_test + " (")
+               and expected_class in ln
+               for ln in lines)
+
+
+class ChainRuleMutationTests(unittest.TestCase):
+    """Piece D (#636): each chain-rule element must be detected by a named
+
+    ChainRulePieceDTests failure. Each mutant is a temporary copy of the hook
+    and this test module in a temporary folder. No repository file and no
+    remote branch is changed.
+    """
+
+    MUTANTS = {
+        "rm chain check removed": (
+            '    _require_untainted(ctx, "rm")',
+            '    pass  # mutant: rm chain check removed'),
+        "safe-write chain check removed": (
+            '    _require_untainted(ctx, name)\n    _taint(ctx)',
+            '    _taint(ctx)'),
+        "redirect chain check removed": (
+            '        _require_untainted(ctx, "redirect")',
+            '        pass  # mutant: redirect chain check removed'),
+        "tar chain check removed": (
+            '    _require_untainted(ctx, "tar")',
+            '    pass  # mutant: tar chain check removed'),
+        "sort incoming-taint check removed": (
+            '    if getattr(ctx, "pending_write", False):\n        ctx.pending_write = False\n        _require_untainted(ctx, name)\n        _taint(ctx)',
+            '    if getattr(ctx, "pending_write", False):\n        ctx.pending_write = False\n        _taint(ctx)'),
+        "sort outgoing-taint propagation removed": (
+            '    if getattr(ctx, "pending_write", False):\n        ctx.pending_write = False\n        _require_untainted(ctx, name)\n        _taint(ctx)',
+            '    if getattr(ctx, "pending_write", False):\n        ctx.pending_write = False\n        _require_untainted(ctx, name)'),
+        "rm removal taint removed": (
+            '    _require_untainted(ctx, "rm")\n    # An accepted removal changes the filesystem: later judgments must not\n    # validate against the pre-removal snapshot.\n    _taint(ctx)',
+            '    _require_untainted(ctx, "rm")'),
+        "reset pathspec handling removed": (
+            '    if sub == "reset":\n        # Only the option portion counts: after --, words are pathspecs.\n        for a in rest:\n            if a == "--":\n                break\n            if git_long_is(a, ("--keep",)):\n                rewrite = True\n                break',
+            '    if sub == "reset" and any(git_long_is(a, ("--keep",)) for a in rest):\n        rewrite = True'),
+        "coproc unnamed-compound skip removed": (
+            '            if len(rest) >= 2 and rest[0] not in COPROC_COMPOUND:',
+            '            if len(rest) >= 2:'),
+        "string command-position gating removed": (
+            '                        if cmd_word is None or k == cmd_word:',
+            '                        if True:  # mutant: string command-position gating removed'),
+        "submodule status exemption removed": (
+            '    if sub == "submodule" and rest and rest[:1] != ["status"]:',
+            '    if sub == "submodule" and rest:'),
+        "redirect segment snapshot removed": (
+            '        incoming, wrote = ctx.tainted, False\n        for op, target in ops:\n            ctx.tainted = incoming\n            check_redirect(target, op, ctx, ps)\n            wrote = wrote or ctx.tainted\n        if wrote:\n            ctx.tainted = True',
+            '        for op, target in ops:\n            check_redirect(target, op, ctx, ps)'),
+        "string visit entry snapshot removed": (
+            '                        _nested_text_from(words[k + 1], ctx, wrapper_tainted, ps, depth + 1)',
+            '                        _nested_text(words[k + 1], ctx, ps, depth + 1)'),
+        "substitution segment association removed": (
+            '        bodies, rest_subs = rest_subs[:n], rest_subs[n:]',
+            '        bodies, rest_subs = list(rest_subs), []'),
+        "safe-write taint removed": (
+            '    _require_untainted(ctx, name)\n    _taint(ctx)',
+            '    _require_untainted(ctx, name)'),
+        "git rewrite taint removed": (
+            '    if rewrite:\n        entry_ctx.tainted = True',
+            '    if False:\n        pass'),
+        "nested taint merge removed": (
+            'def _nested_argv(words, ctx, ps, depth):\n    """Analyse nested argv, propagating chain taint back to the parent."""\n'
+            '    sub = ctx.copy()\n    analyze_argv(words, sub, ps, depth)\n'
+            '    if sub.tainted:\n        ctx.tainted = True',
+            'def _nested_argv(words, ctx, ps, depth):\n    """Analyse nested argv, propagating chain taint back to the parent."""\n'
+            '    sub = ctx.copy()\n    analyze_argv(words, sub, ps, depth)'),
+        "eval cwd propagation removed": (
+            '        _nested_text(" ".join(args), ctx, ps, depth + 1, merge_cwd=True)',
+            '        _nested_text(" ".join(args), ctx, ps, depth + 1, merge_cwd=False)  # mutant'),
+        "subshell scope open destroyed": (
+            '                if not scope_stack and not bbrace_stack:\n                    # A top-level `( ... )` may be the whole first pipeline\n                    # stage: remember the pre-group cwd for the entry.\n                    scope_entry = (ctx.cwd, ctx.cwd_fuzzy)\n                    scope_just_closed = False\n                # run-13 (M1): the subshell owns its pipeline/list start:\n                # an inner `cd` moves the subshell\'s run, never the outer one.\n                run_scope.append((run_start, bg_start))\n                run_start = (ctx.cwd, ctx.cwd_fuzzy)\n                bg_start = (ctx.cwd, ctx.cwd_fuzzy)\n                scope_stack.append((ctx.cwd, ctx.cwd_fuzzy))\n                bg_scope.append((ctx.cwd, ctx.cwd_fuzzy))',
+            '                if not scope_stack and not bbrace_stack:\n                    # A top-level `( ... )` may be the whole first pipeline\n                    # stage: remember the pre-group cwd for the entry.\n                    scope_entry = (ctx.cwd, ctx.cwd_fuzzy)\n                    scope_just_closed = False\n                pass  # mutant: subshell scope destroyed'),
+        "subshell cwd restore removed": (
+            '        if seg == SUBSHELL_CLOSE:\n            if not ps and scope_stack:\n                ctx.cwd, ctx.cwd_fuzzy = scope_stack.pop()\n                if run_scope:\n                    run_start, bg_start = run_scope.pop()\n                if pipe_scope:\n                    pipe_entry, prev_was_pipe = pipe_scope.pop()\n                if bg_scope:\n                    bg_scope.pop()\n'
+            '                if not scope_stack and not bbrace_stack:',
+            '        if seg == SUBSHELL_CLOSE:\n            if not ps and scope_stack:\n                scope_stack.pop()  # mutant: subshell cwd leaks\n                if run_scope:\n                    run_start, bg_start = run_scope.pop()\n                if pipe_scope:\n                    pipe_entry, prev_was_pipe = pipe_scope.pop()\n                if bg_scope:\n                    bg_scope.pop()\n'
+            '                if not scope_stack and not bbrace_stack:'),
+        "subshell taint propagation removed": (
+            '        if seg == SUBSHELL_CLOSE:\n            if not ps and scope_stack:\n                ctx.cwd, ctx.cwd_fuzzy = scope_stack.pop()\n                if run_scope:\n                    run_start, bg_start = run_scope.pop()\n                if pipe_scope:\n                    pipe_entry, prev_was_pipe = pipe_scope.pop()\n                if bg_scope:\n                    bg_scope.pop()\n'
+            '                if not scope_stack and not bbrace_stack:',
+            '        if seg == SUBSHELL_CLOSE:\n            if not ps and scope_stack:\n                ctx.cwd, ctx.cwd_fuzzy = scope_stack.pop()\n                if run_scope:\n                    run_start, bg_start = run_scope.pop()\n                if pipe_scope:\n                    pipe_entry, prev_was_pipe = pipe_scope.pop()\n                if bg_scope:\n                    bg_scope.pop()\n'
+            '                ctx.tainted = False  # mutant: subshell taint dropped\n'
+            '                if not scope_stack and not bbrace_stack:'),
+        "cd cwd update removed": (
+            '        ctx.cwd, ctx.cwd_fuzzy = _cd_target(args[0] if args else "~", ctx)',
+            '        pass  # mutant: cd cwd update removed'),
+        "worktree move taint removed": (
+            '    if sub == "worktree" and rest[:1] in (["add"], ["move"]):',
+            '    if sub == "worktree" and rest[:1] == ["add"]:  # mutant: move not a producer'),
+        "read-only stash list over-taint": (
+            '    if sub == "stash" and rest[:1] not in (["list"], ["show"]):\n        rewrite = True',
+            '    if sub == "stash":\n        rewrite = True  # mutant: read-only stash list taints'),
+        "pipeline stage cwd reset removed": (
+            '        if prev_was_pipe and not ps and pipe_entry is not None:\n            ctx.cwd, ctx.cwd_fuzzy = pipe_entry',
+            '        pass  # mutant: pipe stage cwd not reset'),
+        "pipeline taint cleared at boundary": (
+            '                if pipe_entry is None:\n                    if scope_just_closed:',
+            '                if pipe_entry is None:  # mutant: pipe taint cleared\n                    ctx.tainted = False\n                    if scope_just_closed:'),
+        "pipeline entry leaks stage cwd": (
+            '                    elif cond_stack:\n                        # run-12 RZ4Y: inside a conditional the saved run\n                        # start is stale (updates are gated); the active\n                        # arm\'s current pair is the pipeline entry.\n                        pipe_entry = (ctx.cwd, ctx.cwd_fuzzy)',
+            '                    elif cond_stack:  # mutant: cond pipe uses stale run\n                        pipe_entry = run_start'),
+        "command same-shell gating removed": (
+            '            if name in ("command", "builtin", "time"):',
+            '            if name in ("builtin", "time"):  # mutant: command cwd lost'),
+        "builtin same-shell gating removed": (
+            '            if name in ("command", "builtin", "time"):',
+            '            if name in ("command", "time"):  # mutant: builtin cwd lost'),
+        "command eval same-shell removed": (
+            'SAME_SHELL_NAMES = frozenset({"command", "builtin", "eval"}) | CD_NAMES',
+            'SAME_SHELL_NAMES = frozenset({"command", "builtin"}) | CD_NAMES  # mutant: eval cwd lost'),
+        "powershell paren cwd wrongly restored": (
+            '        if seg == SUBSHELL_OPEN:\n            if not ps:\n                if prev_was_pipe and pipe_entry is not None:\n                    # A group right after `|` is the next stage: it forks\n                    # from the entry, and inner commands must not see or\n                    # move the outer pipeline state.\n                    ctx.cwd, ctx.cwd_fuzzy = pipe_entry\n                pipe_scope.append((pipe_entry, prev_was_pipe))\n                pipe_entry = None\n                prev_was_pipe = False\n                if not scope_stack and not bbrace_stack:\n                    # A top-level `( ... )` may be the whole first pipeline\n                    # stage: remember the pre-group cwd for the entry.\n                    scope_entry = (ctx.cwd, ctx.cwd_fuzzy)\n                    scope_just_closed = False\n                # run-13 (M1): the subshell owns its pipeline/list start:\n                # an inner `cd` moves the subshell\'s run, never the outer one.\n                run_scope.append((run_start, bg_start))\n                run_start = (ctx.cwd, ctx.cwd_fuzzy)\n                bg_start = (ctx.cwd, ctx.cwd_fuzzy)\n                scope_stack.append((ctx.cwd, ctx.cwd_fuzzy))\n                bg_scope.append((ctx.cwd, ctx.cwd_fuzzy))\n            continue\n        if seg == SUBSHELL_CLOSE:\n            if not ps and scope_stack:\n',
+            '        if seg == SUBSHELL_OPEN:\n            if True:  # mutant: ps paren wrongly scoped\n                if prev_was_pipe and pipe_entry is not None:\n                    # A group right after `|` is the next stage: it forks\n                    # from the entry, and inner commands must not see or\n                    # move the outer pipeline state.\n                    ctx.cwd, ctx.cwd_fuzzy = pipe_entry\n                pipe_scope.append((pipe_entry, prev_was_pipe))\n                pipe_entry = None\n                prev_was_pipe = False\n                if not scope_stack and not bbrace_stack:\n                    # A top-level `( ... )` may be the whole first pipeline\n                    # stage: remember the pre-group cwd for the entry.\n                    scope_entry = (ctx.cwd, ctx.cwd_fuzzy)\n                    scope_just_closed = False\n                run_scope.append((run_start, bg_start))\n                run_start = (ctx.cwd, ctx.cwd_fuzzy)\n                bg_start = (ctx.cwd, ctx.cwd_fuzzy)\n                scope_stack.append((ctx.cwd, ctx.cwd_fuzzy))\n                bg_scope.append((ctx.cwd, ctx.cwd_fuzzy))\n            continue\n        if seg == SUBSHELL_CLOSE:\n            if scope_stack:  # mutant\n'),
+
+        "pipeline over-taint": (
+            '        if prev_was_pipe and not ps and pipe_entry is not None:\n            ctx.cwd, ctx.cwd_fuzzy = pipe_entry',
+            '        if prev_was_pipe and not ps and pipe_entry is not None:\n            ctx.cwd, ctx.cwd_fuzzy = pipe_entry\n            ctx.tainted = True  # mutant: pipe over-taint'),
+        "or-list treated as pipeline": (
+            '                if nxt == "|":\n                    i += 1  # consume ||: ends an open pipeline, not the list',
+            '                if nxt == "|":\n                    segs.append(PIPE_BOUND)  # mutant: || as pipeline\n                    redirs.append([])\n                    i += 1'),
+        "bash brace open token boundary removed": (
+            '            if cur_blank and (nxt == "" or nxt in " \\t\\n"):',
+            '            if True:  # mutant: any { opens a group'),
+        "background parent restore removed": (
+            '                if (scope_stack or bbrace_stack) and bg_scope:\n                    ctx.cwd, ctx.cwd_fuzzy = bg_scope[-1]\n                else:\n                    ctx.cwd, ctx.cwd_fuzzy = bg_start',
+            '                pass  # mutant: background parent cwd not restored'),
+        "scope-local background start removed": (
+            '            if bg_scope and (scope_stack or bbrace_stack):\n                # A `;`/newline inside a scope group starts a new list\n                # there: a later `&` restores this scope-local start,\n                # never the stale outer bg_start.\n                bg_scope[-1] = (ctx.cwd, ctx.cwd_fuzzy)',
+            '            pass  # mutant: in-scope list start never refreshed'),
+        "pipeline end restore removed": (
+            '            # A `;`/newline ends a pipeline and a background list: later\n            # foreground segments are judged from the pipeline-entry cwd,\n            # never from a finished stage\'s cwd. Entry snapshots restart\n            # after the boundary for the next list.\n            if not ps and pipe_entry is not None:\n                ctx.cwd, ctx.cwd_fuzzy = pipe_entry\n                pipe_entry = None',
+            '            if False:  # mutant: pipeline-end entry not restored\n                pass'),
+
+        "pipeline continuation newline treated as boundary": (
+            '            if c == "\\n" and not ps and pipe_open and cur_blank:',
+            '            if False:  # mutant: pipeline continuation ends the list'),
+        "brace group stage does not fork": (
+            '            is_stage = bool(prev_was_pipe and pipe_entry is not None)\n            if is_stage:\n                ctx.cwd, ctx.cwd_fuzzy = pipe_entry',
+            '            is_stage = False  # mutant: brace stage does not fork\n            if is_stage:\n                ctx.cwd, ctx.cwd_fuzzy = pipe_entry'),        "scope entry falls back to stale run": (
+            '                    if scope_just_closed:\n                        pipe_entry = scope_entry',
+            '                    if False:  # mutant: scope entry ignored\n                        pass'),
+        "command-boundary snapshots removed": (
+            '            # run-13 (M1): the snapshots are scope-local, so an in-scope\n            # `;` moves the scope\'s list start. Conditionals still gate\n            # the update (Gu1Y): an arm-end cwd must not become the run.\n            if not cond_stack:\n                run_start = (ctx.cwd, ctx.cwd_fuzzy)\n                bg_start = (ctx.cwd, ctx.cwd_fuzzy)',
+            '            pass  # mutant: boundary snapshots not refreshed'),
+        "cwd-uncertain check removed": (
+            '        if ctx.cwd_fuzzy and not for_cd:\n            # run-12: a relative path cannot be judged from an uncertain\n            # working directory (conditional branch outcomes). Absolute\n            # paths do not depend on the cwd and stay checkable.\n            raise Deny("cwd-uncertain", "a relative path with an uncertain working directory is not inspected")',
+            '        pass  # mutant: uncertain cwd trusted'),
+        "failed-cd keep-old removed": (
+            '    if not ctx.tainted and not os.path.isdir(real):\n        # Nothing earlier in this command could have created the\n        # directory. An explicit path (with a slash) cannot come from\n        # CDPATH, so the shell keeps the old cwd for certain. A bare\n        # name may still resolve through CDPATH (which the hook cannot\n        # see, including command-prefix assignments), so only the cwd\n        # is kept while the result is marked uncertain.\n        if "/" in target.replace("\\\\", "/"):\n            return ctx.cwd, ctx.cwd_fuzzy\n        return ctx.cwd, True',
+            '    pass  # mutant: failed cd adopted'),
+        "conditional scope tracking removed": (
+            '        if not ps and first_cmd in COND_OPENERS:',
+            '        if False:  # mutant: conditional scope ignored'),
+        "nested opener after then removed": (
+            '        elif not ps and cond_stack and first_cmd in ("then", "else", "do", "elif"):',
+            '        elif False:  # mutant: nested opener after then ignored'),
+        "conditional close fuzz removed": (
+            '            entry = cond_stack.pop()\n            # run-12 OQww/P7kz: join all outcomes including the skipped\n            # body (same rule as the PowerShell close).\n            if entry["fuzzy"] or entry["moved"] or ctx.cwd != entry["cwd"]:\n                ctx.cwd_fuzzy = True\n            ctx.tainted = ctx.tainted or entry["then_taint"]\n            if cond_stack and (entry["moved"] or ctx.cwd != cond_stack[-1]["cwd"]):\n                cond_stack[-1]["moved"] = True',
+            '            pass  # mutant: conditional close trusted'),
+        "coproc nested scope restored wrong": (
+            '                segs.append(BBRACE_CLOSE if kind == "brace" else COPROC_CLOSE)',
+            '                segs.append(BBRACE_CLOSE)  # mutant: coproc close leaks'),
+        "andor ends pipeline removed": (
+            '                if nxt == "&":\n                    i += 1  # consume &&: ends an open pipeline, not the list\n                    if pipe_open:\n                        segs.append(PIPE_END)\n                        redirs.append([])\n                    pipe_open = False',
+            '                if nxt == "&":\n                    i += 1  # mutant: && never ends the pipeline\n                    pipe_open = False'),
+        "subshell fuzz restore removed": (
+            '        if seg == SUBSHELL_CLOSE:\n            if not ps and scope_stack:\n                ctx.cwd, ctx.cwd_fuzzy = scope_stack.pop()',
+            '        if seg == SUBSHELL_CLOSE:\n            if not ps and scope_stack:\n                ctx.cwd = scope_stack.pop()[0]  # mutant: fuzz not restored'),
+        "skipped-body certainty dropped": (
+            '            # body (same rule as the PowerShell close).\n            if entry["fuzzy"] or entry["moved"] or ctx.cwd != entry["cwd"]:',
+            '            # body (same rule as the PowerShell close).\n            if entry["moved"] or ctx.cwd != entry["cwd"]:  # mutant: skipped body trusted'),
+        "condition taint snapshot removed": (
+            '        if not ps and cond_stack and first_cmd == "then":\n            # run-12 OQww/P7k3/RZ4R: the condition just ended; snapshot the\n            # arm entry (cwd, certainty, taint). Every `else`/`elif` arm\n            # restarts from here instead of the previous arm\'s end, so a\n            # condition that moves the cwd (or taints) is honored while a\n            # previous arm\'s effects stay joined only at the close.\n            cond_stack[-1]["arm"] = (ctx.cwd, ctx.cwd_fuzzy, ctx.tainted)',
+        '        pass  # mutant: condition taint dropped'),
+        "else arm reset removed": (
+            '        elif cond_stack and first_cmd in ("else", "elif"):',
+            '        elif False:  # mutant: else arm reuses previous arm state'),
+        "cdpath bare cd treated certain": (
+            '        if "/" in target.replace("\\\\", "/"):\n            return ctx.cwd, ctx.cwd_fuzzy\n        return ctx.cwd, True',
+            '        return ctx.cwd, ctx.cwd_fuzzy  # mutant: bare CDPATH miss treated certain'),
+        "eval certainty publish removed": (
+            '    if merge_cwd:\n        ctx.cwd = sub.cwd\n        ctx.cwd_fuzzy = sub.cwd_fuzzy',
+            '    if merge_cwd:\n        ctx.cwd = sub.cwd\n        if sub.cwd_fuzzy:  # mutant: eval never restores certainty\n            ctx.cwd_fuzzy = True'),
+        "powershell cond marker removed": (
+            '        if seg == PSCOND_CLOSE:\n            if cond_stack:\n                # run-12 OQww: join the arm outcomes conservatively: any\n                # move inside the scope leaves the cwd uncertain, and\n                # taint from either arm reaches later segments.\n                entry = cond_stack.pop()\n                # run-12 OQww/P7kz: join all outcomes including the\n                # skipped body: entry uncertainty, any move, or any end\n                # difference leaves the cwd uncertain.\n                if entry["fuzzy"] or entry["moved"] or ctx.cwd != entry["cwd"]:\n                    ctx.cwd_fuzzy = True\n                ctx.tainted = ctx.tainted or entry["then_taint"]\n                if cond_stack and (entry["moved"] or ctx.cwd != cond_stack[-1]["cwd"]):\n                    cond_stack[-1]["moved"] = True\n                # run-13 (M3): keep the pre-arm snapshot for a following\n                # else/elseif arm, whose entry was already popped. Each\n                # arm restarts from this base and joins at its own close.\n                ps_arm_stack.append(entry)\n            continue',
+            '        if seg == PSCOND_CLOSE:\n            continue  # mutant: ps close trusted'),
+        "coproc compound scope removed": (
+            '        if seg == COPROC_CLOSE:\n            if scope_stack:\n                ctx.cwd, ctx.cwd_fuzzy = scope_stack.pop()\n                if run_scope:\n                    run_start, bg_start = run_scope.pop()\n                if bg_scope:\n                    bg_scope.pop()\n                if pipe_scope:\n                    pipe_entry, prev_was_pipe = pipe_scope.pop()\n'
+            '                if not scope_stack and not bbrace_stack:',
+            '        if seg == COPROC_CLOSE:\n            if scope_stack:\n                scope_stack.pop()  # mutant: coproc body leaks cwd\n                if run_scope:\n                    run_start, bg_start = run_scope.pop()\n                if bg_scope:\n                    bg_scope.pop()\n                if pipe_scope:\n                    pipe_entry, prev_was_pipe = pipe_scope.pop()\n'
+            '                if not scope_stack and not bbrace_stack:'),
+        "command double-dash handling removed": (
+            '        if i < len(args) and args[i] == "--":',
+            '        if False:  # mutant: command -- not consumed'),
+        "same-shell duplicate validation restored": (
+            '                if same_shell_consumed is not None and cand == same_shell_consumed:',
+            '                if False:  # mutant: same-shell target revalidated against its taint'),
+                "powershell call operator refusal removed": (
+            '                if k < n and text[k] in "\\"\'$({":',
+            '                if False and k < n and text[k] in "\\"\'$({":  # mutant: call operator with string allowed'),
+        "brace close token boundary removed": (
+            '        if c == "}" and not ps and cur_blank:',
+            '        if c == "}" and not ps:  # mutant: any } closes the group'),
+        "subshell run start not scoped": (
+            '                # run-13 (M1): the subshell owns its pipeline/list start:\n                # an inner `cd` moves the subshell\'s run, never the outer one.\n                run_scope.append((run_start, bg_start))\n                run_start = (ctx.cwd, ctx.cwd_fuzzy)\n                bg_start = (ctx.cwd, ctx.cwd_fuzzy)',
+            '                pass  # mutant: subshell run start not scoped'),
+        "pipe entry snapshot certainty kept": (
+            '                    else:\n                        pipe_entry = run_start\n                prev_was_pipe = True',
+            '                    else:\n                        pipe_entry = run_start\n                    pipe_entry = (pipe_entry[0], ctx.cwd_fuzzy)  # mutant: live certainty\n                prev_was_pipe = True'),
+        "cond close run refresh removed": (
+            '            if not cond_stack:\n                # run-13 (M2): the run start is the same-instant pair\n                # again, so a later pipeline entry keeps its own\n                # certainty instead of borrowing the live one. The\n                # refresh is scope-local (M1) inside a subshell.\n                run_start = (ctx.cwd, ctx.cwd_fuzzy)',
+            '            pass  # mutant: cond close run not refreshed'),
+        "else arm certainty restore removed": (
+            '            entry = cond_stack[-1]\n            entry["then_taint"] = entry["then_taint"] or ctx.tainted\n            if entry["arm"] is None:\n                entry["arm"] = (ctx.cwd, ctx.cwd_fuzzy, ctx.tainted)\n            ctx.cwd, ctx.cwd_fuzzy, ctx.tainted = entry["arm"]',
+            '            entry = cond_stack[-1]\n            entry["then_taint"] = entry["then_taint"] or ctx.tainted\n            if entry["arm"] is None:\n                entry["arm"] = (ctx.cwd, ctx.cwd_fuzzy, ctx.tainted)\n            ctx.cwd = entry["arm"][0]\n            ctx.tainted = entry["arm"][2]  # mutant: else certainty not restored'),
+        "powershell else stash restore removed": (
+            '            entry = ps_arm_stack[-1]\n            entry["then_taint"] = entry["then_taint"] or ctx.tainted\n            arm = entry["arm"]\n            if arm is None:\n                arm = (entry["cwd"], entry["fuzzy"], entry["tainted"])\n            ctx.cwd, ctx.cwd_fuzzy, ctx.tainted = arm\n            ps_arm_moved = entry["moved"]\n            ps_arm_taint = entry["then_taint"]',
+            '            entry = cond_stack[-1] if cond_stack else ps_arm_stack[-1]  # mutant: ps else uses outer entry\n            entry["then_taint"] = entry["then_taint"] or ctx.tainted\n            ctx.cwd, ctx.cwd_fuzzy, ctx.tainted = (entry["cwd"], entry["fuzzy"], entry["tainted"])'),
+        "powershell arm outcome inheritance removed": (
+            '            if ps_arm_moved or ps_arm_taint:\n                # run-13 (M3): this is an else/elseif body: inherit the\n                # then-arm outcome so the close joins every arm.\n                cond_stack[-1]["moved"] = cond_stack[-1]["moved"] or ps_arm_moved\n                cond_stack[-1]["then_taint"] = cond_stack[-1]["then_taint"] or ps_arm_taint\n                ps_arm_moved = False\n                ps_arm_taint = False\n            # run-12 P7k3/RZ4V: every block open snapshots the live arm\n            # state, so an `elseif` condition\'s own writes are kept for\n            # a later arm instead of being replaced by stale state.\n            cond_stack[-1]["arm"] = (ctx.cwd, ctx.cwd_fuzzy, ctx.tainted)',
+            '            if False:  # mutant: ps arm outcome not inherited\n                pass'),
+    }
+
+    # Each hook mutant must turn its expected ChainRulePieceDTests test RED
+    # with an assertion failure. A mutant with no entry here fails the run.
+    MUTANT_EXPECTED_TEST = {
+        "rm chain check removed": "test_filesystem_mutation_taints_later_rm",
+        "safe-write chain check removed": "test_tainted_write_and_redirect_are_refused",
+        "redirect chain check removed": "test_tainted_write_and_redirect_are_refused",
+        "tar chain check removed": "test_tainted_write_and_redirect_are_refused",
+        "sort incoming-taint check removed": "test_tainted_write_and_redirect_are_refused",
+        "sort outgoing-taint propagation removed": "test_filesystem_mutation_taints_later_rm",
+        "rm removal taint removed": "test_accepted_removal_taints_later_writes",
+        "reset pathspec handling removed": "test_reset_pathspec_is_not_a_mode",
+        "coproc unnamed-compound skip removed": "test_unnamed_compound_coprocess_is_analysed_once",
+        "string command-position gating removed": "test_wrapper_data_string_does_not_export_taint",
+        "submodule status exemption removed": "test_readonly_prefixes_do_not_taint",
+        "redirect segment snapshot removed": "test_two_redirects_in_one_segment_share_incoming_taint",
+        "string visit entry snapshot removed": "test_wrapper_string_visit_starts_from_entry_taint",
+        "substitution segment association removed": "test_substitution_taint_follows_its_segment",
+        "safe-write taint removed": "test_filesystem_mutation_taints_later_rm",
+        "git rewrite taint removed": "test_filesystem_mutation_taints_later_rm",
+        "nested taint merge removed": "test_filesystem_mutation_taints_later_rm",
+        "eval cwd propagation removed": "test_eval_cd_moves_calling_shell_cwd",
+        "subshell scope open destroyed": "test_subshell_cd_does_not_leak_to_parent",
+        "subshell cwd restore removed": "test_subshell_cd_does_not_leak_to_parent",
+        "subshell taint propagation removed": "test_subshell_filesystem_change_taints_parent",
+        "cd cwd update removed": "test_brace_group_shares_calling_shell_cwd",
+        "worktree move taint removed": "test_git_worktree_move_taints_later_rm",
+        "read-only stash list over-taint": "test_readonly_prefixes_do_not_taint",
+        "pipeline stage cwd reset removed": "test_pipeline_stage_cwd_does_not_leak_to_parent",
+        "pipeline taint cleared at boundary": "test_pipeline_taint_propagates_to_parent",
+        "pipeline entry leaks stage cwd": "test_pipeline_inside_conditional_uses_arm_entry",
+        "command same-shell gating removed": "test_command_builtin_same_shell_cd",
+        "builtin same-shell gating removed": "test_command_builtin_same_shell_cd",
+        "command eval same-shell removed": "test_command_builtin_eval_same_shell",
+        "powershell paren cwd wrongly restored": "test_powershell_grouping_shares_runspace",
+        "pipeline over-taint": "test_pipeline_clean_stages_keep_allow",
+        "or-list treated as pipeline": "test_or_list_keeps_calling_shell_cwd",
+        "bash brace open token boundary removed": "test_brace_expansion_word_does_not_close_group",
+        "background parent restore removed": "test_background_list_entry_is_list_start",
+        "scope-local background start removed": "test_bg_list_scope_local_semicolon_refresh",
+        "pipeline end restore removed": "test_pipeline_end_restores_entry",
+        "pipeline continuation newline treated as boundary": "test_pipeline_continuation_newline_stays_in_pipeline",
+        "brace group stage does not fork": "test_brace_group_stage_forks_from_entry",
+        "scope entry falls back to stale run": "test_pipeline_entry_after_sequential_cd",
+        "command-boundary snapshots removed": "test_background_list_entry_is_list_start",
+        "cwd-uncertain check removed": "test_if_pipeline_stage_does_not_leak_cwd",
+        "failed-cd keep-old removed": "test_failed_cd_keeps_old_cwd",
+        "conditional scope tracking removed": "test_if_pipeline_stage_does_not_leak_cwd",
+        "conditional close fuzz removed": "test_if_pipeline_stage_does_not_leak_cwd",
+        "coproc nested scope restored wrong": "test_nested_coproc_body_is_subshell_scoped",
+        "andor ends pipeline removed": "test_and_or_end_pipeline",
+        "subshell fuzz restore removed": "test_subshell_abs_cd_keeps_outer_uncertainty",
+        "nested opener after then removed": "test_nested_opener_after_then",
+        "skipped-body certainty dropped": "test_skipped_body_keeps_uncertainty",
+        "condition taint snapshot removed": "test_condition_taint_snapshot_keeps_else_clean",
+        "else arm reset removed": "test_else_arm_runs_from_entry",
+        "cdpath bare cd treated certain": "test_failed_cd_keeps_old_cwd",
+        "eval certainty publish removed": "test_eval_abs_cd_restores_certainty",
+        "powershell cond marker removed": "test_powershell_uncertain_branch_denies_relative_rm",
+        "coproc compound scope removed": "test_coproc_compound_body_is_subshell_scoped",
+        "command double-dash handling removed": "test_command_double_dash_merges_cwd",
+        "same-shell duplicate validation restored": "test_same_shell_target_does_not_self_deny",
+        "powershell call operator refusal removed": "test_powershell_call_scriptblock_stays_refused",
+        "brace close token boundary removed": "test_brace_expansion_word_does_not_close_group",
+        "subshell run start not scoped": "test_subshell_pipeline_uses_inner_cwd",
+        "pipe entry snapshot certainty kept": "test_pipe_entry_keeps_snapshot_certainty",
+        "cond close run refresh removed": "test_conditional_close_refreshes_run_for_pipe",
+        "else arm certainty restore removed": "test_else_arm_restores_entry_certainty",
+        "powershell else stash restore removed": "test_powershell_nested_else_keeps_outer_taint",
+        "powershell arm outcome inheritance removed": "test_powershell_if_else_branch_denies_relative_rm",
+    }
+
+    # Mutants of the detection helper itself (this test file, not the hook).
+    # Under the mutant, an ERROR: output must still fail the check: the
+    # expected helper test turns RED with an assertion failure.
+    TEST_MUTANTS = {
+        "mutation ERROR accepted as detection": (
+            '    if any(ln.startswith("ERROR:") for ln in lines):\n        return False',
+            '    if any(ln.startswith("ERROR:") for ln in lines):\n        return True  # mutant'),
+    }
+    TEST_MUTANT_EXPECTED_TEST = {
+        "mutation ERROR accepted as detection": "test_mutation_detection_rejects_error_output",
+    }
+
+    def _run(self, hook_text, test_text=None, test_class=None):
+        with tempfile.TemporaryDirectory() as td:
+            root = os.path.realpath(td)
+            hooks = os.path.join(root, ".claude", "hooks")
+            host = os.path.join(root, "tests", "host")
+            os.makedirs(hooks)
+            os.makedirs(host)
+            write_text(os.path.join(hooks, "guard_destructive.py"), hook_text)
+            if test_text is None:
+                with open(THIS_FILE, encoding="utf-8") as f:
+                    test_text = f.read()
+            write_text(os.path.join(host, "test_claude_destructive_guard.py"), test_text)
+            env = dict(os.environ, PYTHON_COLORS="0")
+            proc = subprocess.run([sys.executable, "-m", "unittest", "-v",
+                                   "test_claude_destructive_guard." + (test_class or "ChainRulePieceDTests")],
+                                  cwd=host, capture_output=True, text=True, timeout=300,
+                                  env=env)
+            return proc.returncode, proc.stderr
+
+    def test_chain_tests_detect_each_mutant(self):
+        with open(HOOK, encoding="utf-8") as f:
+            original = f.read()
+        with open(THIS_FILE, encoding="utf-8") as f:
+            original_test = f.read()
+        self.assertEqual(set(self.MUTANTS), set(self.MUTANT_EXPECTED_TEST),
+                         "every hook mutant needs an expected test")
+        code, out = self._run(original)
+        self.assertEqual(code, 0, "unmutated copy must pass ChainRulePieceDTests:\n" + out[-800:])
+        for name, (old, new) in self.MUTANTS.items():
+            if name in KNOWN_UNRESOLVED_MUTANTS:
+                continue
+            with self.subTest(mutant=name):
+                self.assertEqual(original.count(old), 1,
+                                 "mutation target not found exactly once: " + name)
+                code, out = self._run(original.replace(old, new))
+                expected = self.MUTANT_EXPECTED_TEST[name]
+                self.assertTrue(mutant_detected_by_expected_failure(out, expected),
+                                "mutant not detected by the expected ChainRulePieceDTests failure: " + name
+                                + " (expected " + expected + ")\n" + out[-1500:])
+        code, out = self._run(original, original_test,
+                              "ChainRuleMutationHelperTests")
+        self.assertEqual(code, 0, "unmutated copy must pass ChainRuleMutationHelperTests:\n" + out[-800:])
+        for name, (old, new) in self.TEST_MUTANTS.items():
+            with self.subTest(mutant=name):
+                self.assertEqual(original_test.count(old), 1,
+                                 "mutation target not found exactly once: " + name)
+                code, out = self._run(original, original_test.replace(old, new),
+                                      "ChainRuleMutationHelperTests")
+                expected = self.TEST_MUTANT_EXPECTED_TEST[name]
+                self.assertTrue(mutant_detected_by_expected_failure(
+                    out, expected, "ChainRuleMutationHelperTests"),
+                    "runner mutant not detected by the expected helper failure: " + name
+                    + " (expected " + expected + ")\n" + out[-1500:])
+
+
+class ChainRuleMutationHelperTests(unittest.TestCase):
+    """Unit tests for mutant_detected_by_expected_failure (no subprocess)."""
+
+    def test_mutation_detection_accepts_expected_failure(self):
+        out = ("test_eval_cd_moves_calling_shell_cwd "
+               "(test_claude_destructive_guard.ChainRulePieceDTests) ... FAIL\n"
+               "FAIL: test_eval_cd_moves_calling_shell_cwd "
+               "(test_claude_destructive_guard.ChainRulePieceDTests)\n")
+        self.assertTrue(mutant_detected_by_expected_failure(
+            out, "test_eval_cd_moves_calling_shell_cwd"))
+
+    def test_mutation_detection_rejects_error_output(self):
+        out = ("ERROR: test_eval_cd_moves_calling_shell_cwd "
+               "(test_claude_destructive_guard.ChainRulePieceDTests)\n")
+        self.assertFalse(mutant_detected_by_expected_failure(
+            out, "test_eval_cd_moves_calling_shell_cwd"))
+
+    def test_mutation_detection_rejects_internal_error(self):
+        # False-positive guard: a mutant that crashes to "guard internal
+        # error" DENY must not count as semantic detection, even when the
+        # expected test FAILs by name (verdict/reason, not just FAIL:).
+        out = ("test_powershell_grouping_shares_runspace "
+               "(test_claude_destructive_guard.ChainRulePieceDTests) ... FAIL\n"
+               "FAIL: test_powershell_grouping_shares_runspace "
+               "(test_claude_destructive_guard.ChainRulePieceDTests)\n"
+               "AssertionError: False is not true : guard internal error: test crashed\n")
+        self.assertFalse(mutant_detected_by_expected_failure(
+            out, "test_powershell_grouping_shares_runspace"))
+
+    def test_mutation_detection_rejects_unexpected_test_failure(self):
+        out = ("FAIL: test_some_other "
+               "(test_claude_destructive_guard.ChainRulePieceDTests)\n")
+        self.assertFalse(mutant_detected_by_expected_failure(
+            out, "test_eval_cd_moves_calling_shell_cwd"))
 
 
 if __name__ == "__main__":

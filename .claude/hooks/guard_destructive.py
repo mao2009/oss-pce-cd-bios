@@ -24,6 +24,13 @@ ALLOW, DENY = "ALLOW", "DENY"
 SHELL_TOOLS = ("Bash", "PowerShell")
 KEYWORDS = {"{", "}", "!", "if", "then", "else", "elif", "fi", "do", "done",
             "while", "until", "(", ")"}
+# run-12: first words that open a conditional/loop scope whose branch
+# outcome is not known statically (Gu1P/Gu1Y/Gu1n follow-ups). The body
+# is still analysed (DENY/taint detection unchanged); only the cwd it
+# leaves is marked uncertain when it moved.
+COND_OPENERS = {"if", "while", "until", "for", "case", "select"}
+COND_CLOSERS = {"fi", "done", "esac"}
+PS_COND_WORDS = {"if", "elseif", "else", "while", "for", "foreach", "switch"}
 WRAPPERS = {"sudo", "doas", "env", "command", "builtin", "exec", "nohup", "time",
             "nice", "ionice", "timeout", "setsid", "stdbuf", "xargs"}
 # External launchers (#664): each runs its arguments as a command. Their options are not parsed (wrapper_candidates analyses
@@ -60,6 +67,9 @@ EXPR_SYNTAX_RE = re.compile(r"[,()@{}$]")
 # is refused on the raw text before any split. Property access ($_.Name) is not a call and is not refused.
 METHOD_CALL_RE = re.compile(r"(?i)\.\s*(?:\w+\s*\(|['\"(])|-m(?:e|em\w*)?\b")
 CD_NAMES = {"cd", "chdir", "set-location", "sl", "pushd", "push-location"}
+# A coproc name is only a name before a compound command (Piece D, #636).
+COPROC_COMPOUND = frozenset({"{", "(", "((", "[[", "if", "until",
+                                "for", "while", "case", "select", "!"})
 # External commands whose arguments only read data, or name plain files (writes into .claude/ are checked by WRITE_NAMES).
 # None of them runs another program or evaluates its arguments. Any other external command with arguments is DENY.
 SAFE_EXTERNAL = {"cat", "head", "tail", "wc", "ls", "echo", "printf", "pwd", "true", "false", "diff", "stat", "file",
@@ -76,6 +86,63 @@ ALWAYS_DENY = {"unlink", "shred", "rmdir", "rd", "dd", "mkfs", "truncate", "wipe
                # popd and Pop-Location return to a directory the guard cannot know (the stack is not tracked): denied.
                "popd", "pop-location"}
 PY_NAME = re.compile(r"^python(3(\.\d+)?)?$|^py$")
+# A parenthesised group runs in a subshell: its cwd never reaches the
+# parent, but a filesystem change inside it outlives the subshell, so taint
+# still merges. split_segments emits these sentinels for unquoted parens
+# (quoted or escaped parens stay ordinary words); analyze_text keeps a
+# stack of pre-subshell cwds. Control characters are rejected on input, so
+# \x02 can never come from the command text itself.
+SUBSHELL_OPEN = "\x02("
+SUBSHELL_CLOSE = "\x02)"
+# A pipeline stage boundary (Bash only): each stage of `a | b` runs in
+# a subshell, so its cwd never reaches the parent, while a filesystem
+# change inside it still taints later judgments. `||` and `&&` are
+# sequential (same shell) and never emit this. Control characters are
+# rejected on input, so \x02 can never come from the command text itself.
+PIPE_BOUND = "\x02|"
+# A background-list boundary (Bash only): `a & b` backgrounds the whole
+# `a` list in a subshell. The parent continues from the cwd the list
+# started with (bg_start), while taint still propagates. Same \x02
+# safety as PIPE_BOUND.
+BG_BOUND = "\x02&"
+# A top-level command boundary (Bash `;` or newline): no scope effect, but
+# it ends a background list and a pipeline, so analyze_text restores the
+# pipeline-entry cwd here and refreshes the entry snapshots. Same \x02
+# safety as PIPE_BOUND. `&&`/`||` are sequential inside a list and never
+# emit this.
+CMD_BOUND = "\x02;"
+# A Bash coprocess-compound boundary: `coproc { ...; }` runs its body in a
+# subshell (like `( ... )`), so the body shares the parent taint but its
+# cwd is restored at the close. The `{` stays a literal word of the
+# `coproc ...` segment (so coproc dispatch sees exactly what it saw
+# before); only the scope is new. Same \x02 safety as PIPE_BOUND.
+COPROC_OPEN = "\x02c{"
+COPROC_CLOSE = "\x02c}"
+# A Bash brace-group boundary: `{ ...; }` runs in the calling shell, so it
+# shares cwd like a plain sequence — but as a pipeline stage the whole
+# group still runs in one subshell. Scoping it lets pipeline entries stay
+# exact when the first stage spans several segments. Only a command-
+# position `{` opens a group (mid-word `{a,b}` stays literal, so brace
+# expansion words keep their current validation). A `}` closes a group
+# only as a standalone word (a `}` inside a word stays literal). A stray
+# `}` with no open group stays an ordinary word, as before.
+BBRACE_OPEN = "\x02b{"
+BBRACE_CLOSE = "\x02b}"
+# run-12: a PowerShell conditional/loop body in braces. The location
+# change inside persists when the branch runs, but the branch outcome
+# is not known statically, so the close marks the cwd uncertain.
+PSCOND_OPEN = "\x02p{"
+PSCOND_CLOSE = "\x02p}"
+# run-12 OQwd: `&&`/`||` terminate the pipeline like `;` (but do not
+# start a new background list). The enclosing cwd is restored first.
+PIPE_END = "\x02e"
+# PowerShell `{ ... }` groups (statement bodies, scriptblocks, hashtables)
+# run in the calling scope for cwd purposes: `if`/`while`/`foreach` bodies
+# execute in the current scope, so a Set-Location inside persists like a
+# Bash brace group. Only `& { ... }` (child scope, uncertain) stays
+# refused elsewhere. Brace depth is still tracked so an unclosed `{`
+# (a shell syntax error) is refused instead of guessed.
+
 # Placeholder for a $(...), `...`, <(...) or >(...) body. NUL is rejected on input,
 # so the placeholder can never collide with user text.
 SUBST = "\x00SUBST\x00"
@@ -173,19 +240,149 @@ class Deny(Exception):
         self.reason = reason
 
 
+# Piece D (#636) chain rule. A segment that changes the filesystem invalidates
+# the hook-time filesystem state (symlink targets, existence, cwd-relative
+# resolution) that later destructive-path judgments rely on. The taint is set
+# by an earlier segment in the same command and read by rm, write and redirect
+# judgments for later segments. The taint never clears within one command.
+# ln and rmdir are already DENY in every form; cd/pushd move the tracked cwd.
 class Ctx:
-    def __init__(self, cwd, root, git, registry, protected):
+    def __init__(self, cwd, root, git, registry, protected, tainted=False,
+                 cwd_fuzzy=False):
         self.cwd = cwd            # canonical absolute path
         self.root = root          # case-folded canonical repo root
         self.git = git            # case-folded canonical .git directory
         self.registry = registry  # case-folded worktree paths with a recorded owner
         self.protected = protected
+        self.tainted = tainted    # Piece D (#636): an earlier segment changed the filesystem
+        self.cwd_fuzzy = cwd_fuzzy  # run-12: cwd is one of several branch outcomes (fail closed)
+        self.pending_write = False  # Piece D (#636): validated write option awaiting publish
 
     def copy(self, **kw):
-        c = Ctx(self.cwd, self.root, self.git, self.registry, self.protected)
+        c = Ctx(self.cwd, self.root, self.git, self.registry, self.protected,
+                self.tainted, self.cwd_fuzzy)
         for k, v in kw.items():
             setattr(c, k, v)
         return c
+
+
+def _cond_entry(ctx):
+    """Snapshot a conditional/loop entry (run-12 OQww)."""
+    return {"cwd": ctx.cwd, "fuzzy": ctx.cwd_fuzzy, "tainted": ctx.tainted,
+            "then_taint": ctx.tainted, "arm": None, "moved": False}
+
+
+def _taint(ctx):
+    """Mark that this command already changed the filesystem (Piece D, #636)."""
+    if ctx is not None:
+        ctx.tainted = True
+
+
+def _require_untainted(ctx, what):
+    """Refuse a destructive path judgment after a same-command filesystem change."""
+    if ctx is not None and ctx.tainted:
+        raise Deny("chain", what + " after a filesystem change in the same command is not inspected")
+
+
+def _nested_text(text, ctx, ps, depth, merge_cwd=False):
+    """Analyse nested command text, propagating chain taint back to the parent.
+
+    merge_cwd (eval only, #636): the nested text runs in the calling shell,
+    so a cwd change inside it moves the parent too. Every other nested form
+    (sh -c, command/process substitution, wrapper strings) runs in a child
+    process or a subshell, so its cwd is discarded while taint still merges.
+    """
+    sub = ctx.copy()
+    analyze_text(text, sub, ps, depth)
+    if sub.tainted:
+        ctx.tainted = True
+    if merge_cwd:
+        ctx.cwd = sub.cwd
+        ctx.cwd_fuzzy = sub.cwd_fuzzy
+
+
+def _nested_text_from(text, ctx, entry_tainted, ps, depth):
+    """Analyse one alternative string from the entry taint snapshot (Piece D, #636).
+
+    Alternative parses of the same invocation (wrapper strings, launcher
+    suffixes) are not sequential commands, so a visit must not see taint added
+    by another visit of the same text. Taint found here still propagates back
+    for later segments."""
+    sub = ctx.copy()
+    sub.tainted = entry_tainted
+    analyze_text(text, sub, ps, depth)
+    if sub.tainted:
+        ctx.tainted = True
+
+
+def _record_validated_write(ctx):
+    """Record a validated write option for end-of-validation publish (Piece D, #636)."""
+    if ctx is not None:
+        ctx.pending_write = True
+
+
+def _publish_pending_write(ctx, name):
+    """Publish a recorded write-option taint after full argv validation."""
+    if getattr(ctx, "pending_write", False):
+        ctx.pending_write = False
+        _require_untainted(ctx, name)
+        _taint(ctx)
+
+
+def _nested_argv(words, ctx, ps, depth):
+    """Analyse nested argv, propagating chain taint back to the parent."""
+    sub = ctx.copy()
+    analyze_argv(words, sub, ps, depth)
+    if sub.tainted:
+        ctx.tainted = True
+
+
+# Builtins that run in the calling shell (so the caller cwd moves too)
+# when reached through command/builtin/time. Anything else reached that
+# way runs in a child process (or is refused), so its cwd is discarded.
+# source/. execute a file the guard cannot inspect and stay refused.
+SAME_SHELL_NAMES = frozenset({"command", "builtin", "eval"}) | CD_NAMES
+
+
+def same_shell_target_index(name, args, ctx):
+    """Index of the command word for same-shell wrappers, or None.
+
+    None means "not a plain execution form": fall through to the existing
+    suffix analysis (fail closed, e.g. command -v only describes)."""
+    i = 0
+    if name == "command":
+        while i < len(args) and args[i] == "-p":
+            i += 1
+        if i < len(args) and args[i] == "--":
+            # Piece D (#636): `command -- cd sub` runs cd in the calling
+            # shell (verified on Bash): consume one terminator so the
+            # wrapped builtin merges cwd. Other dash forms still describe.
+            i += 1
+        elif i < len(args) and args[i].startswith("-"):
+            return None
+    elif name == "time":
+        # Exact grammar (may DENY, e.g. time -o); side-effect free here.
+        i = wrapper_command_index(name, args, ctx)
+    if i >= len(args):
+        return None
+    if name == "builtin" and args[i].startswith("-"):
+        # Piece D (#636): `builtin -- cd sub` runs cd in the calling
+        # shell (verified on Bash): consume one terminator.
+        if args[i] == "--" and i + 1 < len(args):
+            i += 1
+        else:
+            return None
+    return i
+
+
+def _nested_argv_same_shell(words, ctx, ps, depth):
+    """Same-shell wrapper target: merge chain taint and cwd back to the parent."""
+    sub = ctx.copy()
+    analyze_argv(words, sub, ps, depth)
+    if sub.tainted:
+        ctx.tainted = True
+    ctx.cwd = sub.cwd
+    ctx.cwd_fuzzy = sub.cwd_fuzzy
 
 
 def canon(path, normalize=True):
@@ -364,7 +561,7 @@ def _dotdot_unresolved(p, raw_form):
     return False
 
 
-def resolve_full(raw, ctx, deny_unresolvable_dotdot=False):
+def resolve_full(raw, ctx, deny_unresolvable_dotdot=False, for_cd=False):
     """Return (lexical canonical, real canonical, final entry is a link) for a path argument.
 
     The real path resolves the raw spelling on the filesystem, so a symlink followed by ".." reaches its
@@ -389,6 +586,11 @@ def resolve_full(raw, ctx, deny_unresolvable_dotdot=False):
     if not (p.startswith("/") or re.match(r"^[A-Za-z]:/", p)):
         if ":" in p:
             raise Deny("path", "drive-relative path")
+        if ctx.cwd_fuzzy and not for_cd:
+            # run-12: a relative path cannot be judged from an uncertain
+            # working directory (conditional branch outcomes). Absolute
+            # paths do not depend on the cwd and stay checkable.
+            raise Deny("cwd-uncertain", "a relative path with an uncertain working directory is not inspected")
         p = ctx.cwd.rstrip("/") + "/" + p
     lex = canon(p)
     raw_form = canon(p, normalize=False)
@@ -401,10 +603,29 @@ def resolve_full(raw, ctx, deny_unresolvable_dotdot=False):
     return lex, real, entry_link
 
 
-def resolve(raw, ctx):
+def resolve(raw, ctx, for_cd=False):
     """Return (lexical canonical, real canonical) for a path argument."""
-    lex, real, _ = resolve_full(raw, ctx)
+    lex, real, _ = resolve_full(raw, ctx, for_cd=for_cd)
     return lex, real
+
+
+def _cd_target(target, ctx):
+    """Resolve a cd target and the certainty it leaves (run-12 Gu1P/OQwR)."""
+    lex, real = resolve(target, ctx, for_cd=True)
+    if not ctx.tainted and not os.path.isdir(real):
+        # Nothing earlier in this command could have created the
+        # directory. An explicit path (with a slash) cannot come from
+        # CDPATH, so the shell keeps the old cwd for certain. A bare
+        # name may still resolve through CDPATH (which the hook cannot
+        # see, including command-prefix assignments), so only the cwd
+        # is kept while the result is marked uncertain.
+        if "/" in target.replace("\\", "/"):
+            return ctx.cwd, ctx.cwd_fuzzy
+        return ctx.cwd, True
+    p = target.replace("\\", "/")
+    if p.startswith("/") or re.match(r"^[A-Za-z]:/", p) or p == "~" or p.startswith("~/"):
+        return real, False
+    return real, ctx.cwd_fuzzy
 
 
 def strip_quotes(tok):
@@ -531,6 +752,10 @@ def check_redirect(raw, op=">", ctx=None, ps=False):
     if target.casefold() in ("/dev/null", "nul"):
         return
     if ctx is not None and tar_path_ok(target, ctx, "archive"):
+        # Piece D (#636): after the path check, so a tainted bad target keeps
+        # its original reason and only a would-be ALLOW is refused and taints.
+        _require_untainted(ctx, "redirect")
+        _taint(ctx)
         return
     raise Deny("redirect", "redirect writes outside the repository or to a protected path: " + raw)
 
@@ -542,11 +767,19 @@ def split_segments(text, ps=False):
     target is the raw word after each unquoted '>' ("" when there is none).
     """
     segs, subs, cur, redirs, rd = [], [], [], [], []
+    group_stack = []  # open Bash scopes, innermost last: "brace" or "coproc"
+    ps_group_stack = []  # open PowerShell `{` groups: True when a conditional/loop body
+    ps_cond_pending = False  # run-12: a PS conditional opener awaits its `{` across `(...)`
+    ps_bdepth = 0  # open PowerShell `{ ... }` groups (calling scope; only balance is tracked)
+    pipe_open = False  # run-12: the last boundary opened a pipeline stage not yet started
+    cur_blank = True  # no non-whitespace appended since the last flush
     quote, i, n = None, 0, len(text)
     while i < n:
         c = text[i]
         if quote == "'":
             cur.append(c)
+            if not c.isspace():
+                cur_blank = False
             if c == "'":
                 quote = None
             i += 1
@@ -556,17 +789,20 @@ def split_segments(text, ps=False):
                 i += 2
                 continue
             cur.append(text[i:i + 2])
+            cur_blank = False
             i += 2
             continue
         if c == "$" and i + 1 < n and text[i + 1] == "(":
             body, i = _matched(text, i + 2)
             subs.append(body)
             cur.append(SUBST)
+            cur_blank = False
             continue
         if c in "<>" and quote is None and i + 1 < n and text[i + 1] == "(":
             body, i = _matched(text, i + 2)  # process substitution
             subs.append(body)
             cur.append(SUBST)
+            cur_blank = False
             continue
         if c == "`":
             j = text.find("`", i + 1)
@@ -574,6 +810,7 @@ def split_segments(text, ps=False):
                 raise Deny("parse", "unterminated backtick")
             subs.append(text[i + 1:j])
             cur.append(SUBST)
+            cur_blank = False
             i = j + 1
             continue
         if c == "$" and quote is None and i + 1 < n and text[i + 1] in "'\"":
@@ -582,6 +819,8 @@ def split_segments(text, ps=False):
             if c == '"':
                 quote = None
             cur.append(c)
+            if not c.isspace():
+                cur_blank = False
             i += 1
             continue
         if ps and quote is None and text.startswith("<#", i):
@@ -601,6 +840,7 @@ def split_segments(text, ps=False):
                 continue
             quote = c
             cur.append(c)
+            cur_blank = False
             i += 1
             continue
         if c in "<>":
@@ -619,10 +859,12 @@ def split_segments(text, ps=False):
             start = i
             if k and (i - k == 0 or text[i - k - 1] in " \t\n;&|(){},") and "".join(cur[-k:]) == text[i - k:i]:
                 del cur[-k:]
+                cur_blank = not any(not ch.isspace() for ch in cur)
                 start = i - k
             if c == ">":
                 rd.append((text[i:j], _redir_target(text, j)))
             cur.append(" " + REDIR_MARK + text[start:j] + " ")
+            cur_blank = False
             i = j
             continue
         if quote is None and c == "&" and i + 1 < n and text[i + 1] == ">":
@@ -631,6 +873,7 @@ def split_segments(text, ps=False):
                 j += 1
             rd.append((text[i:j], _redir_target(text, j)))
             cur.append(" " + REDIR_MARK + text[i:j] + " ")
+            cur_blank = False
             i = j
             continue
         if ps and c == "&" and quote is None:
@@ -646,15 +889,179 @@ def split_segments(text, ps=False):
         # PowerShell scriptblocks ({ ... }) are command bodies wherever they appear (try, ForEach-Object, Invoke-Command,
         # Start-Job -ScriptBlock). Each block boundary starts a segment, so the commands inside are analysed.
         if c in ";&|()\n" or (ps and c in "{},"):
+            if c == "\n" and not ps and pipe_open and cur_blank:
+                # run-12 GuIir8: a newline continues a pipeline whose
+                # next stage has not started. Blank lines and comments
+                # append no words, so cur stays blank through them and
+                # the pipeline state survives (verified on Bash).
+                i += 1
+                continue
+            flushed_head = "".join(cur).split()
+            if ps and flushed_head and flushed_head[0].lower() in PS_COND_WORDS:
+                # run-12 Gu1n/OQwX: `if ($c) {` flushes `if ` at `(` long
+                # before the `{`: remember the opener across the paren
+                # segments (newlines included) so the body still gets
+                # its marker. Only the block itself consumes it.
+                ps_cond_pending = True
             segs.append("".join(cur))
             redirs.append(rd)
             cur, rd = [], []
+            cur_blank = True
+            if c == "|" and not ps:
+                # Piece D (#636, CRITICAL-1): each Bash pipeline stage runs
+                # in a subshell. `||` is sequential (same shell); `|&`
+                # pipes stderr too and is still a pipeline boundary.
+                nxt = text[i + 1] if i + 1 < n else ""
+                if nxt == "|":
+                    i += 1  # consume ||: ends an open pipeline, not the list
+                    if pipe_open:
+                        segs.append(PIPE_END)
+                        redirs.append([])
+                    pipe_open = False
+                else:
+                    segs.append(PIPE_BOUND)
+                    redirs.append([])
+                    pipe_open = True
+                    if nxt == "&":
+                        i += 1  # consume |&: still a pipeline boundary
+            elif c == "&" and not ps:
+                # A single & backgrounds the whole list in a subshell;
+                # && is sequential. &> is consumed as a redirect before
+                # reaching here.
+                nxt = text[i + 1] if i + 1 < n else ""
+                if nxt == "&":
+                    i += 1  # consume &&: ends an open pipeline, not the list
+                    if pipe_open:
+                        segs.append(PIPE_END)
+                        redirs.append([])
+                    pipe_open = False
+                elif nxt != ">":
+                    segs.append(BG_BOUND)
+                    redirs.append([])
+                    pipe_open = False
+            elif c == "(":
+                # Piece D (#636): an unquoted paren opens a subshell.
+                # The sentinel is its own segment so analyze_text can
+                # scope the group without touching word parsing.
+                segs.append(SUBSHELL_OPEN)
+                redirs.append([])
+                pipe_open = False
+            elif c == ")":
+                segs.append(SUBSHELL_CLOSE)
+                redirs.append([])
+                pipe_open = False
+            elif ps and c == "{":
+                # Piece D (#636): a PowerShell `{ ... }` group (statement
+                # body, scriptblock, hashtable) runs in the calling scope
+                # for cwd purposes, like a Bash brace group, so no scope
+                # marker is emitted. Only balance is tracked for the
+                # fail-closed unclosed-group check. `& { ... }` stays
+                # refused by the call-operator rule above.
+                # run-12: a conditional/loop body gets a marker as well:
+                # its location change persists when taken, but the outcome
+                # is uncertain, so the close marks the cwd uncertain.
+                head = "".join(cur).split()
+                is_cond = ps_cond_pending or (bool(head) and head[0].lower() in PS_COND_WORDS)
+                ps_cond_pending = False
+                ps_group_stack.append(is_cond)
+                if is_cond:
+                    segs.append(PSCOND_OPEN)
+                    redirs.append([])
+                ps_bdepth += 1
+                pipe_open = False
+            elif ps and c == "}":
+                if ps_bdepth > 0:
+                    ps_bdepth -= 1
+                if ps_group_stack:
+                    if ps_group_stack.pop():
+                        segs.append(PSCOND_CLOSE)
+                        redirs.append([])
+                pipe_open = False
+                # A stray `}` stays an ordinary word, as before.
+            if c == ";" or c == "\n":
+                # A top-level command boundary ends a background list and
+                # a pipeline. No scope effect; analyze_text restores the
+                # pipeline-entry cwd and refreshes entry snapshots here.
+                # (A newline that continues a pipeline is consumed by the
+                # pipe_open check above before reaching this boundary.)
+                segs.append(CMD_BOUND)
+                redirs.append([])
+                pipe_open = False
             i += 1
             continue
+        if c == "{" and not ps:
+            # A `{` right after a `coproc` header (`coproc [NAME]`,
+            # optionally led by `VAR=x` assignments) opens a
+            # coprocess-compound subshell scope. The `{` stays a literal
+            # word of the `coproc ...` segment (so coproc dispatch sees
+            # exactly what it saw before); only the scope is new. This
+            # applies mid-command too (`echo ok; coproc { ...; }`).
+            # run-12 Gu02: the full split is skipped unless the `{` is at
+            # a word boundary after a short header mentioning coproc. A
+            # glued `{` (`x{`) can be neither a header nor a group open,
+            # and the bounded prefix scan keeps brace-heavy input linear.
+            nxt = text[i + 1] if i + 1 < n else ""
+            if cur_blank or "".join(cur[-4:]).endswith((" ", "\t")):
+                head = []
+                total = 0
+                for el in cur:
+                    head.append(el)
+                    total += len(el)
+                    if total >= 512:
+                        break
+                if "coproc" in "".join(head)[:512].lower():
+                    parts = [w for w in "".join(cur).split() if not ASSIGN.match(w)]
+                    if (parts and parts[0].lower() == "coproc" and len(parts) <= 2
+                            and "{" not in "".join(cur)):
+                        segs.append(COPROC_OPEN)
+                        redirs.append([])
+                        group_stack.append("coproc")
+                        cur.append(c)
+                        cur_blank = False
+                        i += 1
+                        continue
+            if cur_blank and (nxt == "" or nxt in " \t\n"):
+                # Piece D (#636, CRITICAL-1): a command-position `{`
+                # followed by a blank opens a brace group (calling
+                # shell). A glued `{` (`{echo`, `{a,b}`) is a literal
+                # word (verified on Bash: no group opens, and a later
+                # `}` does not close). cur_blank tracks the blank-buffer
+                # rule without rebuilding the segment on every `{`.
+                segs.append("".join(cur))
+                redirs.append(rd)
+                cur, rd = [], []
+                cur_blank = True
+                segs.append(BBRACE_OPEN)
+                redirs.append([])
+                group_stack.append("brace")
+                i += 1
+                continue
+        if c == "}" and not ps and cur_blank:
+            # run-12 Gu02: a `}` closes the innermost open scope, not
+            # always a brace group (`{ coproc { ...; }; ...; }` leaked
+            # the coprocess body into the calling shell). run-12 Gu1A:
+            # the `}` must also stand alone (verified on Bash: `}echo`
+            # and `}#c` do not close the group).
+            nxt = text[i + 1] if i + 1 < n else ""
+            if group_stack and (nxt == "" or nxt in " \t\n;&|()<>"):
+                kind = group_stack.pop()
+                segs.append("".join(cur))
+                redirs.append(rd)
+                cur, rd = [], []
+                cur_blank = True
+                segs.append(BBRACE_CLOSE if kind == "brace" else COPROC_CLOSE)
+                redirs.append([])
+                i += 1
+                continue
+            # A stray `}` stays an ordinary word (KEYWORD-skipped).
         cur.append(c)
+        if not c.isspace():
+            cur_blank = False
         i += 1
     if quote:
         raise Deny("parse", "unterminated quote")
+    if ps_bdepth:
+        raise Deny("parse", "unbalanced PowerShell grouping is not inspected")
     segs.append("".join(cur))
     redirs.append(rd)
     return segs, subs, redirs
@@ -713,6 +1120,12 @@ def rm_rule(args, ps, ctx):
         raise Deny("rm-protected", "rm target is or contains a protected path")
     if not os.path.isfile(real):
         raise Deny("rm", "rm target is not a regular file")
+    # Piece D (#636): last, so a tainted rm that hook-state already refuses
+    # keeps its original reason and only a would-be ALLOW is refused here.
+    _require_untainted(ctx, "rm")
+    # An accepted removal changes the filesystem: later judgments must not
+    # validate against the pre-removal snapshot.
+    _taint(ctx)
 
 
 def worktree_remove(args, ctx):
@@ -734,6 +1147,7 @@ def git_long_is(a, names):
 
 
 def git_rule(args, ctx):
+    entry_ctx = ctx
     i = 0
     while i < len(args) and args[i].startswith("-"):
         if args[i] == "--config-env" or args[i].startswith("--config-env="):
@@ -798,6 +1212,30 @@ def git_rule(args, ctx):
         if rest[0] == "remove":
             worktree_remove(rest[1:], ctx)
             raise Deny("git-worktree-remove", "git worktree remove is DENY (Owner, Round A)")
+    # Piece D (#636) chain rule: a subcommand that can rewrite the working tree
+    # (checkout, merge, stash push or pop, ...) swaps what hook-time symlink
+    # resolution saw, so later destructive segments must not rely on it.
+    rewrite = sub in ("checkout", "switch", "merge", "pull", "apply", "am",
+                      "rebase", "cherry-pick", "revert", "mv", "rm", "clone")
+    if sub == "reset":
+        # Only the option portion counts: after --, words are pathspecs.
+        for a in rest:
+            if a == "--":
+                break
+            if git_long_is(a, ("--keep",)):
+                rewrite = True
+                break
+    if sub == "stash" and rest[:1] not in (["list"], ["show"]):
+        rewrite = True
+    if sub == "submodule" and rest and rest[:1] != ["status"]:
+        rewrite = True
+    if sub == "worktree" and rest[:1] in (["add"], ["move"]):
+        # Piece D (#636, MAJOR-3): add creates directories and move
+        # relocates them, so later path judgments must not rely on the
+        # hook-time state. list stays read-only; remove/prune are DENY.
+        rewrite = True
+    if rewrite:
+        entry_ctx.tainted = True
 
 
 # X3b (Issue #640): program-naming options. An option whose value names a program that the tool starts is an
@@ -1045,6 +1483,8 @@ def allowlist_rule(name, args, ctx=None):
                     raise Deny("write", name + " " + opt + " writes a file: DENY in every form (Owner Round 13)")
                 if opt in spec.get("long_writes", ()) and not (ctx is not None and tar_path_ok(value, ctx, "archive")):
                     raise Deny("write", name + " " + opt + " writes outside the repository or a protected path: " + a)
+                if opt in spec.get("long_writes", ()):
+                    _record_validated_write(ctx)
                 if not eq:
                     i += 1  # the value is the next word
                 if any(value.lower().startswith(p) for p in spec.get("long_arg_deny_prefix", {}).get(opt, ())):
@@ -1073,6 +1513,8 @@ def allowlist_rule(name, args, ctx=None):
                         raise Deny("write", name + " -" + ch + " writes a file: DENY in every form (Owner Round 13)")
                     if ch in spec.get("short_writes", "") and not (ctx is not None and tar_path_ok(value, ctx, "archive")):
                         raise Deny("write", name + " -" + ch + " writes outside the repository or a protected path: " + a)
+                    if ch in spec.get("short_writes", ""):
+                        _record_validated_write(ctx)
                     if j == len(a) - 1:
                         i += 1  # the value is the next word
                     if ch in spec.get("short_value_strict", "") and (
@@ -1224,6 +1666,10 @@ def tar_rule(args, ctx):
     for m in members:
         if not tar_path_ok(m, ctx, "member"):
             raise Deny("tar", "tar member name is not an inspectable repository path")
+    # Piece D (#636): after the operand checks, so a tainted bad operand keeps
+    # its original reason and only a would-be ALLOW is refused and taints.
+    _require_untainted(ctx, "tar")
+    _taint(ctx)
 
 
 def program_option_rule(name, args, ctx=None):
@@ -1252,6 +1698,9 @@ def program_option_rule(name, args, ctx=None):
         tar_rule(args, ctx)
         return
     allowlist_rule(name, args, ctx)
+    # Piece D (#636): a validated write option (sort -o/--output) mutates
+    # the filesystem. The check runs once, after full argv validation.
+    _publish_pending_write(ctx, name)
 
 
 SAFE_WRITE_OPTS = {"cp": {"-r", "-R", "-p", "-v", "-n"}, "mv": {"-v", "-n"}, "mkdir": {"-p", "-v"},
@@ -1275,6 +1724,10 @@ def safe_write_rule(name, args, ctx):
             continue
         if not tar_path_ok(a, ctx, "dir"):
             raise Deny("program-option", name + " operand is not a plain repository path: " + a)
+    # Piece D (#636): after the operand checks, so a tainted malformed write
+    # keeps its original reason and only a would-be ALLOW is refused and taints.
+    _require_untainted(ctx, name)
+    _taint(ctx)
 
 
 def dev_tool_opt_denied(name, a):
@@ -1338,7 +1791,10 @@ def find_rule(args, ps, ctx, depth):
                 j += 1
             if j == i + 1:
                 raise Deny("find", "find -exec without a command")
-            analyze_argv(args[i + 1:j], ctx, ps, depth + 1)
+            # Piece D (#636): -exec runs in a child process, so its cwd
+            # never reaches the parent; taint still merges (a child can
+            # change the filesystem the parent later judges).
+            _nested_argv(args[i + 1:j], ctx, ps, depth + 1)
 
 
 # Commands on this list must not run another program, whatever their options. sort (--compress-program=PROG) and
@@ -1449,7 +1905,7 @@ def shell_rule(args, ctx, depth):
         if short_has(a, "c"):
             if i + 1 >= len(args):
                 raise Deny("shell", "shell -c without code")
-            analyze_text(args[i + 1], ctx.copy(), False, depth + 1)
+            _nested_text(args[i + 1], ctx, False, depth + 1)
             return
     raise Deny("shell", "shell without -c is not inspected")
 
@@ -1463,7 +1919,7 @@ def pwsh_rule(args, ctx, depth):
             raise Deny("powershell", "-File script is not inspected")
     for i, a in enumerate(low):
         if a == "-c" or (len(a) > 2 and "-command".startswith(a)):
-            analyze_text(" ".join(args[i + 1:]), ctx.copy(), True, depth + 1)
+            _nested_text(" ".join(args[i + 1:]), ctx, True, depth + 1)
             return
 
 
@@ -1742,8 +2198,12 @@ def analyze_argv(words, ctx, ps, depth):
             rest = words[1:]
             if not rest:
                 raise Deny("coproc", "coproc without a command is not resolvable")
-            analyze_argv(rest, ctx.copy(), ps, depth + 1)
-            if len(rest) >= 2:
+            _nested_argv(rest, ctx, ps, depth + 1)
+            if len(rest) >= 2 and rest[0] not in COPROC_COMPOUND:
+                # Simple-command form has no explicit name: the suffix is
+                # validated, but taint from the impossible named parse is
+                # not exported (Piece D, #636). A recognised unnamed
+                # compound was already covered once by the primary parse.
                 analyze_argv(rest[1:], ctx.copy(), ps, depth + 1)
             return
         if SUBST in w0:
@@ -1772,27 +2232,62 @@ def analyze_argv(words, ctx, ps, depth):
             # timeout's option grammar (long options with a separate value, non-integer durations) is not parsed, so
             # the command it runs is taken from its grammar (timeout_candidates), with conservative extra candidates.
             for cand in timeout_candidates(words[1:]):
-                analyze_argv(cand, ctx.copy(), ps, depth + 1)
+                _nested_argv(cand, ctx, ps, depth + 1)
             return
         if handoff(name):
+            # String visits below are alternative parses of this same
+            # invocation: they start from the taint inherited here, before
+            # the suffix pass merges its own findings (Piece D, #636).
+            wrapper_tainted = ctx.tainted
+            same_shell_consumed = None
+            if name in ("command", "builtin", "time"):
+                # Piece D (#636, CRITICAL-2): command/builtin/time run a
+                # shell builtin in the calling shell, so its cwd change
+                # moves the parent too. Anything else they reach runs in
+                # a child process (or is refused), keeping taint-only.
+                # The existing suffix and string passes below still run,
+                # so no current validation is dropped.
+                idx = same_shell_target_index(name, words[1:], ctx)
+                if idx is not None and command_name(words[1:][idx]) in SAME_SHELL_NAMES:
+                    same_shell_consumed = words[1:][idx:]
+                    _nested_argv_same_shell(same_shell_consumed, ctx, ps, depth + 1)
             for cand in wrapper_candidates(name, words[1:], ctx):
+                if same_shell_consumed is not None and cand == same_shell_consumed:
+                    # Already validated above (its taint/cwd merged once):
+                    # re-validating the exact target against its own taint
+                    # self-denies a clean same-shell invocation.
+                    continue
                 # An option-looking word (-n, --command=...) or a number (timeout 5) cannot be the command a wrapper starts;
                 # the command is a later suffix. Strings are covered by the text analysis below.
                 # For a wrapper with a grammar the command word is exact, so it is analysed even when it looks like an option.
                 if name not in WRAPPER_OPTS and cand and (cand[0].startswith("-") or cand[0].isdigit()):
                     continue
-                analyze_argv(cand, ctx.copy(), ps, depth + 1)
+                _nested_argv(cand, ctx, ps, depth + 1)
             if name in STRING_LAUNCHERS:
                 # A shell string argument is text, whatever its shape: a quoted string with a space (sudo -s "rm -rf x"),
                 # the value after -c or --command (flock -c rm lock), and the value after --name= (flock --command="rm").
                 # Plain words and options are commands for the suffix pass, which the grammar narrows to the real command.
+                # String visits are alternative parses of one invocation: each
+                # starts from the wrapper-entry taint and merges back (Piece D, #636).
+                # A plain-word visit exports taint only for the command word
+                # itself: other words are the command's data, validated but
+                # not exported. Explicit code carriers (-c/--command/--x=y)
+                # always export.
+                cmd_word = None
+                if name in WRAPPER_OPTS:
+                    cmd_word = wrapper_command_index(name, words[1:], ctx) + 1
                 for k in range(1, len(words)):
                     if not words[k].startswith("-") and any(ch.isspace() for ch in words[k]):
-                        analyze_text(words[k], ctx.copy(), ps, depth + 1)
+                        if cmd_word is None or k == cmd_word:
+                            _nested_text_from(words[k], ctx, wrapper_tainted, ps, depth + 1)
+                        else:
+                            sub = ctx.copy()
+                            sub.tainted = wrapper_tainted
+                            analyze_text(words[k], sub, ps, depth + 1)
                     if words[k] in ("-c", "--command") and k + 1 < len(words):
-                        analyze_text(words[k + 1], ctx.copy(), ps, depth + 1)
+                        _nested_text_from(words[k + 1], ctx, wrapper_tainted, ps, depth + 1)
                     if words[k].startswith("--") and "=" in words[k]:
-                        analyze_text(words[k].split("=", 1)[1], ctx.copy(), ps, depth + 1)
+                        _nested_text_from(words[k].split("=", 1)[1], ctx, wrapper_tainted, ps, depth + 1)
             return
         break
     args = words[1:]
@@ -1807,8 +2302,9 @@ def analyze_argv(words, ctx, ps, depth):
             raise Deny("launcher", "launcher with too many arguments is not inspected")
         # No candidate is skipped: a path split at its space ("Files\app.exe") is refused like any other command word,
         # so a destructive command after a separator in the same token ("tools\app.exe;rm -rf /") is still analysed.
+        entry_tainted = ctx.tainted
         for k in range(len(tokens)):
-            analyze_text(" ".join(tokens[k:]), ctx.copy(), True, depth + 1)
+            _nested_text_from(" ".join(tokens[k:]), ctx, entry_tainted, True, depth + 1)
     if name in (".", "source") and any(("$" in a or "`" in a or SUBST in a) for a in args):
         # Sourcing a path that names a variable (or a substitution) is a file that is not known here (fail closed).
         raise Deny("unexpanded", "sourcing a variable or substitution is not inspected")
@@ -1827,7 +2323,11 @@ def analyze_argv(words, ctx, ps, depth):
     if name in ("iex", "invoke-expression"):
         raise Deny("powershell", "Invoke-Expression is not inspected")
     if name == "eval":
-        analyze_text(" ".join(args), ctx.copy(), ps, depth + 1)
+        # Piece D (#636, CRITICAL-1): eval runs in the calling shell, so
+        # a cd inside it moves the parent cwd. The nested text is analysed
+        # in a copy and both taint and cwd merge back; a subshell inside
+        # the eval text is still scoped by analyze_text.
+        _nested_text(" ".join(args), ctx, ps, depth + 1, merge_cwd=True)
     elif name in SHELLS:
         shell_rule(args, ctx, depth)
     elif name in PS_HOSTS:
@@ -1837,7 +2337,12 @@ def analyze_argv(words, ctx, ps, depth):
             raise Deny("cd", "cd with option is not inspected")
         if args and any(c in args[0] for c in "*?[") and names_claude(args[0]):
             raise Deny("cd", "cd into a glob that may name .claude/ is not inspected")
-        ctx.cwd = resolve(args[0] if args else "~", ctx)[1]
+        if args and ("$" in args[0] or "`" in args[0] or SUBST in args[0]):
+            # Piece D (#636): the target is known only after the shell
+            # expands it. Guessing a cwd would misjudge later relative
+            # paths, so it is refused instead of resolved lexically.
+            raise Deny("unexpanded", "cd target with a variable or substitution is not inspected")
+        ctx.cwd, ctx.cwd_fuzzy = _cd_target(args[0] if args else "~", ctx)
     elif name in ALWAYS_DENY:
         raise Deny("destructive", name + " is denied")
     elif name == "rm" or name in PS_RM:
@@ -1881,6 +2386,18 @@ def analyze_text(text, ctx, ps, depth):
     segs, subs, redirs = split_segments(text, ps)
     # A python command whose argv is not certain (unquoted or double-quoted expansion characters) is refused.
     for seg in segs:
+        if seg == SUBSHELL_OPEN or seg == SUBSHELL_CLOSE:
+            continue
+        if seg == PIPE_BOUND or seg == BG_BOUND or seg == CMD_BOUND:
+            continue
+        if seg == PIPE_END:
+            continue
+        if seg == COPROC_OPEN or seg == COPROC_CLOSE:
+            continue
+        if seg == PSCOND_OPEN or seg == PSCOND_CLOSE:
+            continue
+        if seg == BBRACE_OPEN or seg == BBRACE_CLOSE:
+            continue
         pargs = python_position_args(words_of(seg, ps))
         if pargs is not None:
             if not python_word_certainty(seg):
@@ -1889,14 +2406,412 @@ def analyze_text(text, ctx, ps, depth):
             python_rule(pargs)
     if sum(len(ops) for ops in redirs) > MAX_REDIRECTS:
         raise Deny("redirect", "more than %d redirections are not inspected" % MAX_REDIRECTS)
-    for body in subs:
-        analyze_text(body, ctx.copy(), ps, depth + 1)
+    rest_subs = list(subs)
+    # Piece D (#636): execution-scope cwd handling. A Bash parenthesised
+    # group and every stage of a Bash pipeline (or background job) run in
+    # a subshell: segments inside share the parent taint (a filesystem
+    # change inside outlives the subshell) but their cwd is restored at
+    # the boundary. `||`/`&&` are sequential and never scope. Brace
+    # groups, eval and plain sequences run in the calling shell and keep
+    # sharing cwd. A stray close with no open group is ignored (lenient,
+    # as before); an unclosed Bash group is a shell syntax error, so it is
+    # refused instead of guessed. PowerShell `{ ... }` groups run in the
+    # calling scope for cwd purposes (like Bash brace groups): `if`/`while`
+    # /`foreach` bodies execute in the current scope. Only `& { ... }`
+    # (child scope, uncertain) stays refused by the call-operator rule. A
+    # conditional branch taken or not taken cannot be told apart statically
+    # (same as Bash `if`). run-12: the body is still analysed as taken
+    # (DENY/taint detection unchanged), but a cwd it leaves behind is
+    # marked uncertain (cwd_fuzzy): a later relative-path judgment is
+    # refused instead of trusting one branch outcome. An absolute `cd`
+    # restores certainty. A failed `cd` into an absent directory keeps the
+    # old cwd when nothing earlier could have created it (Gu1P).
+    # run-12 OQwj: every cwd snapshot carries its certainty, so a child
+    # scope exit restores both and a relative judgment never outlives the
+    # scope that made it uncertain. Taint stays a single shared flag.
+    scope_stack = []  # (cwd, fuzzy) per open subshell/coprocess
+    bbrace_stack = []
+    pipe_entry = None  # (cwd, fuzzy) or None
+    run_start = (ctx.cwd, ctx.cwd_fuzzy)
+    bg_start = (ctx.cwd, ctx.cwd_fuzzy)
+    scope_entry = (ctx.cwd, ctx.cwd_fuzzy)
+    scope_just_closed = False
+    prev_was_pipe = False
+    # Saved (pipe_entry, prev_was_pipe) per open Bash scope, plus the
+    # brace-group stage cwd for calling-shell groups used as a stage.
+    pipe_scope = []
+    bstage = []  # (is_stage, cwd, fuzzy)
+    bg_scope = []  # (cwd, fuzzy) per open scope
+    ps_arm_stack = []  # run-13: pre-arm snapshots of closed PS conditionals
+    ps_arm_moved = False  # run-13: then-arm move pending for the next PS arm entry
+    ps_arm_taint = False  # run-13: then-arm taint pending for the next PS arm entry
+    run_scope = []  # (run_start, bg_start) per open brace group (OQwm)
+    cond_stack = []  # run-12: entry dict per open conditional/loop scope
+    # Scope-local background-list start per open group: a `&` backgrounds
+    # the whole in-scope list, so the parent continues from the cwd the
+    # in-scope list started with (after the last in-scope `;`), not from
+    # the outer bg_start.
     for seg, ops in zip(segs, redirs):
+        if seg == SUBSHELL_OPEN:
+            if not ps:
+                if prev_was_pipe and pipe_entry is not None:
+                    # A group right after `|` is the next stage: it forks
+                    # from the entry, and inner commands must not see or
+                    # move the outer pipeline state.
+                    ctx.cwd, ctx.cwd_fuzzy = pipe_entry
+                pipe_scope.append((pipe_entry, prev_was_pipe))
+                pipe_entry = None
+                prev_was_pipe = False
+                if not scope_stack and not bbrace_stack:
+                    # A top-level `( ... )` may be the whole first pipeline
+                    # stage: remember the pre-group cwd for the entry.
+                    scope_entry = (ctx.cwd, ctx.cwd_fuzzy)
+                    scope_just_closed = False
+                # run-13 (M1): the subshell owns its pipeline/list start:
+                # an inner `cd` moves the subshell's run, never the outer one.
+                run_scope.append((run_start, bg_start))
+                run_start = (ctx.cwd, ctx.cwd_fuzzy)
+                bg_start = (ctx.cwd, ctx.cwd_fuzzy)
+                scope_stack.append((ctx.cwd, ctx.cwd_fuzzy))
+                bg_scope.append((ctx.cwd, ctx.cwd_fuzzy))
+            continue
+        if seg == SUBSHELL_CLOSE:
+            if not ps and scope_stack:
+                ctx.cwd, ctx.cwd_fuzzy = scope_stack.pop()
+                if run_scope:
+                    run_start, bg_start = run_scope.pop()
+                if pipe_scope:
+                    pipe_entry, prev_was_pipe = pipe_scope.pop()
+                if bg_scope:
+                    bg_scope.pop()
+                if not scope_stack and not bbrace_stack:
+                    scope_just_closed = True
+            continue
+        if seg == BBRACE_OPEN:
+            # Calling-shell group: cwd is shared, so nothing is restored
+            # at the close -- unless the group itself is a pipeline stage,
+            # which forks like any other stage. The pre-group cwd is still
+            # the pipeline entry when the whole group is the first stage.
+            is_stage = bool(prev_was_pipe and pipe_entry is not None)
+            if is_stage:
+                ctx.cwd, ctx.cwd_fuzzy = pipe_entry
+            pipe_scope.append((pipe_entry, prev_was_pipe))
+            pipe_entry = None
+            prev_was_pipe = False
+            bstage.append((is_stage, ctx.cwd, ctx.cwd_fuzzy))
+            if not scope_stack and not bbrace_stack:
+                scope_entry = (ctx.cwd, ctx.cwd_fuzzy)
+                scope_just_closed = False
+            bbrace_stack.append(ctx.cwd)
+            bg_scope.append((ctx.cwd, ctx.cwd_fuzzy))
+            # run-12 OQwm: the group runs the calling shell, so its `;`
+            # advances a group-local pipeline/list start; the outer one
+            # is restored at the close.
+            run_scope.append((run_start, bg_start))
+            continue
+        if seg == BBRACE_CLOSE:
+            if bbrace_stack:
+                bbrace_stack.pop()
+                if bg_scope:
+                    bg_scope.pop()
+                if run_scope:
+                    run_start, bg_start = run_scope.pop()
+                was_stage, stage_cwd, stage_fuzzy = bstage.pop() if bstage else (False, ctx.cwd, ctx.cwd_fuzzy)
+                if was_stage:
+                    # A brace group used as a pipeline stage forked: drop
+                    # the body-local cwd instead of leaking it.
+                    ctx.cwd, ctx.cwd_fuzzy = stage_cwd, stage_fuzzy
+                if pipe_scope:
+                    pipe_entry, prev_was_pipe = pipe_scope.pop()
+                if not scope_stack and not bbrace_stack:
+                    scope_just_closed = True
+            continue
+        if seg == COPROC_OPEN:
+            # A `coproc { ... }` compound body runs in a subshell: same
+            # scope handling as `( ... )`. The `coproc ...` segment itself
+            # is still dispatched (in a taint-only copy) by analyze_argv.
+            if prev_was_pipe and pipe_entry is not None:
+                ctx.cwd, ctx.cwd_fuzzy = pipe_entry
+            pipe_scope.append((pipe_entry, prev_was_pipe))
+            pipe_entry = None
+            prev_was_pipe = False
+            if not scope_stack and not bbrace_stack:
+                scope_entry = (ctx.cwd, ctx.cwd_fuzzy)
+                scope_just_closed = False
+            # run-13 (M1): the coprocess body runs in a subshell, so it
+            # owns its pipeline/list start like `( ... )`.
+            run_scope.append((run_start, bg_start))
+            run_start = (ctx.cwd, ctx.cwd_fuzzy)
+            bg_start = (ctx.cwd, ctx.cwd_fuzzy)
+            scope_stack.append((ctx.cwd, ctx.cwd_fuzzy))
+            bg_scope.append((ctx.cwd, ctx.cwd_fuzzy))
+            continue
+        if seg == COPROC_CLOSE:
+            if scope_stack:
+                ctx.cwd, ctx.cwd_fuzzy = scope_stack.pop()
+                if run_scope:
+                    run_start, bg_start = run_scope.pop()
+                if bg_scope:
+                    bg_scope.pop()
+                if pipe_scope:
+                    pipe_entry, prev_was_pipe = pipe_scope.pop()
+                if not scope_stack and not bbrace_stack:
+                    scope_just_closed = True
+            continue
+        if seg == PSCOND_OPEN:
+            # run-12 Gu1n: a PowerShell conditional/loop body in braces
+            # runs in the calling scope when taken, but the outcome is
+            # uncertain: remember the entry and mark the cwd uncertain
+            # on close when the body moved it.
+            cond_stack.append(_cond_entry(ctx))
+            if ps_arm_moved or ps_arm_taint:
+                # run-13 (M3): this is an else/elseif body: inherit the
+                # then-arm outcome so the close joins every arm.
+                cond_stack[-1]["moved"] = cond_stack[-1]["moved"] or ps_arm_moved
+                cond_stack[-1]["then_taint"] = cond_stack[-1]["then_taint"] or ps_arm_taint
+                ps_arm_moved = False
+                ps_arm_taint = False
+            # run-12 P7k3/RZ4V: every block open snapshots the live arm
+            # state, so an `elseif` condition's own writes are kept for
+            # a later arm instead of being replaced by stale state.
+            cond_stack[-1]["arm"] = (ctx.cwd, ctx.cwd_fuzzy, ctx.tainted)
+            continue
+        if seg == PSCOND_CLOSE:
+            if cond_stack:
+                # run-12 OQww: join the arm outcomes conservatively: any
+                # move inside the scope leaves the cwd uncertain, and
+                # taint from either arm reaches later segments.
+                entry = cond_stack.pop()
+                # run-12 OQww/P7kz: join all outcomes including the
+                # skipped body: entry uncertainty, any move, or any end
+                # difference leaves the cwd uncertain.
+                if entry["fuzzy"] or entry["moved"] or ctx.cwd != entry["cwd"]:
+                    ctx.cwd_fuzzy = True
+                ctx.tainted = ctx.tainted or entry["then_taint"]
+                if cond_stack and (entry["moved"] or ctx.cwd != cond_stack[-1]["cwd"]):
+                    cond_stack[-1]["moved"] = True
+                # run-13 (M3): keep the pre-arm snapshot for a following
+                # else/elseif arm, whose entry was already popped. Each
+                # arm restarts from this base and joins at its own close.
+                ps_arm_stack.append(entry)
+            continue
+        if seg == CMD_BOUND:
+            # A `;`/newline ends a pipeline and a background list: later
+            # foreground segments are judged from the pipeline-entry cwd,
+            # never from a finished stage's cwd. Entry snapshots restart
+            # after the boundary for the next list.
+            if not ps and pipe_entry is not None:
+                ctx.cwd, ctx.cwd_fuzzy = pipe_entry
+                pipe_entry = None
+            prev_was_pipe = False
+            # run-13 (M1): the snapshots are scope-local, so an in-scope
+            # `;` moves the scope's list start. Conditionals still gate
+            # the update (Gu1Y): an arm-end cwd must not become the run.
+            if not cond_stack:
+                run_start = (ctx.cwd, ctx.cwd_fuzzy)
+                bg_start = (ctx.cwd, ctx.cwd_fuzzy)
+            if bg_scope and (scope_stack or bbrace_stack):
+                # A `;`/newline inside a scope group starts a new list
+                # there: a later `&` restores this scope-local start,
+                # never the stale outer bg_start.
+                bg_scope[-1] = (ctx.cwd, ctx.cwd_fuzzy)
+            scope_just_closed = False
+            continue
+        if seg == PIPE_END:
+            # run-12 OQwd: `&&`/`||` terminate the pipeline like `;` (the
+            # next command runs in the enclosing cwd), but they do not
+            # start a new background list: bg_start/bg_scope are kept.
+            if not ps and pipe_entry is not None:
+                ctx.cwd, ctx.cwd_fuzzy = pipe_entry
+                pipe_entry = None
+            prev_was_pipe = False
+            # run-13 (M1): scope-local like `;` above (bg_start is the
+            # list start and stays untouched by `&&`/`||` by design).
+            if not cond_stack:
+                run_start = (ctx.cwd, ctx.cwd_fuzzy)
+            scope_just_closed = False
+            continue
+        if seg == PIPE_BOUND:
+            # Piece D (#636, CRITICAL-1): the next stage starts from the
+            # pipeline-entry cwd, never from a sibling stage's cwd. The
+            # entry is the pre-execution cwd of the first stage's run
+            # (run_start tracks sequential `cd`, but never a stage body or
+            # a keyword/empty segment; a scope that is itself the first
+            # stage contributes its pre-group cwd via scope_entry).
+            # run-13 (M2): the entry keeps the snapshot's own certainty:
+            # cwd and fuzzy are always the same-instant pair, so a first
+            # stage that clears the certainty cannot launder a stale cwd
+            # into certain. The snapshot is refreshed when a conditional
+            # closes (below), so uncertainty set just before the pipe
+            # still reaches the stages (OQwj).
+            if not ps:
+                if pipe_entry is None:
+                    if scope_just_closed:
+                        pipe_entry = scope_entry
+                    elif cond_stack:
+                        # run-12 RZ4Y: inside a conditional the saved run
+                        # start is stale (updates are gated); the active
+                        # arm's current pair is the pipeline entry.
+                        pipe_entry = (ctx.cwd, ctx.cwd_fuzzy)
+                    else:
+                        pipe_entry = run_start
+                prev_was_pipe = True
+                scope_just_closed = False
+            continue
+        if seg == BG_BOUND:
+            # A `&` backgrounds the whole list in a subshell: the parent
+            # (following foreground segments) continues at once from the
+            # cwd the list started with, and the list's pipeline state ends
+            # here. A `cd` left of `&` stays in the background job. Inside
+            # a scope group the list started at the scope-local `;`
+            # boundary (bg_scope), never at the outer bg_start: without
+            # this a `cd` left of `&` leaks into the in-scope foreground.
+            if not ps:
+                if (scope_stack or bbrace_stack) and bg_scope:
+                    ctx.cwd, ctx.cwd_fuzzy = bg_scope[-1]
+                else:
+                    ctx.cwd, ctx.cwd_fuzzy = bg_start
+                pipe_entry = None
+                prev_was_pipe = False
+                scope_just_closed = False
+            continue
+        seg_words = words_of(seg, ps)
+        first_cmd = next((w for w in seg_words if not ASSIGN.match(w)), None)
+        if not ps and cond_stack and first_cmd == "then":
+            # run-12 OQww/P7k3/RZ4R: the condition just ended; snapshot the
+            # arm entry (cwd, certainty, taint). Every `else`/`elif` arm
+            # restarts from here instead of the previous arm's end, so a
+            # condition that moves the cwd (or taints) is honored while a
+            # previous arm's effects stay joined only at the close.
+            cond_stack[-1]["arm"] = (ctx.cwd, ctx.cwd_fuzzy, ctx.tainted)
+        if not ps and first_cmd in COND_OPENERS:
+            # run-12 Gu1Y: a Bash conditional/loop body is analysed (DENY
+            # and taint detection unchanged), but the cwd it leaves is
+            # one branch outcome of several: later segments must not
+            # trust it via run_start/pipe_entry either.
+            cond_stack.append(_cond_entry(ctx))
+        elif not ps and cond_stack and first_cmd in ("then", "else", "do", "elif"):
+            # run-12 OQwq: a nested opener after a branch/loop keyword
+            # (`then if true`) starts its own scope; the inner `fi`
+            # must not pop the outer entry. Only command position after
+            # the keyword counts, never an argument.
+            rest = [w for w in seg_words if not ASSIGN.match(w)]
+            if len(rest) > 1 and rest[1] in COND_OPENERS:
+                cond_stack.append(_cond_entry(ctx))
+        if ps and first_cmd in ("else", "elseif") and ps_arm_stack:
+            # run-13 (M3): a PowerShell then-body close pops its entry
+            # before the else/elseif arm starts, so the arm restarts from
+            # the stashed pre-conditional snapshot (cwd, certainty,
+            # taint), never from the previous arm's end or an outer
+            # conditional's entry. The then-arm outcome (move/taint) is
+            # carried into the next arm entry and joins at its close, so
+            # the post-chain state covers every arm taken or not.
+            # P7k3: condition taint wins over the pre-conditional taint.
+            entry = ps_arm_stack[-1]
+            entry["then_taint"] = entry["then_taint"] or ctx.tainted
+            arm = entry["arm"]
+            if arm is None:
+                arm = (entry["cwd"], entry["fuzzy"], entry["tainted"])
+            ctx.cwd, ctx.cwd_fuzzy, ctx.tainted = arm
+            ps_arm_moved = entry["moved"]
+            ps_arm_taint = entry["then_taint"]
+        elif cond_stack and first_cmd in ("else", "elif"):
+            # run-12 OQww/P7k3: each arm runs from the conditional entry, not
+            # from the previous arm's end. Condition taint (captured at
+            # `then`, at the PowerShell block open, or lazily here) is kept;
+            # the previous arm's taint is dropped here and joined at close.
+            # run-13 (M3): the certainty is restored too, so a previous
+            # arm's absolute cd cannot clear an uncertain entry for the
+            # else arm.
+            entry = cond_stack[-1]
+            entry["then_taint"] = entry["then_taint"] or ctx.tainted
+            if entry["arm"] is None:
+                entry["arm"] = (ctx.cwd, ctx.cwd_fuzzy, ctx.tainted)
+            ctx.cwd, ctx.cwd_fuzzy, ctx.tainted = entry["arm"]
+        if not seg_words and not ops:
+            # A boundary flush with no words and no redirects (e.g. the
+            # empty segment before `{` in `| { ...`): consumes no pipeline
+            # state at all -- not even the stage reset. The next real
+            # segment (or scope open) is still the stage.
+            continue
+        if prev_was_pipe and not ps and pipe_entry is not None:
+            ctx.cwd, ctx.cwd_fuzzy = pipe_entry
+        # Refresh the pipeline-entry candidate only at a top-level segment
+        # with a real command word, so a compound body or an empty/keyword
+        # segment never moves it (Piece D, #636 CRITICAL-1). A scope that
+        # just closed stays the entry source until a real segment (or a
+        # `;` boundary) starts a new run: empty segments never clear it.
+        # A scope group owns its inner pipeline state on pipe_scope, so an
+        # inner command never ends the enclosing entry lifetime.
+        if not scope_stack and not bbrace_stack and seg_words:
+            scope_just_closed = False
+        if (not prev_was_pipe
+                and not cond_stack
+                and any(
+                    w not in KEYWORDS and not ASSIGN.match(w)
+                    for w in seg_words)):
+            # run-13 (M1): the refresh is scope-local, so `cd` inside a
+            # subshell moves the subshell's run without touching the
+            # outer run. Conditionals still gate it (Gu1Y).
+            run_start = (ctx.cwd, ctx.cwd_fuzzy)
+        if (not prev_was_pipe and not scope_stack
+                and not cond_stack):
+            # A top-level non-stage segment ends the pipeline entry
+            # lifetime. Segments inside a scope group must not end the
+            # enclosing entry: the group owns a saved copy on pipe_scope.
+            pipe_entry = None
+        prev_was_pipe = False
+        # A substitution runs when its containing segment runs: analyse it
+        # with this segment's incoming taint, so it taints only this and
+        # later segments (Piece D, #636).
+        n = seg.count(SUBST)
+        bodies, rest_subs = rest_subs[:n], rest_subs[n:]
+        for body in bodies:
+            _nested_text(body, ctx, ps, depth + 1)
         if ops and inside_claude(ctx.cwd, ctx):
             raise Deny("claude-write", "redirect while cwd is inside .claude/ is denied")
+        # Redirects of one segment share its incoming taint for their checks;
+        # a write they perform is still recorded for later segments.
+        incoming, wrote = ctx.tainted, False
         for op, target in ops:
+            ctx.tainted = incoming
             check_redirect(target, op, ctx, ps)
+            wrote = wrote or ctx.tainted
+        if wrote:
+            ctx.tainted = True
         analyze_argv(words_of(seg, ps), ctx, ps, depth)
+        if cond_stack and ctx.cwd != cond_stack[-1]["cwd"]:
+            # run-12 OQww: any move inside the scope makes the outcome
+            # uncertain, even when a later arm moves it back.
+            cond_stack[-1]["moved"] = True
+        if not ps and cond_stack and first_cmd in COND_CLOSERS:
+            # run-12: the body ran above (still analysed as taken); a
+            # cwd it moved is uncertain, since the branch may not run.
+            # A stray closer with no open scope is ignored, as before.
+            entry = cond_stack.pop()
+            # run-12 OQww/P7kz: join all outcomes including the skipped
+            # body (same rule as the PowerShell close).
+            if entry["fuzzy"] or entry["moved"] or ctx.cwd != entry["cwd"]:
+                ctx.cwd_fuzzy = True
+            ctx.tainted = ctx.tainted or entry["then_taint"]
+            if cond_stack and (entry["moved"] or ctx.cwd != cond_stack[-1]["cwd"]):
+                cond_stack[-1]["moved"] = True
+            if not cond_stack:
+                # run-13 (M2): the run start is the same-instant pair
+                # again, so a later pipeline entry keeps its own
+                # certainty instead of borrowing the live one. The
+                # refresh is scope-local (M1) inside a subshell.
+                run_start = (ctx.cwd, ctx.cwd_fuzzy)
+    for body in rest_subs:
+        # Defensive: a body no segment claimed is still analysed, never skipped.
+        _nested_text(body, ctx, ps, depth + 1)
+    if scope_stack:
+        # An unclosed subshell never runs in a real shell: refuse instead
+        # of judging later segments against a guessed cwd (fail closed).
+        raise Deny("parse", "unbalanced subshell grouping is not inspected")
+    if bbrace_stack:
+        # An unclosed Bash brace group never runs either (fail closed).
+        raise Deny("parse", "unbalanced brace grouping is not inspected")
 
 
 def load_registry(root):
