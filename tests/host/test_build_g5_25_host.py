@@ -244,9 +244,12 @@ class BuildScrmod25HostTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             beb._redirect_slot25_to_body(bank_with(0xE21D, 0xFFED, (0x60, 0xEA)),
                                          0xE21D, 0xFFED)
-        # Body below BOOT refuses (span check covers the low edge too).
+        # Body below BOOT refuses (span check covers the low edge too):
+        # the valid prologue sits AT the requested entry ($EFFF, one byte
+        # below BOOT), so only the span lower bound can refuse here -- a
+        # removed lower bound would wrongly ACCEPT instead of raising.
         with self.assertRaises(ValueError):
-            beb._redirect_slot25_to_body(bank_with(0xE21D, 0xE21D), 0xE21D, 0xE100 - 1)
+            beb._redirect_slot25_to_body(bank_with(0xE21D, 0xEFFF), 0xE21D, 0xEFFF)
 
     def test_windows_superset(self):
         import sys

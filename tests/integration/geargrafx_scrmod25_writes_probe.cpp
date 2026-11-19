@@ -101,12 +101,16 @@ int main(int argc, char** argv) {
                     prev[k] = w[k];
                 }
             }
-            if (!halted && cpu->GetState()->PC->GetValue() == halt) {
-                halted = true;
+            // Halt counts only after 16 consecutive confirmation steps on
+            // the halt address: reaching halt on the last permitted step
+            // must NOT report success before confirmation (a bare first
+            // sighting with zero confirmations is INCONCLUSIVE, never RED
+            // and never GREEN -- the Python checkers require halted true,
+            // so an unconfirmed tail reports harness failure instead).
+            if (cpu->GetState()->PC->GetValue() == halt) {
+                if (++confirm >= 16) { halted = true; break; }
+            } else {
                 confirm = 0;
-            } else if (halted) {
-                if (cpu->GetState()->PC->GetValue() == halt && ++confirm >= 16) break;
-                else if (cpu->GetState()->PC->GetValue() != halt) { halted = false; confirm = 0; }
             }
         }
         // Merge written bitmap into inclusive ranges (cap 256 for output).

@@ -245,8 +245,11 @@ res_base:
 # Synthetic G5 chain leg: $33 -> $4A -> $23 -> $25 through the real table
 # entries (the $02 leg is the PUBLIC boot that loads this payload). Entry
 # regs are set once; every body preserves them, so the final record equals
-# the entry state and each APICALL (return_matches_caller + MATCH +
-# SP balance) proves per-call return (APIRETURN is not collected).
+# the entry state. Each APICALL's return_matches_caller + MATCH + SP balance
+# observes the STACKED return bytes at table-entry time (before the body
+# runs) -- not the RTS landing itself. The 9-byte body-shape pin (exact B1
+# bytes verified pre-run) is the only guard against a body that rewrites
+# its stacked return to a trampoline; APIRETURN is not collected.
 CHAIN_ASM = r"""
 .setcpu "huc6280"
 .segment "CODE"
@@ -767,12 +770,15 @@ class Scrmod25Synthetic(unittest.TestCase):
                 self.assertEqual(c.get("stack_check"), "MATCH", (cycle, c))
                 self.assertTrue(c.get("return_matches_caller"), (cycle, c))
         # NOTE: the probe parser only collects the APICALL tag (APIRETURN
-        # lines are not collected); return is proved per-call by
-        # return_matches_caller + stack_check == MATCH + SP balance, plus
-        # the payload records below: a body that RTS-resumes to the wrong
-        # address (e.g. caller+6 instead of caller+3) cannot produce the
-        # exact post-return record stream and the verified halt (the 9-byte
-        # structural pin independently forbids such a body shape).
+        # lines are not collected). return_matches_caller + stack_check ==
+        # MATCH + SP balance observe the stacked return bytes at entry time,
+        # before the body runs -- they do not observe the RTS destination.
+        # A body that rewrites its stacked return to a trampoline landing
+        # back at caller+3 would still MATCH; that class is excluded only by
+        # the 9-byte structural pin (exact B1 bytes verified pre-run), not
+        # by runtime records. The post-return record stream below excludes
+        # only bodies that skip bytes (e.g. resuming at caller+6 instead of
+        # caller+3 cannot produce the exact records and the verified halt).
         self._check_expected(cold, base, 0x07, 0x07, 0x11, 0x22,
                              0x06, 0x06, 0x66, 0x77)
         self._check_expected(warm, base, 0x07, 0x07, 0x11, 0x22,
@@ -1108,8 +1114,12 @@ class Scrmod25Synthetic(unittest.TestCase):
                 self.assertEqual(c.get("stack_check"), "MATCH", (cycle, c))
                 self.assertTrue(c.get("return_matches_caller"), (cycle, c))
                 self.assertEqual(c["mpr"][1], 0xF8, (cycle, c))  # MPR1=$F8 at every entry
-            # NOTE: APIRETURN lines are not collected by the probe parser;
-            # per-call return is proved by return_matches_caller + SP balance.
+            # NOTE: APIRETURN lines are not collected by the probe parser.
+            # return_matches_caller + stack_check == MATCH observe the
+            # stacked return bytes at entry time, not the RTS destination;
+            # a stacked-return-rewriting trampoline back to caller+3 is
+            # excluded only by the 9-byte body-shape pin, while the
+            # end-to-end records below exclude byte-skipping bodies.
         # End-to-end preservation across all four calls.
         self.assertEqual(cold[base], 0xAA)
         self.assertEqual((cold[base + 1], cold[base + 2], cold[base + 3]),
@@ -1405,6 +1415,16 @@ class Scrmod25Synthetic(unittest.TestCase):
         self._assert_mutant_red(rec, base, check=self._check_c1,
                                 allowed_abnormal=set(),
                                 mutant_tag="M7a-C1-preservation (balanced)")
+        # Carry-specificity: the forced clear is observed DIRECTLY at both
+        # return offsets, and it is the ONLY deviation -- every other field
+        # still matches the C=1 vector with Carry forced clear (P=$06 is
+        # $07 with bit0 off; B is masked by the checker).
+        cold, warm = self._buf(rec)
+        for buf in (cold, warm):
+            self.assertEqual(buf[base + 4] & 0x01, 0x00)
+            self.assertEqual(buf[base + 20] & 0x01, 0x00)
+            self._check_expected(buf, base, 0x06, 0x07, 0x11, 0x22,
+                                 0x06, 0x07, 0x66, 0x77)
 
     def test_scrmod_mutant_force_clc_balanced_green_c0(self):
         # T07 passing seed: the same CLC cavity body at C=0 must stay GREEN
@@ -1425,6 +1445,14 @@ class Scrmod25Synthetic(unittest.TestCase):
         self._assert_mutant_red(rec, base, check=self._check_c0,
                                 allowed_abnormal=set(),
                                 mutant_tag="M7b-C0-preservation (balanced)")
+        # Carry-specificity (mirrored): forced set observed directly at
+        # both return offsets, and the only deviation from the C=0 vector.
+        cold, warm = self._buf(rec)
+        for buf in (cold, warm):
+            self.assertEqual(buf[base + 4] & 0x01, 0x01)
+            self.assertEqual(buf[base + 20] & 0x01, 0x01)
+            self._check_expected(buf, base, 0x07, 0x06, 0x11, 0x22,
+                                 0x07, 0x06, 0x66, 0x77)
 
     def test_scrmod_mutant_force_sec_balanced_green_c1(self):
         # T07 passing seed: the same SEC cavity body at C=1 must stay GREEN.

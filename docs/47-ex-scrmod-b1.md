@@ -109,7 +109,12 @@ write history, cold+warm).
   blind outside their samples) but RED on the tracer; a
   write-then-restore `$2200` mutant (final value unchanged) is GREEN on
   every final-value oracle yet RED on the write history -- proving the
-  history-vs-final distinction the contract demands.
+  history-vs-final distinction the contract demands. Residual limit: the
+  tracer accumulates per-instruction WRAM *value diffs*, so a same-value
+  store (writing back the byte already present, no value change at any
+  step) is invisible to it by construction -- bus-level write detection
+  would need core write-path hooks, out of scope for this experimental
+  scaffold. Only state-changing writes are claimed as detected.
 - T06 bad table: `$E06F` reroute to fallback RED
   (`api_unimplemented`, X=`$25`, arrival-proved).
 - T07 Carry-preservation oracle (balanced, channel (b)): cavity bodies
