@@ -1007,6 +1007,8 @@ class Scrmod25Synthetic(unittest.TestCase):
                              f"write history truncated ({res['cycle']}): harness failure")
             seen.append(self._written_set(res))
         self.assertEqual(seen[0], seen[1], "cold/warm write sets differ (INCONCLUSIVE)")
+        self.assertTrue(allowed <= seen[0],
+                        f"transient stack writes missing: {sorted(allowed - seen[0])}")
         surplus = seen[0] - allowed
         self.assertEqual(surplus, set(extra),
                          f"unexpected out-of-scope writes: {sorted(surplus)}")
