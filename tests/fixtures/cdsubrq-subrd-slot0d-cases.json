@@ -1,0 +1,64 @@
+{
+  "schema": "oss-pce-cd-bios/cdsubrq-subrd-slot0d-fixture/v1",
+  "issue": 272,
+  "parent_issue": 22,
+  "slot": "$0D",
+  "entry_candidate": "$E027",
+  "candidate_name": "CD_SUBRQ / CD_SUBRD",
+  "abi_status": "BLOCKED_ABI",
+  "release_eligible": false,
+  "execution": "NOT_RUN",
+  "provenance": "synthetic: author-defined medium and cases only; no System Card BIOS byte, disassembly, retail data, or ./rom/ content; no reference callee is executed",
+  "callee_abi": {
+    "arguments": "UNKNOWN",
+    "returns": "UNKNOWN",
+    "registers": "UNKNOWN",
+    "q_buffer_layout": "UNKNOWN",
+    "reference_jsr": "NOT_CALLED",
+    "reference_jsr_count": 0
+  },
+  "medium": {
+    "synthetic": true,
+    "leadout_lba": 200,
+    "leadout_model": "author-defined: last track end + 1; not measured",
+    "tracks": [
+      {"no": 1, "type": "data", "start": 0, "end": 99},
+      {"no": 2, "type": "audio", "start": 100, "end": 199}
+    ]
+  },
+  "io_range": {
+    "lba_min": 0,
+    "lba_max": 199,
+    "track_numbers": [1, 2]
+  },
+  "query_model": {
+    "grounded_request": "current_q",
+    "request_provenance": "unverified author choice (HYPOTHESIS): no public source proves current_q is a real CD_SUBRQ/CD_SUBRD call mode; selected only to give the synthetic model one grounded kind; any other request string is an unmodelled call mode, not a refusal; do not treat as System Card ABI fact; Issue #272 grounded-kind acceptance remains open",
+    "unmodelled_call_mode": "UNKNOWN",
+    "callee_dependent": "BLOCKED_ABI"
+  },
+  "cases": [
+    {"id": "pos_t1_start", "request": "current_q", "track": 1, "lba": 0, "present": true, "needs_callee": false, "expected": "POSITIVE", "result": {"track": 1, "type": "data", "lba": 0}, "reason": "作者定義: first LBA of the data track"},
+    {"id": "pos_t1_end", "request": "current_q", "track": 1, "lba": 99, "present": true, "needs_callee": false, "expected": "POSITIVE", "result": {"track": 1, "type": "data", "lba": 99}, "reason": "作者定義: last LBA of the data track"},
+    {"id": "pos_t2_start", "request": "current_q", "track": 2, "lba": 100, "present": true, "needs_callee": false, "expected": "POSITIVE", "result": {"track": 2, "type": "audio", "lba": 100}, "reason": "作者定義: first LBA of the audio track"},
+    {"id": "pos_t2_mid", "request": "current_q", "track": 2, "lba": 150, "present": true, "needs_callee": false, "expected": "POSITIVE", "result": {"track": 2, "type": "audio", "lba": 150}, "reason": "作者定義: interior LBA of the audio track"},
+    {"id": "pos_t2_end", "request": "current_q", "track": 2, "lba": 199, "present": true, "needs_callee": false, "expected": "POSITIVE", "result": {"track": 2, "type": "audio", "lba": 199}, "reason": "作者定義: last LBA of the audio track"},
+    {"id": "neg_nomedium", "request": "current_q", "track": 2, "lba": 150, "present": false, "needs_callee": false, "expected": "NEGATIVE", "reason": "no medium present: no Q response exists"},
+    {"id": "neg_no_such_track", "request": "current_q", "track": 3, "lba": 100, "present": true, "needs_callee": false, "expected": "NEGATIVE", "reason": "track number not on the medium"},
+    {"id": "neg_track_zero", "request": "current_q", "track": 0, "lba": 100, "present": true, "needs_callee": false, "expected": "NEGATIVE", "reason": "track number zero is not a track"},
+    {"id": "neg_track_mismatch", "request": "current_q", "track": 1, "lba": 150, "present": true, "needs_callee": false, "expected": "NEGATIVE", "reason": "LBA lies in track 2 but track 1 is requested"},
+    {"id": "neg_before_track2", "request": "current_q", "track": 2, "lba": 99, "present": true, "needs_callee": false, "expected": "NEGATIVE", "reason": "last data LBA, one before the audio track start"},
+    {"id": "neg_track1_past_end", "request": "current_q", "track": 1, "lba": 100, "present": true, "needs_callee": false, "expected": "NEGATIVE", "reason": "first audio LBA but track 1 requested (symmetric boundary to neg_before_track2)"},
+    {"id": "neg_past_leadout", "request": "current_q", "track": 2, "lba": 200, "present": true, "needs_callee": false, "expected": "NEGATIVE", "reason": "lead-out LBA, one past the audio track end"},
+    {"id": "neg_negative_lba", "request": "current_q", "track": 1, "lba": -1, "present": true, "needs_callee": false, "expected": "NEGATIVE", "reason": "negative LBA"},
+    {"id": "neg_bool_track", "request": "current_q", "track": true, "lba": 0, "present": true, "needs_callee": false, "expected": "NEGATIVE", "reason": "bool is not an int track (malformed); in-range LBA isolates the track-type check"},
+    {"id": "neg_float_lba", "request": "current_q", "track": 2, "lba": 100.0, "present": true, "needs_callee": false, "expected": "NEGATIVE", "reason": "non-integer LBA type (malformed)"},
+    {"id": "neg_string_lba", "request": "current_q", "track": 2, "lba": "100", "present": true, "needs_callee": false, "expected": "NEGATIVE", "reason": "string LBA type (malformed)"},
+    {"id": "neg_none_track", "request": "current_q", "track": null, "lba": 100, "present": true, "needs_callee": false, "expected": "NEGATIVE", "reason": "None is not a track (malformed)"},
+    {"id": "neg_bool_lba", "request": "current_q", "track": 1, "lba": true, "present": true, "needs_callee": false, "expected": "NEGATIVE", "reason": "bool is not an int LBA (malformed)"},
+    {"id": "unk_request_stream", "request": "stream_q", "track": 2, "lba": 150, "present": true, "needs_callee": false, "expected": "UNKNOWN", "reason": "unmodelled call mode: the author-defined model only grounds current_q"},
+    {"id": "unk_request_cached", "request": "cached_q", "track": 1, "lba": 10, "present": true, "needs_callee": false, "expected": "UNKNOWN", "reason": "unmodelled call mode: the author-defined model only grounds current_q"},
+    {"id": "blocked_callee_args", "request": "current_q", "track": 2, "lba": 150, "present": true, "needs_callee": true, "expected": "BLOCKED", "reason": "BLOCKED_ABI: the answer would need the callee ABI; reference JSR not called"},
+    {"id": "blocked_callee_nomedium", "request": "current_q", "track": 2, "lba": 150, "present": false, "needs_callee": true, "expected": "BLOCKED", "reason": "BLOCKED_ABI first: callee dependence outranks the no-medium refusal"}
+  ]
+}
