@@ -4576,6 +4576,17 @@ class ChainRulePieceDTests(unittest.TestCase):
         self.assertEqual(verdict, "DENY", reason)
         self.assertTrue(reason.startswith("chain"), reason)
 
+    def test_powershell_elseif_condition_taint_reaches_else(self):
+        # CodeRabbit #815 (MAJOR, run-12 RZ4V): an `elseif` condition's own
+        # writes must reach a later `else` arm. Replacing the live arm
+        # snapshot with stale then-arm state would judge the else body
+        # clean after the condition wrote a file.
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        verdict, reason = self._decide("if ($a) { Set-Location sub } elseif (echo hi > f) { echo yo } else { Remove-Item file.txt }",
+                                       tool="PowerShell")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("chain"), reason)
+
     def test_pipeline_inside_conditional_uses_arm_entry(self):
         # CodeRabbit #815 (MAJOR, run-12 RZ4Y): a pipeline opened inside
         # a conditional body forks from the active arm's cwd, not from
