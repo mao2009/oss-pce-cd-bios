@@ -61,9 +61,11 @@ no mask; requiring them would invent code paths).
 ## 2. Wiring (opt-in, normal ROM untouched)
 
 - `tools/build_experimental_bios_boot.py`: `_SLOT25_TABLE`,
+  `_SLOT25_BODY_LEN` (= 9, tied to the structural pin),
   `_redirect_slot25_to_body` (fail-closed: linked-fallback check, BOOT
-  range check, PHP/PHA prologue check), `unified_api_windows_25`,
-  `unified_api_windows_4a_25` (base windows untouched).
+  span check `entry + 9 <= $FFF6`, PHP/PHA prologue check),
+  `unified_api_windows_25`, `unified_api_windows_4a_25` (base windows
+  untouched).
 - `tools/build_ipl_loader_g5_2base.py`: `cd_25` parameter
   (`"stub"`/`"experimental"`, refused otherwise), `SCRMOD_SOURCE/_ENTRY`,
   incremental label/source/link lists (the `(stub, stub)` order is
@@ -80,11 +82,14 @@ no mask; requiring them would invent code paths).
 
 ## 3. Synthetic evidence (pinned Geargrafx `b49ae82a`, cc65 `71746c8`)
 
-Real-core suite `tests/integration/test_g5_scrmod_25.py` (53 tests):
+Real-core suite `tests/integration/test_g5_scrmod_25.py` (61 tests):
 host-side oracle negatives (strict-validator controls) + synthetic
 return-probe runs (PUBLIC IPL 2-base boot, `cd_4a`+`cd_25` experimental,
 cold+warm identical every run) + dedicated VDC probe
-(`tests/integration/geargrafx_scrmod25_probe.cpp`).
+(`tests/integration/geargrafx_scrmod25_probe.cpp`) + dedicated WRAM
+write-tracer probe
+(`tests/integration/geargrafx_scrmod25_writes_probe.cpp`, per-instruction
+write history, cold+warm).
 
 - T01 stub: `cd_25="stub"` traps at `api_unimplemented` with X=`$25`,
   post-JSR marker `$00` (fail-closed intact).
@@ -96,13 +101,30 @@ cold+warm identical every run) + dedicated VDC probe
   independent A-vs-P checks; boundary values (A `$00`/`$FF`, X
   `$00`/`$80`, Y `$A5`/`$5A`, P `$04`/`$85`) GREEN.
 - T05 RAM scope: `$2900`-`$29FF` canary intact + zp `$10` pre/post
-  intact + full 6 KiB buffer cold/warm equality on every GREEN run.
+  intact + full 6 KiB buffer cold/warm equality on every GREEN run,
+  PLUS per-instruction WRAM write history from the tracer probe: B1
+  writes exactly the 6 transient stack bytes (`$21FA`-`$21FF` at SP=`$FF`,
+  `$2101`-`$2106` at SP=`$06`) and nothing else, cold and warm. A
+  `$2200` store mutant is GREEN on all legacy oracles (canary/zp/dump
+  blind outside their samples) but RED on the tracer; a
+  write-then-restore `$2200` mutant (final value unchanged) is GREEN on
+  every final-value oracle yet RED on the write history -- proving the
+  history-vs-final distinction the contract demands.
 - T06 bad table: `$E06F` reroute to fallback RED
   (`api_unimplemented`, X=`$25`, arrival-proved).
-- T07 Carry-preservation oracle: M7a (PLP->CLC) RED on the C=1 class as
-  `M7a-C1-preservation`; M7b (PLP->SEC) RED on the C=0 class as
-  `M7b-C0-preservation` (control GREEN on unmutated ROM for the
-  matching class, so no baseline-mismatch false positive).
+- T07 Carry-preservation oracle (balanced, channel (b)): cavity bodies
+  B1+CLC / B1+SEC before RTS (4 pushes / 4 pops, clean return, SP
+  balanced, only Carry differs; `$E06F` vector repointed to a BOOT
+  `$FF` cavity, normal 9-byte body intact and verified). Forced-CLC:
+  C=0 GREEN (full preservation proof) / C=1 RED as
+  `M7a-C1-preservation (balanced)` on the direct Carry-assertion
+  mismatch; forced-SEC: C=0 RED as `M7b-C0-preservation (balanced)` /
+  C=1 GREEN. Abnormal halts are forbidden for these mutants (channel
+  (a) never counts as T07 RED); arrival, clean RTS, SP balance, and
+  cold/warm identity are all required. The earlier unbalanced PLP-drop
+  shapes are kept separately as control-flow coverage
+  (`M7a-C1-control-flow`, `M7b-C0-control-flow`), never cited as the
+  T07 preservation verdict.
 - T10 stack smash: balanced out-of-scope write mutant (PHY/PLY ->
   STA `$10`) RED via the guest-observed zp mismatch (abnormal halts
   forbidden for this mutant). A canary-region STA shape was rejected
@@ -143,12 +165,14 @@ cold+warm identical every run) + dedicated VDC probe
   arrival (missing/partial) -- all rejected as RED; both-cycle mismatch
   and valid abnormal/misreturn arrivals accepted.
 
-Host suite `tests/host/test_build_g5_25_host.py` (8 tests): source
+Host suite `tests/host/test_build_g5_25_host.py` (10 tests): source
 presence, stub-default table/manifest/body-absence, pre-$25 baseline
 byte-identity, experimental wiring (table/body/prologue/opcode
-allowlist/manifest), combined `$4A`+`$25` wiring, `cd_25` refusal,
-redirect-helper guards, window supersets (base < 25 < both, base < 4a
-< both, default entry unchanged).
+allowlist/manifest), `$4A`-only-keeps-`$25`-stub matrix corner, combined
+`$4A`+`$25` wiring, `cd_25` refusal, redirect-helper guards, span
+boundaries (`$FFED` accept; `$FFEE`/`$FFF5`/`$FFF6`/bad-prologue/low-edge
+refuse; span-length linkage pin), window supersets (base < 25 < both,
+base < 4a < both, default entry unchanged).
 
 ## 4. Limits and non-goals (still UNKNOWN/BLOCKED)
 
@@ -168,9 +192,10 @@ any caller branch. Commercial media: NOT_RUN (no `./rom` access).
 - `tools/build_ipl_loader_g5_2base.py` (`cd_25` opt-in)
 - `tools/build_experimental_bios_boot.py` (slot-25 redirect + windows)
 - `spec/c3_static_contracts.json` (fixture classification only)
-- `tests/host/test_build_g5_25_host.py` (new, 8 tests)
-- `tests/integration/test_g5_scrmod_25.py` (new, 53 tests)
+- `tests/host/test_build_g5_25_host.py` (new, 10 tests)
+- `tests/integration/test_g5_scrmod_25.py` (new, 61 tests)
 - `tests/integration/geargrafx_scrmod25_probe.cpp` (new, VDC probe)
+- `tests/integration/geargrafx_scrmod25_writes_probe.cpp` (new, WRAM write tracer)
 - `docs/47-ex-scrmod-b1.md` (this file)
 
 ---

@@ -213,6 +213,41 @@ class BuildScrmod25HostTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             beb._redirect_slot25_to_body(bytes(bank), 0x1000, body_at)
 
+    def test_redirect_span_boundaries(self):
+        # MEDIUM (review 5976263400): the 9-byte B1 span must sit entirely
+        # inside BOOT (end at or before VECTORS $FFF6). Start-only checks
+        # would accept $FFF5 with a valid prologue while overlapping vectors.
+        import sys
+        sys.path[:0] = [str(ROOT / "tools")]
+        import build_experimental_bios_boot as beb
+        # Body-length pin linkage: the helper span constant must match the
+        # reviewed B1 bytes (change together with the structural pin).
+        self.assertEqual(beb._SLOT25_BODY_LEN, 9)
+        self.assertEqual(beb._SLOT25_BODY_LEN, len(B1_BODY))
+
+        def bank_with(stub_addr, body_at, prologue=(0x08, 0x48)):
+            bank = bytearray(b"\xff" * 0x2000)
+            bank[3 * 0x25:3 * 0x25 + 3] = bytes((0x4C, stub_addr & 0xFF,
+                                                  stub_addr >> 8))
+            bank[body_at - 0xE000:body_at - 0xE000 + 2] = bytes(prologue)
+            return bytes(bank)
+
+        # $FFED + 9 == $FFF6: last acceptable span.
+        out = beb._redirect_slot25_to_body(bank_with(0xE21D, 0xFFED), 0xE21D, 0xFFED)
+        self.assertEqual(tuple(out[3 * 0x25:3 * 0x25 + 3]), (0x4C, 0xED, 0xFF))
+        # $FFEE + 9 == $FFF7, $FFF5, $FFF6: span crosses VECTORS -> refuse.
+        for bad in (0xFFEE, 0xFFF5, 0xFFF6):
+            with self.subTest(entry=hex(bad)):
+                with self.assertRaises(ValueError):
+                    beb._redirect_slot25_to_body(bank_with(0xE21D, bad), 0xE21D, bad)
+        # Bad prologue at a span-valid entry still refuses.
+        with self.assertRaises(ValueError):
+            beb._redirect_slot25_to_body(bank_with(0xE21D, 0xFFED, (0x60, 0xEA)),
+                                         0xE21D, 0xFFED)
+        # Body below BOOT refuses (span check covers the low edge too).
+        with self.assertRaises(ValueError):
+            beb._redirect_slot25_to_body(bank_with(0xE21D, 0xE21D), 0xE21D, 0xE100 - 1)
+
     def test_windows_superset(self):
         import sys
         sys.path[:0] = [str(ROOT / "tools")]

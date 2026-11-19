@@ -97,6 +97,13 @@ _SLOT4A_PATCH_LABELS = ("api_slot_4A", "ex_memopen_entry")
 # stays False).
 _SLOT25_TABLE = 3 * 0x25
 _SLOT25_PATCH_LABELS = ("api_slot_25", "ex_scrmod_entry")
+# B1 body length in bytes (src/ex_scrmod.s: PHP/PHA/PHX/PHY/PLY/PLX/PLA/PLP/
+# RTS). The redirect helper requires the whole span inside BOOT (start-only
+# is not enough: an entry at $FFF5 with a valid prologue would otherwise
+# overlap VECTORS at $FFF6). Pinned against the 9-byte structural pin in
+# tests/host/test_build_g5_25_host.py and
+# tests/integration/test_g5_scrmod_25.py (change together).
+_SLOT25_BODY_LEN = 9
 # Merged input branches whose heads are recorded (never hardcoded) in the manifest.
 _MERGED_REFS = ("origin/agent-a/cd-base-proto-g5", "origin/agent-b/ex-dspoff-real-cpu-g5",
                 "origin/agent-b/cd-read-link-g5")
@@ -242,8 +249,9 @@ def _redirect_slot25_to_body(bank: bytes, slot25_stub: int, scrmod_entry: int) -
             raise ValueError(f"{name} address {addr!r} outside BIOS window $E000-$FFFF")
     if not 0xE100 <= slot25_stub < 0xFFF6:
         raise ValueError(f"slot $25 fallback stub ${slot25_stub:04X} outside bank0 body")
-    if not 0xF000 <= scrmod_entry < 0xFFF6:
-        raise ValueError(f"experimental slot $25 body ${scrmod_entry:04X} outside the BOOT region")
+    if not 0xF000 <= scrmod_entry <= 0xFFF6 - _SLOT25_BODY_LEN:
+        raise ValueError(f"experimental slot $25 body ${scrmod_entry:04X} outside the BOOT region "
+                         f"(9-byte span must end at or before $FFF6)")
     out = bytearray(bank)
     want_stub = bytes((0x4C, slot25_stub & 0xFF, slot25_stub >> 8))
     if bytes(out[_SLOT25_TABLE:_SLOT25_TABLE + 3]) != want_stub:

@@ -315,6 +315,24 @@ res_base:
 
 # B1 preservation-only scaffold bytes: PHP PHA PHX PHY PLY PLX PLA PLP RTS.
 B1_BODY = bytes((0x08, 0x48, 0xDA, 0x5A, 0x7A, 0xFA, 0x68, 0x28, 0x60))
+# Extended cavity mutant bodies (position-independent: stack ops only, no
+# absolute addressing except the deliberate stores; executed via a repointed
+# $E06F vector from an $FF cavity in BOOT padding, never in the normal ROM).
+# Balanced flag-only mutants for the T07 Carry oracle (4 pushes / 4 pops,
+# clean RTS, only the Carry bit differs from B1):
+MUT_CLC10 = bytes((0x08, 0x48, 0xDA, 0x5A, 0x7A, 0xFA, 0x68, 0x28, 0x18, 0x60))
+MUT_SEC10 = bytes((0x08, 0x48, 0xDA, 0x5A, 0x7A, 0xFA, 0x68, 0x28, 0x38, 0x60))
+# Balanced out-of-scope write mutant for the T05 write tracer (B1 + STA
+# $2200 + RTS; $2200 is outside the canary $2900-$29FF and zp $10):
+MUT_STA2200_12 = bytes((0x08, 0x48, 0xDA, 0x5A, 0x7A, 0xFA, 0x68, 0x28,
+                        0x8D, 0x00, 0x22, 0x60))
+# Balanced write-then-restore mutant (save $2200 / write $AA / restore $2200
+# inserted between B1's PLA and PLP, so the final PLP still restores the
+# entry flags exactly; final $2200 value unchanged, write history non-empty):
+MUT_RESTORE_24 = bytes((0x08, 0x48, 0xDA, 0x5A, 0x7A, 0xFA, 0x68,
+                        0x48, 0xAD, 0x00, 0x22, 0x48, 0xA9, 0xAA, 0x8D,
+                        0x00, 0x22, 0x68, 0x8D, 0x00, 0x22, 0x68, 0x28,
+                        0x60))
 
 
 class Scrmod25Synthetic(unittest.TestCase):
@@ -360,6 +378,8 @@ class Scrmod25Synthetic(unittest.TestCase):
             trace_stub, ("api_unimplemented", "cd_halt_fail", "cd_unexpected_interrupt"))
         cls.probe = compile_probe(cls.out, "geargrafx_api_return_probe.cpp", "m25-probe")
         cls.vdc_probe = compile_probe(cls.out, "geargrafx_scrmod25_probe.cpp", "m25-vdc-probe")
+        cls.writes_probe = compile_probe(cls.out, "geargrafx_scrmod25_writes_probe.cpp",
+                                         "m25-writes-probe")
         import geargrafx_ipl_loader as L
         cls.L = L
 
@@ -522,6 +542,88 @@ class Scrmod25Synthetic(unittest.TestCase):
         out = bytearray(rom_bytes)
         out[body_off + offset:body_off + offset + len(new_bytes)] = new_bytes
         return bytes(out)
+
+    def _cavity_off(self, rom_bytes, size):
+        # First $FF run of at least `size` bytes in the BOOT file range
+        # [0x1000, 0x1FF6) (bank0 padding before VECTORS $FFF6).
+        # Deterministic for identical images; the caller re-verifies the
+        # cavity content in _assert_ext_mutant_applied.
+        bank = rom_bytes[:0x2000]
+        i = 0x1000
+        while i < 0x1FF6:
+            if bank[i] == 0xFF:
+                j = i
+                while j < 0x1FF6 and bank[j] == 0xFF:
+                    j += 1
+                if j - i >= size:
+                    return i
+                i = j
+            else:
+                i += 1
+        self.fail(f"no FF cavity >= {size} in BOOT (harness failure, not RED)")
+
+    def _mutate_body_extended(self, rom_bytes, mutant_bytes):
+        # Extended mutant body in a BOOT $FF cavity with the $E06F vector
+        # repointed to it (for shapes that do not fit the 9-byte B1 body:
+        # balanced flag-only and balanced store mutants). Returns
+        # (mutant_rom, cavity_file_offset). Position-independent bodies
+        # only (stack ops + RTS, plus the deliberate store under test).
+        out = bytearray(rom_bytes)
+        cav = self._cavity_off(rom_bytes, len(mutant_bytes))
+        if not 0x1000 <= cav <= 0x1FF6 - len(mutant_bytes):
+            self.fail("cavity outside BOOT span (harness failure)")
+        cav_addr = 0xE000 + cav
+        out[cav:cav + len(mutant_bytes)] = mutant_bytes
+        out[3 * 0x25:3 * 0x25 + 3] = bytes((0x4C, cav_addr & 0xFF,
+                                            (cav_addr >> 8) & 0xFF))
+        return bytes(out), cav
+
+    def _assert_ext_mutant_applied(self, orig_bytes, mutant_bytes_rom, cavity_off,
+                                   mutant_bytes):
+        # Prove the extended mutant changed ONLY the $E06F vector plus a
+        # previously-$FF cavity: ROM length unchanged, cavity was all-$FF,
+        # cavity now holds the mutant bytes, vector targets the cavity, the
+        # normal 9-byte B1 body is intact (so the test exercises the mutant
+        # body through the vector, never the original), and every other
+        # byte is identical.
+        size = len(mutant_bytes)
+        self.assertGreater(size, 0, "empty replacement is not a mutant (harness failure)")
+        self.assertEqual(len(orig_bytes), len(mutant_bytes_rom),
+                         "mutant ROM length changed (harness failure)")
+        self.assertEqual(bytes(orig_bytes[cavity_off:cavity_off + size]),
+                         bytes((0xFF,) * size),
+                         "cavity was not all-$FF (harness failure)")
+        self.assertEqual(bytes(mutant_bytes_rom[cavity_off:cavity_off + size]),
+                         bytes(mutant_bytes), "mutant bytes not in cavity (harness failure)")
+        cav_addr = 0xE000 + cavity_off
+        self.assertEqual(bytes(mutant_bytes_rom[3 * 0x25:3 * 0x25 + 3]),
+                         bytes((0x4C, cav_addr & 0xFF, (cav_addr >> 8) & 0xFF)),
+                         "$E06F vector does not target the cavity (harness failure)")
+        body_off = (self.syms["ex_scrmod_entry"] & 0xFFFF) - 0xE000
+        self.assertEqual(bytes(mutant_bytes_rom[body_off:body_off + 9]), B1_BODY,
+                         "normal B1 body disturbed (harness failure)")
+        expect = bytearray(orig_bytes)
+        expect[cavity_off:cavity_off + size] = mutant_bytes
+        expect[3 * 0x25:3 * 0x25 + 3] = bytes((0x4C, cav_addr & 0xFF,
+                                               (cav_addr >> 8) & 0xFF))
+        self.assertEqual(bytes(mutant_bytes_rom), bytes(expect),
+                         "mutant changed bytes outside vector+cavity (harness failure)")
+
+    def _assert_green(self, rec, base, check, spinit=0xFF, mutant_tag=""):
+        # Full GREEN proof for a clean-halt run: halt shape, both-cycle
+        # value match (incl. zp/canary via the checker), SP balance, and
+        # proven $25 arrival. Used for passing-seed mutant runs (T07) and
+        # for old-oracle GREEN controls on tracer mutants (T05).
+        cold, warm = self._buf(rec)
+        self.assertEqual(cold, warm,
+                         f"GREEN run {mutant_tag} cold/warm buffers differ (harness failure)")
+        check(cold, base)
+        check(warm, base)
+        self._check_sp(cold, base, spinit)
+        self._check_sp(warm, base, spinit)
+        self._check_canary(cold, base)
+        self._check_canary(warm, base)
+        self._assert_apicall_arrival(rec, mutant_tag=mutant_tag)
 
     def _check_canary(self, buf, base):
         # T05 work-RAM scope: the 256-byte canary at CPU $2900-$29FF (dump
@@ -830,6 +932,123 @@ class Scrmod25Synthetic(unittest.TestCase):
     def test_vdc_ar_unchanged_zero_select(self):
         self._check_vdc(self._run_vdc("ar0", 0, 0x5A, 0x34, 0x06), 0, 0x5A, 0x34, 0x06)
 
+    def _run_writes(self, name, spinit, rom_bytes=None):
+        # WRAM write-tracer run: HuCARD-style guest (SEI, MPR0/1=$F8,
+        # SP=spinit, JSR $E06F, halt) with per-instruction WRAM write
+        # history recorded by the probe, cold then warm. Returns the two
+        # RESULT records.
+        import tempfile
+        rom = self.rom if rom_bytes is None else self._tmp_rom(name, rom_bytes)
+        o = self.out / ("writes-" + name)
+        o.mkdir(exist_ok=True)
+        (o / "d.bin").write_bytes(bytes(2352 * 32))
+        cue = o / "d.cue"
+        cue.write_text('FILE "d.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n')
+        r = subprocess.run([str(self.writes_probe), str(rom.resolve()),
+                            str(cue.resolve()), "4096", str(spinit)],
+                           capture_output=True, text=True, timeout=120, check=True)
+        import json
+        recs = [json.loads(line[7:]) for line in r.stdout.splitlines()
+                if line.startswith("RESULT ")]
+        self.assertEqual(len(recs), 2, "write tracer must report cold+warm")
+        cycles = sorted(x["cycle"] for x in recs)
+        self.assertEqual(cycles, ["cold", "warm"])
+        return recs
+
+    def _tmp_rom(self, name, rom_bytes):
+        # Mutant ROM materialized under the test out dir (never tracked).
+        p = self.out / ("writes-" + name + ".pce")
+        p.write_bytes(bytes(rom_bytes))
+        return p
+
+    def _written_set(self, res):
+        out = set()
+        for s, e in res["written"]:
+            out.update(range(s, e + 1))
+        return out
+
+    def _allowed_transient(self, spinit):
+        # T05 scope: JSR (2 bytes) + B1 body (4 pushes) below SP, i.e.
+        # WRAM offsets for $21(spinit-5)..$21(spinit). Nothing else may be
+        # written on any cycle for B1.
+        return set(range(0x100 + spinit - 5, 0x100 + spinit + 1))
+
+    def _check_writes(self, recs, spinit):
+        # Strict B1 write-history proof, both cycles: halted, complete
+        # (not truncated), identical sets cold==warm, and exactly the
+        # transient stack bytes -- a bare-RTS mutant (2 JSR bytes only)
+        # or any extra write fails here.
+        allowed = self._allowed_transient(spinit)
+        seen = []
+        for res in recs:
+            self.assertTrue(res["halted"],
+                            f"write tracer did not halt ({res['cycle']}): harness failure, not RED")
+            self.assertFalse(res["truncated"],
+                             f"write history truncated ({res['cycle']}): harness failure")
+            seen.append(self._written_set(res))
+        self.assertEqual(seen[0], seen[1], "cold/warm write sets differ (INCONCLUSIVE)")
+        self.assertEqual(seen[0], allowed,
+                         f"B1 wrote outside transient stack: {sorted(seen[0] - allowed)}")
+
+    def _check_writes_extra(self, recs, spinit, extra):
+        # Mutant RED through the tracer only: halted cleanly on both cycles
+        # (abnormal halt/timeout never counts as side-effect detection),
+        # identical write sets, and the out-of-scope surplus is exactly
+        # `extra` (non-empty). The caller additionally proves the legacy
+        # oracles stay GREEN on the same ROM where the property demands it.
+        self.assertTrue(len(extra) > 0, "empty extra set is not a mutant")
+        allowed = self._allowed_transient(spinit)
+        seen = []
+        for res in recs:
+            self.assertTrue(res["halted"],
+                            f"tracer mutant did not halt ({res['cycle']}): "
+                            "harness failure, never side-effect RED")
+            self.assertFalse(res["truncated"],
+                             f"write history truncated ({res['cycle']}): harness failure")
+            seen.append(self._written_set(res))
+        self.assertEqual(seen[0], seen[1], "cold/warm write sets differ (INCONCLUSIVE)")
+        surplus = seen[0] - allowed
+        self.assertEqual(surplus, set(extra),
+                         f"unexpected out-of-scope writes: {sorted(surplus)}")
+
+    def test_writes_b1_sp_ff(self):
+        # T05: B1 writes exactly the 6 transient stack bytes ($21FA-$21FF)
+        # and nothing else, cold and warm.
+        self._check_writes(self._run_writes("b1ff", 0xFF), 0xFF)
+
+    def test_writes_b1_sp_06(self):
+        # T05 boundary: SP=$06 minimum writes exactly $2101-$2106.
+        self._check_writes(self._run_writes("b106", 0x06), 0x06)
+
+    def test_writes_mutant_sta2200_red(self):
+        # T05 non-sampled write (outside canary $2900-$29FF and zp $10):
+        # the legacy oracles stay GREEN (proving their blindness here)
+        # while the tracer flags $2200 on both cycles.
+        orig = self.rom.read_bytes()
+        bad, cav = self._mutate_body_extended(orig, MUT_STA2200_12)
+        self._assert_ext_mutant_applied(orig, bad, cav, MUT_STA2200_12)
+        rec, base = self._run_on_rom("m-w2200", bad,
+                                      self._defines(0x06, 0x11, 0x22, 0x06, 0x66, 0x77))
+        self._assert_green(rec, base, self._check_c0,
+                           mutant_tag="sta2200-old-oracle-green")
+        wrecs = self._run_writes("w2200", 0xFF, rom_bytes=bad)
+        self._check_writes_extra(wrecs, 0xFF, {0x200})
+
+    def test_writes_mutant_restore_red(self):
+        # T05 history-vs-final distinction: the mutant saves $2200, writes
+        # $AA, then restores the original value -- the final WRAM value is
+        # unchanged, so snapshots/dumps/checksums stay GREEN, but the
+        # per-instruction write history still records $2200 -> RED.
+        orig = self.rom.read_bytes()
+        bad, cav = self._mutate_body_extended(orig, MUT_RESTORE_24)
+        self._assert_ext_mutant_applied(orig, bad, cav, MUT_RESTORE_24)
+        rec, base = self._run_on_rom("m-restore", bad,
+                                      self._defines(0x06, 0x11, 0x22, 0x06, 0x66, 0x77))
+        self._assert_green(rec, base, self._check_c0,
+                           mutant_tag="restore-old-oracle-green")
+        wrecs = self._run_writes("restore", 0xFF, rom_bytes=bad)
+        self._check_writes_extra(wrecs, 0xFF, {0x200})
+
     def test_chain_33_4a_23_25(self):
         # Synthetic G5 chain leg: the PUBLIC boot ($02 leg) loads this
         # payload, which then calls $33 -> $4A -> $23 -> $25 through the real
@@ -1136,15 +1355,11 @@ class Scrmod25Synthetic(unittest.TestCase):
                                       self._defines(0x06, 0x11, 0x22, 0x06, 0x66, 0x77))
         self._assert_mutant_red(rec, base, mutant_tag="drop-plp")
 
-    def test_scrmod_mutant_force_clc_red(self):
-        # T07/M7a: fabricate C=0 on success (PLP->CLC). The C=1 entry class
-        # must go RED (M7a-C1-preservation). Control: unmutated C=1 ROM is
-        # GREEN for _check_c1 (no baseline-mismatch false positive).
-        # Note: PLP->CLC drops a pop, so SP is unbalanced and RTS
-        # mis-returns (channel (a) non-halt); the C=1 seed pairing is what
-        # makes this a preservation-oracle mutant rather than a generic
-        # crash (an isolated flag-only mutant would need a stack-balanced
-        # replacement, not claimed here).
+    def test_scrmod_mutant_force_clc_unbalanced_red(self):
+        # Control-flow mutant (kept, NOT the T07 oracle): PLP->CLC drops a
+        # pop, so SP is unbalanced and RTS mis-returns (channel (a)). The
+        # C=1 seed pairing is retained; the discriminating T07 proof is the
+        # balanced mutant below (test_scrmod_mutant_force_clc_balanced_red).
         rec_ctrl, base_ctrl = self._run("c1-ctrl", self._defines(0x07, 0x11, 0x22,
                                                                   0x07, 0x66, 0x77))
         cold_ctrl, _ = self._buf(rec_ctrl)
@@ -1152,20 +1367,70 @@ class Scrmod25Synthetic(unittest.TestCase):
         orig = self.rom.read_bytes()
         bad = self._mutate_body(orig, 7, bytes((0x18,)))
         self._assert_body_mutant_applied(orig, bad, 7, bytes((0x18,)))
-        rec, base = self._run_on_rom("m-clc", bad,
+        rec, base = self._run_on_rom("m-clc-unbal", bad,
                                       self._defines(0x07, 0x11, 0x22, 0x07, 0x66, 0x77))
-        self._assert_mutant_red(rec, base, check=self._check_c1, mutant_tag="M7a-C1-preservation")
+        self._assert_mutant_red(rec, base, check=self._check_c1,
+                                mutant_tag="M7a-C1-control-flow (unbalanced)")
 
-    def test_scrmod_mutant_force_sec_red(self):
-        # T07/M7b: fabricate C=1 on success (PLP->SEC). Unbalanced like
-        # PLP->CLC, so a control-flow mutant; the C=0 entry class must go
-        # RED (M7b-C0-preservation).
+    def test_scrmod_mutant_force_sec_unbalanced_red(self):
+        # Control-flow mutant (kept, NOT the T07 oracle): PLP->SEC drops a
+        # pop (unbalanced, channel (a)); the discriminating proof is the
+        # balanced mutant below (test_scrmod_mutant_force_sec_balanced_red).
         orig = self.rom.read_bytes()
         bad = self._mutate_body(orig, 7, bytes((0x38,)))
         self._assert_body_mutant_applied(orig, bad, 7, bytes((0x38,)))
-        rec, base = self._run_on_rom("m-sec", bad,
+        rec, base = self._run_on_rom("m-sec-unbal", bad,
                                       self._defines(0x06, 0x11, 0x22, 0x06, 0x66, 0x77))
-        self._assert_mutant_red(rec, base, mutant_tag="M7b-C0-preservation")
+        self._assert_mutant_red(rec, base,
+                                mutant_tag="M7b-C0-control-flow (unbalanced)")
+
+    def _run_balanced(self, name, mutant_bytes, defines):
+        # Extended cavity mutant run: $E06F vector repointed to the cavity
+        # body (scope-verified); the normal 9-byte B1 body stays intact.
+        orig = self.rom.read_bytes()
+        bad, cav = self._mutate_body_extended(orig, mutant_bytes)
+        self._assert_ext_mutant_applied(orig, bad, cav, mutant_bytes)
+        return self._run_on_rom(name, bad, defines)
+
+    def test_scrmod_mutant_force_clc_balanced_red(self):
+        # T07/M7a-C1-preservation (balanced, channel (b)): the cavity body
+        # is B1 + CLC before RTS (4 pushes / 4 pops, clean return, only
+        # Carry differs). C=1 entry must RED on the direct Carry-assertion
+        # mismatch; abnormal halts are forbidden for this mutant.
+        rec, base = self._run_balanced("m-clc-bal", MUT_CLC10,
+                                        self._defines(0x07, 0x11, 0x22,
+                                                     0x07, 0x66, 0x77))
+        self._assert_mutant_red(rec, base, check=self._check_c1,
+                                allowed_abnormal=set(),
+                                mutant_tag="M7a-C1-preservation (balanced)")
+
+    def test_scrmod_mutant_force_clc_balanced_green_c0(self):
+        # T07 passing seed: the same CLC cavity body at C=0 must stay GREEN
+        # (full preservation proof: no violation to detect).
+        rec, base = self._run_balanced("m-clc-bal0", MUT_CLC10,
+                                        self._defines(0x06, 0x11, 0x22,
+                                                     0x06, 0x66, 0x77))
+        self._assert_green(rec, base, self._check_c0,
+                           mutant_tag="M7a-C0-green (balanced CLC)")
+
+    def test_scrmod_mutant_force_sec_balanced_red(self):
+        # T07/M7b-C0-preservation (balanced, channel (b)): B1 + SEC before
+        # RTS. C=0 entry must RED on the direct Carry-assertion mismatch;
+        # abnormal halts are forbidden for this mutant.
+        rec, base = self._run_balanced("m-sec-bal", MUT_SEC10,
+                                        self._defines(0x06, 0x11, 0x22,
+                                                     0x06, 0x66, 0x77))
+        self._assert_mutant_red(rec, base, check=self._check_c0,
+                                allowed_abnormal=set(),
+                                mutant_tag="M7b-C0-preservation (balanced)")
+
+    def test_scrmod_mutant_force_sec_balanced_green_c1(self):
+        # T07 passing seed: the same SEC cavity body at C=1 must stay GREEN.
+        rec, base = self._run_balanced("m-sec-bal1", MUT_SEC10,
+                                        self._defines(0x07, 0x11, 0x22,
+                                                     0x07, 0x66, 0x77))
+        self._assert_green(rec, base, self._check_c1,
+                           mutant_tag="M7b-C1-green (balanced SEC)")
 
     def test_scrmod_mutant_save_pha_to_php_red(self):
         # Stack-balanced A corruption (save-path PHA->PHP at body offset 1).
