@@ -3947,7 +3947,8 @@ def _stdin_prepass(segs, ps, inherited_fed):
                 # (`(exec < f; node)` reads f there, verified on Bash). The
                 # matching close restores the saved outer state, so a
                 # completed fork never leaks out (fail-closed).
-                if not pfed and not _suppressed:
+                if (not pfed and not _suppressed
+                        and not _followed_by_fork_boundary(segs, i, ps)):
                     exec_flag = True
             elif effect == "close":
                 # An explicit stdin close at this same shell level clears
@@ -3957,7 +3958,8 @@ def _stdin_prepass(segs, ps, inherited_fed):
                 # (fail-open otherwise). Forked positions never leak: the
                 # saved state is restored at the fork's closing boundary.
                 if (not pfed and not _suppressed
-                        and not _in_cond_here):
+                        and not _in_cond_here
+                        and not _followed_by_fork_boundary(segs, i, ps)):
                     exec_flag = False
                     inh = False
     return pipe, eff, is_stage, subdepth, exec_flag, suppressed, in_cond
@@ -4074,6 +4076,35 @@ def _body_sets_exec_stdin(body, ps, funcs=None, _seen=None, strict=True):
                 return True
     return False
 
+
+
+def _followed_by_fork_boundary(segs, idx, ps):
+    """True when the command in segment idx runs in a forked child.
+
+    A Bash `|`-pipeline stage or `&`-background job forks, so a persistent
+    stdin change there never reaches the parent shell (verified on Bash:
+    `exec < f | cat` and `exec < f &` leave the parent stdin alone).
+    `&&`/`||` (PIPE_END) and `;`/newlines are sequential in the same shell.
+    Only empty segments are skipped (a trailing redirect-only segment
+    belongs to the preceding command, not to a following boundary).
+    PowerShell forks no pipeline/background children this way, so only
+    Bash `|`/`&` count (ps keeps its prior behavior exactly).
+    """
+    if ps:
+        return False
+    n = len(segs)
+    j = idx + 1
+    while j < n:
+        if segs[j] in _STDIN_SENTINELS:
+            return segs[j] in (PIPE_BOUND, BG_BOUND)
+        try:
+            _w = words_of(segs[j], ps)
+        except Deny:
+            return False
+        if strip_redirections(_w) != []:
+            return False
+        j += 1
+    return False
 
 def _seg_is_transparent(seg, ps):
     """True when a segment is empty or redirect-only (runs no command)."""
@@ -4238,7 +4269,8 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None):
                 # the NON_EXEC shortcut (fail-closed for pipe-fed
                 # `cat() { node; }; ... | cat`).
                 if (not _stdin_stage[idx]
-                        and not _saw_coproc and not _stdin_suppressed[idx]):
+                        and not _saw_coproc and not _stdin_suppressed[idx]
+                        and not _followed_by_fork_boundary(segs, idx, ps)):
                     for _body in all_funcs[_fkey]:
                         if _body is None or _body_sets_exec_stdin(_body, ps, all_funcs):
                             dyn_exec = True
@@ -4253,18 +4285,24 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None):
         # nested analysis (fail-closed DENY there). The scope-machine loop
         # below additionally merges the precise nested result.
         if (not ps and not _stdin_stage[idx]
-                and not _stdin_suppressed[idx]):
+                and not _stdin_suppressed[idx]
+                and not _followed_by_fork_boundary(segs, idx, ps)):
             _ev_text = _eval_command_text(seg_words, ps, all_funcs)
             if _ev_text is not None and _body_sets_exec_stdin(
                     _ev_text, ps, all_funcs, strict=False):
                 dyn_exec = True
-            # A close clears only when its execution is certain (top level):
-            # a conditional/loop close may never run, so clearing there
-            # would under-taint (fail-open). Supply is fail-closed either way.
+        # A bare `exec` supply/close at a same-shell position updates the
+        # dynamic flag too (mirrors the prepass): pipe-fed, suppressed, or
+        # forked (pipeline/background) positions never leak to the parent.
+        # A close clears only when its execution is certain (unconditional
+        # and unforked); a conditional/loop close may never run, so
+        # clearing there would under-taint (fail-open).
+        if not ps and not _stdin_stage[idx] and not _stdin_suppressed[idx]:
             _fx = _exec_segment_effect(seg_words, seg)
-            if _fx == "supply":
+            if _fx == "supply" and not _followed_by_fork_boundary(segs, idx, ps):
                 dyn_exec = True
-            elif _fx == "close" and not _stdin_in_cond[idx]:
+            elif (_fx == "close" and not _stdin_in_cond[idx]
+                    and not _followed_by_fork_boundary(segs, idx, ps)):
                 dyn_exec = False
     if sum(len(ops) for ops in redirs) > MAX_REDIRECTS:
         raise Deny("redirect", "more than %d redirections are not inspected" % MAX_REDIRECTS)
@@ -4674,7 +4712,8 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None):
             # PowerShell has no eval/exec persistent-redirect semantics.
             ctx.exec_out = False
             if (not ps and not _stdin_stage[idx]
-                    and not _stdin_suppressed[idx]):
+                    and not _stdin_suppressed[idx]
+                    and not _followed_by_fork_boundary(segs, idx, ps)):
                 live_exec = True
         # A certain bare-exec close clears the live flag too (mirrors the
         # first-loop dyn handling): a conditional/loop close may never run,
@@ -4682,6 +4721,7 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None):
         # save/restore above scopes the clear to the active fork.
         if (live_exec and not ps and not _stdin_stage[idx]
                 and not _stdin_suppressed[idx] and not _stdin_in_cond[idx]
+                and not _followed_by_fork_boundary(segs, idx, ps)
                 and _exec_segment_effect(seg_words, seg) == "close"):
             live_exec = False
         if cond_stack and ctx.cwd != cond_stack[-1]["cwd"]:
