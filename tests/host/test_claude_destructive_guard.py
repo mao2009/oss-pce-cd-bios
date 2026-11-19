@@ -3863,12 +3863,12 @@ class StdinProgramTests(unittest.TestCase):
                 self.assertEqual(verdict, "DENY", cmd)
                 self.assertIn("stdin-program", reason, cmd)
         # Distinct Bash functions do not confuse each other.
-        verdict, _ = self._d("F-X() { node; }; f-x() { cat; }; printf 'code\\n' | F-X")
-        self.assertEqual(verdict, "DENY")
-        verdict, _ = self._d("F-X() { node; }; f-x() { cat; }; printf 'code\\n' | f-x")
-        self.assertEqual(verdict, "ALLOW")
-        verdict, _ = self._d("F-X() { node script.js; }; printf 'code\\n' | F-X")
-        self.assertEqual(verdict, "ALLOW")
+        verdict, reason = self._d("F-X() { node; }; f-x() { cat; }; printf 'code\\n' | F-X")
+        self.assertEqual(verdict, "DENY", reason)
+        verdict, reason = self._d("F-X() { node; }; f-x() { cat; }; printf 'code\\n' | f-x")
+        self.assertEqual(verdict, "ALLOW", reason)
+        verdict, reason = self._d("F-X() { node script.js; }; printf 'code\\n' | F-X")
+        self.assertEqual(verdict, "ALLOW", reason)
         # PowerShell treats `F-X`/`f-x` as the same name (case-insensitive).
         verdict, reason = self._d("function F-X { node }; printf 'code\\n' | f-x", tool="PowerShell")
         self.assertEqual(verdict, "DENY", reason)
