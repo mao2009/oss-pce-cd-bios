@@ -4565,6 +4565,27 @@ class ChainRulePieceDTests(unittest.TestCase):
         self.assertEqual(verdict, "DENY", reason)
         self.assertTrue(reason.startswith("cwd-uncertain"), reason)
 
+    def test_powershell_elseif_condition_taint_reaches_else(self):
+        # CodeRabbit #815 (MAJOR, run-12 RZ4V): an `elseif` condition's own
+        # writes must reach a later `else` arm. Replacing the live arm
+        # snapshot with stale then-arm state would judge the else body
+        # clean after the condition wrote a file.
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        verdict, reason = self._decide("if ($a) { Set-Location sub } elseif (echo hi > f) { echo yo } else { Remove-Item file.txt }",
+                                       tool="PowerShell")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("chain"), reason)
+
+    def test_pipeline_inside_conditional_uses_arm_entry(self):
+        # CodeRabbit #815 (MAJOR, run-12 RZ4Y): a pipeline opened inside
+        # a conditional body forks from the active arm's cwd, not from
+        # the stale saved run start. The `rm` below runs from the
+        # parent directory and is refused as outside the repository.
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        verdict, reason = self._decide("if true; then cd ..; if true; then echo hi; fi; true | rm file.txt; fi")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("rm-outside-repo"), reason)
+
     def test_and_or_end_pipeline(self):
         # CodeRabbit #815 (MAJOR, run-12 OQwd): `&&`/`||` terminate the
         # pipeline like `;` (verified on Bash: the next command runs in
@@ -4722,7 +4743,7 @@ class ChainRulePieceDTests(unittest.TestCase):
         # to the already-current cwd must not launder the earlier
         # uncertainty into a certain judgment.
         write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
-        verdict, reason = self._decide("if true; then cd sub; fi; cd ..; if false; then cd %s; fi; rm file.txt" % self.repo)
+        verdict, reason = self._decide("if true; then cd sub; fi; cd ..; if false; then cd \"%s\"; fi; rm file.txt" % self.repo)
         self.assertEqual(verdict, "DENY", reason)
         self.assertTrue(reason.startswith("cwd-uncertain"), reason)
 
@@ -4735,6 +4756,19 @@ class ChainRulePieceDTests(unittest.TestCase):
         verdict, reason = self._decide("if git checkout other && false; then true; else rm lnk/../file.txt; fi")
         self.assertEqual(verdict, "DENY", reason)
         self.assertTrue(reason.startswith("chain"), reason)
+
+    def test_condition_cwd_moves_else_arm(self):
+        # CodeRabbit #815 (MAJOR, run-12 RZ4R): each arm runs from the
+        # condition-end state, not the pre-conditional entry. The `else`
+        # below runs from `sub` (the `cd` in the condition succeeded),
+        # so `rm file.txt` targets the in-sub symlink and is refused as
+        # a symlink delete instead of being judged against repo/file.txt.
+        write_text(os.path.join(self.tmp, "file.txt"), "outside\n")
+        os.symlink(os.path.join(self.tmp, "file.txt"),
+                     os.path.join(self.repo, "sub", "file.txt"))
+        verdict, reason = self._decide("if cd ./sub && false; then true; else rm file.txt; fi")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertTrue(reason.startswith("rm-symlink"), reason)
 
     def test_condition_taint_snapshot_keeps_else_clean(self):
         # run-12 P7k3 (mutant direction): a tainted then-arm must not
@@ -4986,8 +5020,8 @@ class ChainRuleMutationTests(unittest.TestCase):
             '                if pipe_entry is None:\n                    if scope_just_closed:',
             '                if pipe_entry is None:  # mutant: pipe taint cleared\n                    ctx.tainted = False\n                    if scope_just_closed:'),
         "pipeline entry leaks stage cwd": (
-            '                    if scope_just_closed:\n                        pipe_entry = scope_entry\n                    else:\n                        pipe_entry = run_start',
-            '                    if scope_just_closed:\n                        pipe_entry = scope_entry\n                    else:\n                        pipe_entry = ctx.cwd  # mutant: pipe entry leaks stage cwd'),
+            '                    elif cond_stack:\n                        # run-12 RZ4Y: inside a conditional the saved run\n                        # start is stale (updates are gated); the active\n                        # arm\'s current pair is the pipeline entry.\n                        pipe_entry = (ctx.cwd, ctx.cwd_fuzzy)',
+            '                    elif cond_stack:  # mutant: cond pipe uses stale run\n                        pipe_entry = run_start'),
         "command same-shell gating removed": (
             '            if name in ("command", "builtin", "time"):',
             '            if name in ("builtin", "time"):  # mutant: command cwd lost'),
@@ -5059,8 +5093,8 @@ class ChainRuleMutationTests(unittest.TestCase):
             '            # body (same rule as the PowerShell close).\n            if entry["fuzzy"] or entry["moved"] or ctx.cwd != entry["cwd"]:',
             '            # body (same rule as the PowerShell close).\n            if entry["moved"] or ctx.cwd != entry["cwd"]:  # mutant: skipped body trusted'),
         "condition taint snapshot removed": (
-            '        if not ps and cond_stack and first_cmd == "then":\n            # run-12 OQww/P7k3: the condition just ended; snapshot its\n            # taint so `else`/`elif` arms keep condition taint while\n            # dropping the previous arm\'s taint (joined at the close).\n            cond_stack[-1]["cond_taint"] = ctx.tainted',
-            '        pass  # mutant: condition taint dropped'),
+            '        if not ps and cond_stack and first_cmd == "then":\n            # run-12 OQww/P7k3/RZ4R: the condition just ended; snapshot the\n            # arm entry (cwd, certainty, taint). Every `else`/`elif` arm\n            # restarts from here instead of the previous arm\'s end, so a\n            # condition that moves the cwd (or taints) is honored while a\n            # previous arm\'s effects stay joined only at the close.\n            cond_stack[-1]["arm"] = (ctx.cwd, ctx.cwd_fuzzy, ctx.tainted)',
+            '            pass  # mutant: condition taint dropped'),
         "else arm reset removed": (
             '        elif cond_stack and first_cmd in ("else", "elif"):',
             '        elif False:  # mutant: else arm reuses previous arm state'),
@@ -5100,13 +5134,13 @@ class ChainRuleMutationTests(unittest.TestCase):
             '            if not cond_stack:\n                # run-13 (M2): the run start is the same-instant pair\n                # again, so a later pipeline entry keeps its own\n                # certainty instead of borrowing the live one. The\n                # refresh is scope-local (M1) inside a subshell.\n                run_start = (ctx.cwd, ctx.cwd_fuzzy)',
             '            pass  # mutant: cond close run not refreshed'),
         "else arm certainty restore removed": (
-            '            entry = cond_stack[-1]\n            entry["then_taint"] = entry["then_taint"] or ctx.tainted\n            if entry["cond_taint"] is None:\n                entry["cond_taint"] = ctx.tainted\n            ctx.cwd = entry["cwd"]\n            ctx.cwd_fuzzy = entry["fuzzy"]\n            ctx.tainted = entry["cond_taint"]',
-            '            entry = cond_stack[-1]\n            entry["then_taint"] = entry["then_taint"] or ctx.tainted\n            if entry["cond_taint"] is None:\n                entry["cond_taint"] = ctx.tainted\n            ctx.cwd = entry["cwd"]\n            ctx.tainted = entry["cond_taint"]  # mutant: else certainty not restored'),
+            '            entry = cond_stack[-1]\n            entry["then_taint"] = entry["then_taint"] or ctx.tainted\n            if entry["arm"] is None:\n                entry["arm"] = (ctx.cwd, ctx.cwd_fuzzy, ctx.tainted)\n            ctx.cwd, ctx.cwd_fuzzy, ctx.tainted = entry["arm"]',
+            '            entry = cond_stack[-1]\n            entry["then_taint"] = entry["then_taint"] or ctx.tainted\n            if entry["arm"] is None:\n                entry["arm"] = (ctx.cwd, ctx.cwd_fuzzy, ctx.tainted)\n            ctx.cwd = entry["arm"][0]\n            ctx.tainted = entry["arm"][2]  # mutant: else certainty not restored'),
         "powershell else stash restore removed": (
-            '            entry = ps_arm_stack[-1]\n            entry["then_taint"] = entry["then_taint"] or ctx.tainted\n            ctx.cwd = entry["cwd"]\n            ctx.cwd_fuzzy = entry["fuzzy"]\n            ctx.tainted = entry["cond_taint"] if entry["cond_taint"] is not None else entry["tainted"]\n            ps_arm_moved = entry["moved"]\n            ps_arm_taint = entry["then_taint"]',
+            '            entry = ps_arm_stack[-1]\n            entry["then_taint"] = entry["then_taint"] or ctx.tainted\n            arm = entry["arm"]\n            if arm is None:\n                arm = (entry["cwd"], entry["fuzzy"], entry["tainted"])\n            ctx.cwd, ctx.cwd_fuzzy, ctx.tainted = arm\n            ps_arm_moved = entry["moved"]\n            ps_arm_taint = entry["then_taint"]',
             '            entry = cond_stack[-1]  # mutant: ps else uses outer entry\n            entry["then_taint"] = entry["then_taint"] or ctx.tainted\n            ctx.cwd = entry["cwd"]\n            ctx.tainted = entry["tainted"]'),
         "powershell arm outcome inheritance removed": (
-            '            if ps_arm_moved or ps_arm_taint:\n                # run-13 (M3): this is an else/elseif body: inherit the\n                # then-arm outcome so the close joins every arm, including\n                # the condition taint stashed with the then-arm entry.\n                cond_stack[-1]["moved"] = cond_stack[-1]["moved"] or ps_arm_moved\n                cond_stack[-1]["then_taint"] = cond_stack[-1]["then_taint"] or ps_arm_taint\n                if ps_arm_stack and ps_arm_stack[-1]["cond_taint"] is not None:\n                    cond_stack[-1]["cond_taint"] = ps_arm_stack[-1]["cond_taint"]\n                ps_arm_moved = False\n                ps_arm_taint = False',
+            '            if ps_arm_moved or ps_arm_taint:\n                # run-13 (M3): this is an else/elseif body: inherit the\n                # then-arm outcome so the close joins every arm.\n                cond_stack[-1]["moved"] = cond_stack[-1]["moved"] or ps_arm_moved\n                cond_stack[-1]["then_taint"] = cond_stack[-1]["then_taint"] or ps_arm_taint\n                ps_arm_moved = False\n                ps_arm_taint = False\n            # run-12 P7k3/RZ4V: every block open snapshots the live arm\n            # state, so an `elseif` condition\'s own writes are kept for\n            # a later arm instead of being replaced by stale state.\n            cond_stack[-1]["arm"] = (ctx.cwd, ctx.cwd_fuzzy, ctx.tainted)',
             '            if False:  # mutant: ps arm outcome not inherited\n                pass'),
     }
 
@@ -5139,7 +5173,7 @@ class ChainRuleMutationTests(unittest.TestCase):
         "read-only stash list over-taint": "test_readonly_prefixes_do_not_taint",
         "pipeline stage cwd reset removed": "test_pipeline_stage_cwd_does_not_leak_to_parent",
         "pipeline taint cleared at boundary": "test_pipeline_taint_propagates_to_parent",
-        "pipeline entry leaks stage cwd": "test_pipeline_clean_stages_keep_allow",
+        "pipeline entry leaks stage cwd": "test_pipeline_inside_conditional_uses_arm_entry",
         "command same-shell gating removed": "test_command_builtin_same_shell_cd",
         "builtin same-shell gating removed": "test_command_builtin_same_shell_cd",
         "command eval same-shell removed": "test_command_builtin_eval_same_shell",

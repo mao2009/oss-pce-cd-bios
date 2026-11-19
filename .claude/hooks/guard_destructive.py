@@ -269,7 +269,7 @@ class Ctx:
 def _cond_entry(ctx):
     """Snapshot a conditional/loop entry (run-12 OQww)."""
     return {"cwd": ctx.cwd, "fuzzy": ctx.cwd_fuzzy, "tainted": ctx.tainted,
-            "then_taint": ctx.tainted, "cond_taint": None, "moved": False}
+            "then_taint": ctx.tainted, "arm": None, "moved": False}
 
 
 def _taint(ctx):
@@ -2566,17 +2566,15 @@ def analyze_text(text, ctx, ps, depth):
             cond_stack.append(_cond_entry(ctx))
             if ps_arm_moved or ps_arm_taint:
                 # run-13 (M3): this is an else/elseif body: inherit the
-                # then-arm outcome so the close joins every arm, including
-                # the condition taint stashed with the then-arm entry.
+                # then-arm outcome so the close joins every arm.
                 cond_stack[-1]["moved"] = cond_stack[-1]["moved"] or ps_arm_moved
                 cond_stack[-1]["then_taint"] = cond_stack[-1]["then_taint"] or ps_arm_taint
-                if ps_arm_stack and ps_arm_stack[-1]["cond_taint"] is not None:
-                    cond_stack[-1]["cond_taint"] = ps_arm_stack[-1]["cond_taint"]
                 ps_arm_moved = False
                 ps_arm_taint = False
-            else:
-                # run-12 P7k3: the condition ends where the body opens.
-                cond_stack[-1]["cond_taint"] = ctx.tainted
+            # run-12 P7k3/RZ4V: every block open snapshots the live arm
+            # state, so an `elseif` condition's own writes are kept for
+            # a later arm instead of being replaced by stale state.
+            cond_stack[-1]["arm"] = (ctx.cwd, ctx.cwd_fuzzy, ctx.tainted)
             continue
         if seg == PSCOND_CLOSE:
             if cond_stack:
@@ -2650,6 +2648,11 @@ def analyze_text(text, ctx, ps, depth):
                 if pipe_entry is None:
                     if scope_just_closed:
                         pipe_entry = scope_entry
+                    elif cond_stack:
+                        # run-12 RZ4Y: inside a conditional the saved run
+                        # start is stale (updates are gated); the active
+                        # arm's current pair is the pipeline entry.
+                        pipe_entry = (ctx.cwd, ctx.cwd_fuzzy)
                     else:
                         pipe_entry = run_start
                 prev_was_pipe = True
@@ -2675,10 +2678,12 @@ def analyze_text(text, ctx, ps, depth):
         seg_words = words_of(seg, ps)
         first_cmd = next((w for w in seg_words if not ASSIGN.match(w)), None)
         if not ps and cond_stack and first_cmd == "then":
-            # run-12 OQww/P7k3: the condition just ended; snapshot its
-            # taint so `else`/`elif` arms keep condition taint while
-            # dropping the previous arm's taint (joined at the close).
-            cond_stack[-1]["cond_taint"] = ctx.tainted
+            # run-12 OQww/P7k3/RZ4R: the condition just ended; snapshot the
+            # arm entry (cwd, certainty, taint). Every `else`/`elif` arm
+            # restarts from here instead of the previous arm's end, so a
+            # condition that moves the cwd (or taints) is honored while a
+            # previous arm's effects stay joined only at the close.
+            cond_stack[-1]["arm"] = (ctx.cwd, ctx.cwd_fuzzy, ctx.tainted)
         if not ps and first_cmd in COND_OPENERS:
             # run-12 Gu1Y: a Bash conditional/loop body is analysed (DENY
             # and taint detection unchanged), but the cwd it leaves is
@@ -2704,9 +2709,10 @@ def analyze_text(text, ctx, ps, depth):
             # P7k3: condition taint wins over the pre-conditional taint.
             entry = ps_arm_stack[-1]
             entry["then_taint"] = entry["then_taint"] or ctx.tainted
-            ctx.cwd = entry["cwd"]
-            ctx.cwd_fuzzy = entry["fuzzy"]
-            ctx.tainted = entry["cond_taint"] if entry["cond_taint"] is not None else entry["tainted"]
+            arm = entry["arm"]
+            if arm is None:
+                arm = (entry["cwd"], entry["fuzzy"], entry["tainted"])
+            ctx.cwd, ctx.cwd_fuzzy, ctx.tainted = arm
             ps_arm_moved = entry["moved"]
             ps_arm_taint = entry["then_taint"]
         elif cond_stack and first_cmd in ("else", "elif"):
@@ -2719,11 +2725,9 @@ def analyze_text(text, ctx, ps, depth):
             # else arm.
             entry = cond_stack[-1]
             entry["then_taint"] = entry["then_taint"] or ctx.tainted
-            if entry["cond_taint"] is None:
-                entry["cond_taint"] = ctx.tainted
-            ctx.cwd = entry["cwd"]
-            ctx.cwd_fuzzy = entry["fuzzy"]
-            ctx.tainted = entry["cond_taint"]
+            if entry["arm"] is None:
+                entry["arm"] = (ctx.cwd, ctx.cwd_fuzzy, ctx.tainted)
+            ctx.cwd, ctx.cwd_fuzzy, ctx.tainted = entry["arm"]
         if not seg_words and not ops:
             # A boundary flush with no words and no redirects (e.g. the
             # empty segment before `{` in `| { ...`): consumes no pipeline
