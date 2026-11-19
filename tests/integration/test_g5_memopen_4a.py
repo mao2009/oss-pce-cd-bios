@@ -253,40 +253,65 @@ class MemopenSynthetic(unittest.TestCase):
         return rec, res_base
 
     def _buf(self, rec):
+        # Strict clean-halt validator (review 5968681873): cold/warm each 1,
+        # all required fields present, halt confirmed, same PC both cycles,
+        # valid 2048B+ buffers, no truncated traces. Any deviation is a
+        # harness failure (AssertionError), never a silent pass.
         self.assertIn("RUN", rec)
         runs = rec["RUN"]
+        self.assertIsInstance(runs, list)
         self.assertEqual(len(runs), 2)
         cycles = [r.get("cycle") for r in runs]
         self.assertEqual(sorted(cycles), ["cold", "warm"])
         bufs = {}
+        pcs = []
         for r in runs:
+            self.assertIn("cycle", r)
+            self.assertIn("reason", r)
+            self.assertIn("pc", r)
+            self.assertIn("halt_confirmed", r)
+            self.assertIn("buffer_hex", r)
+            self.assertIn("apicall_truncated", r)
+            self.assertIn("ret_truncated", r)
             self.assertEqual(r.get("reason"), "cd_halt_ok")
             self.assertIs(r.get("halt_confirmed"), True)
-            self.assertIn("buffer_hex", r)
+            self.assertIsInstance(r.get("pc"), int)
+            self.assertIs(r.get("apicall_truncated"), False)
+            self.assertIs(r.get("ret_truncated"), False)
             try:
                 buf = bytes.fromhex(r["buffer_hex"])
             except (TypeError, ValueError):
                 self.fail("buffer_hex is not valid hex")
             self.assertGreaterEqual(len(buf), 2048)
             bufs[r["cycle"]] = buf
+            pcs.append(r["pc"])
+        self.assertEqual(pcs[0], pcs[1], "clean-halt cold/warm pc differ")
         return bufs["cold"], bufs["warm"]
 
     def _buf_stublike(self, rec, labels, expect_x):
         # Stub-halt runs (api_unimplemented, confirmed): return buffers.
         self.assertIn("RUN", rec)
         runs = rec["RUN"]
+        self.assertIsInstance(runs, list)
         self.assertEqual(len(runs), 2)
+        cycles = [r.get("cycle") for r in runs]
+        self.assertEqual(sorted(cycles), ["cold", "warm"])
         bufs = {}
         for r in runs:
+            self.assertIn("apicall_truncated", r)
+            self.assertIn("ret_truncated", r)
             self.assertEqual(r.get("reason"), "api_unimplemented")
             self.assertIs(r.get("halt_confirmed"), True)
             self.assertEqual(r.get("pc"), labels["api_unimplemented"])
             self.assertEqual(r.get("x"), expect_x)
+            self.assertIs(r.get("apicall_truncated"), False)
+            self.assertIs(r.get("ret_truncated"), False)
             self.assertIn("buffer_hex", r)
             try:
                 buf = bytes.fromhex(r["buffer_hex"])
             except (TypeError, ValueError):
                 self.fail("buffer_hex is not valid hex")
+            self.assertGreaterEqual(len(buf), 2048)
             bufs[r["cycle"]] = buf
         self.assertEqual(sorted(bufs), ["cold", "warm"])
         return bufs["cold"], bufs["warm"]
@@ -400,58 +425,148 @@ class MemopenSynthetic(unittest.TestCase):
         self.assertEqual(exp[body - 0xE000:body - 0xE000 + 21], want)
         self.assertNotEqual(want[0], 0x60)  # not a bare RTS
 
-    def _assert_mutant_red(self, rec, base, check=None):
+    def _validate_abnormal_runs(self, rec, allowed_reasons, expect_x=None):
+        # Strict abnormal-halt validator (review 5968681873 MEDIUM).
+        # Counts as mutant RED only when ALL hold:
+        #  RUN is a 2-list with cold/warm each exactly once (no dup/missing/
+        #  excess); every run carries cycle/reason/pc/halt_confirmed/
+        #  buffer_hex/apicall_truncated/ret_truncated; reason is in the
+        #  per-mutant allowed set (subset of the 3 confirmed halt reasons,
+        #  never cd_halt_ok/budget/unknown); halt_confirmed is exactly True
+        #  (budget/unconfirmed is harness failure, never RED); pc equals
+        #  labels[reason] (halt PC must match the named halt); buffer_hex is
+        #  valid hex with >=2048 bytes; no truncated traces; cold/warm share
+        #  the same reason and pc (deterministic failure mode); optional
+        #  expect_x pins the halt X (table-reroute stub halt X=$4A).
+        # Anything else raises AssertionError (harness failure), never RED.
+        self.assertIn("RUN", rec, "mutant run missing RUN (harness failure, not detection)")
+        runs = rec["RUN"]
+        self.assertIsInstance(runs, list, "mutant RUN not a list (harness failure)")
+        self.assertEqual(len(runs), 2, "mutant run RUN count != 2 (harness failure)")
+        cycles = [r.get("cycle") for r in runs]
+        self.assertEqual(sorted(cycles), ["cold", "warm"],
+                         f"mutant run cycles must be cold/warm each once, got {cycles} (harness failure)")
+        reasons = []
+        pcs = []
+        for r in runs:
+            for field in ("cycle", "reason", "pc", "halt_confirmed",
+                          "buffer_hex", "apicall_truncated", "ret_truncated"):
+                self.assertIn(field, r, f"mutant run missing {field} (harness failure)")
+            self.assertIn(r.get("cycle"), ("cold", "warm"),
+                          f"mutant run bad cycle {r.get('cycle')} (harness failure)")
+            self.assertIn(r.get("reason"), tuple(allowed_reasons),
+                          f"mutant run unexpected reason {r.get('reason')} (harness failure, not detection)")
+            self.assertIs(r.get("halt_confirmed"), True,
+                          f"mutant run halt not confirmed for {r.get('reason')} (harness failure, not detection)")
+            self.assertIsInstance(r.get("pc"), int, "mutant run pc not int (harness failure)")
+            self.assertIn(r.get("reason"), self.labels,
+                          f"mutant run reason {r.get('reason')} has no verified halt PC (harness failure)")
+            self.assertEqual(r.get("pc"), self.labels[r.get("reason")],
+                              f"mutant run pc {r.get('pc'):04x} != {r.get('reason')} halt "
+                              f"{self.labels[r.get('reason')]:04x} (harness failure, not detection)")
+            self.assertIs(r.get("apicall_truncated"), False,
+                          "mutant run APICALL truncated (harness failure, not detection)")
+            self.assertIs(r.get("ret_truncated"), False,
+                          "mutant run RET truncated (harness failure, not detection)")
+            try:
+                buf = bytes.fromhex(r["buffer_hex"])
+            except (TypeError, ValueError):
+                self.fail("mutant run buffer_hex invalid hex (harness failure)")
+            self.assertGreaterEqual(len(buf), 2048, "mutant run buffer short (harness failure)")
+            if expect_x is not None:
+                self.assertEqual(r.get("x"), expect_x,
+                                 f"mutant run x {r.get('x')!r} != {expect_x:#04x} (harness failure)")
+            reasons.append(r.get("reason"))
+            pcs.append(r.get("pc"))
+        self.assertEqual(reasons[0], reasons[1],
+                         f"mutant run cold/warm reasons differ {reasons} (harness failure, not detection)")
+        self.assertEqual(pcs[0], pcs[1],
+                         "mutant run cold/warm pc differ (harness failure, not detection)")
+
+    def _assert_body_mutant_applied(self, orig_bytes, mutant_bytes, offset, new_bytes):
+        # Prove the mutant bytes actually landed at the intended 21-byte body
+        # offset (review 5968681873 C): correct offset, correct replacement,
+        # ROM length unchanged, bytes really differ. An unpatched copy fails
+        # here (harness/mutant-helper failure), never counts as RED.
+        body_off = (self.syms["ex_memopen_entry"] & 0xFFFF) - 0xE000
+        self.assertEqual(len(orig_bytes), len(mutant_bytes),
+                         "mutant ROM length changed (harness failure)")
+        self.assertGreaterEqual(offset, 0)
+        self.assertLessEqual(offset + len(new_bytes), 21,
+                             f"mutant offset {offset}+{len(new_bytes)} outside 21-byte body")
+        self.assertEqual(bytes(mutant_bytes[body_off + offset:body_off + offset + len(new_bytes)]),
+                         bytes(new_bytes),
+                         f"mutant bytes not at body offset {offset}")
+        self.assertNotEqual(bytes(orig_bytes), bytes(mutant_bytes),
+                            "mutant not applied (bytes identical)")
+
+    def _assert_mutant_red(self, rec, base, check=None, allowed_abnormal=None,
+                           expect_x=None, mutant_tag=""):
         # A mutant is detected (RED) through either of two channels:
         # (a) abnormal halt -- dropping/replacing a pop unbalances SP, so
-        #     RTS mis-returns and the probe reports a non-halt reason; or
-        # (b) value mismatch -- balanced mutants that fabricate flags or
-        #     misdirect the gate return cleanly but with wrong state.
+        #     RTS mis-returns and the probe reports a non-halt confirmed halt; or
+        # (b) value mismatch -- balanced gate/refusal mutants return cleanly
+        #     (cd_halt_ok, confirmed, same PC) but with wrong preserved state.
         # If the run halts cleanly AND all values match, the mutant went
         # GREEN and this helper fails (the test then fails: coverage gap).
-        # Review 5968211653: channel (a) counts ONLY expected control-flow
-        # failure (RUN present with 2 cycles, valid buffers, reason is a
-        # non-halt halt reason). Missing RUN, bad hex, short buffers, or
-        # probe/internal errors are harness failures, not mutant detection
-        # (fail the test, do not count as RED). `check` selects the baseline
-        # matcher (C=0 vs C=1); unmutated ROM must be GREEN for it (control).
+        # Review 5968681873 (MEDIUM): channel (a) counts ONLY a strictly
+        # validated control-flow failure (cold/warm each once, required
+        # fields present, valid 2048B+ buffers, reason in the per-mutant
+        # allowed set, halt_confirmed exactly True, pc == labels[reason],
+        # same reason/pc both cycles, no truncation, optional X pin).
+        # Missing RUN, bad hex, short buffers, budget/unconfirmed halts,
+        # pc mismatches, cycle dupes/splits, truncations, or probe/internal
+        # errors are harness failures, not mutant detection (fail the test,
+        # do not count as RED). `check` selects the baseline matcher (C=0
+        # vs C=1); unmutated ROM must be GREEN for it (control). Value-class
+        # mutants (gate/refusal) forbid abnormal halts: pass
+        # allowed_abnormal=set() so an abnormal path fails instead of
+        # counting as RED. Control-flow mutants allow the named halt set;
+        # table-reroute additionally pins reason api_unimplemented + X=$4A.
+        # PLP->CLC/SEC replacements unbalance SP (pop dropped), so they are
+        # control-flow mutants, NOT isolated flag-only mutants (no claim of
+        # stack-balanced flag fabrication).
         if check is None:
             check = self._check_c0
+        if allowed_abnormal is None:
+            allowed_abnormal = ("cd_halt_fail", "api_unimplemented",
+                                "cd_unexpected_interrupt")
         try:
             cold, _ = self._buf(rec)
-        except AssertionError:
-            # Distinguish control-flow failure from harness failure.
-            self.assertIn("RUN", rec, "mutant run missing RUN (harness failure, not detection)")
-            runs = rec["RUN"]
-            self.assertEqual(len(runs), 2, "mutant run RUN count != 2 (harness failure)")
-            for r in runs:
-                self.assertIn(r.get("reason"), ("cd_halt_fail", "api_unimplemented", "cd_unexpected_interrupt"),
-                              f"mutant run unexpected reason {r.get('reason')} (harness failure, not detection)")
-                self.assertIn("buffer_hex", r, "mutant run missing buffer_hex (harness failure)")
-                try:
-                    buf = bytes.fromhex(r["buffer_hex"])
-                except (TypeError, ValueError):
-                    self.fail("mutant run buffer_hex invalid hex (harness failure)")
-                self.assertGreaterEqual(len(buf), 2048, "mutant run buffer short (harness failure)")
+        except AssertionError as buf_err:
+            if len(tuple(allowed_abnormal)) == 0:
+                self.fail(f"value mutant {mutant_tag} took abnormal path "
+                          f"(expected clean-halt value mismatch): {buf_err}")
+            # Strict control-flow failure validation (raises on harness failure).
+            self._validate_abnormal_runs(rec, allowed_abnormal, expect_x)
             return  # channel (a): expected control-flow failure
-        with self.assertRaises(AssertionError, msg="mutant went GREEN"):
+        if expect_x is not None:
+            self.fail(f"control-flow mutant {mutant_tag} returned cleanly "
+                      "(expected abnormal halt)")
+        with self.assertRaises(AssertionError, msg=f"mutant went GREEN {mutant_tag}"):
             check(cold, base)  # channel (b)
 
     def test_memopen_mutant_drop_pla_red(self):
-        # Drop the success-path A restore (PLA->NOP): A keeps the TMA gate
-        # residue ($F8) instead of the entry value. Proves A preservation
-        # is load-bearing, not incidental.
-        bad = self._mutate_body(self.rom.read_bytes(), 12, bytes((0xEA,)))
+        # Drop the success-path A restore (PLA->NOP): unbalanced SP (pop
+        # dropped), so RTS mis-returns (control-flow mutant, channel (a)
+        # expected; a clean return with wrong A/SP also counts via (b)).
+        # Proves A preservation is load-bearing, not incidental.
+        orig = self.rom.read_bytes()
+        bad = self._mutate_body(orig, 12, bytes((0xEA,)))
+        self._assert_body_mutant_applied(orig, bad, 12, bytes((0xEA,)))
         rec, base = self._run_on_rom("m-nopla", bad,
                                       self._defines(0x06, 0x11, 0x22, 0x06, 0x66, 0x77))
-        self._assert_mutant_red(rec, base)
+        self._assert_mutant_red(rec, base, mutant_tag="drop-pla")
 
     def test_memopen_mutant_drop_plp_red(self):
-        # Drop the success-path P restore (PLP->NOP): flags keep the gate
-        # residue instead of the entry value. Proves flag preservation.
-        bad = self._mutate_body(self.rom.read_bytes(), 13, bytes((0xEA,)))
+        # Drop the success-path P restore (PLP->NOP): unbalanced SP, same
+        # class as drop-PLA. Proves flag preservation.
+        orig = self.rom.read_bytes()
+        bad = self._mutate_body(orig, 13, bytes((0xEA,)))
+        self._assert_body_mutant_applied(orig, bad, 13, bytes((0xEA,)))
         rec, base = self._run_on_rom("m-noplp", bad,
                                       self._defines(0x06, 0x11, 0x22, 0x06, 0x66, 0x77))
-        self._assert_mutant_red(rec, base)
+        self._assert_mutant_red(rec, base, mutant_tag="drop-plp")
 
     def test_memopen_mutant_force_clc_red(self):
         # Fabricate C=0 on success (PLP->CLC): the C=1 entry class must go
@@ -465,54 +580,78 @@ class MemopenSynthetic(unittest.TestCase):
                                                                   0x07, 0x66, 0x77))
         cold_ctrl, _ = self._buf(rec_ctrl)
         self._check_c1(cold_ctrl, base_ctrl)
-        bad = self._mutate_body(self.rom.read_bytes(), 13, bytes((0x18,)))
+        orig = self.rom.read_bytes()
+        bad = self._mutate_body(orig, 13, bytes((0x18,)))
+        self._assert_body_mutant_applied(orig, bad, 13, bytes((0x18,)))
         rec, base = self._run_on_rom("m-clc", bad,
                                       self._defines(0x07, 0x11, 0x22, 0x07, 0x66, 0x77))
-        self._assert_mutant_red(rec, base, check=self._check_c1)
+        self._assert_mutant_red(rec, base, check=self._check_c1, mutant_tag="force-clc")
 
     def test_memopen_mutant_force_sec_red(self):
-        # Fabricate C=1 on success (PLP->SEC): the C=0 entry class must go
-        # RED. Proves no fixed C=1 success flag.
-        bad = self._mutate_body(self.rom.read_bytes(), 13, bytes((0x38,)))
+        # Fabricate C=1 on success (PLP->SEC): unbalanced SP (PLP pop
+        # dropped, like PLP->CLC), so this is a control-flow mutant, NOT an
+        # isolated flag-only mutant; no stack-balanced flag fabrication is
+        # claimed. The C=0 entry class must go RED.
+        orig = self.rom.read_bytes()
+        bad = self._mutate_body(orig, 13, bytes((0x38,)))
+        self._assert_body_mutant_applied(orig, bad, 13, bytes((0x38,)))
         rec, base = self._run_on_rom("m-sec", bad,
                                       self._defines(0x06, 0x11, 0x22, 0x06, 0x66, 0x77))
-        self._assert_mutant_red(rec, base)
+        self._assert_mutant_red(rec, base, mutant_tag="force-sec")
 
     def test_memopen_mutant_always_refuse_red(self):
-        # Force the refusal path (BNE->BRA): the C=0 entry class returns C=1
-        # and must go RED. Proves the gate outcome matters.
-        bad = self._mutate_body(self.rom.read_bytes(), 8, bytes((0x80,)))
+        # Force the refusal path (BNE->BRA): balanced refusal return
+        # (PLY/PLX/PLA/PLP/SEC/RTS), so clean halt with C=1 is expected
+        # (value mutant, channel (b)); an abnormal halt here is unexpected
+        # and fails instead of counting as RED. Proves the gate outcome matters.
+        orig = self.rom.read_bytes()
+        bad = self._mutate_body(orig, 8, bytes((0x80,)))
+        self._assert_body_mutant_applied(orig, bad, 8, bytes((0x80,)))
         rec, base = self._run_on_rom("m-refuse", bad,
                                       self._defines(0x06, 0x11, 0x22, 0x06, 0x66, 0x77))
-        self._assert_mutant_red(rec, base)
+        self._assert_mutant_red(rec, base, allowed_abnormal=set(),
+                                mutant_tag="always-refuse")
 
     def test_memopen_mutant_gate_const_red(self):
         # Corrupt the gate constant (CMP #$F8 -> #$F7): MPR1=$F8 wrongly
-        # refuses, and the C=0 class goes RED. Proves the gate value.
-        bad = self._mutate_body(self.rom.read_bytes(), 7, bytes((0xF7,)))
+        # refuses via the balanced refusal path (value mutant, channel (b)).
+        # Proves the gate value.
+        orig = self.rom.read_bytes()
+        bad = self._mutate_body(orig, 7, bytes((0xF7,)))
+        self._assert_body_mutant_applied(orig, bad, 7, bytes((0xF7,)))
         rec, base = self._run_on_rom("m-const", bad,
                                       self._defines(0x06, 0x11, 0x22, 0x06, 0x66, 0x77))
-        self._assert_mutant_red(rec, base)
+        self._assert_mutant_red(rec, base, allowed_abnormal=set(),
+                                mutant_tag="gate-const")
 
     def test_memopen_mutant_gate_register_red(self):
         # Read the wrong MPR (TMA #$02 -> #$01 reads MPR0=$FF): the gate
-        # wrongly refuses, and the C=0 class goes RED. Proves the TMA
-        # operand really selects MPR1 (disambiguation is load-bearing).
-        bad = self._mutate_body(self.rom.read_bytes(), 5, bytes((0x01,)))
+        # wrongly refuses via the balanced path (value mutant, channel (b)).
+        # Proves the TMA operand really selects MPR1.
+        orig = self.rom.read_bytes()
+        bad = self._mutate_body(orig, 5, bytes((0x01,)))
+        self._assert_body_mutant_applied(orig, bad, 5, bytes((0x01,)))
         rec, base = self._run_on_rom("m-tma", bad,
                                       self._defines(0x06, 0x11, 0x22, 0x06, 0x66, 0x77))
-        self._assert_mutant_red(rec, base)
+        self._assert_mutant_red(rec, base, allowed_abnormal=set(),
+                                mutant_tag="gate-register")
 
     def test_memopen_mutant_table_reroute_red(self):
         # Reroute $E0DE back to the stub fallback: calls halt at the stub
-        # instead of returning, so the preservation check goes RED. Proves
-        # the test exercises the wired body, not the table alone.
-        tab = bytearray(self.rom.read_bytes())
+        # (api_unimplemented, confirmed, X=$4A) instead of returning.
+        # Control-flow mutant pinned to that halt (channel (a) only).
+        # Proves the test exercises the wired body, not the table alone.
+        orig = self.rom.read_bytes()
+        tab = bytearray(orig)
         fb = self.syms["api_slot_4A"]
-        tab[3 * 0x4A:3 * 0x4A + 3] = bytes((0x4C, fb & 0xFF, (fb >> 8) & 0xFF))
+        want_tab = bytes((0x4C, fb & 0xFF, (fb >> 8) & 0xFF))
+        tab[3 * 0x4A:3 * 0x4A + 3] = want_tab
+        self.assertNotEqual(bytes(tab), orig, "table reroute not applied")
+        self.assertEqual(bytes(tab[3 * 0x4A:3 * 0x4A + 3]), want_tab)
         rec, base = self._run_on_rom("m-tab", bytes(tab),
                                       self._defines(0x06, 0x11, 0x22, 0x06, 0x66, 0x77))
-        self._assert_mutant_red(rec, base)
+        self._assert_mutant_red(rec, base, allowed_abnormal=("api_unimplemented",),
+                                expect_x=0x4A, mutant_tag="table-reroute")
 
     def test_memopen_buffer_mutants_detected(self):
         # Corrupt the recorded buffer: head/middle/tail changes must be visible.
@@ -572,6 +711,175 @@ class MemopenSynthetic(unittest.TestCase):
             self.assertEqual(rom_bytes[0xE006 - 0xE000], 0x4C)
             self.assertEqual(rom_bytes[0xE009 - 0xE000], 0x4C)
             self.assertEqual(rom_bytes[0xE099 - 0xE000], 0x4C)
+
+    # --- Oracle negative controls (review 5968681873 MEDIUM).
+    # Fabricated RUN records (no probe run) that must NEVER count as
+    # mutant RED. Each asserts the oracle raises instead of returning.
+    # Before the strict-oracle fix the lax cases (cold duplicate,
+    # halt_unconfirmed, pc mismatch, truncated, cross-cycle reason split)
+    # are falsely accepted as RED, so these tests are RED pre-fix and
+    # GREEN post-fix. The remaining cases already fail-closed pre-fix
+    # and pin that behavior.
+    def _fake_buf_hex(self):
+        return "ab" * 2048  # 2048 bytes valid hex
+
+    def _fake_abnormal_run(self, cycle, reason, halt=True, pc=None,
+                           buf=None, trunc=False):
+        if pc is None:
+            pc = self.labels[reason]
+        if buf is None:
+            buf = self._fake_buf_hex()
+        return {"cycle": cycle, "reason": reason,
+                "halt_confirmed": halt, "pc": pc,
+                "buffer_hex": buf,
+                "apicall_truncated": trunc, "ret_truncated": trunc}
+
+    def _fake_abnormal_rec(self, runs):
+        return {"RUN": runs}
+
+    def test_oracle_rejects_cold_duplicate(self):
+        rec = self._fake_abnormal_rec([
+            self._fake_abnormal_run("cold", "api_unimplemented"),
+            self._fake_abnormal_run("cold", "api_unimplemented"),
+        ])
+        with self.assertRaises(AssertionError, msg="cold duplicate accepted as RED"):
+            self._assert_mutant_red(rec, 0)
+
+    def test_oracle_rejects_run_count_short(self):
+        rec = self._fake_abnormal_rec([
+            self._fake_abnormal_run("cold", "api_unimplemented"),
+        ])
+        with self.assertRaises(AssertionError, msg="short RUN accepted as RED"):
+            self._assert_mutant_red(rec, 0)
+
+    def test_oracle_rejects_run_count_excess(self):
+        rec = self._fake_abnormal_rec([
+            self._fake_abnormal_run("cold", "api_unimplemented"),
+            self._fake_abnormal_run("warm", "api_unimplemented"),
+            self._fake_abnormal_run("warm", "cd_halt_fail"),
+        ])
+        with self.assertRaises(AssertionError, msg="excess RUN accepted as RED"):
+            self._assert_mutant_red(rec, 0)
+
+    def test_oracle_rejects_bad_reason(self):
+        rec = self._fake_abnormal_rec([
+            {"cycle": "cold", "reason": "bogus",
+             "halt_confirmed": True, "pc": 0,
+             "buffer_hex": self._fake_buf_hex(),
+             "apicall_truncated": False, "ret_truncated": False},
+            self._fake_abnormal_run("warm", "api_unimplemented"),
+        ])
+        with self.assertRaises(AssertionError, msg="bad reason accepted as RED"):
+            self._assert_mutant_red(rec, 0)
+
+    def test_oracle_rejects_budget_reason(self):
+        rec = self._fake_abnormal_rec([
+            self._fake_abnormal_run("cold", "api_unimplemented",
+                                      halt=False, pc=0),
+            self._fake_abnormal_run("warm", "api_unimplemented",
+                                      halt=False, pc=0),
+        ])
+        # budget-style: halt False with mismatched reason/pc is harness failure
+        rec["RUN"][0]["reason"] = "budget"
+        rec["RUN"][1]["reason"] = "budget"
+        with self.assertRaises(AssertionError, msg="budget accepted as RED"):
+            self._assert_mutant_red(rec, 0)
+
+    def test_oracle_rejects_halt_unconfirmed(self):
+        rec = self._fake_abnormal_rec([
+            self._fake_abnormal_run("cold", "api_unimplemented", halt=False),
+            self._fake_abnormal_run("warm", "api_unimplemented", halt=False),
+        ])
+        with self.assertRaises(AssertionError, msg="unconfirmed halt accepted as RED"):
+            self._assert_mutant_red(rec, 0)
+
+    def test_oracle_rejects_pc_mismatch(self):
+        rec = self._fake_abnormal_rec([
+            self._fake_abnormal_run("cold", "api_unimplemented", pc=0xEEEE),
+            self._fake_abnormal_run("warm", "api_unimplemented", pc=0xEEEE),
+        ])
+        with self.assertRaises(AssertionError, msg="pc mismatch accepted as RED"):
+            self._assert_mutant_red(rec, 0)
+
+    def test_oracle_rejects_cross_cycle_reason_split(self):
+        rec = self._fake_abnormal_rec([
+            self._fake_abnormal_run("cold", "api_unimplemented"),
+            self._fake_abnormal_run("warm", "cd_halt_fail"),
+        ])
+        with self.assertRaises(AssertionError, msg="reason split accepted as RED"):
+            self._assert_mutant_red(rec, 0)
+
+    def test_oracle_rejects_truncated(self):
+        rec = self._fake_abnormal_rec([
+            self._fake_abnormal_run("cold", "api_unimplemented", trunc=True),
+            self._fake_abnormal_run("warm", "api_unimplemented", trunc=True),
+        ])
+        with self.assertRaises(AssertionError, msg="truncated trace accepted as RED"):
+            self._assert_mutant_red(rec, 0)
+
+    def test_oracle_rejects_missing_buffer(self):
+        r = self._fake_abnormal_run("cold", "api_unimplemented")
+        del r["buffer_hex"]
+        rec = self._fake_abnormal_rec([
+            r, self._fake_abnormal_run("warm", "api_unimplemented"),
+        ])
+        with self.assertRaises(AssertionError, msg="missing buffer accepted as RED"):
+            self._assert_mutant_red(rec, 0)
+
+    def test_oracle_rejects_bad_hex(self):
+        rec = self._fake_abnormal_rec([
+            self._fake_abnormal_run("cold", "api_unimplemented", buf="zz"),
+            self._fake_abnormal_run("warm", "api_unimplemented"),
+        ])
+        with self.assertRaises(AssertionError, msg="bad hex accepted as RED"):
+            self._assert_mutant_red(rec, 0)
+
+    def test_oracle_rejects_short_buffer(self):
+        rec = self._fake_abnormal_rec([
+            self._fake_abnormal_run("cold", "api_unimplemented", buf="ab" * 100),
+            self._fake_abnormal_run("warm", "api_unimplemented"),
+        ])
+        with self.assertRaises(AssertionError, msg="short buffer accepted as RED"):
+            self._assert_mutant_red(rec, 0)
+
+    def test_oracle_rejects_missing_run(self):
+        with self.assertRaises(AssertionError, msg="missing RUN accepted as RED"):
+            self._assert_mutant_red({}, 0)
+
+    def test_oracle_rejects_unapplied_mutant(self):
+        # Mutation helper must actually change ROM bytes at the right offset;
+        # an unpatched copy is not a mutant and must not count as applied.
+        orig = self.rom.read_bytes()
+        same = bytes(orig)
+        with self.assertRaises(AssertionError, msg="unapplied mutant counted"):
+            self._assert_body_mutant_applied(orig, same, 12, bytes((0xEA,)))
+
+    def test_oracle_rejects_clean_rom_as_mutant(self):
+        # A clean halt with fully matching values is GREEN, never RED:
+        # the detector must raise (mutant went GREEN), not return.
+        good = bytearray(2048)
+        base = 512
+        good[base] = 0xAA
+        good[base + 1:base + 4] = bytes((0x06, 0x11, 0x22))
+        good[base + 4] = 0x06
+        good[base + 5] = 0xFF
+        good[base + 6:base + 14] = bytes((0xFF, 0xF8, 0x80, 0x81, 0x82, 0x83, 0x84, 0x00))
+        good[base + 17:base + 20] = bytes((0x06, 0x66, 0x77))
+        good[base + 20] = 0x06
+        good[base + 21] = 0xFF
+        hx = bytes(good).hex()
+        rec = {"RUN": [
+            {"cycle": "cold", "reason": "cd_halt_ok",
+             "halt_confirmed": True, "pc": 0x3000,
+             "buffer_hex": hx,
+             "apicall_truncated": False, "ret_truncated": False},
+            {"cycle": "warm", "reason": "cd_halt_ok",
+             "halt_confirmed": True, "pc": 0x3000,
+             "buffer_hex": hx,
+             "apicall_truncated": False, "ret_truncated": False},
+        ]}
+        with self.assertRaises(AssertionError, msg="clean ROM counted as mutant RED"):
+            self._assert_mutant_red(rec, base)
 
 
 if __name__ == "__main__":
