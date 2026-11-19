@@ -51,7 +51,7 @@
 | S1 | `huc:include/hucc/pcengine.inc`（SHA-256 `b6a25d33…728a9`、`spec/api_contracts.json` 記録値と一致）L494–499（`bm_read=$00:E04E` L496、`bm_write=$00:E051` L497、`bm_delete=$00:E054` L498、`bm_files=$00:E057` L499）、L329–343（`_ax=$F8:20F8` L329、`_bx` L333、`_cx` L337、`_dx` L341）、L395（`parameter_buf=$F8:2260,8` *UNDOCUMENTED*）、L204–205（`IFU_BRAM_LOCK=$FF:1803`、`IFU_BRAM_UNLOCK=$FF:1807`） | 呼出側宣言。BSL-1.0（ファイル L8）。PENDING | 名前と入口の対応、呼出側レジスタ名、BRAM 窓の記号 | REFERENCE_ONLY。BIOS 側の証明ではない |
 | S2 | `huc:include/hucc/hucc-systemcard.asm`（SHA-256 `4258b7c3…ea9`、一致）L54–61（`BM_OK=0` L54、`BM_NOT_FOUND=1` L55、`BM_BAD_CHECKSUM=2` L56、`BM_DIR_CORRUPTED=3` L57、`BM_FILE_EMPTY=4` L58、`BM_FULL=5` L59、綴り誤り `BM_NOT_FORMATED=$FF` L60、正書 `BM_NOT_FORMATTED=$FF` L61）、L65（`__bm_error .ds 1`）、L775–790（`_bm_delete.1` マクロ。コメント L775–785、本体 L787–790） | 呼出側ラッパー。BSL-1.0（L10）、Copyright John Brandwood 2024（L8）。PENDING | 削除の呼出規約（呼出側）の全文 | REFERENCE_ONLY。コードを複製しない |
 | S3 | `huc:include/hucc/hucc-systemcard.h`（SHA-256 `f2477642…90894220b8a3b`、一致）L31–38（BM 定数）、L115（`bm_delete(unsigned char *name<_ax>)` 宣言） | 呼出側 C 宣言。BSL-1.0（L13）。PENDING | 引数が名前ポインタ 1 つのみ | REFERENCE_ONLY |
-| S4 | `huc:include/huc/huc_bram.asm`（SHA-256 `95d1d5f4…0a515`）L10–47（BRAM 形式コメント）、L350–353（`_bm_delete` は `lib2_bm_delete` への転送のみ）、L484–503（`lib2_bm_delete` 実体）、L443–477（`lib2_bm_open`）、L693–737（`lib2_bm_enable/unlock/disable` に対応する実装。unlock L714–727、disable L729–737、enable L693–712）、L326（`_bm_id: HUBM,00,88,10,80`） | **BIOS を呼ばない直接実装（経路 B）**。ファイル内ライセンス記載なし → UNKNOWN。PENDING | HuC ライブラリが BIOS 非経由で何をするかの事実。BIOS の仕様ではない | REFERENCE_ONLY。経路 A（BIOS `$E054`）と混同しない |
+| S4 | `huc:include/huc/huc_bram.asm`（SHA-256 `95d1d5f4…0a515`）L10–47（BRAM 形式コメント）、L326（`_bm_id`）、L350–353（`_bm_delete` は `lib2_bm_delete` への転送のみ）、L479–503（`lib2_bm_delete` 実体。open 成功後に memmove 的圧縮・end 調整）、L689–748（`lib2_bm_open`。走査・12 バイト名比較・size 検査・`#1/#3/#4/$FF` 分岐）、L750–771（`lib2_bm_enable`。タグ 4 バイト照合、不一致は `#$FF`）、L773–791（`lib2_bm_unlock`。`sei`・MPR4=`$F7`・`csl`・`$48/$75/$80` 順書込み）、L793–804（`lib2_bm_disable`。MPR4 復元・`bram_lock` 読取り・`csh`・`cli`） | **BIOS を呼ばない直接実装（経路 B）**。ファイル内ライセンス記載なし → UNKNOWN。PENDING | HuC ライブラリが BIOS 非経由で何をするかの事実。BIOS の仕様ではない | REFERENCE_ONLY。経路 A（BIOS `$E054`）と混同しない |
 | S5 | `huc:include/huc/system.inc` L91–96（`bm_delete=$E054` L95）、`huc:include/huc/equ.inc` L236–237（`bram_lock=cd_port+3`、`bram_unlock=cd_port+7`）、L33–52（`__ax=$20F8` 等） | 記号定義。ライセンス記載なし → UNKNOWN。PENDING | S1/S2 と独立した第 2 の呼出側記号の一致 | REFERENCE_ONLY |
 | S6 | Stum「PC Engine CD-ROM² BIOS Method offsets」（2025-07-28、CC BY-NC-SA 4.0 表示。事実引用のみ、本文は転載しない） | 公開ジャンプ表。二次資料 | 行 `bm_delete $E054`、本体番地 `1.0=$F951 / 2.0=$FA10 / 2.1=$FA1A / 3.0=$FA1A / TG2.0=$FA33 / TG3.0=$FA33`。JSR 列は全世代で `$E054` 一致 | REFERENCE_ONLY。名前・入口対応のみ。世代別本体番地の差異は「単一挙動を仮定できない」根拠 |
 | S7 | `hugo:bios.c` @ `64ed226d`（SHA-256 `db3f227e…210972f22`）L65–70（`BM_FORMAT 0x18 … BM_DELETE 0x1C BM_FILES 0x1D` セレクタ定義）、L212–213（デバッグ名 `"BM_DELETE"`）、L982–998（HLE `BM_FREE` 実装あり）、L1091–1095（`default:` は未処理時に対象アドレスへ原本バイトを復元） | HLE エミュレータ。GPL-2.0 既定（`COPYING`）。PENDING、REJECTED（ROM 組込み不可） | `handle_bios()` の `switch` に `BM_DELETE` の `case` が無い（`BM_FREE` のみ実装）。名前ラベルの存在と挙動の不在 | REFERENCE_ONLY。HLE は実 BIOS の証明にならない。コードを複製しない |
@@ -111,7 +111,7 @@
 | --- | --- | --- | --- |
 | R25 | 窓・施錠記号（呼出側の定義） | `$F7` 窓・`$1EE000` 対応、`IFU_BRAM_LOCK=$FF:1803`、`IFU_BRAM_UNLOCK=$FF:1807` の記号定義（S1 L102 付近の注記はプロジェクト注記、`pcengine.inc` L204–205、S5 の `bram_lock/unlock`） | CONFIRMED-by-source（記号の存在）。実窓の挙動は本書では未再確認 |
 | R26 | 経路 A（BIOS `$E054`）の MMIO | 呼出側マクロ内に `$1807` 書込み・MPR4 切替えは無い（S2 L787–790）。BIOS 内部で解除・施錠・MPR4=`$F7` 切替えを行うかは不明 | UNKNOWN |
-| R27 | 経路 B（HuC 直接実装）の MMIO | `lib2_bm_unlock` は `sei`・MPR4 保存→`$F7` 切替え→`csl`→`$48/$75/$80` 順の `bram_unlock` 書込み（S4 L714–727）。`lib2_bm_disable` は MPR4 復元・`bram_lock` 読取り・`csh`・`cli`（S4 L729–737） | CONFIRMED-by-source（経路 B の事実。**BIOS の動作ではない**） |
+| R27 | 経路 B（HuC 直接実装）の MMIO | `lib2_bm_unlock` は `sei`・MPR4 保存→`$F7` 切替え→`csl`→`$48/$75/$80` 順の `bram_unlock` 書込み（S4 L777–789）。`lib2_bm_disable` は MPR4 復元・`bram_lock` 読取り・`csh`・`cli`（S4 L797–804） | CONFIRMED-by-source（経路 B の事実。**BIOS の動作ではない**） |
 | R28 | 経路 B の MPR・割込み副作用 | MPR4 を 1 バイト `bm_mpr4` に保存（入れ子に弱いと読めるが追跡未了）、割込みは入状態を復元せず `cli` で許可にする | CONFIRMED-by-source（経路 B）。BIOS 経路への適用は禁止 |
 | R29 | 実 BRAM の形式（ヘッダ・割当表・ディレクトリ） | S4 コメント L10–47（`HUBM` タグ、`$8000` 基準の end/next ポインタ、0x10 エントリヘッダ、0x02 終端）は**経路 B の実装が読む形式**であり、BIOS の形式の証拠ではない | HYPOTHESIS（経路 B の形式としてのみ。以降の合成 mock との混同禁止） |
 
@@ -129,12 +129,12 @@
 | ID | 項目 | 事実（出典） | 判定 |
 | --- | --- | --- | --- |
 | R34 | 呼出側の 3 値 | コメントは `BM_OK / BM_NOT_FOUND / BM_NOT_FORMATTED`（S2 L783–785）。`__bm_error` も同 3 値（L785） | CONFIRMED-by-source（呼出側の宣言）。呼出先の返値は HYPOTHESIS |
-| R35 | 存在しない対象 | 呼出側の期待は `BM_NOT_FOUND=1`（R12）。S4 の `lib2_bm_open` は不一致を `.next` で走査し尽きると `#1`（S4 L466–471 `.x1`） | HYPOTHESIS（BIOS が 1 を返す根拠は呼出側コメントのみ） |
-| R36 | 未フォーマット | 呼出側の期待は `$FF`（R13）。S4 の enable はタグ不一致で `#$FF`＋`sec`（S4 L706–712 `.x1`） | HYPOTHESIS（BIOS の `$FF` は未確認） |
+| R35 | 存在しない対象 | 呼出側の期待は `BM_NOT_FOUND=1`（R12）。S4 の `lib2_bm_open` は走査し尽くすと `.x1` で `#1`（S4 L736） | HYPOTHESIS（BIOS が 1 を返す根拠は呼出側コメントのみ） |
+| R36 | 未フォーマット | 呼出側の期待は `$FF`（R13）。S4 の enable はタグ不一致で `#$FF`＋`sec`（S4 L768 `.x1`） | HYPOTHESIS（BIOS の `$FF` は未確認） |
 | R37 | 保護対象（書込み禁止・ロック中の扱い） | 「保護対象」の概念は取得ソースに無い。`BM_FILE_EMPTY/FULL/BAD_CHECKSUM/DIR_CORRUPTED` 定数はあるが DELETE コメントは挙げない（R14） | UNKNOWN |
-| R38 | `BM_BAD_CHECKSUM=2`・`BM_DIR_CORRUPTED=3`・`BM_FILE_EMPTY=4`・`BM_FULL=5` を DELETE が返すか | 出典なし。S4 の open は `3`（破損）・`4`（空ファイル、`size==16`）を返しうるが（S4 L456–477 `.x3/.x4`）、経路 A の BIOS が同値を返すかは不明 | UNKNOWN |
+| R38 | `BM_BAD_CHECKSUM=2`・`BM_DIR_CORRUPTED=3`・`BM_FILE_EMPTY=4`・`BM_FULL=5` を DELETE が返すか | 出典なし。S4 の open は `3`（破損、L743 `.x3`）・`4`（空ファイル、`size==16`、L746 `.x4`）を返しうるが、経路 A の BIOS が同値を返すかは不明 | UNKNOWN |
 | R39 | 不正入力（NULL ポインタ、12 バイト未満、非 ASCII、NUL 混じり、uniqueness 非 zero、マップ外 MPR） | 出典なし | UNKNOWN |
-| R40 | 空ファイル（size `==16`）の削除 | S4 の open は空ファイルを `.x4`（`#4`）で拒否するが、BIOS 経路が同じかは不明。HuCC コメントは `FILE_EMPTY` に触れない | UNKNOWN |
+| R40 | 空ファイル（size `==16`）の削除 | S4 の open は空ファイルを L746 `.x4`（`#4`）で拒否するが、BIOS 経路が同じかは不明。HuCC コメントは `FILE_EMPTY` に触れない | UNKNOWN |
 
 ## 4. BURAM 系の既存 API との依存関係
 
@@ -145,11 +145,11 @@
 | BM_READ（`$1A/$E04E`） | 同一 12 バイト名規則を共有（S2 L729–739）。`_bm_exist` は READ（長さ 0）で存在確認する冗長経路（S2 L798–829） | CONFIRMED-by-source（名前規則の共有）。BIOS 内部の共有は UNKNOWN |
 | BM_WRITE（`$1B/$E051`）・`bm_create`（WRITE 転送） | 同一 12 バイト名規則（S2 L752–766、L831–853）。`bm_create` は WRITE への転送であり DELETE とは逆方向 | CONFIRMED-by-source（名前規則の共有）。UPSERT/排他の有無は UNKNOWN |
 | BM_FILES（`$1D/$E057`） | 入口定義はあるが S2 にラッパーが無い（R05）。列挙・終了条件は全面 UNKNOWN のまま | UNKNOWN |
-| `bm_check` / `lib2_bm_enable` | S2 L609–664 の `_bm_check`（BRAM 存在確認、MPR3 退避つき）、S4 の enable（タグ 4 バイト照合）。DELETE マクロは check/enable を呼ばない | CONFIRMED-by-source（DELETE に事前 check は無い）。BIOS 内部の有無は UNKNOWN |
+| `bm_check` / `lib2_bm_enable` | S2 L609–660 の `_bm_check`（BRAM 存在確認、MPR3 退避つき。L615 `.proc`–L660 `.endp`）、S4 L750–771 の enable（タグ 4 バイト照合）。DELETE マクロは check/enable を呼ばない | CONFIRMED-by-source（DELETE に事前 check は無い）。BIOS 内部の有無は UNKNOWN |
 | `__bm_error`（S2 L65） | 全 BURAM ラッパーが共有する 1 バイト。DELETE も上書きする（S2 L789） | CONFIRMED-by-source（呼出側の共有状態）。スレッド・再入の安全性は UNKNOWN |
 
 重要: 経路 B（S4）の `lib2_bm_delete` は `lib2_bm_open` 成功を前提に
-`memmove` 的圧縮（dest=curr、src=next、len=`end-next+2`、end ポインタを `-size`）を行う（S4 L484–503）。
+`memmove` 的圧縮（dest=curr、src=next、len=`end-next+2`、end ポインタを `-size`）を行う（S4 L479–503）。
 これは **HuC ライブラリの直接実装の事実**であり、BIOS `$E054` が同じ圧縮をする証拠ではない。
 断片化（fragmentation）の有無・圧縮の有無は §5 の UNKNOWN に残す。
 
@@ -162,7 +162,7 @@
 | E01 | 呼出側マクロ自体の副作用 | `__bm_error` 上書き＋Y=0 のみ（R24）。CONFIRMED-by-source |
 | E02 | BIOS の消去範囲（何バイト消すか、後続エントリを詰めるか、終端ポインタを動かすか） | UNKNOWN。S4 の圧縮は経路 B の事実であり流用禁止 |
 | E03 | 断片化の扱い（詰めない／詰める／フリーリスト化） | UNKNOWN。「ファイル削除と断片化を調べる」は Issue #38 の課題のまま |
-| E04 | チェックサム・ヘッダの更新 | UNKNOWN（S4 の checksum 域 L516–549 は経路 B のもの） |
+| E04 | チェックサム・ヘッダの更新 | UNKNOWN（S4 の `lib2_bm_checksum` 関数 L806–840 は経路 B のもの） |
 | E05 | MMIO（`$1803/$1807`、MPR4=`$F7`）の有無 | UNKNOWN（R26）。`docs/173` の結論どおり固定 Geargrafx は MMIO 書込みを副作用前に阻止できないため、実行検証は BLOCKED |
 | E06 | 割込み・完了条件・所要時間 | UNKNOWN |
 | E07 | `$20F8`–`$20FF`・`$2260` 等の work RAM への書込み | UNKNOWN（R23） |
@@ -256,7 +256,7 @@ VERIFIED（真正 BIOS の確認）は 0 件。`release_eligible=false`。
   3 値のみ（S2 L783–785 の呼出側 3 値に対応）。`2/3/4/5` は mock では出さない。
   破損入力に対しては mock 判定器が `CORRUPTED`（fail-closed）を返し、画像は不変とする。
   `CORRUPTED` は BIOS の返値の主張ではなく、mock 判定層の拒否名である。
-- 成功時の mock 意味論（PROJECT-INVENTED）: 指定 1 件を除去し後続を詰める（S4 L484–503 の
+- 成功時の mock 意味論（PROJECT-INVENTED）: 指定 1 件を除去し後続を詰める（S4 L479–503 の
   `memmove` 圧縮に対応）。終端管理は「リスト長」で表現し、バイトポインタの主張はしない。
 - 失敗時の mock 不変条件: `new_image` は入力とバイト同一（失敗時非変更）。判定器は同一性を検査する。
 
@@ -324,7 +324,7 @@ VERIFIED（真正 BIOS の確認）は 0 件。`release_eligible=false`。
 - ハッシュ照合: S1–S3 の SHA-256 3 件は `spec/api_contracts.json` の記録値と一致（§2 表に完全値の先頭・末尾を記載）。
   S4（`95d1d5f4…0a515`）・S5・S7（`db3f227e…210972f22`）は本調査で取得・計算した値である。
 - 行番号照合: S1 L329/L333/L337/L341/L395/L494–499/L204–205、S2 L54–61/L65/L677–680/L775–790、
-  S3 L31–38/L115、S4 L10–47/L326/L350–353/L443–477/L484–503/L693–737、S5 L91–96・`equ.inc` L236–237、
+  S3 L31–38/L115、S4 L10–47/L326/L350–353/L479–503/L689–748/L750–771/L773–791/L793–804、S5 L91–96・`equ.inc` L236–237、
   S7 L65–70/L212–213/L982–998/L1091–1095 は取得ファイルで `grep -n`／`Read` により確認した。
 - Stum 行 `bm_delete $E054` および世代別本体番地は本調査の取得内容（/tmp 取得、事実引用のみ）で確認。
   Zeograd は 403 のため NOT_RUN（未確認）として記録し、判定に使わない。
