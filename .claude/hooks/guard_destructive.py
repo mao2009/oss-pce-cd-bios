@@ -755,20 +755,47 @@ def split_segments(text, ps=False):
                     if compound_stack and compound_stack[-1][0] == "paren":
                         _okind, _ofed, _oidx = compound_stack.pop()
                         # MAJOR compound-redirect: trailing "< file" after ")" applies to
-                        # the whole subshell (e.g., "(node) < code.js"). Look ahead for
-                        # unquoted "<" (not process substitution "<(") before next
+                        # the whole subshell (e.g., "(node) < code.js"). Parse the complete
+                        # trailing redirect list (not just the first nonblank) before next
                         # ";" / "|" / "&" / newline / "(" / ")" / "{" / "}" to taint range.
-                        # Output-only ">" never taints here.
+                        # Any unquoted "<" (not process substitution "<(") supplies stdin;
+                        # output-only ">" never taints here. Fail-closed over-denial safe.
                         _j = i + 1
-                        while _j < n and text[_j] in " \t":
-                            _j += 1
-                        if _j < n and text[_j] == "<" and (_j + 1 >= n or text[_j + 1] != "("):
+                        _q = None
+                        _k = _j
+                        _found_in = False
+                        while _k < n:
+                            _ch = text[_k]
+                            if _q == "'":
+                                if _ch == "'":
+                                    _q = None
+                                _k += 1
+                                continue
+                            if _ch == "\\" and _k + 1 < n:
+                                _k += 2
+                                continue
+                            if _q == '"':
+                                if _ch == '"':
+                                    _q = None
+                                _k += 1
+                                continue
+                            if _ch in "'\"":
+                                _q = _ch
+                                _k += 1
+                                continue
+                            if _ch in ";|&\n(){}:":
+                                break
+                            if _ch == "<" and (_k + 1 >= n or text[_k + 1] != "("):
+                                _found_in = True
+                                break
+                            _k += 1
+                        if _found_in:
                             # Taint inner range [opener_idx, last-inside-idx] (fail-closed).
                             # Current seg just appended is last inside (index len(segs)-1).
                             _cidx = len(segs) - 1
-                            for _k in range(_oidx, _cidx + 1):
-                                if 0 <= _k < len(pipes):
-                                    pipes[_k] = True
+                            for _kk in range(_oidx, _cidx + 1):
+                                if 0 <= _kk < len(pipes):
+                                    pipes[_kk] = True
                     # Mismatch (e.g., case pattern ")"): do not pop; keep tainted.
                 elif ps and c == "{":
                     if len(compound_stack) >= MAX_DEPTH:
@@ -778,13 +805,39 @@ def split_segments(text, ps=False):
                     if compound_stack and compound_stack[-1][0] == "brace":
                         _okind, _ofed, _oidx = compound_stack.pop()
                         _j = i + 1
-                        while _j < n and text[_j] in " \t":
-                            _j += 1
-                        if _j < n and text[_j] == "<" and (_j + 1 >= n or text[_j + 1] != "("):
+                        _q = None
+                        _k = _j
+                        _found_in = False
+                        while _k < n:
+                            _ch = text[_k]
+                            if _q == "'":
+                                if _ch == "'":
+                                    _q = None
+                                _k += 1
+                                continue
+                            if _ch == "\\" and _k + 1 < n:
+                                _k += 2
+                                continue
+                            if _q == '"':
+                                if _ch == '"':
+                                    _q = None
+                                _k += 1
+                                continue
+                            if _ch in "'\"":
+                                _q = _ch
+                                _k += 1
+                                continue
+                            if _ch in ";|&\n(){}:":
+                                break
+                            if _ch == "<" and (_k + 1 >= n or text[_k + 1] != "("):
+                                _found_in = True
+                                break
+                            _k += 1
+                        if _found_in:
                             _cidx = len(segs) - 1
-                            for _k in range(_oidx, _cidx + 1):
-                                if 0 <= _k < len(pipes):
-                                    pipes[_k] = True
+                            for _kk in range(_oidx, _cidx + 1):
+                                if 0 <= _kk < len(pipes):
+                                    pipes[_kk] = True
                     # Mismatch: keep tainted.
                 # Fed update for the next segment.
                 if c == "|":
@@ -839,13 +892,87 @@ def split_segments(text, ps=False):
                         raise Deny("depth", "compound nesting too deep: not inspected")
                     compound_stack.append(("brace", fed, len(segs)))
                 # ")", "}" with whitespace before: pop if matching (same as above
-                # but without keyword checks, since no command words).
+                # but without keyword checks, since no command words). Apply the same
+                # trailing-redirect taint and pipe-state transition as the
+                # non-whitespace branches (fail-closed).
                 elif c == ")":
                     if compound_stack and compound_stack[-1][0] == "paren":
-                        compound_stack.pop()
+                        _okind, _ofed, _oidx = compound_stack.pop()
+                        _j = i + 1
+                        _q = None
+                        _k = _j
+                        _found_in = False
+                        while _k < n:
+                            _ch = text[_k]
+                            if _q == "'":
+                                if _ch == "'":
+                                    _q = None
+                                _k += 1
+                                continue
+                            if _ch == "\\" and _k + 1 < n:
+                                _k += 2
+                                continue
+                            if _q == '"':
+                                if _ch == '"':
+                                    _q = None
+                                _k += 1
+                                continue
+                            if _ch in "'\"":
+                                _q = _ch
+                                _k += 1
+                                continue
+                            if _ch in ";|&\n(){}:":
+                                break
+                            if _ch == "<" and (_k + 1 >= n or text[_k + 1] != "("):
+                                _found_in = True
+                                break
+                            _k += 1
+                        if _found_in:
+                            _cidx = len(segs) - 1
+                            for _kk in range(_oidx, _cidx + 1):
+                                if 0 <= _kk < len(pipes):
+                                    pipes[_kk] = True
+                        if not any(ef for _, ef, _op in compound_stack):
+                            fed = False
                 elif ps and c == "}":
                     if compound_stack and compound_stack[-1][0] == "brace":
-                        compound_stack.pop()
+                        _okind, _ofed, _oidx = compound_stack.pop()
+                        _j = i + 1
+                        _q = None
+                        _k = _j
+                        _found_in = False
+                        while _k < n:
+                            _ch = text[_k]
+                            if _q == "'":
+                                if _ch == "'":
+                                    _q = None
+                                _k += 1
+                                continue
+                            if _ch == "\\" and _k + 1 < n:
+                                _k += 2
+                                continue
+                            if _q == '"':
+                                if _ch == '"':
+                                    _q = None
+                                _k += 1
+                                continue
+                            if _ch in "'\"":
+                                _q = _ch
+                                _k += 1
+                                continue
+                            if _ch in ";|&\n(){}:":
+                                break
+                            if _ch == "<" and (_k + 1 >= n or text[_k + 1] != "("):
+                                _found_in = True
+                                break
+                            _k += 1
+                        if _found_in:
+                            _cidx = len(segs) - 1
+                            for _kk in range(_oidx, _cidx + 1):
+                                if 0 <= _kk < len(pipes):
+                                    pipes[_kk] = True
+                        if not any(ef for _, ef, _op in compound_stack):
+                            fed = False
                 # Other delimiters with whitespace: carry fed (as before).
             i += 1
             continue
@@ -1613,11 +1740,12 @@ def _func_key(name, ps):
 
 
 def _func_call_name(word, ps):
-    """Bare command name for function-call resolution: basename + .exe strip, case per shell."""
-    base = posixpath.basename(word.replace("\\", "/"))
-    if base.lower().endswith(".exe"):
-        base = base[:-4]
-    return base.lower() if ps else base
+    """Exact quote-removed name for function-call resolution (review 5968136032).
+
+    Bash resolves the exact name (no basename, no .exe strip, case-sensitive);
+    `f.exe` (cat) must not resolve to `f` (node). PowerShell folds case.
+    Executable-path normalization stays separate (command_name, _cmd_name)."""
+    return word.lower() if ps else word
 
 
 def python_position_args(words):
@@ -2362,6 +2490,53 @@ def _extract_function_defs(text, ps):
     Handles Bash name() { ... }, name() ( ... ), function name [()] { ... } / ( ... ). PowerShell function name { ... }.
     Fail-closed: unparseable/too deep/unknown forms yield None body (treated as unsafe)."""
     defs = {}
+    # Review 5968136032: exclude `#` comments from discovery (a commented
+    # `f() { node; }` must not taint the real `f() { cat; }`). Replace comment
+    # chars with spaces (same length, indices preserved; newline kept).
+    # `#` starts a comment only outside quotes at word start (blank or
+    # `;|&|(){}`, newline, start); `\#` is literal. Over-stripping is
+    # fail-closed safe (may miss a `#`-containing name, then unknown-call
+    # handling denies piped calls).
+    _chars = list(text)
+    _q = None
+    _word_start = True
+    _i = 0
+    _L = len(text)
+    while _i < _L:
+        _c = text[_i]
+        if _q == "'":
+            if _c == "'":
+                _q = None
+            _word_start = False
+            _i += 1
+            continue
+        if _c == "\\" and _i + 1 < _L:
+            _word_start = False
+            _i += 2
+            continue
+        if _q == '"':
+            if _c == '"':
+                _q = None
+            _word_start = False
+            _i += 1
+            continue
+        if _c in "'\"":
+            _q = _c
+            _word_start = False
+            _i += 1
+            continue
+        if _c == "#" and _word_start:
+            while _i < _L and text[_i] != "\n":
+                _chars[_i] = " "
+                _i += 1
+            _word_start = False
+            continue
+        if _c in " \t\n" or _c in ";|&(){}:":
+            _word_start = True
+        else:
+            _word_start = False
+        _i += 1
+    clean = "".join(_chars)
     # Pattern for name() with { or ( body opener after optional spaces (including newlines)
     # Use regex to find candidates, then brace/paren matching for body (fail-closed None on failure).
     # To avoid missing due to newlines, use \s* (includes \n).
@@ -2375,14 +2550,14 @@ def _extract_function_defs(text, ps):
     # quoted/candidates (fail-closed over-denial, never silent ALLOW).
     # PowerShell names resolve case-insensitively (keyed lower); Bash keys
     # keep original case and are stored/looked up case-sensitively.
-    for m in _re.finditer(r'(?<![^\s;|&<>()=])([^\s;|&<>()=]+)\s*\(\s*\)\s*(\{|\()', text):
+    for m in _re.finditer(r'(?<![^\s;|&<>()=])([^\s;|&<>()=]+)\s*\(\s*\)\s*(\{|\()', clean):
         name = m.group(1)
         key = _func_key(name, ps)
         opener = m.group(2)
         body_start_idx = m.start(2)  # index of "{" or "("
         # Skip if opener inside quotes/comments? Regex over-matches quoted (fail-closed safe: over-denial). Accept.
         if opener == "{":
-            res = _find_matching_brace(text, body_start_idx)
+            res = _find_matching_brace(clean, body_start_idx)
             if res is None:
                 body = None
             else:
@@ -2393,10 +2568,10 @@ def _extract_function_defs(text, ps):
             depth = 1
             quote = None
             i = body_start_idx + 1
-            n = len(text)
+            n = len(clean)
             found = None
             while i < n:
-                c = text[i]
+                c = clean[i]
                 if quote == "'":
                     if c == "'":
                         quote = None
@@ -2405,12 +2580,12 @@ def _extract_function_defs(text, ps):
                 if c == "\\" and i + 1 < n:
                     i += 2
                     continue
-                if c == "$" and i + 1 < n and text[i+1] == "(":
+                if c == "$" and i + 1 < n and clean[i+1] == "(":
                     # Nested $(...): fail-closed unknown (return None for whole body to be safe? Actually body contains $(...), analyzing body with subs handling will handle subs separately? For body extraction, $(...) inside (...) body - need to skip correctly, else paren depth miscount. Fail-closed: return None (unknown -> unsafe).
                     found = None
                     break
                 if c == "`":
-                    j = text.find("`", i+1)
+                    j = clean.find("`", i+1)
                     if j < 0:
                         found = None
                         break
@@ -2433,7 +2608,7 @@ def _extract_function_defs(text, ps):
                 elif c == ")":
                     depth -= 1
                     if depth == 0:
-                        found = (text[body_start_idx+1:i], i+1)
+                        found = (clean[body_start_idx+1:i], i+1)
                         break
                     if depth < 0:
                         found = None
@@ -2445,23 +2620,23 @@ def _extract_function_defs(text, ps):
                 body, _end = found
         defs.setdefault(key, []).append(body)
     # function name [()] { ... } / ( ... )  (Bash + PowerShell)
-    for m in _re.finditer(r'(?<![^\s;|&<>()=])function\s+([^\s;|&<>()=]+)\s*(\(\s*\))?\s*(\{|\()', text):
+    for m in _re.finditer(r'(?<![^\s;|&<>()=])function\s+([^\s;|&<>()=]+)\s*(\(\s*\))?\s*(\{|\()', clean):
         name = m.group(1)
         key = _func_key(name, ps)
         opener = m.group(3)
         body_start_idx = m.start(3)
         if opener == "{":
-            res = _find_matching_brace(text, body_start_idx)
+            res = _find_matching_brace(clean, body_start_idx)
             body = None if res is None else res[0]
         else:
             # "(" subshell body after function: same paren matching as above (fail-closed None on $(), backticks, etc.)
             depth = 1
             quote = None
             i = body_start_idx + 1
-            n = len(text)
+            n = len(clean)
             found = None
             while i < n:
-                c = text[i]
+                c = clean[i]
                 if quote == "'":
                     if c == "'":
                         quote = None
@@ -2470,11 +2645,11 @@ def _extract_function_defs(text, ps):
                 if c == "\\" and i + 1 < n:
                     i += 2
                     continue
-                if c == "$" and i + 1 < n and text[i+1] == "(":
+                if c == "$" and i + 1 < n and clean[i+1] == "(":
                     found = None
                     break
                 if c == "`":
-                    j = text.find("`", i+1)
+                    j = clean.find("`", i+1)
                     if j < 0:
                         found = None
                         break
@@ -2497,7 +2672,7 @@ def _extract_function_defs(text, ps):
                 elif c == ")":
                     depth -= 1
                     if depth == 0:
-                        found = (text[body_start_idx+1:i], i+1)
+                        found = (clean[body_start_idx+1:i], i+1)
                         break
                     if depth < 0:
                         found = None
@@ -2509,7 +2684,7 @@ def _extract_function_defs(text, ps):
 
 
 def _has_input_redirect(seg):
-    """True when a raw segment contains an unquoted `<` (input redirect, heredoc `<<`, here-string `<<<`)."""
+    """True when a raw segment contains an unquoted `<` for stdin (fd 0/default)."""
     quote, i, n = None, 0, len(seg)
     while i < n:
         c = seg[i]
@@ -2528,10 +2703,23 @@ def _has_input_redirect(seg):
         elif c == "<":
             # "<(" is process substitution, not stdin redirection (do not confuse).
             # FD duplication "<&", heredoc "<<", here-string "<<<" remain tainted (fail-closed).
+            # Review 5968136032: only fd 0/default supplies stdin; `3<` etc. do not.
             if i + 1 < n and seg[i + 1] == "(":
                 pass
             else:
-                return True
+                # Collect glued fd digits immediately before `<` (lexer keeps them
+                # in `\x01<op>` markers, e.g. `\x013<`). No digits = default fd 0.
+                _k = i - 1
+                _fd = ""
+                while _k >= 0 and seg[_k].isdigit():
+                    _fd = seg[_k] + _fd
+                    _k -= 1
+                if _fd == "" or _fd == "0":
+                    return True
+                # Non-stdin fd (e.g. `3<`): skip the rest of this operator
+                # (`<`, `&`) so `3<<` does not read its second `<` as stdin.
+                while i + 1 < n and seg[i + 1] in "<&":
+                    i += 1
         i += 1
     return False
 
@@ -2989,6 +3177,23 @@ def analyze_argv(words, ctx, ps, depth, fed=False, outer_funcs=None):
         break
     args = words[1:]
     program_option_rule(name, args, ctx)
+    # MAJOR-B (review 5968211099): enforce stdin-program on the resolved
+    # interpreter argv (wrapper-resolved via handoff recursion carries fed),
+    # not the text-scan first token (which may be a wrapper operand).
+    # Named code/file stays ALLOW (stdin as data); bare/unknown with fed
+    # (pipe-fed OR input-redirected seg_taint) is DENY with stdin-program.
+    if PY_NAME.match(name):
+        _prog = _python_program(args)
+        if _prog == 'stdin':
+            raise Deny("stdin-program", "python with `-` runs its program from stdin: not inspected")
+        if _prog in ('none', 'unknown') and fed:
+            raise Deny("stdin-program", "python with piped or redirected stdin and no program word runs stdin: not inspected")
+    elif name in INTERP:
+        _prog = _interp_program(name, args)
+        if _prog == 'stdin':
+            raise Deny("stdin-program", name + " with `-` runs its program from stdin: not inspected")
+        if _prog in ('none', 'unknown') and fed:
+            raise Deny("stdin-program", name + " with piped or redirected stdin and no program word runs stdin: not inspected")
     if ps and name in PS_LAUNCH_NAMES:
         # A PowerShell process launcher runs its arguments as a command line, and its options (-FilePath, -ArgumentList)
         # may come first, so every suffix of the arguments is analysed as a command line. Bounded: a longer argument
@@ -3085,7 +3290,10 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None):
         # Simpler: treat whole text as tainted unknown -> rely on per-seg checks.
         func_defs = {}
     if outer_funcs:
-        all_funcs = dict(outer_funcs)
+        # Review 5968136032: copy each inherited body list (dict() alone shares
+        # lists; a child `eval` define via extend would pollute the parent map
+        # and deny a later sibling for a body Bash never installed there).
+        all_funcs = {k: list(v) for k, v in outer_funcs.items()}
         for _k, _v in func_defs.items():
             all_funcs.setdefault(_k, []).extend(_v)
     else:
@@ -3126,40 +3334,40 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None):
             # MAJOR (review 5967514206): Bash is case-sensitive, PowerShell is
             # not — resolve NON_EXEC and function names per shell, never
             # lowercasing Bash `F-X` to `f-x` and never missing `+` names.
+            # MAJOR-A (review 5968211099): Bash prefers same-name functions
+            # over builtins/NON_EXEC, so resolve the local function before
+            # applying the NON_EXEC shortcut (fail-closed for pipe-fed
+            # `cat() { node; }; ... | cat`).
             _j = 0
             while _j < len(words) and (words[_j] in KEYWORDS or ASSIGN.match(words[_j])):
                 _j += 1
-            if _j < len(words) and _func_call_name(words[_j], ps) in NON_EXEC_COMMANDS:
+            _k = _j
+            while _k < len(words) and words[_k] in ("time", "coproc"):
+                _k += 1
+            _fkey = _func_call_name(words[_k], ps) if _k < len(words) else None
+            if _fkey is not None and _fkey in all_funcs:
+                for _body in all_funcs[_fkey]:
+                    if _body is None:
+                        raise Deny("function", "function '" + _fkey + "' with uninspectable body called with stdin: not inspected")
+                    try:
+                        analyze_text(_body, ctx.copy(), ps, depth + 1, inherited_fed=True, outer_funcs=all_funcs)
+                    except Deny as _d:
+                        raise _d
+            elif _j < len(words) and _func_call_name(words[_j], ps) in NON_EXEC_COMMANDS:
                 pass
-            else:
-                # Find command after same-shell prefixes.
-                _k = _j
-                while _k < len(words) and words[_k] in ("time", "coproc"):
-                    _k += 1
-                if _k < len(words):
-                    _fname = _func_call_name(words[_k], ps)
-                    if _fname in all_funcs:
-                        for _body in all_funcs[_fname]:
-                            if _body is None:
-                                raise Deny("function", "function '" + _fname + "' with uninspectable body called with stdin: not inspected")
-                            try:
-                                analyze_text(_body, ctx.copy(), ps, depth + 1, inherited_fed=True, outer_funcs=all_funcs)
-                            except Deny as _d:
-                                raise _d
     if sum(len(ops) for ops in redirs) > MAX_REDIRECTS:
         raise Deny("redirect", "more than %d redirections are not inspected" % MAX_REDIRECTS)
     for body, parent_idx in zip(subs, sub_parents):
         # MAJOR subs + MAJOR redirect: each substitution belongs to its parent segment.
-        # Inherit the parent segment's stdin provenance (pipe-fed OR input redirect,
-        # already ORed with outer inherited taint in fed_list for pipe part) instead
-        # of only the global inherited_fed. Parent redirect is ORed here so that
-        # 'echo "$(node)" < file' taints the inner body even without outer pipe.
-        # This avoids over-tainting independent later commands (e.g. "| cat;
-        # echo \"$(node)\"" stays ALLOW for the second sub) while closing the
-        # "| echo \"$(node)\"" bypass (parent seg pipe-fed True -> inner DENY).
+        # Inherit pipe-fed (plus outer taint via fed_list) instead of only the global
+        # inherited_fed. Review 5968136032: do NOT apply the simple command's own
+        # input redirect to substitutions in ordinary argument words (Bash expands
+        # the quoted argument before applying echo's redirect, so `echo "$(node)"`
+        # `< file` leaves the inner body untainted). Pipeline and enclosing-compound
+        # provenance (fed_list) is retained, so `| echo "$(node)"` still DENYs.
         # Unidentifiable belonging is fail-closed tainted (never guessed ALLOW).
         if 0 <= parent_idx < len(segs):
-            sub_fed = fed_list[parent_idx] or _has_input_redirect(segs[parent_idx])
+            sub_fed = fed_list[parent_idx]
         else:
             sub_fed = True
         analyze_text(body, ctx.copy(), ps, depth + 1, inherited_fed=sub_fed, outer_funcs=all_funcs)

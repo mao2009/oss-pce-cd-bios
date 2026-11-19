@@ -3740,15 +3740,19 @@ class StdinProgramTests(unittest.TestCase):
                 self.assertEqual(self._d(cmd)[0], "ALLOW")
 
     def test_compound_depth_is_fail_closed(self):
-        # Too deep nesting is DENY (dedicated fail-closed reason, not generic).
-        deep = "echo hi | " + "if true; then " * 9 + "node --no-warnings" + " ; fi" * 9
+        # Too deep nesting is DENY with a dedicated depth reason (not via
+        # stdin-program, so removing the depth limit would ALLOW and be caught).
+        # Use a data-only nested command (`cat` reads stdin as data, never as
+        # program) so the DENY must come from the depth limit itself.
+        deep = "echo hi | " + "(" * 9 + "cat" + ")" * 9
         verdict, reason = self._d(deep)
         self.assertEqual(verdict, "DENY")
-        # Depth limit uses a dedicated reason; stdin-program is also acceptable if
-        # implementation taints instead of direct depth DENY, but generic is not.
-        self.assertTrue("depth" in reason or "stdin-program" in reason or "compound" in reason, reason)
+        self.assertIn("depth", reason, reason)
         self.assertNotIn("unknown", reason)
         self.assertNotIn("external command", reason)
+        # An otherwise equivalent shallow command passes (no over-denial).
+        shallow = "echo hi | ((cat))"
+        self.assertEqual(self._d(shallow)[0], "ALLOW")
 
     def test_command_substitution_inherits_pipe(self):
         # MAJOR subs: "$(...)" in a pipe-fed segment inherits outer pipe-fed stdin.
@@ -3987,14 +3991,14 @@ class StdinProgramMutationTests(unittest.TestCase):
             "        analyze_text(body, ctx.copy(), ps, depth + 1, inherited_fed=sub_fed, outer_funcs=all_funcs)",
             "        analyze_text(body, ctx.copy(), ps, depth + 1, inherited_fed=sub_fed, outer_funcs=None)"),
         "hyphen-dot-colon functions ignored": (
-            "                    if _fname in all_funcs:",
-            "                    if False:  # hyphen/dot/colon ignored"),
+            "            if _fkey is not None and _fkey in all_funcs:",
+            "            if False:  # hyphen/dot/colon ignored"),
         "function uppercase missed (Bash case-sensitive)": (
-            "                    _fname = _func_call_name(words[_k], ps)",
-            "                    _fname = _cmd_name(words[_k])  # mutant: Bash case-insensitive"),
+            "            _fkey = _func_call_name(words[_k], ps) if _k < len(words) else None",
+            "            _fkey = _cmd_name(words[_k]) if _k < len(words) else None  # mutant: Bash case-insensitive"),
         "function plus-sign missed": (
             "    for m in _re.finditer(r'(?<![^\\s;|&<>()=])([^\\s;|&<>()=]+)\\s*\\(\\s*\\)\\s*(\\{|\\()', text):",
-            "    for m in _re.finditer(r'(?<![A-Za-z0-9_.\\-:])([A-Za-z_][A-Za-z0-9_.:\\-]*\\s*\\(\\s*\\)\\s*(\\{|\\()', text):  # mutant: plus missed"),
+            "    for m in _re.finditer(r'(?<![A-Za-z0-9_.\\-:])([A-Za-z_][A-Za-z0-9_.:\\-_]*)\\s*\\(\\s*\\)\\s*(\\{|\\()', text):  # mutant: plus missed"),
         "compound redirect final segment disabled": (
             "                    if _opener_idx is not None and _has_input_redirect(_final_seg):",
             "                    if False:  # compound redirect final disabled"),
@@ -4042,10 +4046,15 @@ class StdinProgramMutationTests(unittest.TestCase):
             with self.subTest(mutant=name):
                 self.assertEqual(original.count(old), 1, "mutation target not found exactly once: " + name)
                 code, out = self._run(original.replace(old, new))
-                failing = [re.match(r"(?:FAIL|ERROR): (\S+) \(", ln) for ln in out.splitlines()
-                           if ln.startswith(("FAIL:", "ERROR:"))]
+                # Review 5968136032: require an expected FAIL and reject runs
+                # with ERRORs (fixture/test-body exceptions must not count).
+                # Internal-error DENYs are also rejected (no silent pass).
+                failing = [re.match(r"FAIL: (\S+) \(", ln) for ln in out.splitlines()
+                           if ln.startswith("FAIL:")]
                 names = [m.group(1) for m in failing if m]
-                detected = any(n in self.DETECTING for n in names)
+                has_error = any(ln.startswith("ERROR:") for ln in out.splitlines())
+                has_internal = "guard internal error" in out
+                detected = (not has_error and not has_internal) and any(n in self.DETECTING for n in names)
                 self.assertTrue(detected, "mutant not detected by a StdinProgramTests assertion: " + name)
 
 
