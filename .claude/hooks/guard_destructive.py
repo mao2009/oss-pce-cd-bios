@@ -2904,8 +2904,16 @@ def _stdin_op_effect(op, target):
     """
     m = re.match(r"^(\d*)(.*)$", op, re.S)
     fd, base = m.group(1), m.group(2)
-    if fd not in ("", "0"):
-        return None
+    # Bash reads any all-zero spelling ("0", "00", "000", ...) as fd 0,
+    # while "3"/"03" stay fd 3 (verified on Bash). strip("0") avoids the
+    # int() 4300-digit limit and any exception on overlong digit runs;
+    # a non-digit fd (unreachable via the regex, defensive) falls through
+    # fail-closed instead of being guessed as another descriptor.
+    if fd.isdigit():
+        if fd.strip("0") != "":
+            return None
+    elif fd != "":
+        pass  # unknown fd spelling: keep stdin classification below
     if base in ("<", "<<", "<<<", "<<-", "<>"):
         return "supply"
     if base == "<&":

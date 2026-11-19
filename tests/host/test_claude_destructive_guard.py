@@ -4300,6 +4300,61 @@ class StdinProgramTests(unittest.TestCase):
                 self.assertEqual(verdict, "DENY")
                 self.assertIn("stdin-program", reason)
 
+    def test_leading_zero_fd_zero_supplies_stdin(self):
+        # MAJOR #814: Bash reads any all-zero fd spelling ("00", "000", ...)
+        # as fd 0 (verified harmless: `IFS= read -r x 00<<<...`, `cat 00< f`,
+        # `exec 3< f; read ... 00<&3` dups f onto stdin), so a bare
+        # interpreter with such a redirect reads its program from stdin and
+        # must be refused with stdin-program (fail-closed). Covers
+        # _scan_stdin_ops -> _stdin_op_effect -> _has_input_redirect ->
+        # stdin_program_refusal, plus persistent-exec and compound paths via
+        # _exec_segment_effect / _stdin_prepass / analyze_text. `00<&3`
+        # stays DENY even when fd 3 is closed at runtime (Bash errors there,
+        # the guard cannot know runtime fds, so fail-closed DENY either way).
+        for cmd in ["node 0< code.js",
+                    "node 00< code.js",
+                    "node 000< code.js",
+                    "node 0000000000< code.js",
+                    "perl 00< code.pl",
+                    "ruby 00< x.rb",
+                    "node 00<<< 'code'",
+                    "node 000<<< 'code'",
+                    "node 00<&3",
+                    "node 0<&3",
+                    "exec 00< code.js; node",
+                    "exec 000< code.js; node",
+                    "(node) 00< data.txt",
+                    "if true; then node; fi 00< data.txt",
+                    "sh -c 'node' 00< data.txt",
+                    "node " + "0" * 5000 + "< code.js"]:
+            with self.subTest(cmd=cmd[:80]):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertIn("stdin-program", reason)
+
+    def test_leading_zero_fd_nonzero_and_close_stay_safe(self):
+        # Companion ALLOW side: "3"/"03"/"003" stay fd 3 (verified: `03< f`
+        # leaves stdin alone), a named script keeps stdin as data, and an
+        # explicit stdin close (`00<&-`) delivers EOF (no program). `exec
+        # 00<&-` is ALLOW both without prior taint and after a prior supply
+        # (close clears), matching the `<&-` parity.
+        for cmd in ["node 3< code.js",
+                    "node 03< code.js",
+                    "node 003< code.js",
+                    "node script.js 00< data.txt",
+                    "node script.js 000< data.txt",
+                    "echo data | node script.js",
+                    "node 00<&-",
+                    "exec 00<&-; node",
+                    "exec 00< code.js; exec 00<&-; node",
+                    "exec < code.js; exec 00<&-; node",
+                    "(node) 03< data.txt",
+                    "if true; then node; fi 03< data.txt",
+                    "exec 03< data.txt; node",
+                    "exec 3< data.txt; node"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "ALLOW", reason)
 
 
 class StdinProgramMutationTests(unittest.TestCase):
@@ -4401,8 +4456,23 @@ class StdinProgramMutationTests(unittest.TestCase):
             "            elif effect == \"close\":",
             "            elif False:  # mutant: exec close never clears"),
         "fd number distinction removed": (
-            "    if fd not in (\"\", \"0\"):\n        return None",
-            "    if False:\n        return None  # mutant: every fd supplies stdin"),
+            "        if fd.strip(\"0\") != \"\":\n            return None",
+            "        if False:  # mutant: every fd supplies stdin\n            return None"),
+        "fd-zero leading-zero spelling reverted": (
+            "        if fd.strip(\"0\") != \"\":\n            return None",
+            "        if fd not in (\"\", \"0\"):  # mutant: leading-zero reverted\n            return None"),
+        "multi-digit zero treated as non-stdin": (
+            "        if fd.strip(\"0\") != \"\":\n            return None",
+            "        if fd.strip(\"0\") != \"\" or len(fd) > 1:  # mutant: multi-digit zero non-stdin\n            return None"),
+        "fd 3 over-tainted as stdin": (
+            "        if fd.strip(\"0\") != \"\":\n            return None",
+            "        if fd.strip(\"0\") != \"\" and fd.strip(\"0\") != \"3\":  # mutant: fd 3 as stdin\n            return None"),
+        "stdin close treated as supply": (
+            "        return \"close\" if (target or \"\") == \"-\" else \"supply\"",
+            "        return \"supply\"  # mutant: close as supply"),
+        "persistent redirect supply lost": (
+            "    if last == \"supply\":\n        return \"supply\"",
+            "    if False:  # mutant: persistent supply lost\n        return \"supply\""),
         "function-body exec suppression removed": (
             "                if (not pfed and not _suppressed\n                        and not _followed_by_fork_boundary(segs, i, ps)):\n                    exec_flag = True",
             "                if not pfed:\n                    exec_flag = True  # mutant: definition exec leaks"),
@@ -4519,6 +4589,8 @@ class StdinProgramMutationTests(unittest.TestCase):
                  "test_compound_redirect_safe_forms_stay_allowed",
                  "test_exec_redirect_persists_stdin", "test_exec_safe_forms_stay_allowed",
                  "test_function_exec_persists_stdin", "test_subshell_fd3_stays_allowed",
+                 "test_leading_zero_fd_zero_supplies_stdin",
+                 "test_leading_zero_fd_nonzero_and_close_stay_safe",
                  "test_eval_redirect_persists_stdin", "test_eval_function_call_inherits_stdin",
                  "test_subshell_persistent_stdin_scoped", "test_find_ok_does_not_inherit_pipe",
                  "test_nested_pipe_inherits_stdin", "test_nested_conditional_close_keeps_taint",
