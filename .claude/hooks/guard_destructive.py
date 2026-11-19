@@ -2958,6 +2958,36 @@ def _has_input_redirect(seg):
     return False
 
 
+def _exec_shadowed_by_function(words, ps, all_funcs):
+    """True when a segment `exec` resolves to a shell function (Issue #637).
+
+    Bash prefers a same-name function over the builtin, and a function
+    invocation's redirects are temporary (restored afterwards, verified on
+    Bash), so a shadowed `exec <&-` never closes the shell's stdin while
+    `command exec`/`builtin exec` bypass functions and do. Only closes
+    consult this: a shadowed supply stays fail-closed (still taints), since
+    a definition placed after the use would not have shadowed it yet.
+    """
+    if _func_call_name("exec", ps) not in (all_funcs or {}):
+        return False
+    i = 0
+    for _ in range(4):
+        while i < len(words) and (words[i] in KEYWORDS or ASSIGN.match(words[i])):
+            i += 1
+        if i < len(words) and words[i] == "!":
+            i += 1
+            continue
+        if i < len(words) and words[i] == "time":
+            i += 1
+            if i < len(words) and words[i] == "-p":
+                i += 1
+            continue
+        if i < len(words) and words[i] in ("builtin", "command"):
+            return False
+        break
+    return i < len(words) and words[i] == "exec"
+
+
 def _exec_segment_effect(words, seg):
     """Persistent stdin effect of one segment: 'supply', 'close', or None.
 
@@ -3676,7 +3706,7 @@ def analyze_argv(words, ctx, ps, depth, fed=False, outer_funcs=None,
 MAX_REDIRECTS = 64  # each redirection is a path check; an unbounded number of them is refused (fail closed, time bound)
 
 
-def _stdin_prepass(segs, ps, inherited_fed):
+def _stdin_prepass(segs, ps, inherited_fed, all_funcs=None):
     """Stdin provenance per segment over the sentinel stream (Issue #637).
 
     split_segments runs fully before analysis, so this pre-pass can compute
@@ -3959,7 +3989,8 @@ def _stdin_prepass(segs, ps, inherited_fed):
                 # saved state is restored at the fork's closing boundary.
                 if (not pfed and not _suppressed
                         and not _in_cond_here
-                        and not _followed_by_fork_boundary(segs, i, ps)):
+                        and not _followed_by_fork_boundary(segs, i, ps)
+                        and not _exec_shadowed_by_function(words, ps, all_funcs)):
                     exec_flag = False
                     inh = False
     return pipe, eff, is_stage, subdepth, exec_flag, suppressed, in_cond
@@ -4036,7 +4067,7 @@ def _body_sets_exec_stdin(body, ps, funcs=None, _seen=None, strict=True):
     except Deny:
         return strict
     try:
-        _pipe, _eff, _stage, _subdepth, end_exec, _supp, _cond = _stdin_prepass(segs, ps, False)
+        _pipe, _eff, _stage, _subdepth, end_exec, _supp, _cond = _stdin_prepass(segs, ps, False, funcs)
     except Deny:
         return strict
     if end_exec:
@@ -4174,14 +4205,11 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None):
     if ps and PS_PROC_LAUNCH_RE.search(text) and EXPR_SYNTAX_RE.search(text):
         raise Deny("launcher", "PowerShell process launcher with expression syntax is not inspected")
     segs, subs, redirs = split_segments(text, ps)
-    # Issue #637: stdin provenance per segment (pipe-fed, exec-persistent,
-    # group-redirect). Nested shells (sh -c, wrappers, eval, subs) inherit
-    # the outer taint fail-closed (OR of outer and inner marks).
-    _stdin_pipe, _stdin_eff, _stdin_stage, _stdin_subdepth, _prepass_end, _stdin_suppressed, _stdin_in_cond = _stdin_prepass(
-        segs, ps, inherited_fed)
     # MAJOR function: collect shell function definitions in this text and merge
     # with outer (caller) definitions for lexical sibling resolution. ANY unsafe
     # body makes tainted calls fail-closed DENY (redefinition safe over-denial).
+    # Built before the stdin prepass: a function named `exec` shadows the
+    # builtin (its redirects are temporary), so closes must see it.
     try:
         func_defs = _extract_function_defs(text, ps)
     except Deny:
@@ -4198,6 +4226,11 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None):
             all_funcs.setdefault(_k, []).extend(_v)
     else:
         all_funcs = func_defs
+    # Issue #637: stdin provenance per segment (pipe-fed, exec-persistent,
+    # group-redirect). Nested shells (sh -c, wrappers, eval, subs) inherit
+    # the outer taint fail-closed (OR of outer and inner marks).
+    _stdin_pipe, _stdin_eff, _stdin_stage, _stdin_subdepth, _prepass_end, _stdin_suppressed, _stdin_in_cond = _stdin_prepass(
+        segs, ps, inherited_fed, all_funcs)
     # A python command whose argv is not certain (unquoted or double-quoted expansion characters) is refused.
     # dyn_at records the function-exec stdin flag before each segment, so the
     # scope machine below observes the same taint the checks here saw.
@@ -4302,7 +4335,8 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None):
             if _fx == "supply" and not _followed_by_fork_boundary(segs, idx, ps):
                 dyn_exec = True
             elif (_fx == "close" and not _stdin_in_cond[idx]
-                    and not _followed_by_fork_boundary(segs, idx, ps)):
+                    and not _followed_by_fork_boundary(segs, idx, ps)
+                    and not _exec_shadowed_by_function(seg_words, ps, all_funcs)):
                 dyn_exec = False
     if sum(len(ops) for ops in redirs) > MAX_REDIRECTS:
         raise Deny("redirect", "more than %d redirections are not inspected" % MAX_REDIRECTS)
@@ -4722,6 +4756,7 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None):
         if (live_exec and not ps and not _stdin_stage[idx]
                 and not _stdin_suppressed[idx] and not _stdin_in_cond[idx]
                 and not _followed_by_fork_boundary(segs, idx, ps)
+                and not _exec_shadowed_by_function(seg_words, ps, all_funcs)
                 and _exec_segment_effect(seg_words, seg) == "close"):
             live_exec = False
         if cond_stack and ctx.cwd != cond_stack[-1]["cwd"]:

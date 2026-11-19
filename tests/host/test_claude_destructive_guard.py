@@ -4153,6 +4153,25 @@ class StdinProgramTests(unittest.TestCase):
                 verdict, reason = self._d(cmd)
                 self.assertEqual(verdict, "ALLOW", reason)
 
+    def test_shadowed_exec_close_keeps_taint(self):
+        # Bash prefers a same-name function over the `exec` builtin, and a
+        # function invocation's redirects are temporary (verified on Bash),
+        # so a shadowed `exec <&-` never closes the shell stdin. `command`
+        # / `builtin` bypass the shadowing (verified) and do close it.
+        for cmd in ["exec < code.js; exec() { true; }; exec <&-; node",
+                    "exec < code.js; exec() { true; }; exec 0<&-; node",
+                    "exec < code.js; exec() { true; }; time exec <&-; node"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertIn("stdin-program", reason)
+        for cmd in ["exec < code.js; exec() { true; }; command exec <&-; node",
+                    "exec < code.js; exec() { true; }; builtin exec <&-; node",
+                    "exec < code.js; exec() { true; }; command -p exec <&-; node"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "ALLOW", reason)
+
     def test_function_exec_persists_stdin(self):
         # A same-shell function call whose body persistently redirects stdin
         # changes the caller's stdin (verified on Bash); calls through a
@@ -4383,8 +4402,8 @@ class StdinProgramMutationTests(unittest.TestCase):
             "            if (not ps and not _stdin_stage[idx]\n                    and not _stdin_suppressed[idx]\n                    and not _followed_by_fork_boundary(segs, idx, ps)):\n                live_exec = True",
             "            if True:  # mutant: forked eval leaks\n                live_exec = True"),
         "conditional close clears inherited stdin": (
-            '                if (not pfed and not _suppressed\n                        and not _in_cond_here\n                        and not _followed_by_fork_boundary(segs, i, ps)):\n                    exec_flag = False\n                    inh = False',
-            '                if (not pfed and not _suppressed\n                        and not _followed_by_fork_boundary(segs, i, ps)):\n                    exec_flag = False\n                    inh = False  # mutant: conditional close clears',
+            '                if (not pfed and not _suppressed\n                        and not _in_cond_here\n                        and not _followed_by_fork_boundary(segs, i, ps)\n                        and not _exec_shadowed_by_function(words, ps, all_funcs)):\n                    exec_flag = False\n                    inh = False',
+            '                if (not pfed and not _suppressed\n                        and not _followed_by_fork_boundary(segs, i, ps)\n                        and not _exec_shadowed_by_function(words, ps, all_funcs)):\n                    exec_flag = False\n                    inh = False  # mutant: conditional close clears',
         ),
         "fork boundary ignored for supply": (
             '                if (not pfed and not _suppressed\n                        and not _followed_by_fork_boundary(segs, i, ps)):\n                    exec_flag = True',
@@ -4395,12 +4414,23 @@ class StdinProgramMutationTests(unittest.TestCase):
             # and second-loop live each independently preserve a fork-child
             # close, so ignoring the boundary in only one layer cannot flip
             # the verdict; all three must ignore it together.
-            ('                if (not pfed and not _suppressed\n                        and not _in_cond_here\n                        and not _followed_by_fork_boundary(segs, i, ps)):',
-             '                if (not pfed and not _suppressed\n                        and not _in_cond_here):  # mutant: forked close clears'),
-            ('        if not ps and not _stdin_stage[idx] and not _stdin_suppressed[idx]:\n            _fx = _exec_segment_effect(seg_words, seg)\n            if _fx == "supply" and not _followed_by_fork_boundary(segs, idx, ps):\n                dyn_exec = True\n            elif (_fx == "close" and not _stdin_in_cond[idx]\n                    and not _followed_by_fork_boundary(segs, idx, ps)):\n                dyn_exec = False',
-             '        if not ps and not _stdin_stage[idx] and not _stdin_suppressed[idx]:  # mutant: forked dyn close clears\n            _fx = _exec_segment_effect(seg_words, seg)\n            if _fx == "supply" and not _followed_by_fork_boundary(segs, idx, ps):\n                dyn_exec = True\n            elif (_fx == "close" and not _stdin_in_cond[idx]):\n                dyn_exec = False'),
-            ('        if (live_exec and not ps and not _stdin_stage[idx]\n                and not _stdin_suppressed[idx] and not _stdin_in_cond[idx]\n                and not _followed_by_fork_boundary(segs, idx, ps)\n                and _exec_segment_effect(seg_words, seg) == "close"):\n            live_exec = False',
-             '        if (live_exec and not ps and not _stdin_stage[idx]\n                and not _stdin_suppressed[idx] and not _stdin_in_cond[idx]\n                and _exec_segment_effect(seg_words, seg) == "close"):  # mutant: forked live close clears\n            live_exec = False'),],
+            ('                if (not pfed and not _suppressed\n                        and not _in_cond_here\n                        and not _followed_by_fork_boundary(segs, i, ps)\n                        and not _exec_shadowed_by_function(words, ps, all_funcs)):',
+             '                if (not pfed and not _suppressed\n                        and not _in_cond_here\n                        and not _exec_shadowed_by_function(words, ps, all_funcs)):  # mutant: forked close clears'),
+            ('        if not ps and not _stdin_stage[idx] and not _stdin_suppressed[idx]:\n            _fx = _exec_segment_effect(seg_words, seg)\n            if _fx == "supply" and not _followed_by_fork_boundary(segs, idx, ps):\n                dyn_exec = True\n            elif (_fx == "close" and not _stdin_in_cond[idx]\n                    and not _followed_by_fork_boundary(segs, idx, ps)\n                    and not _exec_shadowed_by_function(seg_words, ps, all_funcs)):\n                dyn_exec = False',
+             '        if not ps and not _stdin_stage[idx] and not _stdin_suppressed[idx]:  # mutant: forked dyn close clears\n            _fx = _exec_segment_effect(seg_words, seg)\n            if _fx == "supply" and not _followed_by_fork_boundary(segs, idx, ps):\n                dyn_exec = True\n            elif (_fx == "close" and not _stdin_in_cond[idx]\n                    and not _exec_shadowed_by_function(seg_words, ps, all_funcs)):\n                dyn_exec = False'),
+            ('        if (live_exec and not ps and not _stdin_stage[idx]\n                and not _stdin_suppressed[idx] and not _stdin_in_cond[idx]\n                and not _followed_by_fork_boundary(segs, idx, ps)\n                and not _exec_shadowed_by_function(seg_words, ps, all_funcs)\n                and _exec_segment_effect(seg_words, seg) == "close"):\n            live_exec = False',
+             '        if (live_exec and not ps and not _stdin_stage[idx]\n                and not _stdin_suppressed[idx] and not _stdin_in_cond[idx]\n                and not _exec_shadowed_by_function(seg_words, ps, all_funcs)\n                and _exec_segment_effect(seg_words, seg) == "close"):  # mutant: forked live close clears\n            live_exec = False'),],
+        "shadowed exec close treated as builtin": [
+            # Defense-in-depth coupling (same shape as the fork-close
+            # compound): each layer independently keeps a shadowed close,
+            # so all three must ignore the shadowing together to flip.
+            ('                if (not pfed and not _suppressed\n                        and not _in_cond_here\n                        and not _followed_by_fork_boundary(segs, i, ps)\n                        and not _exec_shadowed_by_function(words, ps, all_funcs)):',
+             '                if (not pfed and not _suppressed\n                        and not _in_cond_here\n                        and not _followed_by_fork_boundary(segs, i, ps)):  # mutant: shadowed close clears\n                    exec_flag = False\n                    inh = False'),
+            ('            elif (_fx == "close" and not _stdin_in_cond[idx]\n                    and not _followed_by_fork_boundary(segs, idx, ps)\n                    and not _exec_shadowed_by_function(seg_words, ps, all_funcs)):\n                dyn_exec = False',
+             '            elif (_fx == "close" and not _stdin_in_cond[idx]\n                    and not _followed_by_fork_boundary(segs, idx, ps)):  # mutant: shadowed dyn close clears\n                dyn_exec = False'),
+            ('        if (live_exec and not ps and not _stdin_stage[idx]\n                and not _stdin_suppressed[idx] and not _stdin_in_cond[idx]\n                and not _followed_by_fork_boundary(segs, idx, ps)\n                and not _exec_shadowed_by_function(seg_words, ps, all_funcs)\n                and _exec_segment_effect(seg_words, seg) == "close"):\n            live_exec = False',
+             '        if (live_exec and not ps and not _stdin_stage[idx]\n                and not _stdin_suppressed[idx] and not _stdin_in_cond[idx]\n                and not _followed_by_fork_boundary(segs, idx, ps)\n                and _exec_segment_effect(seg_words, seg) == "close"):  # mutant: shadowed live close clears\n            live_exec = False'),],
+
         "nested return drops live stdin": (
             '    return bool(_prepass_end or dyn_exec or live_exec)',
             '    return bool(_prepass_end or dyn_exec)  # mutant: return drops live',
@@ -4438,7 +4468,7 @@ class StdinProgramMutationTests(unittest.TestCase):
                  "test_subshell_persistent_stdin_scoped", "test_find_ok_does_not_inherit_pipe",
                  "test_nested_pipe_inherits_stdin", "test_nested_conditional_close_keeps_taint",
                  "test_eval_shadowed_by_function", "test_fork_child_close_keeps_parent_taint",
-                 "test_forked_exec_never_taints_parent"]
+                 "test_forked_exec_never_taints_parent", "test_shadowed_exec_close_keeps_taint"]
 
     def _run(self, hook_text):
         with tempfile.TemporaryDirectory() as td:
