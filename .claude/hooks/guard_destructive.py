@@ -397,10 +397,11 @@ def same_shell_target_index(name, args, ctx):
     return i
 
 
-def _nested_argv_same_shell(words, ctx, ps, depth, fed=False, outer_funcs=None):
+def _nested_argv_same_shell(words, ctx, ps, depth, fed=False, outer_funcs=None,
+                            via_builtin=False):
     """Same-shell wrapper target: merge chain taint and cwd back to the parent."""
     sub = ctx.copy()
-    analyze_argv(words, sub, ps, depth, fed, outer_funcs)
+    analyze_argv(words, sub, ps, depth, fed, outer_funcs, via_builtin)
     if sub.tainted:
         ctx.tainted = True
     if sub.exec_out:
@@ -2774,7 +2775,10 @@ def _extract_function_defs(text, ps):
                 elif c == ")":
                     depth -= 1
                     if depth == 0:
-                        found = (clean[body_start_idx+1:i], i+1)
+                        # Keep the subshell parentheses: a paren body runs
+                        # in a fork, so its stdin changes must not leak to
+                        # the caller (CodeRabbit review, paren-body scope).
+                        found = ("(" + clean[body_start_idx+1:i] + ")", i+1)
                         break
                     if depth < 0:
                         found = None
@@ -2838,7 +2842,10 @@ def _extract_function_defs(text, ps):
                 elif c == ")":
                     depth -= 1
                     if depth == 0:
-                        found = (clean[body_start_idx+1:i], i+1)
+                        # Keep the subshell parentheses: a paren body runs
+                        # in a fork, so its stdin changes must not leak to
+                        # the caller (CodeRabbit review, paren-body scope).
+                        found = ("(" + clean[body_start_idx+1:i] + ")", i+1)
                         break
                     if depth < 0:
                         found = None
@@ -3378,7 +3385,8 @@ def command_name(w):
     return name
 
 
-def analyze_argv(words, ctx, ps, depth, fed=False, outer_funcs=None):
+def analyze_argv(words, ctx, ps, depth, fed=False, outer_funcs=None,
+                  via_builtin=False):
     if depth > MAX_DEPTH:
         raise Deny("depth", "command nesting too deep")
     # A program-naming environment variable anywhere in the command (prefix, export, env -S, a shell string) is denied.
@@ -3495,8 +3503,12 @@ def analyze_argv(words, ctx, ps, depth, fed=False, outer_funcs=None):
                 idx = same_shell_target_index(name, words[1:], ctx)
                 if idx is not None and command_name(words[1:][idx]) in SAME_SHELL_NAMES:
                     same_shell_consumed = words[1:][idx:]
+                    # Only `command`/`builtin` bypass a shadowing function;
+                    # `time` runs functions in the current shell, so the
+                    # builtin form is not assumed there.
                     _nested_argv_same_shell(same_shell_consumed, ctx, ps, depth + 1,
-                                            fed, outer_funcs)
+                                            fed, outer_funcs,
+                                            via_builtin=(name in ("command", "builtin")))
             for cand in wrapper_candidates(name, words[1:], ctx):
                 if same_shell_consumed is not None and cand == same_shell_consumed:
                     # Already validated above (its taint/cwd merged once):
@@ -3601,7 +3613,12 @@ def analyze_argv(words, ctx, ps, depth, fed=False, outer_funcs=None):
         # on the eval command itself does not persist (verified: restored
         # after the command), so it sets no persistent flag.
         _nested_text(" ".join(args), ctx, ps, depth + 1, fed=fed,
-                     outer_funcs=outer_funcs, merge_cwd=True, merge_exec=True)
+                     outer_funcs=outer_funcs, merge_cwd=True,
+                     merge_exec=(via_builtin or _func_call_name("eval", ps) not in (outer_funcs or {})))
+        # `command`/`builtin` bypass a shadowing `eval` function and run
+        # the builtin (verified on Bash); a bare `eval` with a shadowing
+        # function calls that function instead (its string is an argument,
+        # not code, and is judged as such by the function-call path).
     elif name in SHELLS:
         shell_rule(args, ctx, depth, fed)
     elif name in PS_HOSTS:
@@ -3747,7 +3764,7 @@ def _stdin_prepass(segs, ps, inherited_fed):
                     stack.append(("paren" if seg == SUBSHELL_OPEN else "coproc",
                                   fed, pfed, i))
                     pending_funcbody = False
-                exec_save.append(exec_flag)
+                exec_save.append((exec_flag, inh))
                 subshell_depth += 1
             elif seg in (BBRACE_OPEN, PSCOND_OPEN, PSBRACE_OPEN):
                 if len(stack) >= MAX_DEPTH:
@@ -3764,7 +3781,7 @@ def _stdin_prepass(segs, ps, inherited_fed):
                 want = ("paren", "funcbody") if seg == SUBSHELL_CLOSE else ("coproc",)
                 if stack and stack[-1][0] in want:
                     _, _efed, _epfed, opener_idx = stack.pop()
-                    exec_flag = exec_save.pop()
+                    exec_flag, inh = exec_save.pop()
                     if stack and stack[-1][0] == "function":
                         # A non-empty `(...)` group closed directly inside a
                         # `function` body is that body: the definition ends
@@ -3910,16 +3927,25 @@ def _stdin_prepass(segs, ps, inherited_fed):
             _suppressed = any(e[0] in ("function", "funcbody") for e in stack)
             _in_cond_here = any(e[0] in ("if", "loop", "case") for e in stack)
             if effect == "supply":
-                if not pfed and subshell_depth == 0 and not _suppressed:
+                # Apply to the active shell scope, even inside a subshell
+                # or coprocess: the matching close restores the parent
+                # state (verified: `(exec < f; read)` reads f, while a bare
+                # `(exec < f); read` does not). A function definition body
+                # never executes, so it stays suppressed. Pipeline stages
+                # have no close to restore at, so a pipe-fed exec still
+                # never leaks (fail-closed over-approximation kept).
+                if not _suppressed and (subshell_depth > 0 or not pfed):
                     exec_flag = True
             elif effect == "close":
                 # An explicit stdin close at this same shell level clears
                 # both the persistent flag and the inherited provenance
                 # (a closed stdin delivers EOF, no program). A close inside
                 # a conditional may never execute, so it never clears
-                # (fail-open otherwise). Forked positions never leak.
-                if (not pfed and subshell_depth == 0 and not _suppressed
-                        and not _in_cond_here):
+                # (fail-open otherwise). Forked positions apply to their own
+                # scope (restored at the close); pipeline stages have no
+                # close to restore at, so the pipe-fed mark is kept.
+                if (not _suppressed and not _in_cond_here
+                        and (subshell_depth > 0 or not pfed)):
                     exec_flag = False
                     inh = False
     return pipe, eff, is_stage, subdepth, exec_flag, suppressed, in_cond
@@ -3940,8 +3966,12 @@ def _eval_command_text(words, ps, all_funcs):
     j = 0
     while j < len(words) and (words[j] in KEYWORDS or ASSIGN.match(words[j])):
         j += 1
+    builtin_form = False
     for _ in range(4):
         if j < len(words) and words[j] in ("!", "builtin"):
+            if words[j] == "builtin":
+                # `builtin eval` runs the builtin even if a function shadows it.
+                builtin_form = True
             j += 1
             continue
         if j < len(words) and words[j] == "time":
@@ -3955,13 +3985,18 @@ def _eval_command_text(words, ps, all_funcs):
                 j += 1
             elif j < len(words) and words[j] in ("-v", "-V"):
                 return None
+            # A bare `command eval` (plain, -p or --) runs the builtin
+            # even if a function shadows it (only -v/-V merely describe).
+            builtin_form = True
             continue
         break
     if j >= len(words) or words[j] != "eval":
         return None
-    if _func_call_name("eval", ps) in (all_funcs or {}):
+    if not builtin_form and _func_call_name("eval", ps) in (all_funcs or {}):
         # A shell function shadows the builtin: the words are its
         # arguments, not code (handled by the function-call path).
+        # `command`/`builtin` bypass functions, so their form always runs
+        # the builtin (verified on Bash).
         return None
     rest, skip, out = words[j + 1:], False, []
     for w in rest:
@@ -4665,7 +4700,12 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None):
     # Issue #637: report the persistent stdin state for same-shell callers
     # (eval/function merging). Static pre-pass taint or any later dynamic
     # (function/eval) propagation both count as persistent.
-    return bool(_prepass_end or dyn_exec)
+    # Issue #637: report the persistent stdin state for same-shell callers
+    # (eval/function merging). The static pre-pass taint, any dynamic
+    # (function/eval) propagation, and live nested-eval findings all count:
+    # without live_exec, a doubly-nested eval (`eval 'eval "exec < f"'`)
+    # would lose the inner result when the middle text stays quoted.
+    return bool(_prepass_end or dyn_exec or live_exec)
 
 
 def load_registry(root):
