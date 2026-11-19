@@ -4578,8 +4578,9 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None):
             # this segment (MAJOR review 5971146586). Forked positions never
             # leak: a pipeline stage, subshell, or coprocess eval runs in a
             # child, so only unforked positions propagate to later segments.
+            # PowerShell has no eval/exec persistent-redirect semantics.
             ctx.exec_out = False
-            if not _stdin_stage[idx] and _stdin_subdepth[idx] == 0:
+            if not ps and not _stdin_stage[idx] and _stdin_subdepth[idx] == 0:
                 live_exec = True
         # A certain bare-exec close clears the live flag too (mirrors the
         # first-loop dyn handling): a conditional/loop close may never run,

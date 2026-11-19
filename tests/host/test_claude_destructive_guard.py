@@ -4215,7 +4215,7 @@ class StdinProgramMutationTests(unittest.TestCase):
             "                     outer_funcs=outer_funcs, merge_cwd=True, merge_exec=True)",
             "                     outer_funcs=outer_funcs, merge_cwd=True, merge_exec=False)  # mutant"),
         "eval forked leak allowed": (
-            "            if not _stdin_stage[idx] and _stdin_subdepth[idx] == 0:\n                live_exec = True",
+            "            if not ps and not _stdin_stage[idx] and _stdin_subdepth[idx] == 0:\n                live_exec = True",
             "            if True:  # mutant: forked eval leaks\n                live_exec = True"),
     }
     DETECTING = ["test_piped_bare_python_is_refused", "test_dash_names_stdin_program",
