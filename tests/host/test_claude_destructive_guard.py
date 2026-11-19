@@ -4035,14 +4035,23 @@ class StdinProgramTests(unittest.TestCase):
         # whose body reads it as a program (the first-loop eval scan carries
         # the effect to the call-site analysis; the scope machine alone
         # would miss bare-word calls).
+        # Residual asymmetry (fail-closed, rare): `function f { eval ...; }`
+        # (keyword form) analyses its body inline like any definition, so an
+        # uncalled definition may over-taint a later bare interpreter, while
+        # the `f() {...}` form suppresses definition bodies precisely. Both
+        # directions are safe; unifying them would change main-line
+        # definition-body analysis and is out of scope.
         for cmd in ["f() { node; }; eval 'exec < code.js'; f",
-                    "eval 'exec < code.js'; f() { node; }; f"]:
+                    "eval 'exec < code.js'; f() { node; }; f",
+                    "g() { eval 'exec < code.js'; }; f() { g; }; f; node",
+                    "f() { eval 'exec < code.js'; }; f; node"]:
             with self.subTest(cmd=cmd):
                 verdict, reason = self._d(cmd)
                 self.assertEqual(verdict, "DENY")
                 self.assertIn("stdin-program", reason)
         for cmd in ["f() { cat; }; eval 'exec < code.js'; f",
-                    "eval 'exec < code.js'; f() { cat; }; f"]:
+                    "eval 'exec < code.js'; f() { cat; }; f",
+                    "f() { g() { eval 'exec < code.js'; }; }; f; node"]:
             with self.subTest(cmd=cmd):
                 verdict, reason = self._d(cmd)
                 self.assertEqual(verdict, "ALLOW", reason)
@@ -4215,7 +4224,7 @@ class StdinProgramMutationTests(unittest.TestCase):
             "                     outer_funcs=outer_funcs, merge_cwd=True, merge_exec=True)",
             "                     outer_funcs=outer_funcs, merge_cwd=True, merge_exec=False)  # mutant"),
         "eval forked leak allowed": (
-            "            if not ps and not _stdin_stage[idx] and _stdin_subdepth[idx] == 0:\n                live_exec = True",
+            "            if (not ps and not _stdin_stage[idx] and _stdin_subdepth[idx] == 0\n                    and not _stdin_suppressed[idx]):\n                live_exec = True",
             "            if True:  # mutant: forked eval leaks\n                live_exec = True"),
     }
     DETECTING = ["test_piped_bare_python_is_refused", "test_dash_names_stdin_program",

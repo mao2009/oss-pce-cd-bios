@@ -3981,16 +3981,23 @@ def _body_sets_exec_stdin(body, ps, funcs=None, _seen=None, strict=True):
         try:
             words_b = words_of(seg_b, ps)
         except Deny:
-            return True
+            return strict
         if strip_redirections(words_b) == []:
             continue
         fkey_b, saw_coproc_b, _first_b = _call_target(words_b, ps)
-        if fkey_b is None or fkey_b not in funcs or fkey_b in _seen:
-            continue
         if _is_funcdef_name(segs, idx_b, ps):
             continue  # a nested definition installs without running
-        if saw_coproc_b or _stage[idx_b] or _subdepth[idx_b] > 0:
-            continue  # forked call: no leak back to the body level
+        if not saw_coproc_b and not _stage[idx_b] and _subdepth[idx_b] == 0 and not _supp[idx_b]:
+            # A same-shell eval in the body persistently redirects it, too
+            # (resolved before the function-call check: `eval` itself is
+            # not a function name, so it would otherwise be skipped).
+            _ev_b = _eval_command_text(words_b, ps, funcs)
+            if _ev_b is not None and _body_sets_exec_stdin(_ev_b, ps, funcs, _seen, strict):
+                return True
+        if fkey_b is None or fkey_b not in funcs or fkey_b in _seen:
+            continue
+        if saw_coproc_b or _stage[idx_b] or _subdepth[idx_b] > 0 or _supp[idx_b]:
+            continue  # forked call or nested definition: no leak back
         _seen.add(fkey_b)
         for _b in funcs[fkey_b]:
             if _b is None:
@@ -4577,10 +4584,12 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None):
             # A same-shell nested eval persistently redirected stdin during
             # this segment (MAJOR review 5971146586). Forked positions never
             # leak: a pipeline stage, subshell, or coprocess eval runs in a
-            # child, so only unforked positions propagate to later segments.
+            # child, and a definition body never executes, so only unforked
+            # positions outside definitions propagate to later segments.
             # PowerShell has no eval/exec persistent-redirect semantics.
             ctx.exec_out = False
-            if not ps and not _stdin_stage[idx] and _stdin_subdepth[idx] == 0:
+            if (not ps and not _stdin_stage[idx] and _stdin_subdepth[idx] == 0
+                    and not _stdin_suppressed[idx]):
                 live_exec = True
         # A certain bare-exec close clears the live flag too (mirrors the
         # first-loop dyn handling): a conditional/loop close may never run,
