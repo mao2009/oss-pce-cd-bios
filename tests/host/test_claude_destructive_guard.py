@@ -4925,10 +4925,15 @@ def mutant_detected_by_expected_failure(output, expected_test,
 
     A fixture, import, or runner ERROR: proves nothing about the mutant,
     so it fails the mutation check itself and is never detection. A FAIL:
-    of any other test is not detection either.
+    of any other test is not detection either. A FAIL caused by an internal
+    exception ("guard internal error" DENY) is also not detection: it proves
+    a crash, not the intended semantic misjudgment, so verdict/reason must
+    be checked, not just the test name.
     """
     lines = output.splitlines()
     if any(ln.startswith("ERROR:") for ln in lines):
+        return False
+    if "guard internal error" in output:
         return False
     return any(ln.startswith("FAIL: " + expected_test + " (")
                and expected_class in ln
@@ -5003,7 +5008,7 @@ class ChainRuleMutationTests(unittest.TestCase):
             '        _nested_text(" ".join(args), ctx, ps, depth + 1, merge_cwd=False)  # mutant'),
         "subshell scope open destroyed": (
             '                if not scope_stack and not bbrace_stack:\n                    # A top-level `( ... )` may be the whole first pipeline\n                    # stage: remember the pre-group cwd for the entry.\n                    scope_entry = (ctx.cwd, ctx.cwd_fuzzy)\n                    scope_just_closed = False\n                # run-13 (M1): the subshell owns its pipeline/list start:\n                # an inner `cd` moves the subshell\'s run, never the outer one.\n                run_scope.append((run_start, bg_start))\n                run_start = (ctx.cwd, ctx.cwd_fuzzy)\n                bg_start = (ctx.cwd, ctx.cwd_fuzzy)\n                scope_stack.append((ctx.cwd, ctx.cwd_fuzzy))\n                bg_scope.append((ctx.cwd, ctx.cwd_fuzzy))',
-            '                if not scope_stack and not bbrace_stack:\n                    # A top-level `( ... )` may be the whole first pipeline\n                    # stage: remember the pre-group cwd for the entry.\n                    scope_entry = ctx.cwd\n                    scope_just_closed = False\n                pass  # mutant: subshell scope destroyed'),
+            '                if not scope_stack and not bbrace_stack:\n                    # A top-level `( ... )` may be the whole first pipeline\n                    # stage: remember the pre-group cwd for the entry.\n                    scope_entry = (ctx.cwd, ctx.cwd_fuzzy)\n                    scope_just_closed = False\n                pass  # mutant: subshell scope destroyed'),
         "subshell cwd restore removed": (
             '        if seg == SUBSHELL_CLOSE:\n            if not ps and scope_stack:\n                ctx.cwd, ctx.cwd_fuzzy = scope_stack.pop()\n                if run_scope:\n                    run_start, bg_start = run_scope.pop()\n                if pipe_scope:\n                    pipe_entry, prev_was_pipe = pipe_scope.pop()\n                if bg_scope:\n                    bg_scope.pop()\n'
             '                if not scope_stack and not bbrace_stack:',
@@ -5012,7 +5017,7 @@ class ChainRuleMutationTests(unittest.TestCase):
         "subshell taint propagation removed": (
             '        if seg == SUBSHELL_CLOSE:\n            if not ps and scope_stack:\n                ctx.cwd, ctx.cwd_fuzzy = scope_stack.pop()\n                if run_scope:\n                    run_start, bg_start = run_scope.pop()\n                if pipe_scope:\n                    pipe_entry, prev_was_pipe = pipe_scope.pop()\n                if bg_scope:\n                    bg_scope.pop()\n'
             '                if not scope_stack and not bbrace_stack:',
-            '        if seg == SUBSHELL_CLOSE:\n            if not ps and scope_stack:\n                ctx.cwd = scope_stack.pop()\n                if run_scope:\n                    run_start, bg_start = run_scope.pop()\n                if pipe_scope:\n                    pipe_entry, prev_was_pipe = pipe_scope.pop()\n                if bg_scope:\n                    bg_scope.pop()\n'
+            '        if seg == SUBSHELL_CLOSE:\n            if not ps and scope_stack:\n                ctx.cwd, ctx.cwd_fuzzy = scope_stack.pop()\n                if run_scope:\n                    run_start, bg_start = run_scope.pop()\n                if pipe_scope:\n                    pipe_entry, prev_was_pipe = pipe_scope.pop()\n                if bg_scope:\n                    bg_scope.pop()\n'
             '                ctx.tainted = False  # mutant: subshell taint dropped\n'
             '                if not scope_stack and not bbrace_stack:'),
         "cd cwd update removed": (
@@ -5044,11 +5049,11 @@ class ChainRuleMutationTests(unittest.TestCase):
             'SAME_SHELL_NAMES = frozenset({"command", "builtin"}) | CD_NAMES  # mutant: eval cwd lost'),
         "powershell paren cwd wrongly restored": (
             '        if seg == SUBSHELL_OPEN:\n            if not ps:\n                if prev_was_pipe and pipe_entry is not None:\n                    # A group right after `|` is the next stage: it forks\n                    # from the entry, and inner commands must not see or\n                    # move the outer pipeline state.\n                    ctx.cwd, ctx.cwd_fuzzy = pipe_entry\n                pipe_scope.append((pipe_entry, prev_was_pipe))\n                pipe_entry = None\n                prev_was_pipe = False\n                if not scope_stack and not bbrace_stack:\n                    # A top-level `( ... )` may be the whole first pipeline\n                    # stage: remember the pre-group cwd for the entry.\n                    scope_entry = (ctx.cwd, ctx.cwd_fuzzy)\n                    scope_just_closed = False\n                # run-13 (M1): the subshell owns its pipeline/list start:\n                # an inner `cd` moves the subshell\'s run, never the outer one.\n                run_scope.append((run_start, bg_start))\n                run_start = (ctx.cwd, ctx.cwd_fuzzy)\n                bg_start = (ctx.cwd, ctx.cwd_fuzzy)\n                scope_stack.append((ctx.cwd, ctx.cwd_fuzzy))\n                bg_scope.append((ctx.cwd, ctx.cwd_fuzzy))\n            continue\n        if seg == SUBSHELL_CLOSE:\n            if not ps and scope_stack:\n',
-            '        if seg == SUBSHELL_OPEN:\n            if True:  # mutant: ps paren wrongly scoped\n                if prev_was_pipe and pipe_entry is not None:\n                    # A group right after `|` is the next stage: it forks\n                    # from the entry, and inner commands must not see or\n                    # move the outer pipeline state.\n                    ctx.cwd = pipe_entry\n                pipe_scope.append((pipe_entry, prev_was_pipe))\n                pipe_entry = None\n                prev_was_pipe = False\n                if not scope_stack and not bbrace_stack:\n                    # A top-level `( ... )` may be the whole first pipeline\n                    # stage: remember the pre-group cwd for the entry.\n                    scope_entry = ctx.cwd\n                    scope_just_closed = False\n                run_scope.append((run_start, bg_start))\n                run_start = (ctx.cwd, ctx.cwd_fuzzy)\n                bg_start = (ctx.cwd, ctx.cwd_fuzzy)\n                scope_stack.append(ctx.cwd)\n                bg_scope.append(ctx.cwd)\n            continue\n        if seg == SUBSHELL_CLOSE:\n            if scope_stack:  # mutant\n'),
+            '        if seg == SUBSHELL_OPEN:\n            if True:  # mutant: ps paren wrongly scoped\n                if prev_was_pipe and pipe_entry is not None:\n                    # A group right after `|` is the next stage: it forks\n                    # from the entry, and inner commands must not see or\n                    # move the outer pipeline state.\n                    ctx.cwd, ctx.cwd_fuzzy = pipe_entry\n                pipe_scope.append((pipe_entry, prev_was_pipe))\n                pipe_entry = None\n                prev_was_pipe = False\n                if not scope_stack and not bbrace_stack:\n                    # A top-level `( ... )` may be the whole first pipeline\n                    # stage: remember the pre-group cwd for the entry.\n                    scope_entry = (ctx.cwd, ctx.cwd_fuzzy)\n                    scope_just_closed = False\n                run_scope.append((run_start, bg_start))\n                run_start = (ctx.cwd, ctx.cwd_fuzzy)\n                bg_start = (ctx.cwd, ctx.cwd_fuzzy)\n                scope_stack.append((ctx.cwd, ctx.cwd_fuzzy))\n                bg_scope.append((ctx.cwd, ctx.cwd_fuzzy))\n            continue\n        if seg == SUBSHELL_CLOSE:\n            if scope_stack:  # mutant\n'),
 
         "pipeline over-taint": (
             '        if prev_was_pipe and not ps and pipe_entry is not None:\n            ctx.cwd, ctx.cwd_fuzzy = pipe_entry',
-            '        if prev_was_pipe and not ps and pipe_entry is not None:\n            ctx.cwd = pipe_entry\n            ctx.tainted = True  # mutant: pipe over-taint'),
+            '        if prev_was_pipe and not ps and pipe_entry is not None:\n            ctx.cwd, ctx.cwd_fuzzy = pipe_entry\n            ctx.tainted = True  # mutant: pipe over-taint'),
         "or-list treated as pipeline": (
             '                if nxt == "|":\n                    i += 1  # consume ||: ends an open pipeline, not the list',
             '                if nxt == "|":\n                    segs.append(PIPE_BOUND)  # mutant: || as pipeline\n                    redirs.append([])\n                    i += 1'),
@@ -5149,7 +5154,7 @@ class ChainRuleMutationTests(unittest.TestCase):
             '            entry = cond_stack[-1]\n            entry["then_taint"] = entry["then_taint"] or ctx.tainted\n            if entry["arm"] is None:\n                entry["arm"] = (ctx.cwd, ctx.cwd_fuzzy, ctx.tainted)\n            ctx.cwd = entry["arm"][0]\n            ctx.tainted = entry["arm"][2]  # mutant: else certainty not restored'),
         "powershell else stash restore removed": (
             '            entry = ps_arm_stack[-1]\n            entry["then_taint"] = entry["then_taint"] or ctx.tainted\n            arm = entry["arm"]\n            if arm is None:\n                arm = (entry["cwd"], entry["fuzzy"], entry["tainted"])\n            ctx.cwd, ctx.cwd_fuzzy, ctx.tainted = arm\n            ps_arm_moved = entry["moved"]\n            ps_arm_taint = entry["then_taint"]',
-            '            entry = cond_stack[-1]  # mutant: ps else uses outer entry\n            entry["then_taint"] = entry["then_taint"] or ctx.tainted\n            ctx.cwd = entry["cwd"]\n            ctx.tainted = entry["tainted"]'),
+            '            entry = cond_stack[-1] if cond_stack else ps_arm_stack[-1]  # mutant: ps else uses outer entry\n            entry["then_taint"] = entry["then_taint"] or ctx.tainted\n            ctx.cwd, ctx.cwd_fuzzy, ctx.tainted = (entry["cwd"], entry["fuzzy"], entry["tainted"])'),
         "powershell arm outcome inheritance removed": (
             '            if ps_arm_moved or ps_arm_taint:\n                # run-13 (M3): this is an else/elseif body: inherit the\n                # then-arm outcome so the close joins every arm.\n                cond_stack[-1]["moved"] = cond_stack[-1]["moved"] or ps_arm_moved\n                cond_stack[-1]["then_taint"] = cond_stack[-1]["then_taint"] or ps_arm_taint\n                ps_arm_moved = False\n                ps_arm_taint = False\n            # run-12 P7k3/RZ4V: every block open snapshots the live arm\n            # state, so an `elseif` condition\'s own writes are kept for\n            # a later arm instead of being replaced by stale state.\n            cond_stack[-1]["arm"] = (ctx.cwd, ctx.cwd_fuzzy, ctx.tainted)',
             '            if False:  # mutant: ps arm outcome not inherited\n                pass'),
@@ -5309,6 +5314,18 @@ class ChainRuleMutationHelperTests(unittest.TestCase):
                "(test_claude_destructive_guard.ChainRulePieceDTests)\n")
         self.assertFalse(mutant_detected_by_expected_failure(
             out, "test_eval_cd_moves_calling_shell_cwd"))
+
+    def test_mutation_detection_rejects_internal_error(self):
+        # False-positive guard: a mutant that crashes to "guard internal
+        # error" DENY must not count as semantic detection, even when the
+        # expected test FAILs by name (verdict/reason, not just FAIL:).
+        out = ("test_powershell_grouping_shares_runspace "
+               "(test_claude_destructive_guard.ChainRulePieceDTests) ... FAIL\n"
+               "FAIL: test_powershell_grouping_shares_runspace "
+               "(test_claude_destructive_guard.ChainRulePieceDTests)\n"
+               "AssertionError: False is not true : guard internal error: test crashed\n")
+        self.assertFalse(mutant_detected_by_expected_failure(
+            out, "test_powershell_grouping_shares_runspace"))
 
     def test_mutation_detection_rejects_unexpected_test_failure(self):
         out = ("FAIL: test_some_other "
