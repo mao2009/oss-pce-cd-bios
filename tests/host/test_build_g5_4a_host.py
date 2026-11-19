@@ -68,6 +68,33 @@ class BuildMemopen4AHostTests(unittest.TestCase):
             self.assertNotIn("$4A", man["experimental_slots"])
             self.assertNotIn("src/ex_memopen.s", man["experimental_sources"])
 
+    def test_stub_default_matches_pre_4a_baseline(self):
+        # MEDIUM (review 5967514587): stub-default G5 ROM must be
+        # byte-for-byte identical to the pre-$4A baseline (no unrelated BOOT
+        # or link-order drift). Baseline generated once at fa694281 (Merge
+        # PR #812, before 411af7b0 added src/ex_memopen.s) with identical
+        # inputs: normal DEV ROM via build_rom --mode debug (pinned cc65),
+        # sel=0x109, track=2, mode=debug, defines=["-D", "IPL_PUBLIC"],
+        # cd_read="commercial" (default), variant="byteid-stub" for both.
+        # Old SHA256 (256KiB): 9a7a2c00bed665a9d90030b824ad3c8e7d7a81c2eec71f824d6e8fb59ce00bc6.
+        # New stub SHA256 must match (diff 0 bytes); experimental wiring is
+        # covered separately and is NOT byte-identical by design.
+        import sys
+        import tempfile
+        import hashlib
+        sys.path[:0] = [str(ROOT / "tools")]
+        import build_ipl_loader_g5_2base as b2
+        with tempfile.TemporaryDirectory(prefix="pce-4a-byteid-") as td:
+            rom, syms = b2.build_ipl_loader_g5_rom(
+                self.orig, Path(td), 0x109, "debug", "byteid-stub",
+                ["-D", "IPL_PUBLIC"], track=2, cd_4a="stub")
+            data = rom.read_bytes()
+            self.assertEqual(len(data), 262144)
+            self.assertNotIn("ex_memopen_entry", syms)
+            pinned = "9a7a2c00bed665a9d90030b824ad3c8e7d7a81c2eec71f824d6e8fb59ce00bc6"
+            self.assertEqual(hashlib.sha256(data).hexdigest(), pinned,
+                             "stub-default G5 ROM differs from pre-$4A baseline fa694281")
+
     def test_builder_experimental_wiring(self):
         import sys
         import tempfile
@@ -89,9 +116,12 @@ class BuildMemopen4AHostTests(unittest.TestCase):
                             0xD0, 0x05, 0x7A, 0xFA, 0x68, 0x28, 0x60,
                             0x7A, 0xFA, 0x68, 0x28, 0x38, 0x60))
             self.assertEqual(data[body - 0xE000:body - 0xE000 + 21], want)
-            # No memory-write, no MPR-write, no control-transfer opcodes in
-            # the body: the byte set is exactly the allowlisted instruction
-            # stream (PHP/PHA/PHX/PHY/TMA/CMP/BNE/PLY/PLX/PLA/PLP/SEC/RTS).
+            # No memory-write except transient caller-stack pushes (JSR return
+            # + PHP/PHA/PHX/PHY), no MPR-write (no TAM), no MMIO: the byte set
+            # is exactly the allowlisted instruction stream
+            # (PHP/PHA/PHX/PHY/TMA/CMP/BNE/PLY/PLX/PLA/PLP/SEC/RTS). The opcode
+            # allowlist pins the byte shape only; it is not a side-effect proof
+            # (stack writes are real, MPR1=$F8 is a caller precondition).
             allowed = {0x08, 0x48, 0xDA, 0x5A, 0x43, 0x02, 0xC9, 0xF8,
                        0xD0, 0x05, 0x7A, 0xFA, 0x68, 0x28, 0x60, 0x38}
             for i, b in enumerate(want):
