@@ -791,13 +791,14 @@ def check_redirect(raw, op=">", ctx=None, ps=False):
 def split_segments(text, ps=False):
     """Split on unquoted ; & | ( ) and newlines (plus "{}," for PowerShell).
 
-    Returns (segments, substitution bodies, redirect targets per segment, pipe-fed flags per segment,
-    substitution parent segment indices parallel to substitution bodies). Each substitution body
-    belongs to the segment being built when "$(...)", backticks or "<(...)"/">(...)" was seen
-    (parent index = len(segments) at extraction, i.e. the segment that will hold its SUBST placeholder).
-    A redirect target is the raw word after each unquoted '>' ("" when there is none).
-    A redirect target is the raw word after each unquoted '>' ("" when there is none). A pipe-fed flag
-    is True when the segment's stdin is a pipe from the previous segment: the separator that starts it
+    Returns (segments, substitution bodies, redirect targets per segment).
+    Each substitution body belongs to the segment being built when "$(...)",
+    backticks or "<(...)"/">(...)" was seen (i.e. the segment that will hold
+    its SUBST placeholder). A redirect target is the raw word after each
+    unquoted '>' ("" when there is none). Stdin provenance (which segment
+    is pipe-fed) is NOT returned here; `_stdin_prepass` computes it over
+    these segments. A pipe-fed flag is True when the segment's stdin is a
+    pipe from the previous segment: the separator that starts it
     is a single `|` (not `||`, and `|&` keeps the pipe through the `&`). A whitespace-only segment (a line
     continuation after `|`, or `(`/`{` directly after a pipe) carries the flag over without changing it.
     A `;` (or newline, `&`, `||`, `,` for PowerShell) ends the pipe for the next segment only outside
@@ -1850,8 +1851,13 @@ def find_rule(args, ps, ctx, depth, fed=False):
             # Piece D (#636): -exec runs in a child process, so its cwd
             # never reaches the parent; taint still merges (a child can
             # change the filesystem the parent later judges). Issue #637:
-            # the child shares this segment's stdin, so fed is passed.
-            _nested_argv(args[i + 1:j], ctx, ps, depth + 1, fed)
+            # the -exec/-execdir child shares this segment's stdin, so fed
+            # is passed. A -ok/-okdir child does not: GNU find consumes the
+            # pipe itself for the confirmation answer and hands the child
+            # /dev/null (verified: `echo | find -ok cat` shows the child
+            # stdin closed), so only the argv is validated, untainted.
+            _nested_argv(args[i + 1:j], ctx, ps, depth + 1,
+                         fed if a in ("-exec", "-execdir") else False)
 
 
 # Commands on this list must not run another program, whatever their options. sort (--compress-program=PROG) and
@@ -2721,6 +2727,12 @@ def _extract_function_defs(text, ps):
         name = m.group(1)
         key = _func_key(name, ps)
         opener = m.group(2)
+        # MAJOR (Issue #637): a `(...)` body runs in a subshell, so its
+        # `exec` never reaches the caller. The stored body keeps its
+        # parentheses, so the stdin scan sees the fork boundary (a brace
+        # body stays bare: it runs in the calling shell). Verified on Bash:
+        # `f() (exec < f); f; node` leaves the caller stdin alone, while
+        # `f() { exec < f; }; f; node` redirects it.
         body_start_idx = m.start(2)  # index of "{" or "("
         # Skip if opener inside quotes/comments? Regex over-matches quoted (fail-closed safe: over-denial). Accept.
         if opener == "{":
@@ -2775,10 +2787,7 @@ def _extract_function_defs(text, ps):
                 elif c == ")":
                     depth -= 1
                     if depth == 0:
-                        # Keep the subshell parentheses: a paren body runs
-                        # in a fork, so its stdin changes must not leak to
-                        # the caller (CodeRabbit review, paren-body scope).
-                        found = ("(" + clean[body_start_idx+1:i] + ")", i+1)
+                        found = (clean[body_start_idx+1:i], i+1)
                         break
                     if depth < 0:
                         found = None
@@ -2788,6 +2797,7 @@ def _extract_function_defs(text, ps):
                 body = None
             else:
                 body, _end = found
+                body = "(" + body + ")"  # subshell scope marker (see above)
         defs.setdefault(key, []).append(body)
     # function name [()] { ... } / ( ... )  (Bash + PowerShell)
     for m in _re.finditer(r'(?<![^\s;|&<>()=])function\s+([^\s;|&<>()=]+)\s*(\(\s*\))?\s*(\{|\()', clean):
@@ -2842,16 +2852,15 @@ def _extract_function_defs(text, ps):
                 elif c == ")":
                     depth -= 1
                     if depth == 0:
-                        # Keep the subshell parentheses: a paren body runs
-                        # in a fork, so its stdin changes must not leak to
-                        # the caller (CodeRabbit review, paren-body scope).
-                        found = ("(" + clean[body_start_idx+1:i] + ")", i+1)
+                        found = (clean[body_start_idx+1:i], i+1)
                         break
                     if depth < 0:
                         found = None
                         break
                 i += 1
             body = None if found is None else found[0]
+            if body is not None and opener == "(":
+                body = "(" + body + ")"  # subshell scope marker (see above)
         defs.setdefault(key, []).append(body)
     return defs
 
@@ -3609,16 +3618,16 @@ def analyze_argv(words, ctx, ps, depth, fed=False, outer_funcs=None,
         # runs in the calling shell, so this segment's stdin and visible
         # function definitions are passed through, and a persistent stdin
         # redirect inside the eval text (e.g. `exec < file`) moves the
-        # parent's stdin too (merge_exec=True; verified on Bash). A redirect
-        # on the eval command itself does not persist (verified: restored
-        # after the command), so it sets no persistent flag.
+        # parent's stdin too when this eval runs the builtin (merge_exec;
+        # verified on Bash). A `command`/`builtin` prefix bypasses a
+        # shadowing `eval` function and always runs the builtin, while a
+        # bare `eval` with a shadowing function calls that function instead
+        # (its string is an argument, not code). A redirect on the eval
+        # command itself does not persist (verified: restored after the
+        # command), so it sets no persistent flag.
         _nested_text(" ".join(args), ctx, ps, depth + 1, fed=fed,
                      outer_funcs=outer_funcs, merge_cwd=True,
                      merge_exec=(via_builtin or _func_call_name("eval", ps) not in (outer_funcs or {})))
-        # `command`/`builtin` bypass a shadowing `eval` function and run
-        # the builtin (verified on Bash); a bare `eval` with a shadowing
-        # function calls that function instead (its string is an argument,
-        # not code, and is judged as such by the function-call path).
     elif name in SHELLS:
         shell_rule(args, ctx, depth, fed)
     elif name in PS_HOSTS:
@@ -3729,6 +3738,10 @@ def _stdin_prepass(segs, ps, inherited_fed):
     pfed = False
     exec_flag = False
     exec_save = []
+    inh_save = []  # inherited-stdin snapshots per open subshell/coprocess
+    # (Issue #637 MAJOR: an inner `exec <&-` closes only the fork's fd 0;
+    # the enclosing text keeps its inherited stream, restored at the
+    # boundary, exactly like the persistent exec flag).
     stack = []  # (kind, entered_fed, entered_pfed, opener_idx)
     # kinds: if/loop/case, function (the `function` keyword), funcbody (an
     # `f() {...}` / `f() (...)` body), paren, coproc, bbrace, pscond, psbrace.
@@ -3764,7 +3777,8 @@ def _stdin_prepass(segs, ps, inherited_fed):
                     stack.append(("paren" if seg == SUBSHELL_OPEN else "coproc",
                                   fed, pfed, i))
                     pending_funcbody = False
-                exec_save.append((exec_flag, inh))
+                exec_save.append(exec_flag)
+                inh_save.append(inh)
                 subshell_depth += 1
             elif seg in (BBRACE_OPEN, PSCOND_OPEN, PSBRACE_OPEN):
                 if len(stack) >= MAX_DEPTH:
@@ -3781,7 +3795,8 @@ def _stdin_prepass(segs, ps, inherited_fed):
                 want = ("paren", "funcbody") if seg == SUBSHELL_CLOSE else ("coproc",)
                 if stack and stack[-1][0] in want:
                     _, _efed, _epfed, opener_idx = stack.pop()
-                    exec_flag, inh = exec_save.pop()
+                    exec_flag = exec_save.pop()
+                    inh = inh_save.pop()
                     if stack and stack[-1][0] == "function":
                         # A non-empty `(...)` group closed directly inside a
                         # `function` body is that body: the definition ends
@@ -3927,25 +3942,22 @@ def _stdin_prepass(segs, ps, inherited_fed):
             _suppressed = any(e[0] in ("function", "funcbody") for e in stack)
             _in_cond_here = any(e[0] in ("if", "loop", "case") for e in stack)
             if effect == "supply":
-                # Apply to the active shell scope, even inside a subshell
-                # or coprocess: the matching close restores the parent
-                # state (verified: `(exec < f; read)` reads f, while a bare
-                # `(exec < f); read` does not). A function definition body
-                # never executes, so it stays suppressed. Pipeline stages
-                # have no close to restore at, so a pipe-fed exec still
-                # never leaks (fail-closed over-approximation kept).
-                if not _suppressed and (subshell_depth > 0 or not pfed):
+                # MAJOR (Issue #637): a persistent redirect applies to the
+                # active shell scope, including a subshell/coprocess body
+                # (`(exec < f; node)` reads f there, verified on Bash). The
+                # matching close restores the saved outer state, so a
+                # completed fork never leaks out (fail-closed).
+                if not pfed and not _suppressed:
                     exec_flag = True
             elif effect == "close":
                 # An explicit stdin close at this same shell level clears
                 # both the persistent flag and the inherited provenance
                 # (a closed stdin delivers EOF, no program). A close inside
                 # a conditional may never execute, so it never clears
-                # (fail-open otherwise). Forked positions apply to their own
-                # scope (restored at the close); pipeline stages have no
-                # close to restore at, so the pipe-fed mark is kept.
-                if (not _suppressed and not _in_cond_here
-                        and (subshell_depth > 0 or not pfed)):
+                # (fail-open otherwise). Forked positions never leak: the
+                # saved state is restored at the fork's closing boundary.
+                if (not pfed and not _suppressed
+                        and not _in_cond_here):
                     exec_flag = False
                     inh = False
     return pipe, eff, is_stage, subdepth, exec_flag, suppressed, in_cond
@@ -3966,12 +3978,8 @@ def _eval_command_text(words, ps, all_funcs):
     j = 0
     while j < len(words) and (words[j] in KEYWORDS or ASSIGN.match(words[j])):
         j += 1
-    builtin_form = False
     for _ in range(4):
         if j < len(words) and words[j] in ("!", "builtin"):
-            if words[j] == "builtin":
-                # `builtin eval` runs the builtin even if a function shadows it.
-                builtin_form = True
             j += 1
             continue
         if j < len(words) and words[j] == "time":
@@ -3985,18 +3993,13 @@ def _eval_command_text(words, ps, all_funcs):
                 j += 1
             elif j < len(words) and words[j] in ("-v", "-V"):
                 return None
-            # A bare `command eval` (plain, -p or --) runs the builtin
-            # even if a function shadows it (only -v/-V merely describe).
-            builtin_form = True
             continue
         break
     if j >= len(words) or words[j] != "eval":
         return None
-    if not builtin_form and _func_call_name("eval", ps) in (all_funcs or {}):
+    if _func_call_name("eval", ps) in (all_funcs or {}):
         # A shell function shadows the builtin: the words are its
         # arguments, not code (handled by the function-call path).
-        # `command`/`builtin` bypass functions, so their form always runs
-        # the builtin (verified on Bash).
         return None
     rest, skip, out = words[j + 1:], False, []
     for w in rest:
@@ -4169,14 +4172,22 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None):
     # scope machine below observes the same taint the checks here saw.
     dyn_exec = False
     dyn_at = [False] * len(segs)
+    dyn_save = []  # dynamic stdin snapshots per open subshell/coprocess
+    # (Issue #637 MAJOR: function/eval persistent effects apply inside the
+    # active fork as well; the saved outer state is restored at the fork's
+    # close so a completed fork never leaks back. A brace group runs in the
+    # calling shell, so it shares the dyn flag with no save/restore.)
     for idx, seg in enumerate(segs):
-        if seg == SUBSHELL_OPEN or seg == SUBSHELL_CLOSE:
+        if seg == SUBSHELL_OPEN or seg == COPROC_OPEN:
+            dyn_save.append(dyn_exec)
+            continue
+        if seg == SUBSHELL_CLOSE or seg == COPROC_CLOSE:
+            if dyn_save:
+                dyn_exec = dyn_save.pop()
             continue
         if seg == PIPE_BOUND or seg == BG_BOUND or seg == CMD_BOUND:
             continue
         if seg == PIPE_END:
-            continue
-        if seg == COPROC_OPEN or seg == COPROC_CLOSE:
             continue
         if seg == PSCOND_OPEN or seg == PSCOND_CLOSE:
             continue
@@ -4226,7 +4237,7 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None):
                 # over builtins/NON_EXEC, so the local function resolves before
                 # the NON_EXEC shortcut (fail-closed for pipe-fed
                 # `cat() { node; }; ... | cat`).
-                if (not _stdin_stage[idx] and _stdin_subdepth[idx] == 0
+                if (not _stdin_stage[idx]
                         and not _saw_coproc and not _stdin_suppressed[idx]):
                     for _body in all_funcs[_fkey]:
                         if _body is None or _body_sets_exec_stdin(_body, ps, all_funcs):
@@ -4241,7 +4252,7 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None):
         # positions never leak, and unparseable text is left to the precise
         # nested analysis (fail-closed DENY there). The scope-machine loop
         # below additionally merges the precise nested result.
-        if (not ps and not _stdin_stage[idx] and _stdin_subdepth[idx] == 0
+        if (not ps and not _stdin_stage[idx]
                 and not _stdin_suppressed[idx]):
             _ev_text = _eval_command_text(seg_words, ps, all_funcs)
             if _ev_text is not None and _body_sets_exec_stdin(
@@ -4305,7 +4316,16 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None):
     # Issue #637: eval-discovered persistent stdin (same-shell nested eval)
     # is found during this loop, after the first loop snapshotted dyn_at.
     live_exec = False
+    live_save = []  # resolved-effect snapshots per open subshell/coprocess
+    # (Issue #637 MAJOR: same scoping as dyn_exec in the first loop; a
+    # fork-local discovery never leaks past the fork's close. Kept in this
+    # separate block so the scope-machine anchors below stay untouched.)
     for idx, (seg, ops) in enumerate(zip(segs, redirs)):
+        if seg == SUBSHELL_OPEN or seg == COPROC_OPEN:
+            live_save.append(live_exec)
+        elif seg == SUBSHELL_CLOSE or seg == COPROC_CLOSE:
+            if live_save:
+                live_exec = live_save.pop()
         if seg == SUBSHELL_OPEN:
             if not ps:
                 if prev_was_pipe and pipe_entry is not None:
@@ -4653,14 +4673,14 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None):
             # positions outside definitions propagate to later segments.
             # PowerShell has no eval/exec persistent-redirect semantics.
             ctx.exec_out = False
-            if (not ps and not _stdin_stage[idx] and _stdin_subdepth[idx] == 0
+            if (not ps and not _stdin_stage[idx]
                     and not _stdin_suppressed[idx]):
                 live_exec = True
         # A certain bare-exec close clears the live flag too (mirrors the
         # first-loop dyn handling): a conditional/loop close may never run,
-        # so only unconditional closes clear (fail-open otherwise).
+        # so only unconditional closes clear (fail-open otherwise). The
+        # save/restore above scopes the clear to the active fork.
         if (live_exec and not ps and not _stdin_stage[idx]
-                and _stdin_subdepth[idx] == 0
                 and not _stdin_suppressed[idx] and not _stdin_in_cond[idx]
                 and _exec_segment_effect(seg_words, seg) == "close"):
             live_exec = False
@@ -4700,11 +4720,10 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None):
     # Issue #637: report the persistent stdin state for same-shell callers
     # (eval/function merging). Static pre-pass taint or any later dynamic
     # (function/eval) propagation both count as persistent.
-    # Issue #637: report the persistent stdin state for same-shell callers
-    # (eval/function merging). The static pre-pass taint, any dynamic
-    # (function/eval) propagation, and live nested-eval findings all count:
-    # without live_exec, a doubly-nested eval (`eval 'eval "exec < f"'`)
-    # would lose the inner result when the middle text stays quoted.
+    # MAJOR (Issue #637): a persistent stdin effect found by resolved
+    # dispatch (live_exec) counts like the static findings: an enclosing
+    # same-shell eval inherits it through merge_exec. Static and resolved
+    # findings are scoped identically, so no fork-local effect leaks here.
     return bool(_prepass_end or dyn_exec or live_exec)
 
 
