@@ -3607,7 +3607,8 @@ class StdinProgramTests(unittest.TestCase):
                     "node inspect script.js",
                     "echo x | node inspect script.js"]:
             with self.subTest(cmd=cmd):
-                self.assertEqual(self._d(cmd)[0], "ALLOW")
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "ALLOW", reason)
 
     def test_node_option_forms_classified(self):
         # Option order, separate vs attached values, `--`, concatenated shorts,
@@ -3719,7 +3720,8 @@ class StdinProgramTests(unittest.TestCase):
                     "echo hi | if true; then cat; fi; node --no-warnings",
                     "echo hi | (cat); node --no-warnings"]:
             with self.subTest(cmd=cmd):
-                self.assertEqual(self._d(cmd)[0], "ALLOW")
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "ALLOW", reason)
 
     def test_nested_shell_inherits_pipe(self):
         # MAJOR-2: outer pipe-fed stdin is inherited by inner sh -c strings.
@@ -3750,14 +3752,17 @@ class StdinProgramTests(unittest.TestCase):
         # stdin-program, so removing the depth limit would ALLOW and be caught).
         # Use a data-only nested command (`cat` reads stdin as data, never as
         # program) so the DENY must come from the depth limit itself.
-        deep = "echo hi | " + "(" * 9 + "cat" + ")" * 9
+        # Spaced parens are real subshells in Bash (unspaced `(((...)))`
+        # parses as arithmetic, not nesting): the depth limit counts the
+        # same grouping the shell would actually fork.
+        deep = "echo hi | " + "( " * 9 + "cat" + " )" * 9
         verdict, reason = self._d(deep)
         self.assertEqual(verdict, "DENY")
         self.assertIn("depth", reason, reason)
         self.assertNotIn("unknown", reason)
         self.assertNotIn("external command", reason)
         # An otherwise equivalent shallow command passes (no over-denial).
-        shallow = "echo hi | ((cat))"
+        shallow = "echo hi | ( ( cat ) )"
         self.assertEqual(self._d(shallow)[0], "ALLOW")
 
     def test_command_substitution_inherits_pipe(self):
@@ -3795,7 +3800,8 @@ class StdinProgramTests(unittest.TestCase):
                     'f() { cat; }; printf \'data\\n\' | echo "$(f)"',
                     'f() { g; }; g() { cat; }; printf \'data\\n\' | echo "$(f)"']:
             with self.subTest(cmd=cmd):
-                self.assertEqual(self._d(cmd)[0], "ALLOW")
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "ALLOW", reason)
 
     def test_function_calls_inherit_stdin(self):
         # MAJOR function: pipe-fed/redirected calls to locally defined functions
@@ -3842,7 +3848,8 @@ class StdinProgramTests(unittest.TestCase):
                     "node script.js",
                     "python3 -m unittest"]:
             with self.subTest(cmd=cmd):
-                self.assertEqual(self._d(cmd)[0], "ALLOW")
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "ALLOW", reason)
 
     def test_function_names_case_sensitive_bash(self):
         # Review 5967514206 MAJOR: Bash function names are case-sensitive
@@ -3892,7 +3899,8 @@ class StdinProgramTests(unittest.TestCase):
                     "echo data | node script.js",
                     "echo data | sh -c 'cat'"]:
             with self.subTest(cmd=cmd):
-                self.assertEqual(self._d(cmd)[0], "ALLOW")
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "ALLOW", reason)
 
     def test_compound_redirect_inherits_stdin(self):
         # MAJOR-1 compound redirect: "if ...; fi < file" taints inner members.
@@ -3921,7 +3929,8 @@ class StdinProgramTests(unittest.TestCase):
                     "(node) > out.log",
                     "echo data | cat; node script.js"]:
             with self.subTest(cmd=cmd):
-                self.assertEqual(self._d(cmd)[0], "ALLOW")
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "ALLOW", reason)
 
     def test_exec_redirect_persists_stdin(self):
         # MAJOR (independent review): bare `exec` with an stdin redirect and
@@ -3978,7 +3987,8 @@ class StdinProgramTests(unittest.TestCase):
                     "f() { exec < code.js; }; node",
                     "echo hi | f() { node; }",
                     "f() { exec > o; }; f; node"]:
-                self.assertEqual(self._d(cmd)[0], "ALLOW")
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "ALLOW", reason)
 
     def test_function_exec_persists_stdin(self):
         # A same-shell function call whose body persistently redirects stdin
@@ -4013,7 +4023,8 @@ class StdinProgramTests(unittest.TestCase):
                     "(node) > out.log",
                     "if true; then node; fi 3< data.txt"]:
             with self.subTest(cmd=cmd):
-                self.assertEqual(self._d(cmd)[0], "ALLOW")
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "ALLOW", reason)
         for cmd in ["(node) 0< data.txt",
                     "(node) < data.txt",
                     "node 0<input.txt",
@@ -4256,10 +4267,14 @@ class PythonArgvMutationTests(unittest.TestCase):
             with self.subTest(mutant=name):
                 self.assertEqual(original.count(old), 1, "mutation target not found exactly once: " + name)
                 code, out = self._run(original.replace(old, new))
-                failing = [re.match(r"(?:FAIL|ERROR): (\S+) \(", ln) for ln in out.splitlines()
-                           if ln.startswith(("FAIL:", "ERROR:"))]
+                # Only a named assertion failure (FAIL:) counts; runs with
+                # ERROR: entries or guard internal errors never count.
+                failing = [re.match(r"FAIL: (\S+) \(", ln) for ln in out.splitlines()
+                           if ln.startswith("FAIL:")]
                 names = [m.group(1) for m in failing if m]
-                detected = any(n in self.DETECTING for n in names)
+                has_error = any(ln.startswith("ERROR:") for ln in out.splitlines())
+                has_internal = "guard internal error" in out
+                detected = (not has_error and not has_internal) and any(n in self.DETECTING for n in names)
                 self.assertTrue(detected, "mutant not detected by a PythonArgvCertaintyTests assertion: " + name)
 
 
@@ -4381,10 +4396,13 @@ class PythonOpenMutationTests(unittest.TestCase):
             with self.subTest(mutant=name):
                 self.assertEqual(original.count(old), 1, "mutation target not found exactly once: " + name)
                 code, out = self._run(original.replace(old, new))
-                # Only a named assertion failure (FAIL:) counts; an ERROR: is not a detection.
+                # Only a named assertion failure (FAIL:) counts; runs with
+                # ERROR: entries or guard internal errors never count.
                 failing = [re.match(r"FAIL: (\S+) \(", ln) for ln in out.splitlines() if ln.startswith("FAIL:")]
                 names = [m.group(1) for m in failing if m]
-                detected = any(n in self.DETECTING for n in names)
+                has_error = any(ln.startswith("ERROR:") for ln in out.splitlines())
+                has_internal = "guard internal error" in out
+                detected = (not has_error and not has_internal) and any(n in self.DETECTING for n in names)
                 self.assertTrue(detected, "mutant not detected by a PythonOpenTests assertion: " + name)
 
 
