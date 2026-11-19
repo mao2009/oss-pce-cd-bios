@@ -3990,6 +3990,62 @@ class StdinProgramTests(unittest.TestCase):
                 verdict, reason = self._d(cmd)
                 self.assertEqual(verdict, "ALLOW", reason)
 
+    def test_eval_redirect_persists_stdin(self):
+        # MAJOR (review 5971146586): a same-shell `eval` whose text
+        # persistently redirects stdin changes the caller's stdin (verified
+        # on Bash, including nested and command/builtin forms). Forked evals
+        # (pipeline stage, subshell, coprocess, child process) never leak.
+        for cmd in ["eval 'exec < code.js'; node",
+                    "eval 'exec < code.py'; python3",
+                    "eval 'exec < code.pl'; perl",
+                    "eval 'exec < code.rb'; ruby",
+                    "eval 'exec < code.js' && node",
+                    "eval 'exec 0<&3'; node",
+                    "eval 'exec <&3'; node",
+                    "f() { exec < code.js; }; eval 'f'; node",
+                    "g() { exec < code.js; }; f() { g; }; eval 'f'; node",
+                    "command eval 'exec < code.js'; node",
+                    "command -p eval 'exec < code.js'; node",
+                    "builtin eval 'exec < code.js'; node",
+                    "eval 'eval \"exec < code.js\"'; node",
+                    "time eval 'exec < code.js'; node"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertIn("stdin-program", reason)
+        for cmd in ["eval 'exec > output.log'; node",
+                    "eval 'exec 3< data.txt'; node",
+                    "eval 'exec 5<&-'; node",
+                    "eval 'echo hi'; node",
+                    "eval 'f'; node",
+                    "(eval 'exec < code.js'); node",
+                    "echo hi | eval 'exec < code.js'; node",
+                    "coproc eval 'exec < code.js'; node",
+                    "sudo eval 'exec < code.js'; node",
+                    "sh -c 'exec < code.js'; node",
+                    "eval 'exec < code.js'; exec <&-; node",
+                    "eval 'echo hi' < code.js; node",
+                    "command -v eval; node"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_eval_function_call_inherits_stdin(self):
+        # An eval-persisted stdin reaches a later same-shell function call
+        # whose body reads it as a program (the first-loop eval scan carries
+        # the effect to the call-site analysis; the scope machine alone
+        # would miss bare-word calls).
+        for cmd in ["f() { node; }; eval 'exec < code.js'; f",
+                    "eval 'exec < code.js'; f() { node; }; f"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertIn("stdin-program", reason)
+        for cmd in ["f() { cat; }; eval 'exec < code.js'; f",
+                    "eval 'exec < code.js'; f() { cat; }; f"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "ALLOW", reason)
     def test_function_exec_persists_stdin(self):
         # A same-shell function call whose body persistently redirects stdin
         # changes the caller's stdin (verified on Bash); calls through a
@@ -4079,7 +4135,7 @@ class StdinProgramMutationTests(unittest.TestCase):
             "            _nested_text(args[i + 1], ctx, False, depth + 1, fed=fed)",
             "            _nested_text(args[i + 1], ctx, False, depth + 1, fed=False)"),
         "nested inheritance ignored": (
-            "        for body in bodies:\n            _nested_text(body, ctx, ps, depth + 1,\n                         fed=(_stdin_pipe[idx] or dyn_at[idx]),\n                         outer_funcs=all_funcs)",
+            "        for body in bodies:\n            _nested_text(body, ctx, ps, depth + 1,\n                         fed=(_stdin_pipe[idx] or dyn_at[idx] or live_exec),\n                         outer_funcs=all_funcs)",
             "        for body in bodies:\n            _nested_text(body, ctx, ps, depth + 1,\n                         fed=inherited_fed,\n                         outer_funcs=all_funcs)"),
         "paren taint lost": (
             "                else:\n                    stack.append((\"paren\" if seg == SUBSHELL_OPEN else \"coproc\",\n                                  fed, pfed, i))",
@@ -4088,19 +4144,19 @@ class StdinProgramMutationTests(unittest.TestCase):
             "            elif first == \"case\":",
             "            elif False:  # mutant: case never opens a compound"),
         "subs always untainted": (
-            "        for body in bodies:\n            _nested_text(body, ctx, ps, depth + 1,\n                         fed=(_stdin_pipe[idx] or dyn_at[idx]),\n                         outer_funcs=all_funcs)",
+            "        for body in bodies:\n            _nested_text(body, ctx, ps, depth + 1,\n                         fed=(_stdin_pipe[idx] or dyn_at[idx] or live_exec),\n                         outer_funcs=all_funcs)",
             "        for body in bodies:\n            _nested_text(body, ctx, ps, depth + 1,\n                         fed=False,\n                         outer_funcs=all_funcs)"),
         "subs parent not propagated": (
-            "        for body in bodies:\n            _nested_text(body, ctx, ps, depth + 1,\n                         fed=(_stdin_pipe[idx] or dyn_at[idx]),\n                         outer_funcs=all_funcs)",
+            "        for body in bodies:\n            _nested_text(body, ctx, ps, depth + 1,\n                         fed=(_stdin_pipe[idx] or dyn_at[idx] or live_exec),\n                         outer_funcs=all_funcs)",
             "        for body in bodies:\n            _nested_text(body, ctx, ps, depth + 1,\n                         fed=(_stdin_eff[0] or dyn_at[0]),\n                         outer_funcs=all_funcs)"),
         "nested subs inheritance disabled": (
-            "    sub = ctx.copy()\n    analyze_text(text, sub, ps, depth, inherited_fed=fed, outer_funcs=outer_funcs)\n    if sub.tainted:\n        ctx.tainted = True\n    if merge_cwd:",
-            "    sub = ctx.copy()\n    analyze_text(text, sub, ps, depth, inherited_fed=False, outer_funcs=outer_funcs)\n    if sub.tainted:\n        ctx.tainted = True\n    if merge_cwd:"),
+            "    sub = ctx.copy()\n    nested_end = analyze_text(text, sub, ps, depth, inherited_fed=fed, outer_funcs=outer_funcs)\n    if sub.tainted:\n        ctx.tainted = True\n    if merge_cwd:",
+            "    sub = ctx.copy()\n    nested_end = analyze_text(text, sub, ps, depth, inherited_fed=False, outer_funcs=outer_funcs)\n    if sub.tainted:\n        ctx.tainted = True\n    if merge_cwd:  # mutant"),
         "string visit stdin inheritance removed": (
             "                            _nested_text_from(words[k], ctx, wrapper_tainted, ps, depth + 1,\n                                              fed=fed)",
             "                            _nested_text_from(words[k], ctx, wrapper_tainted, ps, depth + 1,\n                                              fed=False)"),
         "subs global taint over-approximation": (
-            "        for body in bodies:\n            _nested_text(body, ctx, ps, depth + 1,\n                         fed=(_stdin_pipe[idx] or dyn_at[idx]),\n                         outer_funcs=all_funcs)",
+            "        for body in bodies:\n            _nested_text(body, ctx, ps, depth + 1,\n                         fed=(_stdin_pipe[idx] or dyn_at[idx] or live_exec),\n                         outer_funcs=all_funcs)",
             "        for body in bodies:\n            _nested_text(body, ctx, ps, depth + 1,\n                         fed=True,\n                         outer_funcs=all_funcs)"),
         "function call taint removed": (
             "        call_taint = here_eff",
@@ -4118,8 +4174,8 @@ class StdinProgramMutationTests(unittest.TestCase):
             "        if prog in ('code', 'file'):\n            return None",
             "        if prog in ('code', 'file'):\n            return Deny('stdin-program', 'file over-denied')"),
         "subs sibling funcs ignored": (
-            "                         fed=(_stdin_pipe[idx] or dyn_at[idx]),\n                         outer_funcs=all_funcs)",
-            "                         fed=(_stdin_pipe[idx] or dyn_at[idx]),\n                         outer_funcs=None)"),
+            "                         fed=(_stdin_pipe[idx] or dyn_at[idx] or live_exec),\n                         outer_funcs=all_funcs)",
+            "                         fed=(_stdin_pipe[idx] or dyn_at[idx] or live_exec),\n                         outer_funcs=None)"),
         "hyphen-dot-colon functions ignored": (
             "            if _fkey is not None and _fkey in all_funcs and not _is_funcdef_name(segs, idx, ps):",
             "            if False:  # hyphen/dot/colon ignored"),
@@ -4152,7 +4208,15 @@ class StdinProgramMutationTests(unittest.TestCase):
         "pipeline exec leaks": (
             "                if not pfed and subshell_depth == 0 and not _suppressed:\n                    exec_flag = True",
             "                if subshell_depth == 0 and not _suppressed:\n                    exec_flag = True"),
-
+        "eval static scan disabled": (
+            "        _ev_text = _eval_command_text(seg_words, ps, all_funcs)",
+            "        _ev_text = None  # mutant: eval scan disabled"),
+        "eval nested merge disabled": (
+            "                     outer_funcs=outer_funcs, merge_cwd=True, merge_exec=True)",
+            "                     outer_funcs=outer_funcs, merge_cwd=True, merge_exec=False)  # mutant"),
+        "eval forked leak allowed": (
+            "            if not _stdin_stage[idx] and _stdin_subdepth[idx] == 0:\n                live_exec = True",
+            "            if True:  # mutant: forked eval leaks\n                live_exec = True"),
     }
     DETECTING = ["test_piped_bare_python_is_refused", "test_dash_names_stdin_program",
                  "test_bare_other_interpreters_with_piped_or_redirected_stdin_are_refused",
@@ -4168,7 +4232,8 @@ class StdinProgramMutationTests(unittest.TestCase):
                  "test_compound_redirect_inherits_stdin",
                  "test_compound_redirect_safe_forms_stay_allowed",
                  "test_exec_redirect_persists_stdin", "test_exec_safe_forms_stay_allowed",
-                 "test_function_exec_persists_stdin", "test_subshell_fd3_stays_allowed"]
+                 "test_function_exec_persists_stdin", "test_subshell_fd3_stays_allowed",
+                 "test_eval_redirect_persists_stdin", "test_eval_function_call_inherits_stdin"]
 
     def _run(self, hook_text):
         with tempfile.TemporaryDirectory() as td:
@@ -5760,8 +5825,8 @@ class ChainRuleMutationTests(unittest.TestCase):
             'def _nested_argv(words, ctx, ps, depth, fed=False, outer_funcs=None):\n    """Analyse nested argv, propagating chain taint back to the parent."""\n'
             '    sub = ctx.copy()\n    analyze_argv(words, sub, ps, depth, fed, outer_funcs)'),
         "eval cwd propagation removed": (
-            '        _nested_text(" ".join(args), ctx, ps, depth + 1, fed=fed,\n                     outer_funcs=outer_funcs, merge_cwd=True)',
-            '        _nested_text(" ".join(args), ctx, ps, depth + 1, fed=fed,\n                     outer_funcs=outer_funcs, merge_cwd=False)  # mutant'),
+            '        _nested_text(" ".join(args), ctx, ps, depth + 1, fed=fed,\n                     outer_funcs=outer_funcs, merge_cwd=True, merge_exec=True)',
+            '        _nested_text(" ".join(args), ctx, ps, depth + 1, fed=fed,\n                     outer_funcs=outer_funcs, merge_cwd=False, merge_exec=True)  # mutant'),
         "subshell scope open destroyed": (
             '                if not scope_stack and not bbrace_stack:\n                    # A top-level `( ... )` may be the whole first pipeline\n                    # stage: remember the pre-group cwd for the entry.\n                    scope_entry = (ctx.cwd, ctx.cwd_fuzzy)\n                    scope_just_closed = False\n                # run-13 (M1): the subshell owns its pipeline/list start:\n                # an inner `cd` moves the subshell\'s run, never the outer one.\n                run_scope.append((run_start, bg_start))\n                run_start = (ctx.cwd, ctx.cwd_fuzzy)\n                bg_start = (ctx.cwd, ctx.cwd_fuzzy)\n                scope_stack.append((ctx.cwd, ctx.cwd_fuzzy))\n                bg_scope.append((ctx.cwd, ctx.cwd_fuzzy))',
             '                if not scope_stack and not bbrace_stack:\n                    # A top-level `( ... )` may be the whole first pipeline\n                    # stage: remember the pre-group cwd for the entry.\n                    scope_entry = (ctx.cwd, ctx.cwd_fuzzy)\n                    scope_just_closed = False\n                pass  # mutant: subshell scope destroyed'),

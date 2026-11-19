@@ -255,7 +255,7 @@ class Deny(Exception):
 # ln and rmdir are already DENY in every form; cd/pushd move the tracked cwd.
 class Ctx:
     def __init__(self, cwd, root, git, registry, protected, tainted=False,
-                 cwd_fuzzy=False):
+                 cwd_fuzzy=False, exec_out=False):
         self.cwd = cwd            # canonical absolute path
         self.root = root          # case-folded canonical repo root
         self.git = git            # case-folded canonical .git directory
@@ -264,10 +264,12 @@ class Ctx:
         self.tainted = tainted    # Piece D (#636): an earlier segment changed the filesystem
         self.cwd_fuzzy = cwd_fuzzy  # run-12: cwd is one of several branch outcomes (fail closed)
         self.pending_write = False  # Piece D (#636): validated write option awaiting publish
+        self.exec_out = exec_out  # Issue #637: a same-shell nested eval persistently
+        # redirected stdin (set during analyze_argv, consumed per segment by analyze_text)
 
     def copy(self, **kw):
         c = Ctx(self.cwd, self.root, self.git, self.registry, self.protected,
-                self.tainted, self.cwd_fuzzy)
+                self.tainted, self.cwd_fuzzy, self.exec_out)
         for k, v in kw.items():
             setattr(c, k, v)
         return c
@@ -291,7 +293,8 @@ def _require_untainted(ctx, what):
         raise Deny("chain", what + " after a filesystem change in the same command is not inspected")
 
 
-def _nested_text(text, ctx, ps, depth, fed=False, outer_funcs=None, merge_cwd=False):
+def _nested_text(text, ctx, ps, depth, fed=False, outer_funcs=None, merge_cwd=False,
+                 merge_exec=False):
     """Analyse nested command text, propagating chain taint back to the parent.
 
     merge_cwd (eval only, #636): the nested text runs in the calling shell,
@@ -303,14 +306,21 @@ def _nested_text(text, ctx, ps, depth, fed=False, outer_funcs=None, merge_cwd=Fa
     child shell (sh -c) is still analysed from its own stdin unless the
     caller passes the inherited mark. outer_funcs: visible shell function
     definitions for the same-shell nested forms (eval, substitutions).
+    merge_exec (eval only, Issue #637): the nested text runs in the calling
+    shell, so a persistent stdin redirect inside it (e.g. `exec < file`)
+    moves the parent's stdin too. Returns the nested persistent stdin
+    effect for callers that merge it themselves.
     """
     sub = ctx.copy()
-    analyze_text(text, sub, ps, depth, inherited_fed=fed, outer_funcs=outer_funcs)
+    nested_end = analyze_text(text, sub, ps, depth, inherited_fed=fed, outer_funcs=outer_funcs)
     if sub.tainted:
         ctx.tainted = True
     if merge_cwd:
         ctx.cwd = sub.cwd
         ctx.cwd_fuzzy = sub.cwd_fuzzy
+    if merge_exec and nested_end:
+        ctx.exec_out = True
+    return nested_end
 
 
 def _nested_text_from(text, ctx, entry_tainted, ps, depth, fed=False, outer_funcs=None):
@@ -393,6 +403,11 @@ def _nested_argv_same_shell(words, ctx, ps, depth, fed=False, outer_funcs=None):
     analyze_argv(words, sub, ps, depth, fed, outer_funcs)
     if sub.tainted:
         ctx.tainted = True
+    if sub.exec_out:
+        # `command`/`builtin`/`time` reach shell internals (`eval`, `cd`)
+        # in the calling shell, so a persistent stdin redirect inside the
+        # target moves the parent's stdin too (verified on Bash).
+        ctx.exec_out = True
     ctx.cwd = sub.cwd
     ctx.cwd_fuzzy = sub.cwd_fuzzy
 
@@ -3572,9 +3587,13 @@ def analyze_argv(words, ctx, ps, depth, fed=False, outer_funcs=None):
         # in a copy and both taint and cwd merge back; a subshell inside
         # the eval text is still scoped by analyze_text. Issue #637: eval
         # runs in the calling shell, so this segment's stdin and visible
-        # function definitions are passed through.
+        # function definitions are passed through, and a persistent stdin
+        # redirect inside the eval text (e.g. `exec < file`) moves the
+        # parent's stdin too (merge_exec=True; verified on Bash). A redirect
+        # on the eval command itself does not persist (verified: restored
+        # after the command), so it sets no persistent flag.
         _nested_text(" ".join(args), ctx, ps, depth + 1, fed=fed,
-                     outer_funcs=outer_funcs, merge_cwd=True)
+                     outer_funcs=outer_funcs, merge_cwd=True, merge_exec=True)
     elif name in SHELLS:
         shell_rule(args, ctx, depth, fed)
     elif name in PS_HOSTS:
@@ -3641,6 +3660,8 @@ def _stdin_prepass(segs, ps, inherited_fed):
     - is_stage[i]: the pipe taint comes from a real pipeline (a fork: a
       function body called here cannot leak an `exec` back to the caller).
     - subdepth[i]: subshell/coprocess nesting depth (same reason).
+    - suppressed[i]: inside a function definition body (never executes there).
+    - in_cond[i]: inside a conditional/loop compound (may not execute).
     - end_exec: the persistent exec-stdin flag after the last segment (for
       function-body queries; forked contexts never export it).
 
@@ -3663,6 +3684,8 @@ def _stdin_prepass(segs, ps, inherited_fed):
     eff = [False] * n
     is_stage = [False] * n
     subdepth = [0] * n
+    suppressed = [False] * n
+    in_cond = [False] * n
     fed = bool(inherited_fed)
     pfed = False
     exec_flag = False
@@ -3815,6 +3838,8 @@ def _stdin_prepass(segs, ps, inherited_fed):
             eff[i] = pipe[i] or exec_flag or own
             is_stage[i] = pfed
             subdepth[i] = subshell_depth
+            suppressed[i] = any(e[0] in ("function", "funcbody") for e in stack)
+            in_cond[i] = any(e[0] in ("if", "loop", "case") for e in stack)
             continue
         pipe[i] = fed
         exec_before = exec_flag
@@ -3822,6 +3847,8 @@ def _stdin_prepass(segs, ps, inherited_fed):
         eff[i] = pipe[i] or exec_before or own
         is_stage[i] = pfed
         subdepth[i] = subshell_depth
+        suppressed[i] = any(e[0] in ("function", "funcbody") for e in stack)
+        in_cond[i] = any(e[0] in ("if", "loop", "case") for e in stack)
         if not ps:
             k = 0
             while k < len(words) and words[k] in ("!", "time", "coproc"):
@@ -3865,10 +3892,60 @@ def _stdin_prepass(segs, ps, inherited_fed):
             elif effect == "close":
                 if not pfed and subshell_depth == 0 and not _suppressed:
                     exec_flag = False
-    return pipe, eff, is_stage, subdepth, exec_flag
+    return pipe, eff, is_stage, subdepth, exec_flag, suppressed, in_cond
 
 
-def _body_sets_exec_stdin(body, ps, funcs=None, _seen=None):
+def _eval_command_text(words, ps, all_funcs):
+    """Eval string of a same-shell `eval` invocation, or None (Issue #637).
+
+    Resolves `eval` through same-shell prefixes (`!`, `time -p`, `builtin`,
+    `command [-p|--]`; `command -v/-V` merely describes) but never through
+    forking wrappers (`coproc`, `sudo`, ...) or a shadowing shell function
+    named `eval` (Bash prefers the function, like any other command).
+    Output-only redirections on the eval command are skipped; the code
+    words keep their lexer marks so the nested scan classifies them.
+    """
+    if ps:
+        return None
+    j = 0
+    while j < len(words) and (words[j] in KEYWORDS or ASSIGN.match(words[j])):
+        j += 1
+    for _ in range(4):
+        if j < len(words) and words[j] in ("!", "builtin"):
+            j += 1
+            continue
+        if j < len(words) and words[j] == "time":
+            j += 1
+            if j < len(words) and words[j] == "-p":
+                j += 1
+            continue
+        if j < len(words) and words[j] == "command":
+            j += 1
+            if j < len(words) and words[j] in ("-p", "--"):
+                j += 1
+            elif j < len(words) and words[j] in ("-v", "-V"):
+                return None
+            continue
+        break
+    if j >= len(words) or words[j] != "eval":
+        return None
+    if _func_call_name("eval", ps) in (all_funcs or {}):
+        # A shell function shadows the builtin: the words are its
+        # arguments, not code (handled by the function-call path).
+        return None
+    rest, skip, out = words[j + 1:], False, []
+    for w in rest:
+        if skip:
+            skip = False
+            continue
+        if w.startswith(REDIR_MARK):
+            skip = True
+            continue
+        out.append(w)
+    return " ".join(out)
+
+
+def _body_sets_exec_stdin(body, ps, funcs=None, _seen=None, strict=True):
     """True when a function body persistently redirects the caller's stdin.
 
     A function called in the current shell runs in it, so a bare
@@ -3878,18 +3955,20 @@ def _body_sets_exec_stdin(body, ps, funcs=None, _seen=None):
     The scan is syntactic (split + pre-pass only): conditionals inside the
     body are over-approximated fail-closed, while forked positions
     (subshells, coprocesses, pipeline stages, `coproc` calls) never leak.
-    An unparseable body is fail-closed True.
+    strict=True (function bodies): an unparseable body is fail-closed True.
+    strict=False (eval-text pre-scan): unparseable text returns False
+    because the precise nested analysis denies it anyway (fail-closed there).
     """
     if ps:
         return False
     try:
         segs = split_segments(body, ps)[0]
     except Deny:
-        return True
+        return strict
     try:
-        _pipe, _eff, _stage, _subdepth, end_exec = _stdin_prepass(segs, ps, False)
+        _pipe, _eff, _stage, _subdepth, end_exec, _supp, _cond = _stdin_prepass(segs, ps, False)
     except Deny:
-        return True
+        return strict
     if end_exec:
         return True
     if not funcs:
@@ -3915,8 +3994,8 @@ def _body_sets_exec_stdin(body, ps, funcs=None, _seen=None):
         _seen.add(fkey_b)
         for _b in funcs[fkey_b]:
             if _b is None:
-                return True
-            if _body_sets_exec_stdin(_b, ps, funcs, _seen):
+                return strict
+            if _body_sets_exec_stdin(_b, ps, funcs, _seen, strict):
                 return True
     return False
 
@@ -3992,7 +4071,7 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None):
     # Issue #637: stdin provenance per segment (pipe-fed, exec-persistent,
     # group-redirect). Nested shells (sh -c, wrappers, eval, subs) inherit
     # the outer taint fail-closed (OR of outer and inner marks).
-    _stdin_pipe, _stdin_eff, _stdin_stage, _stdin_subdepth, _ = _stdin_prepass(
+    _stdin_pipe, _stdin_eff, _stdin_stage, _stdin_subdepth, _prepass_end, _stdin_suppressed, _stdin_in_cond = _stdin_prepass(
         segs, ps, inherited_fed)
     # MAJOR function: collect shell function definitions in this text and merge
     # with outer (caller) definitions for lexical sibling resolution. ANY unsafe
@@ -4076,13 +4155,34 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None):
                 # the NON_EXEC shortcut (fail-closed for pipe-fed
                 # `cat() { node; }; ... | cat`).
                 if (not _stdin_stage[idx] and _stdin_subdepth[idx] == 0
-                        and not _saw_coproc):
+                        and not _saw_coproc and not _stdin_suppressed[idx]):
                     for _body in all_funcs[_fkey]:
                         if _body is None or _body_sets_exec_stdin(_body, ps, all_funcs):
                             dyn_exec = True
                             break
             elif _first_idx < len(seg_words) and _func_call_name(seg_words[_first_idx], ps) in NON_EXEC_COMMANDS:
                 pass
+        # MAJOR (review 5971146586): a same-shell `eval` whose text
+        # persistently redirects stdin (`eval 'exec < f'`, `eval 'f'`) changes
+        # the caller's stdin for later segments (verified on Bash). The
+        # syntactic pre-scan here is certain-only (strict=False): forked
+        # positions never leak, and unparseable text is left to the precise
+        # nested analysis (fail-closed DENY there). The scope-machine loop
+        # below additionally merges the precise nested result.
+        if (not ps and not _stdin_stage[idx] and _stdin_subdepth[idx] == 0
+                and not _stdin_suppressed[idx]):
+            _ev_text = _eval_command_text(seg_words, ps, all_funcs)
+            if _ev_text is not None and _body_sets_exec_stdin(
+                    _ev_text, ps, all_funcs, strict=False):
+                dyn_exec = True
+            # A close clears only when its execution is certain (top level):
+            # a conditional/loop close may never run, so clearing there
+            # would under-taint (fail-open). Supply is fail-closed either way.
+            _fx = _exec_segment_effect(seg_words, seg)
+            if _fx == "supply":
+                dyn_exec = True
+            elif _fx == "close" and not _stdin_in_cond[idx]:
+                dyn_exec = False
     if sum(len(ops) for ops in redirs) > MAX_REDIRECTS:
         raise Deny("redirect", "more than %d redirections are not inspected" % MAX_REDIRECTS)
     rest_subs = list(subs)
@@ -4130,6 +4230,9 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None):
     # the whole in-scope list, so the parent continues from the cwd the
     # in-scope list started with (after the last in-scope `;`), not from
     # the outer bg_start.
+    # Issue #637: eval-discovered persistent stdin (same-shell nested eval)
+    # is found during this loop, after the first loop snapshotted dyn_at.
+    live_exec = False
     for idx, (seg, ops) in enumerate(zip(segs, redirs)):
         if seg == SUBSHELL_OPEN:
             if not ps:
@@ -4449,11 +4552,12 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None):
         # exec-redirected stdin reaches the substitution, but not the
         # segment's own `<` redirect, which applies after expansion), so it
         # taints only this and later segments (Piece D, #636).
+        # live_exec (same-shell eval discovery in this loop) joins here too.
         n = seg.count(SUBST)
         bodies, rest_subs = rest_subs[:n], rest_subs[n:]
         for body in bodies:
             _nested_text(body, ctx, ps, depth + 1,
-                         fed=(_stdin_pipe[idx] or dyn_at[idx]),
+                         fed=(_stdin_pipe[idx] or dyn_at[idx] or live_exec),
                          outer_funcs=all_funcs)
         if ops and inside_claude(ctx.cwd, ctx):
             raise Deny("claude-write", "redirect while cwd is inside .claude/ is denied")
@@ -4467,8 +4571,24 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None):
         if wrote:
             ctx.tainted = True
         analyze_argv(words_of(seg, ps), ctx, ps, depth,
-                     fed=(_stdin_eff[idx] or dyn_at[idx]),
+                     fed=(_stdin_eff[idx] or dyn_at[idx] or live_exec),
                      outer_funcs=all_funcs)
+        if ctx.exec_out:
+            # A same-shell nested eval persistently redirected stdin during
+            # this segment (MAJOR review 5971146586). Forked positions never
+            # leak: a pipeline stage, subshell, or coprocess eval runs in a
+            # child, so only unforked positions propagate to later segments.
+            ctx.exec_out = False
+            if not _stdin_stage[idx] and _stdin_subdepth[idx] == 0:
+                live_exec = True
+        # A certain bare-exec close clears the live flag too (mirrors the
+        # first-loop dyn handling): a conditional/loop close may never run,
+        # so only unconditional closes clear (fail-open otherwise).
+        if (live_exec and not ps and not _stdin_stage[idx]
+                and _stdin_subdepth[idx] == 0
+                and not _stdin_suppressed[idx] and not _stdin_in_cond[idx]
+                and _exec_segment_effect(seg_words, seg) == "close"):
+            live_exec = False
         if cond_stack and ctx.cwd != cond_stack[-1]["cwd"]:
             # run-12 OQww: any move inside the scope makes the outcome
             # uncertain, even when a later arm moves it back.
@@ -4502,6 +4622,10 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None):
     if bbrace_stack:
         # An unclosed Bash brace group never runs either (fail closed).
         raise Deny("parse", "unbalanced brace grouping is not inspected")
+    # Issue #637: report the persistent stdin state for same-shell callers
+    # (eval/function merging). Static pre-pass taint or any later dynamic
+    # (function/eval) propagation both count as persistent.
+    return bool(_prepass_end or dyn_exec)
 
 
 def load_registry(root):
