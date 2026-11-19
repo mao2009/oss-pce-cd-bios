@@ -3714,6 +3714,8 @@ class StdinProgramTests(unittest.TestCase):
         for cmd in ["echo hi | cat; node --no-warnings",
                     "echo hi | cat && node --no-warnings",
                     "echo hi | cat || node --no-warnings",
+                    "printf data | (cat; ); node --no-warnings",
+                    "printf data | (cat); node --no-warnings",
                     "echo hi | if true; then cat; fi; node --no-warnings",
                     "echo hi | (cat); node --no-warnings"]:
             with self.subTest(cmd=cmd):
@@ -3899,6 +3901,9 @@ class StdinProgramTests(unittest.TestCase):
                     "f() { node; }; if true; then f; fi < code.js",
                     "{ true; node; } < code.js",
                     "(node) < code.js",
+                    "(node) > out.log < code.js",
+                    "(node) < code.js > out.log",
+                    "(node;) < code.js",
                     "if true; then node; fi < code.js; echo hi"]:
             with self.subTest(cmd=cmd):
                 verdict, reason = self._d(cmd)
@@ -3912,6 +3917,7 @@ class StdinProgramTests(unittest.TestCase):
         for cmd in ["if true; then node script.js; fi < data.txt",
                     "if true; then cat; fi < data.txt",
                     "if true; then echo ok; fi > output.txt",
+                    "(node) > out.log",
                     "echo data | cat; node script.js"]:
             with self.subTest(cmd=cmd):
                 self.assertEqual(self._d(cmd)[0], "ALLOW")
@@ -3995,6 +4001,7 @@ class StdinProgramTests(unittest.TestCase):
         # compound supplies no stdin, unlike fd 0/default (`<`, `0<`).
         for cmd in ["(node) 3< data.txt",
                     "(node) 3<data.txt",
+                    "node 3<input.txt",
                     "(node) 3< data.txt > out.log",
                     "(python3) 3< x",
                     "(node) > out.log",
@@ -4003,6 +4010,8 @@ class StdinProgramTests(unittest.TestCase):
                 self.assertEqual(self._d(cmd)[0], "ALLOW")
         for cmd in ["(node) 0< data.txt",
                     "(node) < data.txt",
+                    "node 0<input.txt",
+                    "node <input.txt",
                     "(node) > out.log < data.txt",
                     "(node) < data.txt > out.log",
                     "(node;) < data.txt",
