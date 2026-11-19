@@ -3680,6 +3680,17 @@ class StdinProgramTests(unittest.TestCase):
                 self.assertEqual(verdict, "DENY")
                 self.assertIn("stdin-program", reason)
 
+    def test_awk_later_dash_selects_stdin_program(self):
+        # CodeRabbit (PR #814): GNU awk concatenates every -f source, so a
+        # later `-f -` still runs program text from stdin even when a file
+        # is named first (attached `-ffile` and separate `-f file` alike).
+        # The classifier reports stdin for any -f dash.
+        for cmd in ["awk -f -", "awk -f safe.awk -f -", "awk -ffile -f -"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertIn("stdin-program", reason)
+
     def test_powershell_node_stdin_refused(self):
         for cmd in ["echo hi | node --no-warnings",
                     "node -",
@@ -4108,6 +4119,25 @@ class StdinProgramTests(unittest.TestCase):
                 self.assertEqual(verdict, "DENY")
                 self.assertIn("stdin-program", reason)
 
+    def test_list_conditional_close_keeps_taint(self):
+        # CodeRabbit (PR #814): `&&`/`||` short-circuit, so a close after
+        # them may never execute (verified on Bash: `false && exec <&-`
+        # and `true || exec <&-` keep stdin for a later reader). The taint
+        # is preserved; only an unconditional same-shell close clears it.
+        # Fail-closed over-denial (same convention as the `if` form above):
+        # `true && exec <&-` does run, but is still kept statically.
+        for cmd in ["exec < code.js; false && exec <&-; node",
+                    "exec < code.js; true || exec <&-; node",
+                    "exec < code.js; true && exec <&-; node",
+                    "exec < code.js; a && b && exec <&-; node",
+                    "f() { exec < code.js; }; f; false && exec <&-; node"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertIn("stdin-program", reason)
+        verdict, reason = self._d("exec < code.js; exec <&-; node")
+        self.assertEqual(verdict, "ALLOW", reason)
+
     def test_eval_shadowed_by_function(self):
         # A shell function named `eval` shadows the builtin (Bash prefers
         # functions): a bare `eval '...'` call runs the function, whose
@@ -4405,6 +4435,31 @@ class StdinProgramMutationTests(unittest.TestCase):
             '                if (not pfed and not _suppressed\n                        and not _in_cond_here\n                        and not _followed_by_fork_boundary(segs, i, ps)\n                        and not _exec_shadowed_by_function(words, ps, all_funcs)):\n                    exec_flag = False\n                    inh = False',
             '                if (not pfed and not _suppressed\n                        and not _followed_by_fork_boundary(segs, i, ps)\n                        and not _exec_shadowed_by_function(words, ps, all_funcs)):\n                    exec_flag = False\n                    inh = False  # mutant: conditional close clears',
         ),
+        "list-conditional close clears": [
+            # Defense-in-depth coupling (same shape as the fork-close
+            # compound): the prepass taint list and the same-segment gate
+            # each independently preserve a short-circuited close, so both
+            # must ignore it together to flip the verdict.
+            ('        in_cond[i] = any(e[0] in ("if", "loop", "case") for e in stack) or pending_cond\n        seg_cond = pending_cond\n        pending_cond = False',
+             '        in_cond[i] = any(e[0] in ("if", "loop", "case") for e in stack)\n        seg_cond = False  # mutant: list-conditional close clears\n        pending_cond = False'),
+            ('            _in_cond_here = any(e[0] in ("if", "loop", "case") for e in stack) or seg_cond',
+             '            _in_cond_here = any(e[0] in ("if", "loop", "case") for e in stack)  # mutant: list-conditional close clears'),],
+        "list-conditional marker removed": [
+            # The `&&` and `||` emitters each mark the next command
+            # conditional; both must be removed together to clear a
+            # short-circuited close.
+            ('                    if not ps:\n                        # Issue #637: `||` is conditional (short-circuit);\n                        # mark the next command so a close there never clears\n                        # stdin provenance (fail-closed).\n                        segs.append(COND_BOUND)\n                        redirs.append([])',
+             '                    pass  # mutant: || marker removed'),
+            ('                    # Issue #637: `&&` is conditional (short-circuit); mark\n                    # the next command so a close there never clears stdin\n                    # provenance (fail-closed). This branch is Bash-only.\n                    segs.append(COND_BOUND)\n                    redirs.append([])',
+             '                    pass  # mutant: && marker removed'),],
+        "awk later dash ignored": [
+            # Each `-f file` arm must keep scanning for a later `-f -`;
+            # returning at the first file hides the stdin program source.
+            # Both arms must regress together to flip the verdict.
+            ("                if rest:\n                    if rest == '-':\n                        return 'stdin'\n                    seen_file = True\n                    i += 1\n                    continue",
+             "                if rest:\n                    if rest == '-':\n                        return 'stdin'\n                    return 'file'  # mutant: later -f dash ignored"),
+            ("                if nxt.startswith('-') and nxt != '-':\n                    return 'unknown'\n                seen_file = True\n                i += 2\n                continue",
+             "                if nxt.startswith('-') and nxt != '-':\n                    return 'unknown'\n                return 'file'  # mutant: later -f dash ignored"),],
         "fork boundary ignored for supply": (
             '                if (not pfed and not _suppressed\n                        and not _followed_by_fork_boundary(segs, i, ps)):\n                    exec_flag = True',
             '                if (not pfed and not _suppressed):  # mutant: forked supply leaks\n                    exec_flag = True',
@@ -4468,7 +4523,8 @@ class StdinProgramMutationTests(unittest.TestCase):
                  "test_subshell_persistent_stdin_scoped", "test_find_ok_does_not_inherit_pipe",
                  "test_nested_pipe_inherits_stdin", "test_nested_conditional_close_keeps_taint",
                  "test_eval_shadowed_by_function", "test_fork_child_close_keeps_parent_taint",
-                 "test_forked_exec_never_taints_parent", "test_shadowed_exec_close_keeps_taint"]
+                 "test_forked_exec_never_taints_parent", "test_shadowed_exec_close_keeps_taint",
+                 "test_list_conditional_close_keeps_taint", "test_awk_later_dash_selects_stdin_program"]
 
     def _run(self, hook_text):
         with tempfile.TemporaryDirectory() as td:
@@ -5466,8 +5522,9 @@ class ChainRulePieceDTests(unittest.TestCase):
         verdict, reason = self._decide("true |\ncd sub; rm ../file.txt")
         self.assertEqual(verdict, "DENY", reason)
         self.assertTrue(reason.startswith("rm-outside-repo"), reason)
-        # A newline after `&&` still ends nothing either: `&&` never emits
-        # a boundary, so sequential sharing is unchanged.
+        # A newline after `&&` still ends nothing either: `&&` emits only
+        # COND_BOUND (a same-shell conditional marker with no cwd/scope
+        # effect), so sequential sharing is unchanged.
         verdict, reason = self._decide("cd sub &&\nrm inner.txt")
         self.assertEqual(verdict, "ALLOW", reason)
 

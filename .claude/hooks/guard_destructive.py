@@ -109,8 +109,17 @@ BG_BOUND = "\x02&"
 # it ends a background list and a pipeline, so analyze_text restores the
 # pipeline-entry cwd here and refreshes the entry snapshots. Same \x02
 # safety as PIPE_BOUND. `&&`/`||` are sequential inside a list and never
-# emit this.
+# emit this (they emit COND_BOUND instead).
 CMD_BOUND = "\x02;"
+# A Bash `&&`/`||` list-conditional boundary: the next command runs only
+# when the previous list status selects it (short-circuit), so a stdin
+# close there may never execute and must not clear the parent provenance
+# (verified on Bash: `false && exec <&-` keeps stdin for a later reader).
+# Same-shell and sequential (never a fork, unlike PIPE_BOUND/BG_BOUND), so
+# every machine except the stdin prepass skips it with no scope effect.
+# Same \x02 safety as PIPE_BOUND. PowerShell `||` keeps its prior behavior
+# (no boundary): only Bash `&&`/`||` need it for Issue #637.
+COND_BOUND = "\x02?"
 # A Bash coprocess-compound boundary: `coproc { ...; }` runs its body in a
 # subshell (like `( ... )`), so the body shares the parent taint but its
 # cwd is restored at the close. The `{` stays a literal word of the
@@ -966,6 +975,12 @@ def split_segments(text, ps=False):
                         segs.append(PIPE_END)
                         redirs.append([])
                     pipe_open = False
+                    if not ps:
+                        # Issue #637: `||` is conditional (short-circuit);
+                        # mark the next command so a close there never clears
+                        # stdin provenance (fail-closed).
+                        segs.append(COND_BOUND)
+                        redirs.append([])
                 else:
                     segs.append(PIPE_BOUND)
                     redirs.append([])
@@ -985,6 +1000,11 @@ def split_segments(text, ps=False):
                         segs.append(PIPE_END)
                         redirs.append([])
                     pipe_open = False
+                    # Issue #637: `&&` is conditional (short-circuit); mark
+                    # the next command so a close there never clears stdin
+                    # provenance (fail-closed). This branch is Bash-only.
+                    segs.append(COND_BOUND)
+                    redirs.append([])
                 elif nxt != ">":
                     segs.append(BG_BOUND)
                     redirs.append([])
@@ -2476,15 +2496,18 @@ def _awk_program(args):
     """How an awk/gawk/mawk argv selects its program.
 
     Returns 'file' when a program is named in argv (a -f file, a -W exec file,
-    or a program-text word), 'stdin' when -f names `-` (program from stdin) or
-    a bare `-` selects stdin with no program text, 'none' (flags only), or
-    'unknown' (unmodelled -W form: fail-closed). A non-option word is program
-    text (stdin is then data, not the program), and a `-` data file after
-    program text does not select stdin as the program.
+    or a program-text word), 'stdin' when any -f names `-` (GNU awk
+    concatenates every -f source, so a later `-` still runs program text
+    from stdin) or a bare `-` selects stdin with no program text, 'none'
+    (flags only), or 'unknown' (unmodelled -W form: fail-closed). A
+    non-option word is program text (stdin is then data, not the program),
+    and a `-` data file after program text does not select stdin as the
+    program.
     """
     args = _drop_redirect_words(args)
     i, n = 0, len(args)
     seen_program_text = False
+    seen_file = False
     while i < n:
         a = args[i]
         if a == '--':
@@ -2508,7 +2531,9 @@ def _awk_program(args):
                 if rest:
                     if rest == '-':
                         return 'stdin'
-                    return 'file'
+                    seen_file = True
+                    i += 1
+                    continue
                 if i + 1 >= n:
                     return 'unknown'
                 nxt = args[i + 1]
@@ -2516,7 +2541,9 @@ def _awk_program(args):
                     return 'stdin'
                 if nxt.startswith('-') and nxt != '-':
                     return 'unknown'
-                return 'file'
+                seen_file = True
+                i += 2
+                continue
             if len(a) >= 2 and a[1] in ('F', 'v'):
                 if len(a) == 2:
                     i += 2
@@ -2570,7 +2597,7 @@ def _awk_program(args):
             continue
         seen_program_text = True
         return 'file'
-    if seen_program_text:
+    if seen_program_text or seen_file:
         return 'file'
     return 'none'
 
@@ -3777,6 +3804,7 @@ def _stdin_prepass(segs, ps, inherited_fed, all_funcs=None):
     # `f() {...}` / `f() (...)` body), paren, coproc, bbrace, pscond, psbrace.
     subshell_depth = 0
     pending_funcbody = False  # an `f()`-style signature awaits its body group
+    pending_cond = False  # a `&&`/`||` boundary precedes the next command (short-circuit: it may not execute)
 
     def _transparent(idx):
         return _seg_is_transparent(segs[idx], ps)
@@ -3790,6 +3818,11 @@ def _stdin_prepass(segs, ps, inherited_fed, all_funcs=None):
             if seg == PIPE_BOUND:
                 fed = True
                 pfed = True
+            elif seg == COND_BOUND:
+                # Issue #637: the next command is conditional (may be
+                # skipped by short-circuit), so a stdin close there never
+                # clears. Consumed by the next real command segment below.
+                pending_cond = True
             elif seg in (CMD_BOUND, BG_BOUND, PIPE_END):
                 if not any(e[1] for e in stack):
                     fed = False
@@ -3925,6 +3958,9 @@ def _stdin_prepass(segs, ps, inherited_fed, all_funcs=None):
             suppressed[i] = any(e[0] in ("function", "funcbody") for e in stack)
             in_cond[i] = any(e[0] in ("if", "loop", "case") for e in stack)
             continue
+        in_cond[i] = any(e[0] in ("if", "loop", "case") for e in stack) or pending_cond
+        seg_cond = pending_cond
+        pending_cond = False
         pipe[i] = fed or inh
         exec_before = exec_flag
         own = _has_input_redirect(seg)
@@ -3932,7 +3968,6 @@ def _stdin_prepass(segs, ps, inherited_fed, all_funcs=None):
         is_stage[i] = pfed
         subdepth[i] = subshell_depth
         suppressed[i] = any(e[0] in ("function", "funcbody") for e in stack)
-        in_cond[i] = any(e[0] in ("if", "loop", "case") for e in stack)
         if not ps:
             k = 0
             while k < len(words) and words[k] in ("!", "time", "coproc"):
@@ -3970,7 +4005,7 @@ def _stdin_prepass(segs, ps, inherited_fed, all_funcs=None):
                             eff[kk] = True
             effect = _exec_segment_effect(words, seg)
             _suppressed = any(e[0] in ("function", "funcbody") for e in stack)
-            _in_cond_here = any(e[0] in ("if", "loop", "case") for e in stack)
+            _in_cond_here = any(e[0] in ("if", "loop", "case") for e in stack) or seg_cond
             if effect == "supply":
                 # MAJOR (Issue #637): a persistent redirect applies to the
                 # active shell scope, including a subshell/coprocess body
@@ -4187,6 +4222,7 @@ _STDIN_SENTINELS = frozenset([
     SUBSHELL_OPEN, SUBSHELL_CLOSE, PIPE_BOUND, BG_BOUND, CMD_BOUND,
     PIPE_END, COPROC_OPEN, COPROC_CLOSE, PSCOND_OPEN, PSCOND_CLOSE,
     BBRACE_OPEN, BBRACE_CLOSE, PSBRACE_OPEN, PSBRACE_CLOSE,
+    COND_BOUND,
 ])
 
 # A plausible `f()`-style function name for pending-definition detection:
@@ -4250,6 +4286,11 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None):
                 dyn_exec = dyn_save.pop()
             continue
         if seg == PIPE_BOUND or seg == BG_BOUND or seg == CMD_BOUND:
+            continue
+        if seg == COND_BOUND:
+            # Issue #637: same-shell list-conditional marker. No scope
+            # effect here; the stdin prepass already folded it into
+            # _stdin_in_cond for the close gates below.
             continue
         if seg == PIPE_END:
             continue
@@ -4540,6 +4581,11 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None):
                 # else/elseif arm, whose entry was already popped. Each
                 # arm restarts from this base and joins at its own close.
                 ps_arm_stack.append(entry)
+            continue
+        if seg == COND_BOUND:
+            # Issue #637: same-shell `&&`/`||` marker. No cwd/scope effect
+            # (unlike CMD_BOUND/PIPE_END it restores nothing); the stdin
+            # prepass already folded it into in_cond for the close gates.
             continue
         if seg == CMD_BOUND:
             # A `;`/newline ends a pipeline and a background list: later
