@@ -264,7 +264,7 @@ RAM diff limited to allowed sets. Cold+warm identical required.
 | ID | Class | Setup (synthetic) | Action | Expect (DEV-discipline, NOT genuine) | Guards against |
 |----|-------|-------------------|--------|--------------------------------------|----------------|
 | T01 | 正例 (stub) | Any synthetic ROM with the 81-slot table | `JSR $E06F` from synthetic guest | No return; PC stays at `api_unimplemented` halt; `X=$25`; cold/warm identical | Claiming `$25` returns; table miswire (`JMP` target wrong) |
-| T02 | 正例 (mechanics) | Experimental-image-only future body (NOT wired here): table `JMP` points at body | `JSR $E06F` then halt-loop | Return to caller+2 via RTS; `stack_check=MATCH`, SP delta 0, cold/warm identical | Non-returning table; SP leak; warm-only return |
+| T02 | 正例 (mechanics) | Experimental-image-only future body (NOT wired here): table `JMP` points at body | `JSR $E06F` (3-byte) then halt-loop | Return to caller+3 via RTS (JSR pushes caller+2, RTS adds 1); `stack_check=MATCH`, SP delta 0, cold/warm identical | Non-returning table; SP leak; warm-only return |
 | T03 | 正例 (preserve) | Future body, `A=$00/$FF`, `X=$12/$34`, `Y=$A5`, P with C set/clear | `JSR $E06F` | A/X/Y/MPRs preserved or DEV-documented result; N/Z/V/D/I/T preserved except documented C; AR left at documented register | Register clobber; flag leak; AR drift |
 | T04 | 正例 (window) | Future body, MPR0=`$F8` entry | `JSR $E06F` | SEI during window; MPR0=`$FF` at `$0000/$0002` access; MPR0 restored; MPR1 never remapped | IRQ-inside-window corruption; MPR0 leak; MPR1 remap breaking stack (`$21xx`) |
 | T05 | 正例 (RAM scope) | Future body, shadow seeded per its spec (or "no work-RAM" declared) | `JSR $E06F` | RAM diff ⊆ {transient `$21(SP-k)..$21(SP)`, declared shadow/sentinel, STORE record}; no zero-page/VRAM/CD/BURAM | Silent work-RAM/VRAM smash; shadow over-write |
@@ -274,16 +274,20 @@ RAM diff limited to allowed sets. Cold+warm identical required.
 | T09 | 負例 (mask mutants) | Mutants: wrong VDC mask (e.g. `AND #$FF` keeps all, `AND #$00` clears kept bits, high-byte rewrite) | `JSR $E06F` seeded | RED: VDC low/high mismatch vs DEV oracle | Wrong-bit preservation (cf. ex_dspoff 6-mutant set) |
 | T10 | 負例 (stack smash) | Mutant: body writes outside `$21(SP-k)..$21(SP)` (e.g. `$2100` page smash) | `JSR $E06F` | RED: RAM diff shows out-of-scope write | Out-of-contract RAM write |
 | T11 | 境界例 | `A=$00` / `$FF`, `X=$00` / `$80` (`$80` is the SETWRT reject boundary pattern; for `$25` it is a preservation probe, not a semantic boundary) | `JSR $E06F` | Preserved (or DEV-reject C=1 with no VDC/RAM write); no crash/timeout | Byte-boundary clobber; sign-bit mishandling |
-| T12 | 境界例 | `SP=$05` (min-in-contract) vs `SP=$04` (out-of-contract) | `JSR $E06F` | `$05`: GREEN with balance; `$04`: out-of-contract, never GREEN (harness refuses or documents) | Stack-depth overrun (cf. CR family `$05` rule, `$23` 5-byte rule) |
-| T13 | 境界例 | MPR1 != `$F8` (e.g. `$FF` I/O page, `$00` wrong bank) | `JSR $E06F` | BLOCKED/refused: no blind execution; if executed, must not corrupt I/O (gate BEFORE window) | Non-RAM-mapped shadow access (cf. $4A MPR1 gate) |
+| T12 | 境界例 | `SP` derived from body depth: 3-push body `SP=$05` min vs `$04` out; 5-push body `SP=$07` min vs `$06` and below out (JSR consumes 2 bytes before body pushes). `$25` body depth TBD so no fixed minimum claimed here | `JSR $E06F` | In-contract SP: GREEN with balance; below minimum: out-of-contract, never GREEN (harness refuses or documents; GREEN must not overwrite live caller stack data) | Stack-depth overrun (cf. CR family `$05` rule for 3 pushes, `$23` 5-byte rule needs `$07`) |
+| T13 | 境界例 | MPR1 != `$F8` (e.g. `$FF` I/O page, `$00` wrong bank) | Harness validates MPR1 BEFORE `JSR $E06F`; refuse the call without executing `JSR` when MPR1 != `$F8` | BLOCKED/refused with no `JSR` executed (no return-address write). Rationale: `JSR` itself writes 2 return bytes through the MPR1 mapping before any body gate runs, so a body-internal gate cannot make the call side-effect-free (cf. $4A MPR1 gate, docs/84-4a-contract.md section D) | Non-RAM-mapped stack write via `JSR` (cf. $4A MPR1 precondition) |
 | T14 | 境界例 | Cold vs warm; `P` with C=0 vs C=1 entry; `Y` sentinel variations | `JSR $E06F` ×2 resets | Identical verdicts; entry-C does not leak into result except via documented path | Reset-dependent state; flag-latch confusion (B-bit note: plain PHP/PLP restores every latch bit on the pinned core) |
 
 Oracle discipline (borrowed from #824): each negative/boundary mutant must
 name its failure mode (which assert fails) — a crash or timeout alone is
 not a RED proof. The $4A program used 9 body/table mutants with per-mutant
-failure modes plus a 21-byte structural pin; a future `$25` program must
-provide at least the T06-T10 mutant set with the same strictness before any
-DEV claim.
+failure modes plus a 21-byte structural pin. A future `$25` program must
+provide the applicable mutant set with the same strictness before any DEV
+claim: B1 preservation-only scaffold requires T06 (table reroute),
+T07 (forced-CLC/SEC flag fabrication), and T10 (stack-page smash), each
+with a named failing assert; T08 (unseeded-shadow bypass) and T09 (VDC-mask
+mutants) apply ONLY to bodies that implement shadow/VDC-mask behavior
+(B2/C) and MUST NOT be required of B1, which implements neither.
 
 What is NOT tested: genuine `$25` input encoding (UNKNOWN, so no oracle),
 commercial-disc continuation past `$25` (SIMULATED scaffolding at best, never
@@ -373,8 +377,9 @@ Failure on any line is BLOCKED, never PASS-by-assumption.
    `system_card_abi: NO_CLAIM`, `dev_callable: false`,
    `release_eligible: false`, `private_media_used: false`.
 5. Synthetic fixtures + mutants (section 6): T01 stub RED→GREEN, T02-T05
-   positive GREEN cold+warm, T06-T10 mutants all RED with named failure
-   modes, T11-T14 boundaries documented (in-contract GREEN, out-of-contract
+   positive GREEN cold+warm, applicable mutants RED with named failure
+   modes (B1: T06/T07/T10; T08/T09 only for shadow/VDC-mask bodies),
+   T11-T14 boundaries documented (in-contract GREEN, out-of-contract
    refused). ROM/fixture hashes, emulator version (`b49ae82a`), cc65
    version (`71746c8`), regs/events recorded per run.
 6. Real Geargrafx core only: `make test` (host), `make check`, `make
