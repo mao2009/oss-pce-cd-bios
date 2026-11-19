@@ -542,6 +542,9 @@ class Scrmod25Synthetic(unittest.TestCase):
         self.assertEqual((r[base + 1], r[base + 2], r[base + 3]), (a1, x1, y1))
         self.assertEqual(r[base + 4] & ~0x10, p1)
         self.assertEqual(list(r[base + 6:base + 14]), [0xF8, 0xF8, 0x80, 0x81, 0x82, 0x83, 0x84, 0x00])
+        # CodeRabbit: the second call's MPR record is asserted too (same
+        # expected mapping; the payload performs no MPR write between calls).
+        self.assertEqual(list(r[base + 22:base + 30]), [0xF8, 0xF8, 0x80, 0x81, 0x82, 0x83, 0x84, 0x00])
         # Zero-page scratch invariance (guest-observed, both calls): the
         # payload seeds zp $10 with $A5 immediately before each JSR; B1 must
         # leave it untouched (only transient caller-stack bytes may change).
@@ -581,15 +584,14 @@ class Scrmod25Synthetic(unittest.TestCase):
                                                   0x07, 0x66, 0x77))
         cold, warm = self._buf(rec)
         self.assertEqual(cold, warm)
-        r = cold
-        self.assertEqual(r[base], 0xAA)  # payload ran => PUBLIC boot OK
-        self.assertEqual((r[base + 1], r[base + 2], r[base + 3]), (0x07, 0x11, 0x22))
-        self.assertEqual(r[base + 4] & 0x01, 0x01)  # Carry preserved (C=1)
-        self.assertEqual(r[base + 4] & ~0x10, 0x07)  # P preserved modulo B
+        self.assertEqual(cold[base], 0xAA)  # payload ran => PUBLIC boot OK
+        self._check_c1(cold, base)
+        self._check_c1(warm, base)
+        for buf in (cold, warm):
+            self.assertEqual(buf[base + 4] & 0x01, 0x01)  # Carry kept, call 1
+            self.assertEqual(buf[base + 20] & 0x01, 0x01)  # Carry kept, call 2
         self._check_sp(cold, base, 0xFF)
-        self.assertEqual(list(r[base + 6:base + 14]), [0xF8, 0xF8, 0x80, 0x81, 0x82, 0x83, 0x84, 0x00])
-        self.assertEqual((r[base + 17], r[base + 18], r[base + 19]), (0x07, 0x66, 0x77))
-        self.assertEqual(r[base + 20] & ~0x10, 0x07)
+        self._check_sp(warm, base, 0xFF)
         self._check_canary(cold, base)
         self._check_canary(warm, base)
 
@@ -650,7 +652,8 @@ class Scrmod25Synthetic(unittest.TestCase):
         # (3-byte JSR), RTS lands at caller+3, SP delta 2, MATCH, balanced.
         rec, base = self._run("order", self._defines(0x07, 0x11, 0x22,
                                                      0x06, 0x66, 0x77))
-        self._buf(rec)  # recognized halt first; order alone must not pass a hang
+        cold, warm = self._buf(rec)  # recognized halt first; order alone must not pass a hang
+        self.assertEqual(cold, warm)
         for cycle in ("cold", "warm"):
             calls = [c for c in rec["APICALL"] if c["cycle"] == cycle]
             slots = [c["slot"] for c in calls]
@@ -663,7 +666,19 @@ class Scrmod25Synthetic(unittest.TestCase):
                 self.assertTrue(c.get("return_matches_caller"), (cycle, c))
         # NOTE: the probe parser only collects the APICALL tag (APIRETURN
         # lines are not collected); return is proved per-call by
-        # return_matches_caller + stack_check == MATCH + SP balance.
+        # return_matches_caller + stack_check == MATCH + SP balance, plus
+        # the payload records below: a body that RTS-resumes to the wrong
+        # address (e.g. caller+6 instead of caller+3) cannot produce the
+        # exact post-return record stream and the verified halt (the 9-byte
+        # structural pin independently forbids such a body shape).
+        self._check_expected(cold, base, 0x07, 0x07, 0x11, 0x22,
+                             0x06, 0x06, 0x66, 0x77)
+        self._check_expected(warm, base, 0x07, 0x07, 0x11, 0x22,
+                             0x06, 0x06, 0x66, 0x77)
+        self._check_sp(cold, base, 0xFF)
+        self._check_sp(warm, base, 0xFF)
+        self._check_canary(cold, base)
+        self._check_canary(warm, base)
 
     def test_scrmod_body_bytes_pinned(self):
         # Structural anti-fake pin (no probe run): the experimental body must
@@ -1227,7 +1242,7 @@ class Scrmod25Synthetic(unittest.TestCase):
         # SP (base+5/+21) is verified by _check_sp, not _check_c0: corrupt
         # it and assert _check_sp fires instead.
         targets = [0, 1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
-                   17, 18, 19, 20, 30, 31]
+                   17, 18, 19, 20, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]
         for buf, cycle in ((cold, "cold"), (warm, "warm")):
             for pos in targets:
                 with self.subTest(cycle=cycle, pos=pos):
@@ -1310,6 +1325,7 @@ class Scrmod25Synthetic(unittest.TestCase):
         good[base + 4] = popen
         good[base + 5] = 0xFF
         good[base + 6:base + 14] = bytes((0xF8, 0xF8, 0x80, 0x81, 0x82, 0x83, 0x84, 0x00))
+        good[base + 22:base + 30] = bytes((0xF8, 0xF8, 0x80, 0x81, 0x82, 0x83, 0x84, 0x00))
         good[base + 14] = 0xA5
         good[base + 15] = 0xA5
         good[base + 17:base + 20] = bytes((popen, 0x66, 0x77))
