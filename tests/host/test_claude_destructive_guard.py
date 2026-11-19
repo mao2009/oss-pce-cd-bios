@@ -3924,18 +3924,24 @@ class StdinProgramMutationTests(unittest.TestCase):
         "pipe flag lost across continuations": (
             "            if seg_text.strip():",
             "            if True:"),
-        "dash program check removed": (
-            "    if _python_program(args) == 'stdin':",
-            "    if False:"),
-        "piped-nothing-to-run check removed": (
-            "            if piped and _python_program(words[j + 1:]) == 'none':",
-            "            if False:"),
+        "dash program check removed": [
+            ("    if _python_program(args) == 'stdin':",
+             "    if False:"),
+            ("        _prog = _python_program(args)\n        if _prog == 'stdin':",
+             "        _prog = _python_program(args)\n        if False:"),],
+        "piped-nothing-to-run check removed": [
+            ("            if piped and _python_program(words[j + 1:]) == 'none':",
+             "            if False:"),
+            ("        if _prog in ('none', 'unknown') and fed:\n            raise Deny(\"stdin-program\", \"python with piped or redirected stdin and no program word runs stdin: not inspected\")",
+             "        if False:\n            raise Deny(\"stdin-program\", \"python with piped or redirected stdin and no program word runs stdin: not inspected\")"),],
         "node option/file confusion allowed": (
             "    if name == 'node':\n        return _node_program(args)",
             "    if name == 'node':\n        return 'file'"),
-        "stdin dash check removed": (
-            "        if prog in ('code', 'file'):\n            return None\n        if prog == 'stdin':",
-            "        if prog in ('code', 'file'):\n            return None\n        if False:"),
+        "stdin dash check removed": [
+            ("        if prog in ('code', 'file'):\n            return None\n        if prog == 'stdin':",
+             "        if prog in ('code', 'file'):\n            return None\n        if False:"),
+            ("        _prog = _interp_program(name, args)\n        if _prog == 'stdin':",
+             "        _prog = _interp_program(name, args)\n        if False:"),],
         "piped-or-redirected stdin check removed": (
             "        if prog in ('none', 'unknown'):",
             "        if False:"),
@@ -3973,8 +3979,8 @@ class StdinProgramMutationTests(unittest.TestCase):
             "        call_taint = fed or _has_input_redirect(seg)",
             "        call_taint = False"),
         "function body inheritance disabled": (
-            "                                analyze_text(_body, ctx.copy(), ps, depth + 1, inherited_fed=True, outer_funcs=all_funcs)",
-            "                                analyze_text(_body, ctx.copy(), ps, depth + 1, inherited_fed=False, outer_funcs=all_funcs)"),
+            "                        analyze_text(_body, ctx.copy(), ps, depth + 1, inherited_fed=True, outer_funcs=all_funcs)",
+            "                        analyze_text(_body, ctx.copy(), ps, depth + 1, inherited_fed=False, outer_funcs=all_funcs)"),
         "compound redirect propagation disabled": (
             "                    if _opener_idx is not None and _has_input_redirect(seg_text):",
             "                    if False:  # compound redirect disabled"),
@@ -3997,8 +4003,8 @@ class StdinProgramMutationTests(unittest.TestCase):
             "            _fkey = _func_call_name(words[_k], ps) if _k < len(words) else None",
             "            _fkey = _cmd_name(words[_k]) if _k < len(words) else None  # mutant: Bash case-insensitive"),
         "function plus-sign missed": (
-            "    for m in _re.finditer(r'(?<![^\\s;|&<>()=])([^\\s;|&<>()=]+)\\s*\\(\\s*\\)\\s*(\\{|\\()', text):",
-            "    for m in _re.finditer(r'(?<![A-Za-z0-9_.\\-:])([A-Za-z_][A-Za-z0-9_.:\\-_]*)\\s*\\(\\s*\\)\\s*(\\{|\\()', text):  # mutant: plus missed"),
+            "    for m in _re.finditer(r'(?<![^\\s;|&<>()=])([^\\s;|&<>()=]+)\\s*\\(\\s*\\)\\s*(\\{|\\()', clean):",
+            "    for m in _re.finditer(r'(?<![A-Za-z0-9_.\\-:])([A-Za-z_][A-Za-z0-9_.:\\-_]*)\\s*\\(\\s*\\)\\s*(\\{|\\()', clean):  # mutant: plus missed"),
         "compound redirect final segment disabled": (
             "                    if _opener_idx is not None and _has_input_redirect(_final_seg):",
             "                    if False:  # compound redirect final disabled"),
@@ -4040,12 +4046,20 @@ class StdinProgramMutationTests(unittest.TestCase):
             original = f.read()
         code, out = self._run(original)
         self.assertEqual(code, 0, "unmutated copy must pass StdinProgramTests:\n" + out[-800:])
-        for name, (old, new) in self.MUTANTS.items():
+        for name, spec in self.MUTANTS.items():
             if name in KNOWN_UNRESOLVED_MUTANTS:
                 continue
+            # A mutant may disable a redundant pair of layers (defense in
+            # depth, review 5968211099 MAJOR-B): removing only one layer can
+            # leave the sibling DENY in place, so the pair is removed
+            # together to prove the intended named FAIL.
+            pairs = spec if isinstance(spec[0], tuple) else [spec]
             with self.subTest(mutant=name):
-                self.assertEqual(original.count(old), 1, "mutation target not found exactly once: " + name)
-                code, out = self._run(original.replace(old, new))
+                mutated = original
+                for old, new in pairs:
+                    self.assertEqual(mutated.count(old), 1, "mutation target not found exactly once: " + name)
+                    mutated = mutated.replace(old, new)
+                code, out = self._run(mutated)
                 # Review 5968136032: require an expected FAIL and reject runs
                 # with ERRORs (fixture/test-body exceptions must not count).
                 # Internal-error DENYs are also rejected (no silent pass).
