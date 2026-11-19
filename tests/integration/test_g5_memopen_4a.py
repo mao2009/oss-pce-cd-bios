@@ -321,6 +321,20 @@ class MemopenSynthetic(unittest.TestCase):
         self.assertEqual(r[base + 20] & ~0x10, 0x06)
         self.assertEqual(r[base + 21], 0xFF)
 
+    def _check_c1(self, cold, base):
+        # Entry P=$07 (C=1, commercial CUE[0] shape): C=1 preservation class.
+        # Mirrors _check_c0 with 0x07 (A==POPEN by construction). Used for
+        # force-CLC (which must RED vs C=1, not vs C=0 baseline mismatch).
+        r = cold
+        self.assertEqual(r[base], 0xAA)
+        self.assertEqual((r[base + 1], r[base + 2], r[base + 3]), (0x07, 0x11, 0x22))
+        self.assertEqual(r[base + 4] & ~0x10, 0x07)
+        self.assertEqual(r[base + 5], 0xFF)
+        self.assertEqual(list(r[base + 6:base + 14]), [0xFF, 0xF8, 0x80, 0x81, 0x82, 0x83, 0x84, 0x00])
+        self.assertEqual((r[base + 17], r[base + 18], r[base + 19]), (0x07, 0x66, 0x77))
+        self.assertEqual(r[base + 20] & ~0x10, 0x07)
+        self.assertEqual(r[base + 21], 0xFF)
+
     def test_memopen_preserves_carry_set(self):
         # Entry P=$07 (C=1, commercial CUE shape): everything preserved.
         rec, base = self._run("c1", self._defines(0x07, 0x11, 0x22,
@@ -386,7 +400,7 @@ class MemopenSynthetic(unittest.TestCase):
         self.assertEqual(exp[body - 0xE000:body - 0xE000 + 21], want)
         self.assertNotEqual(want[0], 0x60)  # not a bare RTS
 
-    def _assert_mutant_red(self, rec, base):
+    def _assert_mutant_red(self, rec, base, check=None):
         # A mutant is detected (RED) through either of two channels:
         # (a) abnormal halt -- dropping/replacing a pop unbalances SP, so
         #     RTS mis-returns and the probe reports a non-halt reason; or
@@ -394,12 +408,33 @@ class MemopenSynthetic(unittest.TestCase):
         #     misdirect the gate return cleanly but with wrong state.
         # If the run halts cleanly AND all values match, the mutant went
         # GREEN and this helper fails (the test then fails: coverage gap).
+        # Review 5968211653: channel (a) counts ONLY expected control-flow
+        # failure (RUN present with 2 cycles, valid buffers, reason is a
+        # non-halt halt reason). Missing RUN, bad hex, short buffers, or
+        # probe/internal errors are harness failures, not mutant detection
+        # (fail the test, do not count as RED). `check` selects the baseline
+        # matcher (C=0 vs C=1); unmutated ROM must be GREEN for it (control).
+        if check is None:
+            check = self._check_c0
         try:
             cold, _ = self._buf(rec)
         except AssertionError:
-            return  # channel (a): control flow broken
+            # Distinguish control-flow failure from harness failure.
+            self.assertIn("RUN", rec, "mutant run missing RUN (harness failure, not detection)")
+            runs = rec["RUN"]
+            self.assertEqual(len(runs), 2, "mutant run RUN count != 2 (harness failure)")
+            for r in runs:
+                self.assertIn(r.get("reason"), ("cd_halt_fail", "api_unimplemented", "cd_unexpected_interrupt"),
+                              f"mutant run unexpected reason {r.get('reason')} (harness failure, not detection)")
+                self.assertIn("buffer_hex", r, "mutant run missing buffer_hex (harness failure)")
+                try:
+                    buf = bytes.fromhex(r["buffer_hex"])
+                except (TypeError, ValueError):
+                    self.fail("mutant run buffer_hex invalid hex (harness failure)")
+                self.assertGreaterEqual(len(buf), 2048, "mutant run buffer short (harness failure)")
+            return  # channel (a): expected control-flow failure
         with self.assertRaises(AssertionError, msg="mutant went GREEN"):
-            self._check_c0(cold, base)  # channel (b)
+            check(cold, base)  # channel (b)
 
     def test_memopen_mutant_drop_pla_red(self):
         # Drop the success-path A restore (PLA->NOP): A keeps the TMA gate
@@ -420,11 +455,20 @@ class MemopenSynthetic(unittest.TestCase):
 
     def test_memopen_mutant_force_clc_red(self):
         # Fabricate C=0 on success (PLP->CLC): the C=1 entry class must go
-        # RED. Proves no fixed C=0 success flag.
+        # RED. Proves no fixed C=0 success flag. Note: PLP->CLC drops a pop,
+        # so SP is unbalanced (+1) and RTS mis-returns (channel (a) non-halt)
+        # in addition to any flag mismatch; an isolated flag-only mutant would
+        # need a stack-balanced replacement (future work, not claimed here).
+        # Control: unmutated C=1 ROM is GREEN for _check_c1 (no baseline
+        # mismatch false positive vs _check_c0).
+        rec_ctrl, base_ctrl = self._run("c1-ctrl", self._defines(0x07, 0x11, 0x22,
+                                                                  0x07, 0x66, 0x77))
+        cold_ctrl, _ = self._buf(rec_ctrl)
+        self._check_c1(cold_ctrl, base_ctrl)
         bad = self._mutate_body(self.rom.read_bytes(), 13, bytes((0x18,)))
         rec, base = self._run_on_rom("m-clc", bad,
                                       self._defines(0x07, 0x11, 0x22, 0x07, 0x66, 0x77))
-        self._assert_mutant_red(rec, base)
+        self._assert_mutant_red(rec, base, check=self._check_c1)
 
     def test_memopen_mutant_force_sec_red(self):
         # Fabricate C=1 on success (PLP->SEC): the C=0 entry class must go
