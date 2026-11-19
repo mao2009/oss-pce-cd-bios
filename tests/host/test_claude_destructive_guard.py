@@ -5094,7 +5094,7 @@ class ChainRuleMutationTests(unittest.TestCase):
             '            # body (same rule as the PowerShell close).\n            if entry["moved"] or ctx.cwd != entry["cwd"]:  # mutant: skipped body trusted'),
         "condition taint snapshot removed": (
             '        if not ps and cond_stack and first_cmd == "then":\n            # run-12 OQww/P7k3/RZ4R: the condition just ended; snapshot the\n            # arm entry (cwd, certainty, taint). Every `else`/`elif` arm\n            # restarts from here instead of the previous arm\'s end, so a\n            # condition that moves the cwd (or taints) is honored while a\n            # previous arm\'s effects stay joined only at the close.\n            cond_stack[-1]["arm"] = (ctx.cwd, ctx.cwd_fuzzy, ctx.tainted)',
-            '            pass  # mutant: condition taint dropped'),
+        '        pass  # mutant: condition taint dropped'),
         "else arm reset removed": (
             '        elif cond_stack and first_cmd in ("else", "elif"):',
             '        elif False:  # mutant: else arm reuses previous arm state'),
