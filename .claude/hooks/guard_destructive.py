@@ -1607,6 +1607,19 @@ def _cmd_name(word):
     return n[:-4] if n.endswith(".exe") else n
 
 
+def _func_key(name, ps):
+    """Function-definition/call lookup key: Bash is case-sensitive, PowerShell is not."""
+    return name.lower() if ps else name
+
+
+def _func_call_name(word, ps):
+    """Bare command name for function-call resolution: basename + .exe strip, case per shell."""
+    base = posixpath.basename(word.replace("\\", "/"))
+    if base.lower().endswith(".exe"):
+        base = base[:-4]
+    return base.lower() if ps else base
+
+
 def python_position_args(words):
     """The arguments of the python process this segment runs, or None if python does not run here.
 
@@ -2354,10 +2367,17 @@ def _extract_function_defs(text, ps):
     # To avoid missing due to newlines, use \s* (includes \n).
     import re as _re
     # Bash name() { ... } and name() ( ... )
-    # MAJOR-2: Bash function names allow hyphen/dot/colon (f-x, f.foo, f:foo verified). Fail-closed
-    # for other special chars via unknown-body DENY (no silent ALLOW).
-    for m in _re.finditer(r'(?<![A-Za-z0-9_.\-:])([A-Za-z_][A-Za-z0-9_.:\-]*)\s*\(\s*\)\s*(\{|\()', text):
+    # MAJOR (review 5967514206): Bash function names are case-sensitive and
+    # allow many non-metacharacters (verified: F-X, f+x, f?, f*, f%, f/,
+    # f@, f!, f^, f~, f,, 1f). The previous [A-Za-z0-9_.:\-] missed `+`
+    # (and digit-leading names), causing fail-open misses. Use a permissive
+    # WORD pattern (any non-metacharacter, non-`=`, non-space) and over-match
+    # quoted/candidates (fail-closed over-denial, never silent ALLOW).
+    # PowerShell names resolve case-insensitively (keyed lower); Bash keys
+    # keep original case and are stored/looked up case-sensitively.
+    for m in _re.finditer(r'(?<![^\s;|&<>()=])([^\s;|&<>()=]+)\s*\(\s*\)\s*(\{|\()', text):
         name = m.group(1)
+        key = _func_key(name, ps)
         opener = m.group(2)
         body_start_idx = m.start(2)  # index of "{" or "("
         # Skip if opener inside quotes/comments? Regex over-matches quoted (fail-closed safe: over-denial). Accept.
@@ -2423,10 +2443,11 @@ def _extract_function_defs(text, ps):
                 body = None
             else:
                 body, _end = found
-        defs.setdefault(name, []).append(body)
+        defs.setdefault(key, []).append(body)
     # function name [()] { ... } / ( ... )  (Bash + PowerShell)
-    for m in _re.finditer(r'(?<![A-Za-z0-9_.\-:])function\s+([A-Za-z_][A-Za-z0-9_.:\-]*)\s*(\(\s*\))?\s*(\{|\()', text):
+    for m in _re.finditer(r'(?<![^\s;|&<>()=])function\s+([^\s;|&<>()=]+)\s*(\(\s*\))?\s*(\{|\()', text):
         name = m.group(1)
+        key = _func_key(name, ps)
         opener = m.group(3)
         body_start_idx = m.start(3)
         if opener == "{":
@@ -2483,7 +2504,7 @@ def _extract_function_defs(text, ps):
                         break
                 i += 1
             body = None if found is None else found[0]
-        defs.setdefault(name, []).append(body)
+        defs.setdefault(key, []).append(body)
     return defs
 
 
@@ -3102,10 +3123,13 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None):
                 # Recompute first meaningful word for NON_EXEC check (after KEYWORDS/ASSIGN only, not time/coproc? Actually "time echo f"? Unlikely. Keep simple: check _cname's source word's leading? Use _first for NON_EXEC via _cmd_name? NON_EXEC check uses _cmd_name(words[i]) in original stdin check (after KEYWORDS/ASSIGN). For functions, mimic: if first meaningful (after KEYWORDS/ASSIGN) is NON_EXEC, skip (no call).
                 pass
             # Recompute with NON_EXEC guard (matching stdin_program_refusal behavior).
+            # MAJOR (review 5967514206): Bash is case-sensitive, PowerShell is
+            # not — resolve NON_EXEC and function names per shell, never
+            # lowercasing Bash `F-X` to `f-x` and never missing `+` names.
             _j = 0
             while _j < len(words) and (words[_j] in KEYWORDS or ASSIGN.match(words[_j])):
                 _j += 1
-            if _j < len(words) and _cmd_name(words[_j]) in NON_EXEC_COMMANDS:
+            if _j < len(words) and _func_call_name(words[_j], ps) in NON_EXEC_COMMANDS:
                 pass
             else:
                 # Find command after same-shell prefixes.
@@ -3113,7 +3137,7 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None):
                 while _k < len(words) and words[_k] in ("time", "coproc"):
                     _k += 1
                 if _k < len(words):
-                    _fname = _cmd_name(words[_k])
+                    _fname = _func_call_name(words[_k], ps)
                     if _fname in all_funcs:
                         for _body in all_funcs[_fname]:
                             if _body is None:

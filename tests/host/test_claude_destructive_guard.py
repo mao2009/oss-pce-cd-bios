@@ -3832,6 +3832,29 @@ class StdinProgramTests(unittest.TestCase):
             with self.subTest(cmd=cmd):
                 self.assertEqual(self._d(cmd)[0], "ALLOW")
 
+    def test_function_names_case_sensitive_bash(self):
+        # Review 5967514206 MAJOR: Bash function names are case-sensitive
+        # (`F-X` != `f-x`); PowerShell resolves case-insensitively.
+        # Pipe-fed calls must use the shell-correct key, never lowercased
+        # Bash misses. Reasons must be stdin-program/function (not generic).
+        for cmd in ["F-X() { node; }; printf 'code\\n' | F-X",
+                    "f+x() { node; }; printf 'code\\n' | f+x"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY", cmd)
+                self.assertIn("stdin-program", reason, cmd)
+        # Distinct Bash functions do not confuse each other.
+        verdict, _ = self._d("F-X() { node; }; f-x() { cat; }; printf 'code\\n' | F-X")
+        self.assertEqual(verdict, "DENY")
+        verdict, _ = self._d("F-X() { node; }; f-x() { cat; }; printf 'code\\n' | f-x")
+        self.assertEqual(verdict, "ALLOW")
+        verdict, _ = self._d("F-X() { node script.js; }; printf 'code\\n' | F-X")
+        self.assertEqual(verdict, "ALLOW")
+        # PowerShell treats `F-X`/`f-x` as the same name (case-insensitive).
+        verdict, reason = self._d("function F-X { node }; printf 'code\\n' | f-x", tool="PowerShell")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertIn("stdin-program", reason, reason)
+
     def test_nested_redirect_inherits_stdin(self):
         # MAJOR redirect: outer input redirect taints inner sh -c / python / node.
         for cmd in ["sh -c 'if true; then node; fi' < code.js",
@@ -3966,6 +3989,12 @@ class StdinProgramMutationTests(unittest.TestCase):
         "hyphen-dot-colon functions ignored": (
             "                    if _fname in all_funcs:",
             "                    if False:  # hyphen/dot/colon ignored"),
+        "function uppercase missed (Bash case-sensitive)": (
+            "                    _fname = _func_call_name(words[_k], ps)",
+            "                    _fname = _cmd_name(words[_k])  # mutant: Bash case-insensitive"),
+        "function plus-sign missed": (
+            "    for m in _re.finditer(r'(?<![^\\s;|&<>()=])([^\\s;|&<>()=]+)\\s*\\(\\s*\\)\\s*(\\{|\\()', text):",
+            "    for m in _re.finditer(r'(?<![A-Za-z0-9_.\\-:])([A-Za-z_][A-Za-z0-9_.:\\-]*\\s*\\(\\s*\\)\\s*(\\{|\\()', text):  # mutant: plus missed"),
         "compound redirect final segment disabled": (
             "                    if _opener_idx is not None and _has_input_redirect(_final_seg):",
             "                    if False:  # compound redirect final disabled"),
@@ -3981,7 +4010,7 @@ class StdinProgramMutationTests(unittest.TestCase):
                  "test_command_substitution_inherits_pipe",
                  "test_command_substitution_independent_stays_allowed",
                  "test_function_calls_inherit_stdin", "test_nested_redirect_inherits_stdin",
-                 "test_function_safe_forms_stay_allowed", "test_nested_redirect_safe_forms_stay_allowed",
+                 "test_function_safe_forms_stay_allowed", "test_function_names_case_sensitive_bash", "test_nested_redirect_safe_forms_stay_allowed",
                  "test_independent_command_after_pipeline_stays_allowed",
                  "test_node_file_operand_stays_allowed",
                  "test_compound_redirect_inherits_stdin",
