@@ -425,7 +425,8 @@ class MemopenSynthetic(unittest.TestCase):
         self.assertEqual(exp[body - 0xE000:body - 0xE000 + 21], want)
         self.assertNotEqual(want[0], 0x60)  # not a bare RTS
 
-    def _validate_abnormal_runs(self, rec, allowed_reasons, expect_x=None):
+    def _validate_abnormal_runs(self, rec, allowed_reasons, expect_x=None,
+                               mutant_tag=""):
         # Strict abnormal-halt validator (review 5968681873 MEDIUM).
         # Counts as mutant RED only when ALL hold:
         #  RUN is a 2-list with cold/warm each exactly once (no dup/missing/
@@ -482,6 +483,39 @@ class MemopenSynthetic(unittest.TestCase):
                          f"mutant run cold/warm reasons differ {reasons} (harness failure, not detection)")
         self.assertEqual(pcs[0], pcs[1],
                          "mutant run cold/warm pc differ (harness failure, not detection)")
+        # MEDIUM-1: the mutated $4A must actually have been reached in each
+        # cycle. RUN evidence alone cannot prove this (an early hang elsewhere
+        # yields the same RUN shape).
+        self._assert_apicall_arrival(rec, mutant_tag=mutant_tag)
+
+    def _assert_apicall_arrival(self, rec, mutant_tag=""):
+        # MEDIUM-1 arrival proof: every cycle needs >=1 APICALL showing a
+        # genuine JSR into slot $4A (table entry $E0DE, in_table, SP delta 2,
+        # internal stack MATCH). Return success is deliberately NOT required:
+        # control-flow mutants mis-return by design, so arrival and return
+        # are validated separately (a missing/failed return never invalidates
+        # a proven arrival, and a proven arrival never implies a return).
+        # Missing APICALL, no $4A call, or broken call evidence in any cycle
+        # is HARNESS_FAILURE/INCONCLUSIVE, never MUTANT RED.
+        # The probe emits these APICALL fields (geargrafx_api_return_probe.cpp);
+        # no arrival shape is guessed beyond what the probe observes.
+        self.assertIn("APICALL", rec,
+                      f"mutant {mutant_tag} run missing APICALL (harness failure, not detection)")
+        calls = rec["APICALL"]
+        self.assertIsInstance(calls, list,
+                              f"mutant {mutant_tag} APICALL not a list (harness failure)")
+        for cycle in ("cold", "warm"):
+            arrivals = [c for c in calls
+                        if c.get("cycle") == cycle
+                        and c.get("slot") == 0x4A
+                        and c.get("entry_pc") == 0xE0DE
+                        and c.get("in_table") is True
+                        and c.get("sp_delta") == 2
+                        and c.get("stack_check") == "MATCH"]
+            self.assertGreaterEqual(
+                len(arrivals), 1,
+                f"mutant {mutant_tag} $4A not reached in {cycle} "
+                "(harness failure, not detection)")
 
     def _assert_body_mutant_applied(self, orig_bytes, mutant_bytes, offset, new_bytes):
         # Prove the mutant bytes actually landed at the intended 21-byte body
@@ -532,19 +566,32 @@ class MemopenSynthetic(unittest.TestCase):
             allowed_abnormal = ("cd_halt_fail", "api_unimplemented",
                                 "cd_unexpected_interrupt")
         try:
-            cold, _ = self._buf(rec)
+            cold, warm = self._buf(rec)
         except AssertionError as buf_err:
             if len(tuple(allowed_abnormal)) == 0:
                 self.fail(f"value mutant {mutant_tag} took abnormal path "
                           f"(expected clean-halt value mismatch): {buf_err}")
             # Strict control-flow failure validation (raises on harness failure).
-            self._validate_abnormal_runs(rec, allowed_abnormal, expect_x)
+            self._validate_abnormal_runs(rec, allowed_abnormal, expect_x,
+                                        mutant_tag=mutant_tag)
             return  # channel (a): expected control-flow failure
         if expect_x is not None:
             self.fail(f"control-flow mutant {mutant_tag} returned cleanly "
                       "(expected abnormal halt)")
-        with self.assertRaises(AssertionError, msg=f"mutant went GREEN {mutant_tag}"):
-            check(cold, base)  # channel (b)
+        # MEDIUM-2 channel (b): the value mismatch must hold on BOTH cycles
+        # with identical buffers. A cold-only anomaly, a warm-only anomaly,
+        # or divergent cold/warm anomalies are INCONCLUSIVE (single-cycle
+        # glitch or nondeterminism), never MUTANT RED. Checking an exception
+        # on one cycle alone is not a detection.
+        self.assertEqual(cold, warm,
+                         f"value mutant {mutant_tag} cold/warm buffers differ "
+                         "(INCONCLUSIVE, not detection)")
+        with self.assertRaises(AssertionError,
+                               msg=f"mutant went GREEN on cold {mutant_tag}"):
+            check(cold, base)  # channel (b), cold side
+        with self.assertRaises(AssertionError,
+                               msg=f"mutant went GREEN on warm {mutant_tag}"):
+            check(warm, base)  # channel (b), warm side
 
     def test_memopen_mutant_drop_pla_red(self):
         # Drop the success-path A restore (PLA->NOP): unbalanced SP (pop
@@ -654,16 +701,41 @@ class MemopenSynthetic(unittest.TestCase):
                                 expect_x=0x4A, mutant_tag="table-reroute")
 
     def test_memopen_buffer_mutants_detected(self):
-        # Corrupt the recorded buffer: head/middle/tail changes must be visible.
-        rec, base = self._run("mutbuf", self._defines(0x07, 0x11, 0x22,
+        # MINOR-1: the preservation checker itself must fire. Every asserted
+        # field (marker/A/X/Y/P/SP/MPR x8, both calls) is corrupted in turn
+        # and handed to the REAL checker (_check_c0) on cold AND warm buffers;
+        # the checker must raise each time. Corrupting bytes the checker never
+        # reads (record gaps, far tail) must NOT raise: a silent self-evident
+        # `assertEqual(bad, good)` can no longer stand in for the detector.
+        rec, base = self._run("mutbuf", self._defines(0x06, 0x11, 0x22,
                                                       0x06, 0x66, 0x77))
-        cold, _ = self._buf(rec)
-        good = bytes(cold[base:base + 32])
-        for tag, pos in (("a1", 1), ("p1", 4), ("sp1", 5), ("a2", 17), ("p2", 20)):
-            bad = bytearray(good)
-            bad[pos] ^= 0xFF
-            with self.assertRaises(AssertionError, msg=f"corrupt {tag}"):
-                self.assertEqual(bytes(bad), good, f"mutant corrupt {tag}")
+        cold, warm = self._buf(rec)
+        self.assertEqual(cold, warm)
+        # Control: genuine buffers pass the checker on both cycles.
+        self._check_c0(cold, base)
+        self._check_c0(warm, base)
+        # Every asserted position must trip the checker when corrupted.
+        targets = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
+                   17, 18, 19, 20, 21]
+        for buf, cycle in ((cold, "cold"), (warm, "warm")):
+            for pos in targets:
+                with self.subTest(cycle=cycle, pos=pos):
+                    bad = bytearray(buf)
+                    bad[base + pos] ^= 0xFF
+                    with self.assertRaises(AssertionError,
+                                            msg=f"checker blind at +{pos} ({cycle})"):
+                        self._check_c0(bytes(bad), base)
+        # Bytes the checker never reads must NOT trip it (no false detection).
+        n = len(cold)
+        self.assertGreaterEqual(n, base + 32)
+        unrelated = [base + 14, base + 15, base + 16, base + 22,
+                     base + 30, base + 31, n - 2, n - 1]
+        for buf, cycle in ((cold, "cold"), (warm, "warm")):
+            for idx in unrelated:
+                with self.subTest(cycle=cycle, idx=idx):
+                    bad = bytearray(buf)
+                    bad[idx] ^= 0xFF
+                    self._check_c0(bytes(bad), base)  # must not raise
 
     def test_memopen_stub_default_traps(self):
         # cd_4a="stub" (builder default): $E0DE stays on the linked fallback,
@@ -736,6 +808,50 @@ class MemopenSynthetic(unittest.TestCase):
 
     def _fake_abnormal_rec(self, runs):
         return {"RUN": runs}
+
+    def _fake_arrival_call(self, cycle, slot=0x4A, entry_pc=0xE0DE,
+                           in_table=True, sp_delta=2, stack_check="MATCH",
+                           ret_match=True):
+        # Realistic $4A arrival evidence as emitted by
+        # geargrafx_api_return_probe.cpp (APICALL line). Only the checked
+        # subset (cycle/slot/entry_pc/in_table/sp_delta/stack_check) gates
+        # the oracle; the rest is faithful context.
+        return {"cycle": cycle, "step": 100,
+                "caller_pc": 0x3100, "entry_pc": entry_pc,
+                "in_table": in_table, "slot": slot,
+                "sp_before": 0xFF, "sp_after": 0xFD, "sp_delta": sp_delta,
+                "caller_a": 0x06, "caller_x": 0x11, "caller_y": 0x22,
+                "caller_p": 0x06, "stack_check": stack_check,
+                "return_matches_caller": ret_match}
+
+    def _fake_valid_abnormal_rec(self, ret_match=True):
+        # Strictly-valid channel-(a) record: confirmed halt + per-cycle $4A
+        # arrival. Must be accepted as RED (no false harness failure).
+        return {"RUN": [self._fake_abnormal_run("cold", "cd_halt_fail"),
+                        self._fake_abnormal_run("warm", "cd_halt_fail")],
+                "APICALL": [self._fake_arrival_call("cold", ret_match=ret_match),
+                              self._fake_arrival_call("cold", ret_match=ret_match),
+                              self._fake_arrival_call("warm", ret_match=ret_match),
+                              self._fake_arrival_call("warm", ret_match=ret_match)]}
+
+    def _fake_good_buf(self, base=512, popen=0x06):
+        good = bytearray(2048)
+        good[base] = 0xAA
+        good[base + 1:base + 4] = bytes((popen, 0x11, 0x22))
+        good[base + 4] = popen
+        good[base + 5] = 0xFF
+        good[base + 6:base + 14] = bytes((0xFF, 0xF8, 0x80, 0x81, 0x82, 0x83, 0x84, 0x00))
+        good[base + 17:base + 20] = bytes((popen, 0x66, 0x77))
+        good[base + 20] = popen
+        good[base + 21] = 0xFF
+        return good
+
+    def _fake_clean_rec(self, cold_hex, warm_hex, pc=0x3000):
+        def run(cycle, hx):
+            return {"cycle": cycle, "reason": "cd_halt_ok",
+                    "halt_confirmed": True, "pc": pc, "buffer_hex": hx,
+                    "apicall_truncated": False, "ret_truncated": False}
+        return {"RUN": [run("cold", cold_hex), run("warm", warm_hex)]}
 
     def test_oracle_rejects_cold_duplicate(self):
         rec = self._fake_abnormal_rec([
@@ -880,6 +996,107 @@ class MemopenSynthetic(unittest.TestCase):
         ]}
         with self.assertRaises(AssertionError, msg="clean ROM counted as mutant RED"):
             self._assert_mutant_red(rec, base)
+
+    # --- MEDIUM-1 negatives: $4A arrival is required for channel (a) RED.
+    # Pre-fix the oracle never consults APICALL, so every no-evidence record
+    # below is falsely accepted as RED (these tests FAIL pre-fix, PASS post-fix).
+    def test_oracle_rejects_empty_apicall(self):
+        rec = self._fake_valid_abnormal_rec()
+        rec["APICALL"] = []
+        with self.assertRaises(AssertionError, msg="APICALL=[] accepted as RED"):
+            self._assert_mutant_red(rec, 0)
+
+    def test_oracle_rejects_missing_apicall(self):
+        rec = self._fake_valid_abnormal_rec()
+        del rec["APICALL"]
+        with self.assertRaises(AssertionError, msg="missing APICALL accepted as RED"):
+            self._assert_mutant_red(rec, 0)
+
+    def test_oracle_rejects_wrong_slot_arrival(self):
+        # Calls exist but never reach slot $4A (e.g. only $02 traffic).
+        rec = self._fake_valid_abnormal_rec()
+        rec["APICALL"] = [self._fake_arrival_call("cold", slot=0x02),
+                          self._fake_arrival_call("warm", slot=0x02)]
+        with self.assertRaises(AssertionError, msg="wrong-slot arrival accepted as RED"):
+            self._assert_mutant_red(rec, 0)
+
+    def test_oracle_rejects_wrong_entry_arrival(self):
+        rec = self._fake_valid_abnormal_rec()
+        rec["APICALL"] = [self._fake_arrival_call("cold", entry_pc=0xE00C),
+                          self._fake_arrival_call("warm", entry_pc=0xE00C)]
+        with self.assertRaises(AssertionError, msg="wrong-entry arrival accepted as RED"):
+            self._assert_mutant_red(rec, 0)
+
+    def test_oracle_rejects_bad_stack_evidence(self):
+        # in_table / sp_delta / stack_check each break the JSR-arrival proof.
+        for kw in (dict(in_table=False), dict(sp_delta=0),
+                   dict(stack_check="MISMATCH")):
+            with self.subTest(kw=kw):
+                rec = self._fake_valid_abnormal_rec()
+                rec["APICALL"] = [self._fake_arrival_call("cold", **kw),
+                                  self._fake_arrival_call("warm", **kw)]
+                with self.assertRaises(AssertionError,
+                                        msg=f"bad stack evidence {kw} accepted as RED"):
+                    self._assert_mutant_red(rec, 0)
+
+    def test_oracle_rejects_partial_arrival(self):
+        # $4A reached on cold only; warm has no arrival (INCONCLUSIVE).
+        rec = self._fake_valid_abnormal_rec()
+        rec["APICALL"] = [c for c in rec["APICALL"] if c["cycle"] == "cold"]
+        with self.assertRaises(AssertionError, msg="partial arrival accepted as RED"):
+            self._assert_mutant_red(rec, 0)
+
+    def test_oracle_accepts_valid_abnormal_arrival(self):
+        # Positive control: strictly-valid abnormal record stays RED.
+        self._assert_mutant_red(self._fake_valid_abnormal_rec(), 0,
+                                mutant_tag="arrival-control")
+
+    def test_oracle_accepts_misreturn_arrival(self):
+        # Positive control: arrival proven but return failed
+        # (return_matches_caller=False, the control-flow mutant signature)
+        # must still count as RED. Return success is NOT required.
+        self._assert_mutant_red(self._fake_valid_abnormal_rec(ret_match=False), 0,
+                                mutant_tag="misreturn-control")
+
+    # --- MEDIUM-2 negatives: value mismatch must hold on BOTH cycles.
+    # Pre-fix only cold is checked, so cold-only and divergent anomalies are
+    # falsely accepted as RED (FAIL pre-fix, PASS post-fix).
+    def test_oracle_rejects_cold_only_anomaly(self):
+        base = 512
+        cold = self._fake_good_buf(base)
+        cold[base + 1] ^= 0xFF  # corrupt A1 on cold only
+        warm = self._fake_good_buf(base)
+        rec = self._fake_clean_rec(bytes(cold).hex(), bytes(warm).hex())
+        with self.assertRaises(AssertionError, msg="cold-only anomaly accepted as RED"):
+            self._assert_mutant_red(rec, base)
+
+    def test_oracle_rejects_warm_only_anomaly(self):
+        base = 512
+        cold = self._fake_good_buf(base)
+        warm = self._fake_good_buf(base)
+        warm[base + 1] ^= 0xFF  # corrupt A1 on warm only
+        rec = self._fake_clean_rec(bytes(cold).hex(), bytes(warm).hex())
+        with self.assertRaises(AssertionError, msg="warm-only anomaly accepted as RED"):
+            self._assert_mutant_red(rec, base)
+
+    def test_oracle_rejects_divergent_anomalies(self):
+        base = 512
+        cold = self._fake_good_buf(base)
+        cold[base + 1] ^= 0xFF  # cold: wrong A1
+        warm = self._fake_good_buf(base)
+        warm[base + 4] ^= 0xFF  # warm: wrong P1 (different anomaly)
+        rec = self._fake_clean_rec(bytes(cold).hex(), bytes(warm).hex())
+        with self.assertRaises(AssertionError, msg="divergent anomalies accepted as RED"):
+            self._assert_mutant_red(rec, base)
+
+    def test_oracle_accepts_both_cycle_value_mismatch(self):
+        # Positive control: same value corruption on both cycles stays RED.
+        base = 512
+        bad = self._fake_good_buf(base)
+        bad[base + 1] ^= 0xFF
+        hx = bytes(bad).hex()
+        rec = self._fake_clean_rec(hx, hx)
+        self._assert_mutant_red(rec, base, mutant_tag="both-cycle-control")
 
 
 if __name__ == "__main__":
