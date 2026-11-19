@@ -3814,6 +3814,7 @@ class StdinProgramTests(unittest.TestCase):
                     "f:foo() { node; }; printf 'code\\n' | f:foo",
                     "function f-x { node; }; printf 'code\\n' | f-x",
                     "f() { g; }; g() { node; }; printf 'x\\n' | f",
+                    "f() { node; }; printf 'x\\n' | time -p f",
                     "f() { node; }; f() { node; }; printf 'x\\n' | f",
                     "f() { node; echo hi; }; printf 'x\\n' | f",
                     "f() (node); printf 'x\\n' | f",

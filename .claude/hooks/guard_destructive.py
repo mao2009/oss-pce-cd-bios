@@ -1869,9 +1869,17 @@ def _call_target(words, ps):
         j += 1
     k = j
     saw_coproc = False
+    # `time` runs its pipeline in a forked subshell, but still resolves shell
+    # functions, so a pipe-fed `time -p f` must inspect f's body. Bash `time`
+    # takes only `-p`; anything else option-like is not skipped (fail-closed:
+    # the call then does not resolve and the suffix pass judges `f` alone).
     while k < len(words) and words[k] in ("time", "coproc"):
-        if words[k] == "coproc":
-            saw_coproc = True
+        if words[k] == "time":
+            k += 1
+            if k < len(words) and words[k] == "-p":
+                k += 1
+            continue
+        saw_coproc = True
         k += 1
     fkey = _func_call_name(words[k], ps) if k < len(words) else None
     return fkey, saw_coproc, j
