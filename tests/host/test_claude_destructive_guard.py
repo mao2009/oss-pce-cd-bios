@@ -4057,6 +4057,43 @@ class StdinProgramTests(unittest.TestCase):
             with self.subTest(cmd=cmd):
                 verdict, reason = self._d(cmd)
                 self.assertEqual(verdict, "ALLOW", reason)
+    def test_nested_pipe_inherits_stdin(self):
+        # MAJOR (review 5971146586): an inherited stdin survives inner
+        # command boundaries (`;`, newline, `&&`, `||`, `&`) inside nested
+        # scripts (function bodies, `sh -c` strings). Verified on Bash: a
+        # child shell and a function keep reading the same piped stdin
+        # across `;`. Only an explicit same-level close clears it.
+        for cmd in ["f() { echo ready; node; }\nprintf 'console.log(1)\n' | f",
+                    "printf 'console.log(1)\n' | sh -c 'echo ready\nnode'",
+                    "f() { echo ready; g; }\ng() { node; }\nprintf 'console.log(1)\n' | f",
+                    "printf 'console.log(1)\n' | sh -c 'echo ready; sh -c \"node\"'",
+                    "printf 'x\n' | sh -c 'echo ready; node'",
+                    "printf 'x\n' | sh -c 'echo ready\nnode'",
+                    "printf 'x\n' | sh -c 'echo a && node'",
+                    "printf 'x\n' | sh -c 'echo a || node'",
+                    "printf 'x\n' | sh -c 'echo a & node; wait'",
+                    "printf 'x\n' | (echo ready; node)",
+                    "printf 'x\n' | { echo ready; node; }",
+                    "printf 'x\n' | eval 'echo ready; node'",
+                    "printf 'x\n' | if true; then echo ready; node; fi",
+                    "printf 'x\n' | while read l; do node; done",
+                    "printf 'x\n' | time sh -c 'echo ready; node'",
+                    "printf 'x\n' | command sh -c 'echo ready; node'"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertIn("stdin-program", reason)
+        for cmd in ["printf x | sh -c 'echo ready; node script.js'",
+                    "printf x | cat; node",
+                    "printf x | sh -c 'echo ready; cat'",
+                    "printf x | sh -c 'exec <&-; node'",
+                    "printf x | sh -c 'echo ready; node script.js < data.txt'; node",
+                    "eval 'exec > output.log'; node",
+                    "(eval 'exec < code.js'); node"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "ALLOW", reason)
+
     def test_function_exec_persists_stdin(self):
         # A same-shell function call whose body persistently redirects stdin
         # changes the caller's stdin (verified on Bash); calls through a
@@ -4231,6 +4268,12 @@ class StdinProgramMutationTests(unittest.TestCase):
         "text scan skips quoted redirect words": (
             "        if '<' in w:\n            continue",
             "        if False:  # mutant: text scan ignores inner redirects\n            pass"),
+        "inherited stdin ignored": (
+            "    inh = bool(inherited_fed)",
+            "    inh = False  # mutant: inherited stdin never taints"),
+        "inner boundary clears inherited stdin": (
+            "            elif seg in (CMD_BOUND, BG_BOUND, PIPE_END):\n                if not any(e[1] for e in stack):\n                    fed = False\n                    pfed = False",
+            "            elif seg in (CMD_BOUND, BG_BOUND, PIPE_END):\n                if not any(e[1] for e in stack):\n                    fed = False\n                    pfed = False\n                    inh = False  # mutant: inner boundary drops inheritance"),
     }
     DETECTING = ["test_piped_bare_python_is_refused", "test_dash_names_stdin_program",
                  "test_bare_other_interpreters_with_piped_or_redirected_stdin_are_refused",
@@ -4247,7 +4290,8 @@ class StdinProgramMutationTests(unittest.TestCase):
                  "test_compound_redirect_safe_forms_stay_allowed",
                  "test_exec_redirect_persists_stdin", "test_exec_safe_forms_stay_allowed",
                  "test_function_exec_persists_stdin", "test_subshell_fd3_stays_allowed",
-                 "test_eval_redirect_persists_stdin", "test_eval_function_call_inherits_stdin"]
+                 "test_eval_redirect_persists_stdin", "test_eval_function_call_inherits_stdin",
+                 "test_nested_pipe_inherits_stdin"]
 
     def _run(self, hook_text):
         with tempfile.TemporaryDirectory() as td:
