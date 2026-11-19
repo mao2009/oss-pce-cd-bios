@@ -2941,10 +2941,30 @@ def _exec_segment_effect(words, seg):
     redirect in the segment wins (`< a <&-` closes, `<&- < a` supplies).
     """
     i = 0
-    while i < len(words) and (words[i] in KEYWORDS or ASSIGN.match(words[i])):
-        i += 1
-    while i < len(words) and words[i] in ("!", "time"):
-        i += 1
+    # Same-shell prefixes that still run an `exec` in this shell (verified
+    # on Bash): `!`, `time -p`, `builtin exec`, `command [-p|--] exec` all
+    # persistently redirect the current shell. `command -v/-V` merely
+    # describes and executes nothing. Anything else (wrappers, options)
+    # runs elsewhere or is unparseable, so it is not a persistent redirect.
+    for _ in range(4):
+        while i < len(words) and (words[i] in KEYWORDS or ASSIGN.match(words[i])):
+            i += 1
+        if i < len(words) and words[i] in ("!", "builtin"):
+            i += 1
+            continue
+        if i < len(words) and words[i] == "time":
+            i += 1
+            if i < len(words) and words[i] == "-p":
+                i += 1
+            continue
+        if i < len(words) and words[i] == "command":
+            i += 1
+            if i < len(words) and words[i] in ("-p", "--"):
+                i += 1
+            elif i < len(words) and words[i] in ("-v", "-V"):
+                return None
+            continue
+        break
     if i >= len(words) or words[i] != "exec":
         return None
     # Skip redirect operators and their targets: they select no program.

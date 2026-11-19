@@ -3942,6 +3942,9 @@ class StdinProgramTests(unittest.TestCase):
                     "exec -c < code.js; node",
                     "exec -a name < code.js; node",
                     "exec -- < code.js; node",
+                    "command exec < code.js; node",
+                    "command -p exec < code.js; node",
+                    "builtin exec < code.js; node",
                     "exec < a; exec < code.js; node",
                     "exec > o; exec < code.js; node"]:
             with self.subTest(cmd=cmd):
@@ -3960,6 +3963,8 @@ class StdinProgramTests(unittest.TestCase):
                     "exec 3< data.txt; node",
                     "exec 5<&-; node",
                     "exec; node",
+                    "command -v exec; node",
+                    "sudo exec < code.js; node",
                     "exec -c; node",
                     "exec < data.txt; node script.js",
                     "exec < data.txt; node --no-warnings script.js",
