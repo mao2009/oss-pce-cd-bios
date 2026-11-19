@@ -35,8 +35,9 @@ SEL = 0x109
 TRACK_SEL = 2
 BUDGET = 20_000_000
 
-# Payload CODE ($3000): set entry regs, then entry P last (so P is exact at
-# JSR; entry A necessarily equals POPEN -- X/Y stay fully independent).
+# Payload CODE ($3000): set entry regs with A and P independently (AONE may
+# differ from POPEN: PHA pushes POPEN, LDA #AONE sets A, PLP restores P -- so
+# at JSR, A==AONE and P==POPEN exactly; X/Y stay fully independent).
 # JSR the real $E0DE table entry twice with different regs, record
 # everything, halt. res_base layout (16 bytes):
 #   +0 ran marker ($AA)  +1 A  +2 X  +3 Y  +4 P  +5 SP  +6..13 MPR0..7
@@ -53,6 +54,7 @@ payload_entry:
     ldy #YONE
     lda #POPEN
     pha
+    lda #AONE
     plp
     jsr $E0DE
     sta res_base+1
@@ -85,6 +87,7 @@ payload_entry:
     ldy #YTWO
     lda #PTWO
     pha
+    lda #ATWO
     plp
     jsr $E0DE
     sta res_base+17
@@ -316,13 +319,17 @@ class MemopenSynthetic(unittest.TestCase):
         self.assertEqual(sorted(bufs), ["cold", "warm"])
         return bufs["cold"], bufs["warm"]
 
-    def _defines(self, popen, xone, yone, ptwo, xtwo, ytwo):
-        # Entry A equals entry P by construction (P set last via PLP); X/Y
-        # are fully independent. A=$06/$07 still proves preservation: any
-        # clobber/fixed-value/drop-restore mutant changes it.
+    def _defines(self, popen, xone, yone, ptwo, xtwo, ytwo, aone=None, atwo=None):
+        # Entry A (AONE/ATWO) is independent of entry P (POPEN/PTWO): PHA
+        # pushes POPEN, LDA #AONE sets A, PLP restores P. Legacy callers omit
+        # AONE/ATWO and keep A==P; A!=P vectors pass explicit values.
+        if aone is None:
+            aone = popen
+        if atwo is None:
+            atwo = ptwo
         return {"asm": PAYLOAD_ASM,
-                "defs": {"POPEN": popen, "XONE": xone, "YONE": yone,
-                         "PTWO": ptwo, "XTWO": xtwo, "YTWO": ytwo}}
+                "defs": {"POPEN": popen, "AONE": aone, "XONE": xone, "YONE": yone,
+                         "PTWO": ptwo, "ATWO": atwo, "XTWO": xtwo, "YTWO": ytwo}}
 
 
     def _mutate_body(self, rom_bytes, offset, new_bytes):
@@ -333,32 +340,40 @@ class MemopenSynthetic(unittest.TestCase):
         out[body_off + offset:body_off + offset + len(new_bytes)] = new_bytes
         return bytes(out)
 
-    def _check_c0(self, cold, base):
-        # Entry P=$06 (C=0): the most discriminating class. Refusal, forced
-        # flags, clobbers and dropped restores all change at least one field.
+    def _check_expected(self, cold, base, p1, a1, x1, y1, p2, a2, x2, y2):
+        # General preservation matcher: entry (P/A/X/Y) per call are
+        # independent expectations. A is compared exactly (no conflation
+        # with P); P is compared modulo B (PHP readback forces B, the latch
+        # masks $EF). SP balanced, MPRs exact, marker set.
         r = cold
         self.assertEqual(r[base], 0xAA)
-        self.assertEqual((r[base + 1], r[base + 2], r[base + 3]), (0x06, 0x11, 0x22))
-        self.assertEqual(r[base + 4] & ~0x10, 0x06)
+        self.assertEqual((r[base + 1], r[base + 2], r[base + 3]), (a1, x1, y1))
+        self.assertEqual(r[base + 4] & ~0x10, p1)
         self.assertEqual(r[base + 5], 0xFF)
         self.assertEqual(list(r[base + 6:base + 14]), [0xFF, 0xF8, 0x80, 0x81, 0x82, 0x83, 0x84, 0x00])
-        self.assertEqual((r[base + 17], r[base + 18], r[base + 19]), (0x06, 0x66, 0x77))
-        self.assertEqual(r[base + 20] & ~0x10, 0x06)
+        self.assertEqual((r[base + 17], r[base + 18], r[base + 19]), (a2, x2, y2))
+        self.assertEqual(r[base + 20] & ~0x10, p2)
         self.assertEqual(r[base + 21], 0xFF)
 
-    def _check_c1(self, cold, base):
+    def _check_c0(self, cold, base, aone=0x06, atwo=0x06):
+        # Entry P=$06 (C=0): the most discriminating class. Refusal, forced
+        # flags, clobbers and dropped restores all change at least one field.
+        # A defaults to P (legacy vectors); A!=P vectors pass explicit A.
+        self._check_expected(cold, base, 0x06, aone, 0x11, 0x22,
+                             0x06, atwo, 0x66, 0x77)
+
+    def _check_c1(self, cold, base, aone=0x07, atwo=0x07):
         # Entry P=$07 (C=1, commercial CUE[0] shape): C=1 preservation class.
-        # Mirrors _check_c0 with 0x07 (A==POPEN by construction). Used for
-        # force-CLC (which must RED vs C=1, not vs C=0 baseline mismatch).
-        r = cold
-        self.assertEqual(r[base], 0xAA)
-        self.assertEqual((r[base + 1], r[base + 2], r[base + 3]), (0x07, 0x11, 0x22))
-        self.assertEqual(r[base + 4] & ~0x10, 0x07)
-        self.assertEqual(r[base + 5], 0xFF)
-        self.assertEqual(list(r[base + 6:base + 14]), [0xFF, 0xF8, 0x80, 0x81, 0x82, 0x83, 0x84, 0x00])
-        self.assertEqual((r[base + 17], r[base + 18], r[base + 19]), (0x07, 0x66, 0x77))
-        self.assertEqual(r[base + 20] & ~0x10, 0x07)
-        self.assertEqual(r[base + 21], 0xFF)
+        # Used for force-CLC (which must RED vs C=1, not vs C=0 baseline
+        # mismatch). A defaults to P (legacy vectors).
+        self._check_expected(cold, base, 0x07, aone, 0x11, 0x22,
+                             0x07, atwo, 0x66, 0x77)
+
+    def _check_mixed(self, cold, base):
+        # A!=P vector (synthetic example, not genuine ABI): first call
+        # P=$07(C=1)/A=$B0/X=$11/Y=$22, second P=$06(C=0)/A=$35/X=$66/Y=$77.
+        self._check_expected(cold, base, 0x07, 0xB0, 0x11, 0x22,
+                             0x06, 0x35, 0x66, 0x77)
 
     def test_memopen_preserves_carry_set(self):
         # Entry P=$07 (C=1, commercial CUE shape): everything preserved.
@@ -389,6 +404,43 @@ class MemopenSynthetic(unittest.TestCase):
         self.assertEqual(cold, warm)
         self._check_c0(cold, base)
         self._check_c0(warm, base)
+
+    def test_memopen_preserves_ap_independent(self):
+        # MEDIUM-2: A and P are independent inputs (A!=P). First call
+        # P=$07(C=1)/A=$B0, second P=$06(C=0)/A=$35 (synthetic example
+        # values, not genuine ABI). Everything preserved on both cycles.
+        # No I/T flag is ever set; PLP restores entry P as before.
+        rec, base = self._run("ap", self._defines(0x07, 0x11, 0x22,
+                                                     0x06, 0x66, 0x77,
+                                                     aone=0xB0, atwo=0x35))
+        cold, warm = self._buf(rec)
+        self.assertEqual(cold, warm)
+        self._check_mixed(cold, base)
+        self._check_mixed(warm, base)
+        for buf in (cold, warm):
+            self.assertEqual(buf[base + 4] & 0x01, 0x01)  # C=1 kept, call 1
+            self.assertEqual(buf[base + 20] & 0x01, 0x00)  # C=0 kept, call 2
+            self.assertNotEqual(buf[base + 1], buf[base + 4] & ~0x10)  # A1 != P1
+            self.assertNotEqual(buf[base + 17], buf[base + 20] & ~0x10)  # A2 != P2
+
+    def test_checker_distinguishes_a_from_p(self):
+        # MEDIUM-2: substituting A with P's value must trip the checker.
+        # Proves A and P are verified as distinct registers, not conflated.
+        rec, base = self._run("apd", self._defines(0x07, 0x11, 0x22,
+                                                      0x06, 0x66, 0x77,
+                                                      aone=0xB0, atwo=0x35))
+        cold, warm = self._buf(rec)
+        self._check_mixed(cold, base)  # control: genuine buffers pass
+        self._check_mixed(warm, base)
+        # A1 := P1 ($B0 -> $07) and A2 := P2 ($35 -> $06) must each fail.
+        for buf, cycle in ((cold, "cold"), (warm, "warm")):
+            for pos, val, tag in ((1, 0x07, "a1:=p1"), (17, 0x06, "a2:=p2")):
+                with self.subTest(cycle=cycle, tag=tag):
+                    bad = bytearray(buf)
+                    bad[base + pos] = val
+                    with self.assertRaises(AssertionError,
+                                            msg=f"checker conflates A/P ({tag})"):
+                        self._check_mixed(bytes(bad), base)
 
     def test_memopen_apicall_slot_order(self):
         rec, base = self._run("order", self._defines(0x07, 0x11, 0x22,
@@ -518,21 +570,41 @@ class MemopenSynthetic(unittest.TestCase):
                 "(harness failure, not detection)")
 
     def _assert_body_mutant_applied(self, orig_bytes, mutant_bytes, offset, new_bytes):
-        # Prove the mutant bytes actually landed at the intended 21-byte body
-        # offset (review 5968681873 C): correct offset, correct replacement,
-        # ROM length unchanged, bytes really differ. An unpatched copy fails
-        # here (harness/mutant-helper failure), never counts as RED.
+        # Prove the mutant changed ONLY the intended 21-byte body range
+        # (MEDIUM-1 scope guarantee): ROM length unchanged, offset inside
+        # the body, replacement differs from the original target bytes,
+        # target reads back as new_bytes, and every byte outside the target
+        # range is identical. An unpatched copy, an untouched target, an
+        # extra change anywhere else, or a length change fails here
+        # (harness/mutant-helper failure), never counts as RED.
         body_off = (self.syms["ex_memopen_entry"] & 0xFFFF) - 0xE000
+        # Independent anchor against a shared wrong-offset calculation with
+        # _mutate_body: the unmutated image must carry the reviewed body
+        # prologue at body_off and the $E0DE vector must target the symbol
+        # address (table wiring itself is pinned in setUpClass/rom_identity).
+        self.assertEqual(bytes(orig_bytes[body_off:body_off + 2]),
+                         bytes((0x08, 0x48)),
+                         "body offset does not anchor at reviewed prologue (harness failure)")
+        body_addr = self.syms["ex_memopen_entry"] & 0xFFFF
+        self.assertEqual(bytes(orig_bytes[0xE0DE - 0xE000:0xE0DE - 0xE000 + 3]),
+                         bytes((0x4C, body_addr & 0xFF, (body_addr >> 8) & 0xFF)),
+                         "$E0DE vector does not target ex_memopen_entry (harness failure)")
         self.assertEqual(len(orig_bytes), len(mutant_bytes),
                          "mutant ROM length changed (harness failure)")
+        self.assertGreater(len(new_bytes), 0,
+                           "empty replacement is not a mutant (harness failure)")
         self.assertGreaterEqual(offset, 0)
         self.assertLessEqual(offset + len(new_bytes), 21,
                              f"mutant offset {offset}+{len(new_bytes)} outside 21-byte body")
-        self.assertEqual(bytes(mutant_bytes[body_off + offset:body_off + offset + len(new_bytes)]),
-                         bytes(new_bytes),
+        start, end = body_off + offset, body_off + offset + len(new_bytes)
+        self.assertNotEqual(bytes(orig_bytes[start:end]), bytes(new_bytes),
+                            "replacement identical to original target (no mutant)")
+        self.assertEqual(bytes(mutant_bytes[start:end]), bytes(new_bytes),
                          f"mutant bytes not at body offset {offset}")
-        self.assertNotEqual(bytes(orig_bytes), bytes(mutant_bytes),
-                            "mutant not applied (bytes identical)")
+        self.assertEqual(bytes(mutant_bytes[:start]), bytes(orig_bytes[:start]),
+                         "mutant changed bytes before target range (harness failure)")
+        self.assertEqual(bytes(mutant_bytes[end:]), bytes(orig_bytes[end:]),
+                         "mutant changed bytes outside target range (harness failure)")
 
     def _assert_mutant_red(self, rec, base, check=None, allowed_abnormal=None,
                            expect_x=None, mutant_tag=""):
@@ -682,6 +754,26 @@ class MemopenSynthetic(unittest.TestCase):
         self._assert_mutant_red(rec, base, allowed_abnormal=set(),
                                 mutant_tag="gate-const")
 
+    def test_memopen_mutant_save_pha_to_php_red(self):
+        # MEDIUM-2: stack-balanced A corruption (save-path PHA->PHP at body
+        # offset 1). Pushes stay 4 (PHP/PHP/PHX/PHY) and pops stay 4, so the
+        # body returns cleanly -- but PLA restores the pushed P ($07, B bit
+        # set by PHP) instead of entry A ($B0). Only a value mismatch on the
+        # A!=P vector detects this: channel (b) with abnormal halts
+        # forbidden. A==P vectors cannot isolate this class (A==P is what
+        # makes save/restore confusion invisible), so the mixed vector is
+        # required here, not optional.
+        orig = self.rom.read_bytes()
+        bad = self._mutate_body(orig, 1, bytes((0x08,)))
+        self._assert_body_mutant_applied(orig, bad, 1, bytes((0x08,)))
+        rec, base = self._run_on_rom("m-save", bad,
+                                      self._defines(0x07, 0x11, 0x22,
+                                                   0x06, 0x66, 0x77,
+                                                   aone=0xB0, atwo=0x35))
+        self._assert_mutant_red(rec, base, check=self._check_mixed,
+                                allowed_abnormal=set(),
+                                mutant_tag="save-pha-to-php")
+
     def test_memopen_mutant_gate_register_red(self):
         # Read the wrong MPR (TMA #$02 -> #$01 reads MPR0=$FF): the gate
         # wrongly refuses via the balanced path (value mutant, channel (b)).
@@ -706,6 +798,11 @@ class MemopenSynthetic(unittest.TestCase):
         tab[3 * 0x4A:3 * 0x4A + 3] = want_tab
         self.assertNotEqual(bytes(tab), orig, "table reroute not applied")
         self.assertEqual(bytes(tab[3 * 0x4A:3 * 0x4A + 3]), want_tab)
+        # MEDIUM-1 scope for the table mutant: the reroute is the ONLY change.
+        self.assertEqual(bytes(tab[:3 * 0x4A]), orig[:3 * 0x4A],
+                         "table mutant changed bytes before the vector")
+        self.assertEqual(bytes(tab[3 * 0x4A + 3:]), orig[3 * 0x4A + 3:],
+                         "table mutant changed bytes outside the vector")
         rec, base = self._run_on_rom("m-tab", bytes(tab),
                                       self._defines(0x06, 0x11, 0x22, 0x06, 0x66, 0x77))
         self._assert_mutant_red(rec, base, allowed_abnormal=("api_unimplemented",),
@@ -992,6 +1089,93 @@ class MemopenSynthetic(unittest.TestCase):
         same = bytes(orig)
         with self.assertRaises(AssertionError, msg="unapplied mutant counted"):
             self._assert_body_mutant_applied(orig, same, 12, bytes((0xEA,)))
+
+    def _rom_with(self, orig, patches):
+        # Raw file-offset ROM patches, independent of _mutate_body's body
+        # arithmetic (MEDIUM-1 scope negatives build their own shapes).
+        out = bytearray(orig)
+        for off, bs in patches:
+            out[off:off + len(bs)] = bs
+        return bytes(out)
+
+    def _body_off(self):
+        return (self.syms["ex_memopen_entry"] & 0xFFFF) - 0xE000
+
+    # --- MEDIUM-1 scope negatives: ONLY the target range may change.
+    # Pre-fix the helper checks the target slice plus global inequality, so
+    # a correct target patch combined with extra changes elsewhere (or a
+    # same-as-original "replacement" plus a distant change) is falsely
+    # accepted as applied (these tests FAIL pre-fix, PASS post-fix).
+    def test_applied_rejects_extra_change_in_body(self):
+        orig = self.rom.read_bytes()
+        body_off = self._body_off()
+        bad = self._rom_with(orig, [(body_off + 12, bytes((0xEA,))),
+                                    (body_off + 0, bytes((0x60,)))])
+        with self.assertRaises(AssertionError,
+                               msg="extra in-body change accepted as applied"):
+            self._assert_body_mutant_applied(orig, bad, 12, bytes((0xEA,)))
+
+    def test_applied_rejects_extra_change_outside_body(self):
+        orig = self.rom.read_bytes()
+        body_off = self._body_off()
+        distant = 0x1000
+        bad = self._rom_with(orig, [(body_off + 12, bytes((0xEA,))),
+                                    (distant, bytes((orig[distant] ^ 0xFF,)))])
+        with self.assertRaises(AssertionError,
+                               msg="extra out-of-body change accepted as applied"):
+            self._assert_body_mutant_applied(orig, bad, 12, bytes((0xEA,)))
+
+    def test_applied_rejects_same_replacement_with_distant_change(self):
+        # new_bytes equals the original target bytes, only a distant byte
+        # differs: no mutant at the target, yet the pre-fix helper accepts
+        # (target slice matches, ROMs differ globally).
+        orig = self.rom.read_bytes()
+        body_off = self._body_off()
+        same_at_target = bytes((orig[body_off + 12],))
+        distant = 0x1000
+        bad = self._rom_with(orig, [(distant, bytes((orig[distant] ^ 0xFF,)))])
+        with self.assertRaises(AssertionError,
+                               msg="same-replacement plus distant change accepted"):
+            self._assert_body_mutant_applied(orig, bad, 12, same_at_target)
+
+    def test_applied_rejects_untouched_target_with_distant_change(self):
+        # Target range intact (new_bytes differ from it) plus a distant
+        # change: the target identity requirement must fail (both pre/post).
+        orig = self.rom.read_bytes()
+        distant = 0x1000
+        bad = self._rom_with(orig, [(distant, bytes((orig[distant] ^ 0xFF,)))])
+        with self.assertRaises(AssertionError,
+                               msg="untouched target accepted as applied"):
+            self._assert_body_mutant_applied(orig, bad, 12, bytes((0xEA,)))
+
+    def test_applied_rejects_bad_offset(self):
+        orig = self.rom.read_bytes()
+        bad = self._mutate_body(orig, 12, bytes((0xEA,)))
+        for off in (-1, 21, 99):
+            with self.subTest(offset=off):
+                with self.assertRaises(AssertionError,
+                                        msg=f"bad offset {off} accepted as applied"):
+                    self._assert_body_mutant_applied(orig, bad, off, bytes((0xEA,)))
+
+    def test_applied_rejects_length_change(self):
+        orig = self.rom.read_bytes()
+        bad = bytes(orig) + b"\x00"
+        with self.assertRaises(AssertionError,
+                               msg="length-changed ROM accepted as applied"):
+            self._assert_body_mutant_applied(orig, bad, 12, bytes((0xEA,)))
+
+    def test_applied_accepts_single_byte(self):
+        # Positive control: a correct 1-byte mutant passes.
+        orig = self.rom.read_bytes()
+        bad = self._mutate_body(orig, 12, bytes((0xEA,)))
+        self._assert_body_mutant_applied(orig, bad, 12, bytes((0xEA,)))
+
+    def test_applied_accepts_multi_byte(self):
+        # Positive control: a correct multi-byte mutant passes.
+        orig = self.rom.read_bytes()
+        new = bytes((0xEA, 0xEA, 0xEA))
+        bad = self._mutate_body(orig, 10, new)
+        self._assert_body_mutant_applied(orig, bad, 10, new)
 
     def test_oracle_rejects_clean_rom_as_mutant(self):
         # A clean halt with fully matching values is GREEN, never RED:
