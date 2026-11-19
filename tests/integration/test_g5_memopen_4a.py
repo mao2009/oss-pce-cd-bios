@@ -541,6 +541,9 @@ class MemopenSynthetic(unittest.TestCase):
         #     RTS mis-returns and the probe reports a non-halt confirmed halt; or
         # (b) value mismatch -- balanced gate/refusal mutants return cleanly
         #     (cd_halt_ok, confirmed, same PC) but with wrong preserved state.
+        #     Channel (b) additionally requires the per-cycle $4A arrival
+        #     proof (CodeRabbit review 5969651815): without proven arrival
+        #     a clean-halt mismatch is INCONCLUSIVE, never MUTANT RED.
         # If the run halts cleanly AND all values match, the mutant went
         # GREEN and this helper fails (the test then fails: coverage gap).
         # Review 5968681873 (MEDIUM): channel (a) counts ONLY a strictly
@@ -578,6 +581,14 @@ class MemopenSynthetic(unittest.TestCase):
         if expect_x is not None:
             self.fail(f"control-flow mutant {mutant_tag} returned cleanly "
                       "(expected abnormal halt)")
+        # CodeRabbit review 5969651815 (channel-(b) arrival): a clean halt
+        # with mismatched values counts as mutant RED only when the mutated
+        # $4A was actually reached in both cycles (same arrival proof as
+        # channel (a)). A missing or partial arrival is HARNESS_FAILURE /
+        # INCONCLUSIVE, never RED. Return success stays unrequired: value
+        # mutants return cleanly by design, so arrival and return are
+        # validated separately here as well.
+        self._assert_apicall_arrival(rec, mutant_tag=mutant_tag)
         # MEDIUM-2 channel (b): the value mismatch must hold on BOTH cycles
         # with identical buffers. A cold-only anomaly, a warm-only anomaly,
         # or divergent cold/warm anomalies are INCONCLUSIVE (single-cycle
@@ -807,7 +818,14 @@ class MemopenSynthetic(unittest.TestCase):
                 "apicall_truncated": trunc, "ret_truncated": trunc}
 
     def _fake_abnormal_rec(self, runs):
-        return {"RUN": runs}
+        # CodeRabbit review 5969651815 (nitpick): every factory record
+        # carries valid cold+warm $4A arrival evidence, so each RUN-validator
+        # control reaches its intended check instead of stopping at arrival.
+        # Missing-arrival shapes stay in the dedicated _fake_valid_abnormal_rec
+        # controls below.
+        return {"RUN": runs,
+                "APICALL": [self._fake_arrival_call("cold"),
+                            self._fake_arrival_call("warm")]}
 
     def _fake_arrival_call(self, cycle, slot=0x4A, entry_pc=0xE0DE,
                            in_table=True, sp_delta=2, stack_check="MATCH",
@@ -847,11 +865,16 @@ class MemopenSynthetic(unittest.TestCase):
         return good
 
     def _fake_clean_rec(self, cold_hex, warm_hex, pc=0x3000):
+        # CodeRabbit review 5969651815: clean-channel records carry valid
+        # cold+warm $4A arrival evidence, so channel (b) reaches the value
+        # logic. Missing/partial arrivals are separate controls below.
         def run(cycle, hx):
             return {"cycle": cycle, "reason": "cd_halt_ok",
                     "halt_confirmed": True, "pc": pc, "buffer_hex": hx,
                     "apicall_truncated": False, "ret_truncated": False}
-        return {"RUN": [run("cold", cold_hex), run("warm", warm_hex)]}
+        return {"RUN": [run("cold", cold_hex), run("warm", warm_hex)],
+                "APICALL": [self._fake_arrival_call("cold"),
+                            self._fake_arrival_call("warm")]}
 
     def test_oracle_rejects_cold_duplicate(self):
         rec = self._fake_abnormal_rec([
@@ -993,7 +1016,9 @@ class MemopenSynthetic(unittest.TestCase):
              "halt_confirmed": True, "pc": 0x3000,
              "buffer_hex": hx,
              "apicall_truncated": False, "ret_truncated": False},
-        ]}
+        ],
+               "APICALL": [self._fake_arrival_call("cold"),
+                           self._fake_arrival_call("warm")]}
         with self.assertRaises(AssertionError, msg="clean ROM counted as mutant RED"):
             self._assert_mutant_red(rec, base)
 
@@ -1097,6 +1122,34 @@ class MemopenSynthetic(unittest.TestCase):
         hx = bytes(bad).hex()
         rec = self._fake_clean_rec(hx, hx)
         self._assert_mutant_red(rec, base, mutant_tag="both-cycle-control")
+
+    # --- CodeRabbit review 5969651815: channel (b) needs arrival too.
+    # A clean halt with mismatched values but no proven $4A arrival is
+    # INCONCLUSIVE, never MUTANT RED. Pre-fix the oracle never consults
+    # APICALL on the clean path, so both records below are falsely
+    # accepted as RED (these tests FAIL pre-fix, PASS post-fix).
+    def test_oracle_rejects_clean_missing_arrival(self):
+        base = 512
+        bad = self._fake_good_buf(base)
+        bad[base + 1] ^= 0xFF
+        hx = bytes(bad).hex()
+        rec = self._fake_clean_rec(hx, hx)
+        del rec["APICALL"]
+        with self.assertRaises(AssertionError,
+                               msg="clean mismatch without APICALL accepted as RED"):
+            self._assert_mutant_red(rec, base)
+
+    def test_oracle_rejects_clean_partial_arrival(self):
+        # $4A reached on cold only; warm has no arrival (INCONCLUSIVE).
+        base = 512
+        bad = self._fake_good_buf(base)
+        bad[base + 1] ^= 0xFF
+        hx = bytes(bad).hex()
+        rec = self._fake_clean_rec(hx, hx)
+        rec["APICALL"] = [c for c in rec["APICALL"] if c["cycle"] == "cold"]
+        with self.assertRaises(AssertionError,
+                               msg="clean mismatch with partial arrival accepted as RED"):
+            self._assert_mutant_red(rec, base)
 
 
 if __name__ == "__main__":

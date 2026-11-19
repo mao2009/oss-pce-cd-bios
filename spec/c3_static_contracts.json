@@ -103,7 +103,7 @@
       "src/ipl_loader_g5_glue.s": "experimental-only XSEL selection + EX_DSPOFF slot33 wrapper for the PUBLIC IPL loader G5 image (Issue #800); never linked into the normal/production BIOS, not firmware code",
       "src/cd_base_2base.s": "experimental-only CD_BASE 2-base recbase0/1 fragment for G5 synthetic + opt-in commercial (2-system bases); never linked into the normal/production BIOS, not firmware code",
       "src/cd_read_commercial.s": "experimental-only CD_READ commercial first-mode helper for synthetic + opt-in commercial (Agent-B G5 P1, LOCAL _dh=0/size 2048/dest $2800 only); never linked into the normal/production BIOS, not firmware code",
-      "src/ex_memopen.s": "experimental-only KEY_BIOS/EX_MEMOPEN preservation-only body for slot $4A (Issue #84, G5 P0: full register/flag/MPR preservation + MPR1=$F8 gate, no memory/bus side effects); never linked into the normal/production BIOS, not firmware code"
+      "src/ex_memopen.s": "experimental-only KEY_BIOS/EX_MEMOPEN preservation-only body for slot $4A (Issue #84, G5 P0: full register/flag/MPR preservation with MPR1=$F8 as caller precondition; JSR plus PHP/PHA/PHX/PHY already write 6 stack bytes before the gate, so MPR1!=$F8 is BLOCKED, never a safe refusal); never linked into the normal/production BIOS, not firmware code"
     }
   },
   "files": {
