@@ -3093,6 +3093,14 @@ def stdin_program_refusal(words, piped, seg):
             continue
         if '\n' in w or '$' in w or '`' in w or SUBST in w:
             continue
+        # A `<` inside a multi-word string is a quoted redirect of nested
+        # code (`sh -c 'exec <&-; node'`): the nested analysis judges the
+        # inner stdin precisely (including explicit closes), while this
+        # text scan cannot tell supply from close. Skip it here instead of
+        # guessing (fail-closed: the nested pass still denies when the
+        # inner interpreter really reads stdin as its program).
+        if '<' in w:
+            continue
         parts = w.split()
         if not parts:
             continue
@@ -3649,11 +3657,16 @@ def _stdin_prepass(segs, ps, inherited_fed):
     stdin taint for every segment up front, including retroactive group
     taint (`(node) < file`, `fi < file`) that a single forward pass cannot
     see when it analyses the inner segments. Returns (pipe, eff, is_stage,
-    subdepth, end_exec), each parallel to segs (sentinels read False/0):
-    - pipe[i]: the segment reads a tainted stdin through a pipe, an
-      `exec`-persistent shell redirect, or the inherited outer taint. Its
-      own `<` redirect is NOT included (expansion precedes redirection, so
-      a substitution in the segment still sees the pre-redirect stdin).
+    subdepth, end_exec, suppressed, in_cond), each parallel to segs
+    (sentinels read False/0):
+    - pipe[i]: the segment reads a tainted stdin. This joins three
+      provenance layers tracked separately (Issue #637 MAJOR follow-up):
+      `inh` (inherited from the enclosing invocation: the caller's pipe,
+      redirect, or exec-persistent stdin; never cleared by this text's own
+      command boundaries), `fed` (this text's own local pipeline stage),
+      and the persistent `exec` flag. Its own `<` redirect is NOT included
+      (expansion precedes redirection, so a substitution in the segment
+      still sees the pre-redirect stdin).
     - eff[i]: pipe[i] or its own input redirect (the taint an interpreter
       in this segment, a function called here, or a nested shell string
       actually observes).
@@ -3686,7 +3699,16 @@ def _stdin_prepass(segs, ps, inherited_fed):
     subdepth = [0] * n
     suppressed = [False] * n
     in_cond = [False] * n
-    fed = bool(inherited_fed)
+    # inh: stdin inherited from the enclosing invocation (the caller's pipe,
+    # redirect, or exec-persistent stdin). A `;`/newline/`&&`/`||`/`&`/`|`
+    # boundary ends a command or a local pipeline stage, never the outer
+    # fd-0 input stream, so inh is never cleared by boundaries (verified on
+    # Bash: function bodies and `sh -c` strings keep reading inherited
+    # stdin across `;`). Only an explicit stdin close at this same shell
+    # level clears it (fail-closed: a close inside a conditional may never
+    # execute, so conditional closes never clear).
+    inh = bool(inherited_fed)
+    fed = False
     pfed = False
     exec_flag = False
     exec_save = []
@@ -3833,7 +3855,7 @@ def _stdin_prepass(segs, ps, inherited_fed):
             # Empty or redirect-only: transparent for pipe/exec tracking
             # (a redirect-only segment runs no command). Its own redirect
             # still counts for its substitutions and for eff.
-            pipe[i] = fed
+            pipe[i] = fed or inh
             own = _has_input_redirect(seg)
             eff[i] = pipe[i] or exec_flag or own
             is_stage[i] = pfed
@@ -3841,7 +3863,7 @@ def _stdin_prepass(segs, ps, inherited_fed):
             suppressed[i] = any(e[0] in ("function", "funcbody") for e in stack)
             in_cond[i] = any(e[0] in ("if", "loop", "case") for e in stack)
             continue
-        pipe[i] = fed
+        pipe[i] = fed or inh
         exec_before = exec_flag
         own = _has_input_redirect(seg)
         eff[i] = pipe[i] or exec_before or own
@@ -3886,12 +3908,20 @@ def _stdin_prepass(segs, ps, inherited_fed):
                             eff[kk] = True
             effect = _exec_segment_effect(words, seg)
             _suppressed = any(e[0] in ("function", "funcbody") for e in stack)
+            _in_cond_here = any(e[0] in ("if", "loop", "case") for e in stack)
             if effect == "supply":
                 if not pfed and subshell_depth == 0 and not _suppressed:
                     exec_flag = True
             elif effect == "close":
-                if not pfed and subshell_depth == 0 and not _suppressed:
+                # An explicit stdin close at this same shell level clears
+                # both the persistent flag and the inherited provenance
+                # (a closed stdin delivers EOF, no program). A close inside
+                # a conditional may never execute, so it never clears
+                # (fail-open otherwise). Forked positions never leak.
+                if (not pfed and subshell_depth == 0 and not _suppressed
+                        and not _in_cond_here):
                     exec_flag = False
+                    inh = False
     return pipe, eff, is_stage, subdepth, exec_flag, suppressed, in_cond
 
 

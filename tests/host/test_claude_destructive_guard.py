@@ -3927,6 +3927,8 @@ class StdinProgramTests(unittest.TestCase):
                     "if true; then cat; fi < data.txt",
                     "if true; then echo ok; fi > output.txt",
                     "(node) > out.log",
+                    "printf x | sh -c 'exec <&-; node'",
+                    "printf x | sudo -s 'exec <&-; node'",
                     "echo data | cat; node script.js"]:
             with self.subTest(cmd=cmd):
                 verdict, reason = self._d(cmd)
@@ -4226,6 +4228,9 @@ class StdinProgramMutationTests(unittest.TestCase):
         "eval forked leak allowed": (
             "            if (not ps and not _stdin_stage[idx] and _stdin_subdepth[idx] == 0\n                    and not _stdin_suppressed[idx]):\n                live_exec = True",
             "            if True:  # mutant: forked eval leaks\n                live_exec = True"),
+        "text scan skips quoted redirect words": (
+            "        if '<' in w:\n            continue",
+            "        if False:  # mutant: text scan ignores inner redirects\n            pass"),
     }
     DETECTING = ["test_piped_bare_python_is_refused", "test_dash_names_stdin_program",
                  "test_bare_other_interpreters_with_piped_or_redirected_stdin_are_refused",
