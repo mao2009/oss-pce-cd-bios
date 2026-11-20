@@ -109,8 +109,17 @@ BG_BOUND = "\x02&"
 # it ends a background list and a pipeline, so analyze_text restores the
 # pipeline-entry cwd here and refreshes the entry snapshots. Same \x02
 # safety as PIPE_BOUND. `&&`/`||` are sequential inside a list and never
-# emit this.
+# emit this (they emit COND_BOUND instead).
 CMD_BOUND = "\x02;"
+# A Bash `&&`/`||` list-conditional boundary: the next command runs only
+# when the previous list status selects it (short-circuit), so a stdin
+# close there may never execute and must not clear the parent provenance
+# (verified on Bash: `false && exec <&-` keeps stdin for a later reader).
+# Same-shell and sequential (never a fork, unlike PIPE_BOUND/BG_BOUND), so
+# every machine except the stdin prepass skips it with no scope effect.
+# Same \x02 safety as PIPE_BOUND. PowerShell `||` keeps its prior behavior
+# (no boundary): only Bash `&&`/`||` need it for Issue #637.
+COND_BOUND = "\x02?"
 # A Bash coprocess-compound boundary: `coproc { ...; }` runs its body in a
 # subshell (like `( ... )`), so the body shares the parent taint but its
 # cwd is restored at the close. The `{` stays a literal word of the
@@ -133,6 +142,13 @@ BBRACE_CLOSE = "\x02b}"
 # is not known statically, so the close marks the cwd uncertain.
 PSCOND_OPEN = "\x02p{"
 PSCOND_CLOSE = "\x02p}"
+# A PowerShell non-conditional `{ ... }` group (statement list,
+# scriptblock argument, hashtable). Like PSCOND it carries no cwd scope
+# (the calling scope applies), but unlike PSCOND it is needed for stdin
+# provenance: a bare interpreter inside a pipe-fed scriptblock still reads
+# the pipe (Issue #637). The loop skips these like the other sentinels.
+PSBRACE_OPEN = "\x02P{"
+PSBRACE_CLOSE = "\x02P}"
 # run-12 OQwd: `&&`/`||` terminate the pipeline like `;` (but do not
 # start a new background list). The enclosing cwd is restored first.
 PIPE_END = "\x02e"
@@ -248,7 +264,7 @@ class Deny(Exception):
 # ln and rmdir are already DENY in every form; cd/pushd move the tracked cwd.
 class Ctx:
     def __init__(self, cwd, root, git, registry, protected, tainted=False,
-                 cwd_fuzzy=False):
+                 cwd_fuzzy=False, exec_out=False):
         self.cwd = cwd            # canonical absolute path
         self.root = root          # case-folded canonical repo root
         self.git = git            # case-folded canonical .git directory
@@ -257,10 +273,12 @@ class Ctx:
         self.tainted = tainted    # Piece D (#636): an earlier segment changed the filesystem
         self.cwd_fuzzy = cwd_fuzzy  # run-12: cwd is one of several branch outcomes (fail closed)
         self.pending_write = False  # Piece D (#636): validated write option awaiting publish
+        self.exec_out = exec_out  # Issue #637: a same-shell nested eval persistently
+        # redirected stdin (set during analyze_argv, consumed per segment by analyze_text)
 
     def copy(self, **kw):
         c = Ctx(self.cwd, self.root, self.git, self.registry, self.protected,
-                self.tainted, self.cwd_fuzzy)
+                self.tainted, self.cwd_fuzzy, self.exec_out)
         for k, v in kw.items():
             setattr(c, k, v)
         return c
@@ -284,24 +302,37 @@ def _require_untainted(ctx, what):
         raise Deny("chain", what + " after a filesystem change in the same command is not inspected")
 
 
-def _nested_text(text, ctx, ps, depth, merge_cwd=False):
+def _nested_text(text, ctx, ps, depth, fed=False, outer_funcs=None, merge_cwd=False,
+                 merge_exec=False):
     """Analyse nested command text, propagating chain taint back to the parent.
 
     merge_cwd (eval only, #636): the nested text runs in the calling shell,
     so a cwd change inside it moves the parent too. Every other nested form
     (sh -c, command/process substitution, wrapper strings) runs in a child
     process or a subshell, so its cwd is discarded while taint still merges.
+    fed (Issue #637): the nested text inherits this segment's stdin when the
+    nested form shares it (substitutions, eval, group wrappers); a fresh
+    child shell (sh -c) is still analysed from its own stdin unless the
+    caller passes the inherited mark. outer_funcs: visible shell function
+    definitions for the same-shell nested forms (eval, substitutions).
+    merge_exec (eval only, Issue #637): the nested text runs in the calling
+    shell, so a persistent stdin redirect inside it (e.g. `exec < file`)
+    moves the parent's stdin too. Returns the nested persistent stdin
+    effect for callers that merge it themselves.
     """
     sub = ctx.copy()
-    analyze_text(text, sub, ps, depth)
+    nested_end = analyze_text(text, sub, ps, depth, inherited_fed=fed, outer_funcs=outer_funcs)
     if sub.tainted:
         ctx.tainted = True
     if merge_cwd:
         ctx.cwd = sub.cwd
         ctx.cwd_fuzzy = sub.cwd_fuzzy
+    if merge_exec and nested_end:
+        ctx.exec_out = True
+    return nested_end
 
 
-def _nested_text_from(text, ctx, entry_tainted, ps, depth):
+def _nested_text_from(text, ctx, entry_tainted, ps, depth, fed=False, outer_funcs=None):
     """Analyse one alternative string from the entry taint snapshot (Piece D, #636).
 
     Alternative parses of the same invocation (wrapper strings, launcher
@@ -310,7 +341,7 @@ def _nested_text_from(text, ctx, entry_tainted, ps, depth):
     for later segments."""
     sub = ctx.copy()
     sub.tainted = entry_tainted
-    analyze_text(text, sub, ps, depth)
+    analyze_text(text, sub, ps, depth, inherited_fed=fed, outer_funcs=outer_funcs)
     if sub.tainted:
         ctx.tainted = True
 
@@ -329,10 +360,10 @@ def _publish_pending_write(ctx, name):
         _taint(ctx)
 
 
-def _nested_argv(words, ctx, ps, depth):
+def _nested_argv(words, ctx, ps, depth, fed=False, outer_funcs=None):
     """Analyse nested argv, propagating chain taint back to the parent."""
     sub = ctx.copy()
-    analyze_argv(words, sub, ps, depth)
+    analyze_argv(words, sub, ps, depth, fed, outer_funcs)
     if sub.tainted:
         ctx.tainted = True
 
@@ -375,12 +406,18 @@ def same_shell_target_index(name, args, ctx):
     return i
 
 
-def _nested_argv_same_shell(words, ctx, ps, depth):
+def _nested_argv_same_shell(words, ctx, ps, depth, fed=False, outer_funcs=None,
+                            via_builtin=False):
     """Same-shell wrapper target: merge chain taint and cwd back to the parent."""
     sub = ctx.copy()
-    analyze_argv(words, sub, ps, depth)
+    analyze_argv(words, sub, ps, depth, fed, outer_funcs, via_builtin)
     if sub.tainted:
         ctx.tainted = True
+    if sub.exec_out:
+        # `command`/`builtin`/`time` reach shell internals (`eval`, `cd`)
+        # in the calling shell, so a persistent stdin redirect inside the
+        # target moves the parent's stdin too (verified on Bash).
+        ctx.exec_out = True
     ctx.cwd = sub.cwd
     ctx.cwd_fuzzy = sub.cwd_fuzzy
 
@@ -761,10 +798,23 @@ def check_redirect(raw, op=">", ctx=None, ps=False):
 
 
 def split_segments(text, ps=False):
-    """Split on unquoted ; & | ( ) and newlines.
+    """Split on unquoted ; & | ( ) and newlines (plus "{}," for PowerShell).
 
-    Returns (segments, substitution bodies, redirect targets per segment). A redirect
-    target is the raw word after each unquoted '>' ("" when there is none).
+    Returns (segments, substitution bodies, redirect targets per segment).
+    Each substitution body belongs to the segment being built when "$(...)",
+    backticks or "<(...)"/">(...)" was seen (i.e. the segment that will hold
+    its SUBST placeholder). A redirect target is the raw word after each
+    unquoted '>' ("" when there is none). Stdin provenance (which segment
+    is pipe-fed) is NOT returned here; `_stdin_prepass` computes it over
+    these segments. A pipe-fed flag is True when the segment's stdin is a
+    pipe from the previous segment: the separator that starts it
+    is a single `|` (not `||`, and `|&` keeps the pipe through the `&`). A whitespace-only segment (a line
+    continuation after `|`, or `(`/`{` directly after a pipe) carries the flag over without changing it.
+    A `;` (or newline, `&`, `||`, `,` for PowerShell) ends the pipe for the next segment only outside
+    any pipe-fed compound; inside a pipe-fed `if/while/until/for/case/select/function`, `(...)` or
+    `{...}` the flag is inherited across `;` (MAJOR-1: `... | if c; then node; fi` stays marked).
+    An independent command after the top-level pipeline (`... | cat; node`) stays unmarked.
+    Too deep compound nesting is fail-closed DENY (depth limit).
     """
     segs, subs, cur, redirs, rd = [], [], [], [], []
     group_stack = []  # open Bash scopes, innermost last: "brace" or "coproc"
@@ -889,11 +939,13 @@ def split_segments(text, ps=False):
         # PowerShell scriptblocks ({ ... }) are command bodies wherever they appear (try, ForEach-Object, Invoke-Command,
         # Start-Job -ScriptBlock). Each block boundary starts a segment, so the commands inside are analysed.
         if c in ";&|()\n" or (ps and c in "{},"):
-            if c == "\n" and not ps and pipe_open and cur_blank:
+            if c == "\n" and pipe_open and cur_blank:
                 # run-12 GuIir8: a newline continues a pipeline whose
                 # next stage has not started. Blank lines and comments
                 # append no words, so cur stays blank through them and
-                # the pipeline state survives (verified on Bash).
+                # the pipeline state survives (verified on Bash). Issue
+                # #637: a ps pipeline continues the same way, so its next
+                # stage stays pipe-fed there too.
                 i += 1
                 continue
             flushed_head = "".join(cur).split()
@@ -907,10 +959,15 @@ def split_segments(text, ps=False):
             redirs.append(rd)
             cur, rd = [], []
             cur_blank = True
-            if c == "|" and not ps:
+            if c == "|":
                 # Piece D (#636, CRITICAL-1): each Bash pipeline stage runs
                 # in a subshell. `||` is sequential (same shell); `|&`
                 # pipes stderr too and is still a pipeline boundary.
+                # Issue #637: a PowerShell `|` is a pipeline too (its stages
+                # share stdin), so a pipe-fed bare interpreter reads its
+                # program from the pipe in either shell. The PIPE_BOUND is
+                # still skipped by the cwd machine for ps (its handler is
+                # ps-gated), so only stdin provenance observes it there.
                 nxt = text[i + 1] if i + 1 < n else ""
                 if nxt == "|":
                     i += 1  # consume ||: ends an open pipeline, not the list
@@ -918,12 +975,20 @@ def split_segments(text, ps=False):
                         segs.append(PIPE_END)
                         redirs.append([])
                     pipe_open = False
+                    if not ps:
+                        # Issue #637: `||` is conditional (short-circuit);
+                        # mark the next command so a close there never clears
+                        # stdin provenance (fail-closed).
+                        segs.append(COND_BOUND)
+                        redirs.append([])
                 else:
                     segs.append(PIPE_BOUND)
                     redirs.append([])
                     pipe_open = True
-                    if nxt == "&":
+                    if nxt == "&" and not ps:
                         i += 1  # consume |&: still a pipeline boundary
+                        # A ps `|&` keeps the `&` for the call-operator rule
+                        # below (a consumed `&` would skip that check).
             elif c == "&" and not ps:
                 # A single & backgrounds the whole list in a subshell;
                 # && is sequential. &> is consumed as a redirect before
@@ -935,6 +1000,11 @@ def split_segments(text, ps=False):
                         segs.append(PIPE_END)
                         redirs.append([])
                     pipe_open = False
+                    # Issue #637: `&&` is conditional (short-circuit); mark
+                    # the next command so a close there never clears stdin
+                    # provenance (fail-closed). This branch is Bash-only.
+                    segs.append(COND_BOUND)
+                    redirs.append([])
                 elif nxt != ">":
                     segs.append(BG_BOUND)
                     redirs.append([])
@@ -967,15 +1037,22 @@ def split_segments(text, ps=False):
                 if is_cond:
                     segs.append(PSCOND_OPEN)
                     redirs.append([])
+                else:
+                    # Issue #637: a non-conditional ps `{ ... }` carries no
+                    # cwd scope, but a pipe-fed scriptblock still reads the
+                    # pipe, so its open/close is marked for stdin provenance.
+                    # The cwd machine skips these like the other sentinels.
+                    segs.append(PSBRACE_OPEN)
+                    redirs.append([])
                 ps_bdepth += 1
                 pipe_open = False
             elif ps and c == "}":
                 if ps_bdepth > 0:
                     ps_bdepth -= 1
                 if ps_group_stack:
-                    if ps_group_stack.pop():
-                        segs.append(PSCOND_CLOSE)
-                        redirs.append([])
+                    was_cond = ps_group_stack.pop()
+                    segs.append(PSCOND_CLOSE if was_cond else PSBRACE_CLOSE)
+                    redirs.append([])
                 pipe_open = False
                 # A stray `}` stays an ordinary word, as before.
             if c == ";" or c == "\n":
@@ -1779,7 +1856,7 @@ def gzip_rule(args, ctx):
     raise Deny("gzip", "gzip is DENY: the checked file cannot be tied to the file it reads (TOCTOU)")
 
 
-def find_rule(args, ps, ctx, depth):
+def find_rule(args, ps, ctx, depth, fed=False):
     if "-delete" in args:
         raise Deny("find-delete", "find -delete is denied")
     if any(a in ("-fprint", "-fprint0", "-fprintf", "-fls") for a in args):
@@ -1793,8 +1870,14 @@ def find_rule(args, ps, ctx, depth):
                 raise Deny("find", "find -exec without a command")
             # Piece D (#636): -exec runs in a child process, so its cwd
             # never reaches the parent; taint still merges (a child can
-            # change the filesystem the parent later judges).
-            _nested_argv(args[i + 1:j], ctx, ps, depth + 1)
+            # change the filesystem the parent later judges). Issue #637:
+            # the -exec/-execdir child shares this segment's stdin, so fed
+            # is passed. A -ok/-okdir child does not: GNU find consumes the
+            # pipe itself for the confirmation answer and hands the child
+            # /dev/null (verified: `echo | find -ok cat` shows the child
+            # stdin closed), so only the argv is validated, untainted.
+            _nested_argv(args[i + 1:j], ctx, ps, depth + 1,
+                         fed if a in ("-exec", "-execdir") else False)
 
 
 # Commands on this list must not run another program, whatever their options. sort (--compress-program=PROG) and
@@ -1809,6 +1892,53 @@ NON_EXEC_COMMANDS = frozenset({
 def _cmd_name(word):
     n = posixpath.basename(word.replace("\\", "/")).lower()
     return n[:-4] if n.endswith(".exe") else n
+
+
+def _call_target(words, ps):
+    """Command-position function-call resolution (Issue #637).
+
+    Returns (fkey, saw_coproc, first_idx): the exact name for function lookup
+    after KEYWORDS/assignments and same-shell prefixes, whether a `coproc`
+    prefix was skipped (the call then forks: no exec leaks back), and the
+    first meaningful index (for the NON_EXEC documentation check). Only the
+    command position counts (`echo f` is not a call); external wrappers
+    (`sudo`, `env`, ...) do not run shell functions. Bash resolves
+    case-sensitively and prefers same-name functions over builtins
+    (MAJOR-A); PowerShell folds case.
+    """
+    j = 0
+    while j < len(words) and (words[j] in KEYWORDS or ASSIGN.match(words[j])):
+        j += 1
+    k = j
+    saw_coproc = False
+    # `time` runs its pipeline in a forked subshell, but still resolves shell
+    # functions, so a pipe-fed `time -p f` must inspect f's body. Bash `time`
+    # takes only `-p`; anything else option-like is not skipped (fail-closed:
+    # the call then does not resolve and the suffix pass judges `f` alone).
+    while k < len(words) and words[k] in ("time", "coproc"):
+        if words[k] == "time":
+            k += 1
+            if k < len(words) and words[k] == "-p":
+                k += 1
+            continue
+        saw_coproc = True
+        k += 1
+    fkey = _func_call_name(words[k], ps) if k < len(words) else None
+    return fkey, saw_coproc, j
+
+
+def _func_key(name, ps):
+    """Function-definition/call lookup key: Bash is case-sensitive, PowerShell is not."""
+    return name.lower() if ps else name
+
+
+def _func_call_name(word, ps):
+    """Exact quote-removed name for function-call resolution (review 5968136032).
+
+    Bash resolves the exact name (no basename, no .exe strip, case-sensitive);
+    `f.exe` (cat) must not resolve to `f` (node). PowerShell folds case.
+    Executable-path normalization stays separate (command_name, _cmd_name)."""
+    return word.lower() if ps else word
 
 
 def python_position_args(words):
@@ -1888,11 +2018,1201 @@ def python_c_codes(args):
     return codes
 
 
+def _drop_redirect_words(args):
+    """argv without redirections: a marked operator and the word after it (its target) select no program."""
+    out, skip = [], False
+    for w in args:
+        if skip:
+            skip = False
+            continue
+        if w.startswith(REDIR_MARK):
+            skip = True
+            continue
+        out.append(w)
+    return out
+
+
+def _python_program(args):
+    """How a python argv selects its program: 'code' (-c), 'module' (-m), 'file' (a script path),
+    'stdin' (a standalone `-`), or 'none' (flags only: interactive). A single left-to-right scan, so
+    `python3 - -c x` is 'stdin' (the `-c` becomes that run's argv, not its program). Only -W/-X take a
+    separate value and only --check-hash-based-pycs does among long options; every other -x is a flag.
+    Never raises; redirect words are not program words."""
+    args = _drop_redirect_words(args)
+    i, n = 0, len(args)
+    while i < n:
+        a = args[i]
+        if a == '--':
+            rest = args[i + 1:]
+            if not rest:
+                return 'none'
+            return 'stdin' if rest[0] == '-' else 'file'
+        if a == '-':
+            return 'stdin'
+        if a.startswith('--'):
+            i += 2 if (a == '--check-hash-based-pycs' and i + 1 < n) else 1
+            continue
+        if a.startswith('-') and len(a) > 1:
+            j = 1
+            while j < len(a):
+                ch = a[j]
+                if ch == 'c':
+                    return 'code'
+                if ch == 'm':
+                    return 'module'
+                if ch in 'WX':
+                    if j + 1 == len(a):
+                        i += 1  # the value is the next word
+                    break
+                j += 1
+            i += 1
+            continue
+        return 'file'
+    return 'none'
+
+
+_NODE_CODE_SHORTS = {"e", "p"}
+_NODE_VALUE_SHORTS = {"r", "C"}
+_NODE_FLAG_SHORTS = {"c", "i", "h", "v"}
+_NODE_CODE_LONGS = {"--eval", "--print"}
+_NODE_VALUE_LONGS = {
+    "--allow-fs-read",
+    "--allow-fs-write",
+    "--build-snapshot-config",
+    "--conditions",
+    "--cpu-prof-dir",
+    "--cpu-prof-interval",
+    "--cpu-prof-name",
+    "--diagnostic-dir",
+    "--disable-proto",
+    "--disable-warning",
+    "--dns-result-order",
+    "--env-file",
+    "--env-file-if-exists",
+    "--eval",
+    "--experimental-config-file",
+    "--experimental-default-type",
+    "--experimental-loader",
+    "--experimental-sea-config",
+    "--experimental-test-isolation",
+    "--heap-prof-dir",
+    "--heap-prof-interval",
+    "--heap-prof-name",
+    "--heapsnapshot-near-heap-limit",
+    "--heapsnapshot-signal",
+    "--icu-data-dir",
+    "--import",
+    "--input-type",
+    "--inspect-port",
+    "--inspect-publish-uid",
+    "--localstorage-file",
+    "--max-http-header-size",
+    "--max-old-space-size-percentage",
+    "--network-family-autoselection-attempt-timeout",
+    "--openssl-config",
+    "--redirect-warnings",
+    "--report-dir",
+    "--report-filename",
+    "--report-signal",
+    "--require",
+    "--run",
+    "--secure-heap",
+    "--secure-heap-min",
+    "--snapshot-blob",
+    "--test-concurrency",
+    "--test-coverage-branches",
+    "--test-coverage-exclude",
+    "--test-coverage-functions",
+    "--test-coverage-include",
+    "--test-coverage-lines",
+    "--test-name-pattern",
+    "--test-reporter",
+    "--test-reporter-destination",
+    "--test-shard",
+    "--test-skip-pattern",
+    "--test-timeout",
+    "--title",
+    "--tls-cipher-list",
+    "--tls-keylog",
+    "--trace-event-categories",
+    "--trace-event-file-pattern",
+    "--trace-require-module",
+    "--unhandled-rejections",
+    "--use-largepages",
+    "--v8-pool-size",
+    "--watch-kill-signal",
+    "--watch-path",
+    "--loader",
+    "--report-directory",
+    "--debug-port",
+    "--max-old-space-size",
+}
+_NODE_FLAG_LONGS = {
+    "--abort-on-uncaught-exception",
+    "--allow-addons",
+    "--allow-child-process",
+    "--allow-wasi",
+    "--allow-worker",
+    "--build-snapshot",
+    "--check",
+    "--completion-bash",
+    "--cpu-prof",
+    "--debug-port",
+    "--disable-sigusr1",
+    "--disable-wasm-trap-handler",
+    "--disallow-code-generation-from-strings",
+    "--enable-etw-stack-walking",
+    "--enable-fips",
+    "--enable-network-family-autoselection",
+    "--enable-source-maps",
+    "--entry-url",
+    "--experimental-addon-modules",
+    "--experimental-async-context-frame",
+    "--experimental-default-config-file",
+    "--experimental-eventsource",
+    "--experimental-import-meta-resolve",
+    "--experimental-inspector-network-resource",
+    "--experimental-network-inspection",
+    "--experimental-permission",
+    "--experimental-print-required-tla",
+    "--experimental-require-module",
+    "--experimental-test-coverage",
+    "--experimental-test-module-mocks",
+    "--experimental-transform-types",
+    "--experimental-vm-modules",
+    "--experimental-webstorage",
+    "--experimental-worker-inspection",
+    "--expose-gc",
+    "--force-context-aware",
+    "--force-fips",
+    "--force-node-api-uncaught-exceptions-policy",
+    "--frozen-intrinsics",
+    "--heap-prof",
+    "--help",
+    "--huge-max-old-generation-size",
+    "--insecure-http-parser",
+    "--inspect",
+    "--inspect-brk",
+    "--inspect-wait",
+    "--interactive",
+    "--interpreted-frames-native-stack",
+    "--jitless",
+    "--loader",
+    "--max-old-space-size",
+    "--no-addons",
+    "--no-deprecation",
+    "--no-experimental-detect-module",
+    "--no-experimental-fetch",
+    "--no-experimental-global-customevent",
+    "--no-experimental-global-navigator",
+    "--no-experimental-global-webcrypto",
+    "--no-experimental-repl-await",
+    "--no-experimental-require-module",
+    "--no-experimental-sqlite",
+    "--no-experimental-strip-types",
+    "--no-experimental-websocket",
+    "--no-extra-info-on-fatal-exception",
+    "--no-force-async-hooks-checks",
+    "--no-global-search-paths",
+    "--no-network-family-autoselection",
+    "--no-warnings",
+    "--node-memory-debug",
+    "--openssl-legacy-provider",
+    "--openssl-shared-config",
+    "--pending-deprecation",
+    "--permission",
+    "--preserve-symlinks",
+    "--preserve-symlinks-main",
+    "--print",
+    "--prof",
+    "--prof-process",
+    "--report-compact",
+    "--report-directory",
+    "--report-exclude-env",
+    "--report-exclude-network",
+    "--report-on-fatalerror",
+    "--report-on-signal",
+    "--report-uncaught-exception",
+    "--test",
+    "--test-force-exit",
+    "--test-only",
+    "--test-update-snapshots",
+    "--throw-deprecation",
+    "--tls-max-v1.2",
+    "--tls-max-v1.3",
+    "--tls-min-v1.0",
+    "--tls-min-v1.1",
+    "--tls-min-v1.2",
+    "--tls-min-v1.3",
+    "--trace-atomics-wait",
+    "--trace-deprecation",
+    "--trace-env",
+    "--trace-env-js-stack",
+    "--trace-env-native-stack",
+    "--trace-exit",
+    "--trace-promises",
+    "--trace-sigint",
+    "--trace-sync-io",
+    "--trace-tls",
+    "--trace-uncaught",
+    "--trace-warnings",
+    "--track-heap-objects",
+    "--use-bundled-ca",
+    "--use-env-proxy",
+    "--use-openssl-ca",
+    "--use-system-ca",
+    "--v8-options",
+    "--version",
+    "--watch",
+    "--watch-preserve-output",
+    "--zero-fill-buffers",
+}
+def _node_program(args):
+    """How a node argv selects its program (Issue #637, MAJOR fix).
+
+    Returns 'code' (-e/--eval, -p/--print name code in argv), 'file' (a script
+    file names the program), 'stdin' (a standalone `-` names stdin), 'none'
+    (flags only, no program word), or 'unknown' (an option form the guard does
+    not model: fail-closed, treated like 'none' when stdin is piped or
+    redirected, but never as a file). Only -r/-C take a separate value and only
+    the --xxx=... longs take a value in the same word; every other short/long
+    without a value is a flag. `inspect` after the options is a subcommand, not
+    a file: `node inspect script.js` still names a file, `node inspect` alone
+    names none. Never raises; redirect words are not program words.
+    """
+    args = _drop_redirect_words(args)
+    i, n = 0, len(args)
+    seen_subcommand = False
+    while i < n:
+        a = args[i]
+        if a == '--':
+            rest = args[i + 1:]
+            if not rest:
+                return 'none'
+            return 'stdin' if rest[0] == '-' else 'file'
+        if a == '-':
+            return 'stdin'
+        if a.startswith('--'):
+            key, eq, _val = a.partition('=')
+            if eq:
+                if key in _NODE_CODE_LONGS:
+                    return 'code'
+                if key in _NODE_VALUE_LONGS:
+                    i += 1
+                    continue
+                return 'unknown'
+            if a in _NODE_CODE_LONGS:
+                return 'code'
+            if a in _NODE_VALUE_LONGS:
+                i += 2
+                continue
+            if a in _NODE_FLAG_LONGS:
+                i += 1
+                continue
+            return 'unknown'
+        if a.startswith('-') and len(a) > 1:
+            j = 1
+            while j < len(a):
+                ch = a[j]
+                if ch in _NODE_CODE_SHORTS:
+                    return 'code'
+                if ch in _NODE_VALUE_SHORTS:
+                    if j + 1 == len(a):
+                        i += 1
+                    break
+                if ch in _NODE_FLAG_SHORTS:
+                    j += 1  # flag letter: next cluster letter
+                    continue
+                return 'unknown'
+            i += 1
+            continue
+        if not seen_subcommand and a == 'inspect':
+            seen_subcommand = True
+            i += 1
+            continue
+        return 'file'
+    return 'none'
+
+
+def _perl_program(args):
+    """How a perl argv selects its program: 'code' (-e/-E), 'file', 'stdin' (-),
+    'none' (flags only), or 'unknown' (unmodelled option: fail-closed)."""
+    args = _drop_redirect_words(args)
+    i, n = 0, len(args)
+    while i < n:
+        a = args[i]
+        if a == '--':
+            rest = args[i + 1:]
+            if not rest:
+                return 'none'
+            return 'stdin' if rest[0] == '-' else 'file'
+        if a == '-':
+            return 'stdin'
+        if a.startswith('--'):
+            return 'unknown'
+        if a.startswith('-') and len(a) > 1:
+            j = 1
+            while j < len(a):
+                ch = a[j]
+                if ch in ('e', 'E'):
+                    return 'code'
+                if ch in ('I', 'F', 'D', 'C', '0', 'l', 'i', 'm', 'M', 'd', 'x', 'V'):
+                    if j + 1 == len(a):
+                        i += 1
+                    break
+                if ch in ('a', 'c', 'f', 'g', 'n', 'p', 's', 'S', 't', 'T', 'u', 'U', 'v', 'w', 'W', 'X'):
+                    j += 1  # perl flag: next cluster letter
+                    continue
+                return 'unknown'
+            i += 1
+            continue
+        return 'file'
+    return 'none'
+
+
+def _ruby_program(args):
+    """How a ruby argv selects its program: 'code' (-e), 'file', 'stdin' (-),
+    'none', or 'unknown' (fail-closed). Value-taking shorts consume a separate
+    word when not attached; unknown shorts/longs are unknown."""
+    args = _drop_redirect_words(args)
+    i, n = 0, len(args)
+    while i < n:
+        a = args[i]
+        if a == '--':
+            rest = args[i + 1:]
+            if not rest:
+                return 'none'
+            return 'stdin' if rest[0] == '-' else 'file'
+        if a == '-':
+            return 'stdin'
+        if a.startswith('--'):
+            return 'unknown'
+        if a.startswith('-') and len(a) > 1:
+            j = 1
+            while j < len(a):
+                ch = a[j]
+                if ch == 'e':
+                    return 'code'
+                if ch in ('r', 'I', 'K', 'C', 'E', 'F', '0', 'T', 'W', 'X', 'x', 'i'):
+                    if j + 1 == len(a):
+                        i += 1
+                    break
+                if ch in ('a', 'c', 'd', 'l', 'n', 'p', 's', 'S', 'U', 'v', 'V', 'w', 'y'):
+                    j += 1  # ruby flag: next cluster letter
+                    continue
+                return 'unknown'
+            i += 1
+            continue
+        return 'file'
+    return 'none'
+
+
+def _php_program(args):
+    """How a php argv selects its program: 'code' (-r/-B/-R/-E), 'file' (a script
+    or -f/-F file), 'stdin' (-), 'none', or 'unknown' (fail-closed)."""
+    args = _drop_redirect_words(args)
+    i, n = 0, len(args)
+    while i < n:
+        a = args[i]
+        if a == '--':
+            rest = args[i + 1:]
+            if not rest:
+                return 'none'
+            return 'stdin' if rest[0] == '-' else 'file'
+        if a == '-':
+            return 'stdin'
+        if a.startswith('--'):
+            return 'unknown'
+        if a.startswith('-') and len(a) > 1:
+            # -f/-F name a file: `-f -` reads the program from stdin.
+            if len(a) >= 2 and a[1] in ('f', 'F'):
+                rest = a[2:]
+                if rest:
+                    return 'stdin' if rest == '-' else 'file'
+                if i + 1 >= n:
+                    return 'unknown'
+                nxt = args[i + 1]
+                if nxt == '-':
+                    return 'stdin'
+                if nxt.startswith('-') and nxt != '-':
+                    return 'unknown'
+                return 'file'
+            j = 1
+            while j < len(a):
+                ch = a[j]
+                if ch in ('r', 'B', 'R', 'E'):
+                    return 'code'
+                if ch in ('d', 'c', 'z', 'H', 's'):
+                    if j + 1 == len(a):
+                        i += 1
+                    break
+                if ch in ('a', 'n', 'e', 'h', 'i', 'l', 'm', 'v', 'w', 'q'):
+                    j += 1  # php flag: next cluster letter
+                    continue
+                return 'unknown'
+            i += 1
+            continue
+        return 'file'
+    return 'none'
+
+
+def _lua_program(args):
+    """How a lua argv selects its program: 'code' (-e), 'file', 'stdin' (-),
+    'none', or 'unknown' (fail-closed)."""
+    args = _drop_redirect_words(args)
+    i, n = 0, len(args)
+    while i < n:
+        a = args[i]
+        if a == '--':
+            rest = args[i + 1:]
+            if not rest:
+                return 'none'
+            return 'stdin' if rest[0] == '-' else 'file'
+        if a == '-':
+            return 'stdin'
+        if a.startswith('--'):
+            return 'unknown'
+        if a.startswith('-') and len(a) > 1:
+            j = 1
+            while j < len(a):
+                ch = a[j]
+                if ch == 'e':
+                    return 'code'
+                if ch == 'l':
+                    if j + 1 == len(a):
+                        i += 1
+                    break
+                if ch in ('i', 'v', 'E', 'W'):
+                    j += 1  # lua flag: next cluster letter
+                    continue
+                return 'unknown'
+            i += 1
+            continue
+        return 'file'
+    return 'none'
+
+
+def _awk_program(args):
+    """How an awk/gawk/mawk argv selects its program.
+
+    Returns 'file' when a program is named in argv (a -f file, a -W exec file,
+    or a program-text word), 'stdin' when any -f names `-` (GNU awk
+    concatenates every -f source, so a later `-` still runs program text
+    from stdin) or a bare `-` selects stdin with no program text, 'none'
+    (flags only), or 'unknown' (unmodelled -W form: fail-closed). A
+    non-option word is program text (stdin is then data, not the program),
+    and a `-` data file after program text does not select stdin as the
+    program.
+    """
+    args = _drop_redirect_words(args)
+    i, n = 0, len(args)
+    seen_program_text = False
+    seen_file = False
+    while i < n:
+        a = args[i]
+        if a == '--':
+            rest = args[i + 1:]
+            if not rest:
+                return 'none' if not seen_program_text else 'file'
+            if rest[0] == '-' and not seen_program_text:
+                return 'stdin'
+            return 'file'
+        if a == '-':
+            if seen_program_text:
+                i += 1
+                continue
+            return 'stdin'
+        if a.startswith('--'):
+            return 'unknown'
+        if a.startswith('-') and len(a) > 1:
+            # -f file, -F sep, -v var=value, -W opt (mawk/gawk).
+            if len(a) >= 2 and a[1] == 'f':
+                rest = a[2:]
+                if rest:
+                    if rest == '-':
+                        return 'stdin'
+                    seen_file = True
+                    i += 1
+                    continue
+                if i + 1 >= n:
+                    return 'unknown'
+                nxt = args[i + 1]
+                if nxt == '-':
+                    return 'stdin'
+                if nxt.startswith('-') and nxt != '-':
+                    return 'unknown'
+                seen_file = True
+                i += 2
+                continue
+            if len(a) >= 2 and a[1] in ('F', 'v'):
+                if len(a) == 2:
+                    i += 2
+                    continue
+                i += 1
+                continue
+            if len(a) >= 2 and a[1] == 'W':
+                rest = a[2:]
+                if rest:
+                    if rest == 'exec':
+                        if i + 1 >= n:
+                            return 'unknown'
+                        nxt = args[i + 1]
+                        if nxt == '-':
+                            return 'stdin'
+                        if nxt.startswith('-') and nxt != '-':
+                            return 'unknown'
+                        return 'file'
+                    i += 1
+                    continue
+                if i + 1 >= n:
+                    return 'unknown'
+                nxt = args[i + 1]
+                if nxt == 'exec':
+                    if i + 2 >= n:
+                        return 'unknown'
+                    nxt2 = args[i + 2]
+                    if nxt2 == '-':
+                        return 'stdin'
+                    if nxt2.startswith('-') and nxt2 != '-':
+                        return 'unknown'
+                    return 'file'
+                i += 2
+                continue
+            # Short cluster without f/F/v/W: only flags are expected; any other
+            # letter is unknown (fail-closed).
+            j = 1
+            only_flags = True
+            while j < len(a):
+                ch = a[j]
+                if ch in ('F', 'v', 'W', 'f'):
+                    only_flags = False
+                    break
+                # mawk/gawk have no other single-letter flags that take no value
+                # besides the ones above; treat the rest as unknown.
+                return 'unknown'
+            if only_flags:
+                i += 1
+                continue
+            i += 1
+            continue
+        seen_program_text = True
+        return 'file'
+    if seen_program_text or seen_file:
+        return 'file'
+    return 'none'
+
+
+def _interp_program(name, args):
+    """Program selection for a non-python interpreter (Issue #637)."""
+    if name == 'node':
+        return _node_program(args)
+    if name == 'perl':
+        return _perl_program(args)
+    if name == 'ruby':
+        return _ruby_program(args)
+    if name == 'php':
+        return _php_program(args)
+    if name in ('lua',):
+        return _lua_program(args)
+    if name in ('awk', 'gawk'):
+        return _awk_program(args)
+    return 'unknown'
+
+
+def _find_matching_brace(text, start):
+    """Find matching "}" for "{" at start. Returns (inside_text, end_idx_after_closing).
+    Fail-closed: return None on unbalanced/too deep/unparseable (treated as unknown body -> unsafe).
+    Handles single/double quotes, backslash escapes, # comments (to newline),
+    $(...), backticks, <(...)/>(...) skipping (fail-closed None on failure)."""
+    # start must be "{" ?
+    if start >= len(text) or text[start] != "{":
+        return None
+    depth = 1
+    quote = None
+    i = start + 1
+    n = len(text)
+    while i < n:
+        c = text[i]
+        if quote == "'":
+            if c == "'":
+                quote = None
+            i += 1
+            continue
+        if c == "\\" and i + 1 < n:  # Bash backslash escapes next char (also inside ""? approximate)
+            # In PowerShell, backtick escapes, not backslash; treating backslash as escape is safe over-approx (may miss brace, fail-closed via depth? Actually skipping escaped char could miss quote handling? Safe: skip next char (may incorrectly skip, but then brace matching may fail -> None -> unsafe -> DENY, fail-closed safe).
+            i += 2
+            continue
+        if c == "$" and i + 1 < n and text[i + 1] == "(":
+            # Skip $(...) via _matched-like depth counting with quotes? Simplify: use _matched logic? To avoid dependency, do manual with quote awareness? For minimal, try to find matching ")" via _matched equivalent? Use simple depth with quotes? Hmm.
+            # For fail-closed, on any complexity, return None? Actually $(...) may contain braces (e.g., $(echo "}")). Must skip correctly, else brace depth miscount -> over/under-taint? Under-taint unsafe (leak), over-taint safe. To be safe (fail-closed), on encountering "$(", return None (unknown) -> unsafe -> DENY tainted calls (safe). Good - simple fail-closed for $(...) inside function body braces? But many function bodies contain $(...)? Example f() { echo "$(node)"; }? Unlikely in required tests (bodies are simple node/cat/script). Returning None (unsafe) for any body containing $(...) would cause over-denial for safe bodies with $(...)? Example f() { echo "$(cat)"; }; printf data | f - body contains $(...), our matcher would return None (unknown) -> unsafe -> DENY tainted call (over-denial, safe? Actually body echo "$(cat)" with tainted stdin - inner cat reads...? Hmm, safe? Over-denial safe. Acceptable per fail-closed.
+            # Actually task requires subs in function bodies? Not explicitly, but nested subs + functions combo should be considered. Our simple fail-closed (unknown on $() inside {}) would DENY tainted calls with subs in body (safe over-denial). Acceptable.
+            return None
+        if c == "`":
+            # Skip backticks: find closing unescaped backtick (fail-closed None on failure)
+            j = text.find("`", i + 1)
+            if j < 0:
+                return None
+            i = j + 1
+            continue
+        if c in "<>" and quote is None and i + 1 < n and text[i + 1] == "(":
+            # Process substitution <(...) / >(...): skip via paren matching (fail-closed None on failure)
+            # Find matching ")" for "(" at i+1 with quote awareness? Simplify: return None (unknown) to be fail-closed (safe) since process subst in function body is exotic.
+            return None
+        if quote == '"':
+            if c == '"':
+                quote = None
+            i += 1
+            continue
+        if quote is None and c == "#" and (i == 0 or text[i-1] in " \t\n;&|(){}"):
+            # Word-initial # starts comment to end of line (approximate split_segments logic, plus {,})
+            j = text.find("\n", i)
+            i = n if j < 0 else j
+            continue
+        if c in "'\"":
+            quote = c
+            i += 1
+            continue
+        if c == "{":
+            depth += 1
+            if depth > 8:
+                return None
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return (text[start+1:i], i+1)
+            if depth < 0:
+                return None
+        i += 1
+    return None
+
+def _extract_function_defs(text, ps):
+    """Extract shell function definitions: name -> list of body texts (or None for unknown/unparseable -> unsafe).
+    Handles Bash name() { ... }, name() ( ... ), function name [()] { ... } / ( ... ). PowerShell function name { ... }.
+    Fail-closed: unparseable/too deep/unknown forms yield None body (treated as unsafe)."""
+    defs = {}
+    # Review 5968136032: exclude `#` comments from discovery (a commented
+    # `f() { node; }` must not taint the real `f() { cat; }`). Replace comment
+    # chars with spaces (same length, indices preserved; newline kept).
+    # `#` starts a comment only outside quotes at word start (blank or
+    # `;|&|(){}`, newline, start); `\#` is literal. Over-stripping is
+    # fail-closed safe (may miss a `#`-containing name, then unknown-call
+    # handling denies piped calls).
+    _chars = list(text)
+    _q = None
+    _word_start = True
+    _i = 0
+    _L = len(text)
+    while _i < _L:
+        _c = text[_i]
+        if _q == "'":
+            if _c == "'":
+                _q = None
+            _word_start = False
+            _i += 1
+            continue
+        if _c == "\\" and _i + 1 < _L:
+            _word_start = False
+            _i += 2
+            continue
+        if _q == '"':
+            if _c == '"':
+                _q = None
+            _word_start = False
+            _i += 1
+            continue
+        if _c in "'\"":
+            _q = _c
+            _word_start = False
+            _i += 1
+            continue
+        if _c == "#" and _word_start:
+            while _i < _L and text[_i] != "\n":
+                _chars[_i] = " "
+                _i += 1
+            _word_start = False
+            continue
+        if _c in " \t\n" or _c in ";|&(){}:":
+            _word_start = True
+        else:
+            _word_start = False
+        _i += 1
+    clean = "".join(_chars)
+    # Pattern for name() with { or ( body opener after optional spaces (including newlines)
+    # Use regex to find candidates, then brace/paren matching for body (fail-closed None on failure).
+    # To avoid missing due to newlines, use \s* (includes \n).
+    import re as _re
+    # Bash name() { ... } and name() ( ... )
+    # MAJOR (review 5967514206): Bash function names are case-sensitive and
+    # allow many non-metacharacters (verified: F-X, f+x, f?, f*, f%, f/,
+    # f@, f!, f^, f~, f,, 1f). The previous [A-Za-z0-9_.:\-] missed `+`
+    # (and digit-leading names), causing fail-open misses. Use a permissive
+    # WORD pattern (any non-metacharacter, non-`=`, non-space) and over-match
+    # quoted/candidates (fail-closed over-denial, never silent ALLOW).
+    # PowerShell names resolve case-insensitively (keyed lower); Bash keys
+    # keep original case and are stored/looked up case-sensitively.
+    for m in _re.finditer(r'(?<![^\s;|&<>()=])([^\s;|&<>()=]+)\s*\(\s*\)\s*(\{|\()', clean):
+        name = m.group(1)
+        key = _func_key(name, ps)
+        opener = m.group(2)
+        # MAJOR (Issue #637): a `(...)` body runs in a subshell, so its
+        # `exec` never reaches the caller. The stored body keeps its
+        # parentheses, so the stdin scan sees the fork boundary (a brace
+        # body stays bare: it runs in the calling shell). Verified on Bash:
+        # `f() (exec < f); f; node` leaves the caller stdin alone, while
+        # `f() { exec < f; }; f; node` redirects it.
+        body_start_idx = m.start(2)  # index of "{" or "("
+        # Skip if opener inside quotes/comments? Regex over-matches quoted (fail-closed safe: over-denial). Accept.
+        if opener == "{":
+            res = _find_matching_brace(clean, body_start_idx)
+            if res is None:
+                body = None
+            else:
+                body_inside, _end = res
+                body = body_inside
+        else:  # "(" subshell body: use paren matching with quote awareness? Simplify: use _matched-like? For minimal, try to find matching ")" via simple depth with quotes (fail-closed None on failure).
+            # Find matching ")" for "(" at body_start_idx
+            depth = 1
+            quote = None
+            i = body_start_idx + 1
+            n = len(clean)
+            found = None
+            while i < n:
+                c = clean[i]
+                if quote == "'":
+                    if c == "'":
+                        quote = None
+                    i += 1
+                    continue
+                if c == "\\" and i + 1 < n:
+                    i += 2
+                    continue
+                if c == "$" and i + 1 < n and clean[i+1] == "(":
+                    # Nested $(...): fail-closed unknown (return None for whole body to be safe? Actually body contains $(...), analyzing body with subs handling will handle subs separately? For body extraction, $(...) inside (...) body - need to skip correctly, else paren depth miscount. Fail-closed: return None (unknown -> unsafe).
+                    found = None
+                    break
+                if c == "`":
+                    j = clean.find("`", i+1)
+                    if j < 0:
+                        found = None
+                        break
+                    i = j + 1
+                    continue
+                if quote == '"':
+                    if c == '"':
+                        quote = None
+                    i += 1
+                    continue
+                if c in "'\"":
+                    quote = c
+                    i += 1
+                    continue
+                if c == "(":
+                    depth += 1
+                    if depth > 8:
+                        found = None
+                        break
+                elif c == ")":
+                    depth -= 1
+                    if depth == 0:
+                        found = (clean[body_start_idx+1:i], i+1)
+                        break
+                    if depth < 0:
+                        found = None
+                        break
+                i += 1
+            if found is None:
+                body = None
+            else:
+                body, _end = found
+                body = "(" + body + ")"  # subshell scope marker (see above)
+        defs.setdefault(key, []).append(body)
+    # function name [()] { ... } / ( ... )  (Bash + PowerShell)
+    for m in _re.finditer(r'(?<![^\s;|&<>()=])function\s+([^\s;|&<>()=]+)\s*(\(\s*\))?\s*(\{|\()', clean):
+        name = m.group(1)
+        key = _func_key(name, ps)
+        opener = m.group(3)
+        body_start_idx = m.start(3)
+        if opener == "{":
+            res = _find_matching_brace(clean, body_start_idx)
+            body = None if res is None else res[0]
+        else:
+            # "(" subshell body after function: same paren matching as above (fail-closed None on $(), backticks, etc.)
+            depth = 1
+            quote = None
+            i = body_start_idx + 1
+            n = len(clean)
+            found = None
+            while i < n:
+                c = clean[i]
+                if quote == "'":
+                    if c == "'":
+                        quote = None
+                    i += 1
+                    continue
+                if c == "\\" and i + 1 < n:
+                    i += 2
+                    continue
+                if c == "$" and i + 1 < n and clean[i+1] == "(":
+                    found = None
+                    break
+                if c == "`":
+                    j = clean.find("`", i+1)
+                    if j < 0:
+                        found = None
+                        break
+                    i = j + 1
+                    continue
+                if quote == '"':
+                    if c == '"':
+                        quote = None
+                    i += 1
+                    continue
+                if c in "'\"":
+                    quote = c
+                    i += 1
+                    continue
+                if c == "(":
+                    depth += 1
+                    if depth > 8:
+                        found = None
+                        break
+                elif c == ")":
+                    depth -= 1
+                    if depth == 0:
+                        found = (clean[body_start_idx+1:i], i+1)
+                        break
+                    if depth < 0:
+                        found = None
+                        break
+                i += 1
+            body = None if found is None else found[0]
+            if body is not None and opener == "(":
+                body = "(" + body + ")"  # subshell scope marker (see above)
+        defs.setdefault(key, []).append(body)
+    return defs
+
+
+def _stdin_op_effect(op, target):
+    """Effect of one `<`-family redirect operator on fd 0 (Issue #637).
+
+    op includes an optional fd-digit prefix (e.g. '3<', '<', '<<', '<<<',
+    '<&', '<>'). Returns 'supply' (fd 0 reads a new source), 'close' (fd 0
+    is closed: provably delivers no program), or None (another descriptor
+    or an unrecognised form: no stdin effect). Only fd 0/default supplies
+    stdin; `3<`, `3<&-` and friends touch another descriptor. `<&N` dups
+    onto stdin (supply); `<&-` closes it. `<>` opens fd 0 read-write.
+    """
+    m = re.match(r"^(\d*)(.*)$", op, re.S)
+    fd, base = m.group(1), m.group(2)
+    # Bash reads any all-zero spelling ("0", "00", "000", ...) as fd 0,
+    # while "3"/"03" stay fd 3 (verified on Bash). strip("0") avoids the
+    # int() 4300-digit limit and any exception on overlong digit runs;
+    # a non-digit fd (unreachable via the regex, defensive) falls through
+    # fail-closed instead of being guessed as another descriptor.
+    if fd.isdigit():
+        if fd.strip("0") != "":
+            return None
+    elif fd != "":
+        pass  # unknown fd spelling: keep stdin classification below
+    if base in ("<", "<<", "<<<", "<<-", "<>"):
+        return "supply"
+    if base == "<&":
+        return "close" if (target or "") == "-" else "supply"
+    return None
+
+
+def _scan_stdin_ops(seg):
+    """Yield (op, target) for each unquoted `<`-family operator in a segment.
+
+    Works on lexer-marked segments (operators stand off as `\x01<op>` words,
+    fd digits glued inside the marker) and on raw text alike. Quoted `<`
+    is literal; `<(` is process substitution, not a redirect. The target is
+    the next unquoted word (None when quoted: fail-closed, never `-`).
+    """
+    ops = []
+    quote, i, n = None, 0, len(seg)
+    while i < n:
+        c = seg[i]
+        if quote == "'":
+            if c == "'":
+                quote = None
+            i += 1
+            continue
+        if c == "\\":
+            i += 2  # an escaped `<` is a literal argument, not a redirect
+            continue
+        if quote == '"':
+            if c == '"':
+                quote = None
+            i += 1
+            continue
+        if c in "'\"":
+            quote = c
+            i += 1
+            continue
+        if c == "<" and not (i + 1 < n and seg[i + 1] == "("):
+            # Glued fd digits immediately before `<` (the marked form keeps
+            # them inside the `\x01<op>` marker). No digits = default fd 0.
+            k = i - 1
+            fd = ""
+            while k >= 0 and seg[k].isdigit():
+                fd = seg[k] + fd
+                k -= 1
+            j = i + 1
+            while j < n and seg[j] in "<&":
+                j += 1
+            op = fd + seg[i:j]
+            t = j
+            while t < n and seg[t] in " \t":
+                t += 1
+            if t < n and seg[t] in "'\"":
+                target = None
+            else:
+                u = t
+                while u < n and seg[u] not in " \t" + REDIR_MARK + "'\"":
+                    u += 1
+                target = seg[t:u]
+            ops.append((op, target))
+            i = j
+            continue
+        i += 1
+    return ops
+
+
+def _has_input_redirect(seg):
+    """True when a segment contains an unquoted `<` supplying stdin (fd 0/default).
+
+    Only fd 0/default supplies stdin (`3<`, `3<&-` do not); `<&N` dups onto
+    stdin (supply) while `<&-` closes it (no program can be delivered).
+    `<(` is process substitution, not stdin redirection. Quoted `<` and
+    backslash-escaped `<` are literal arguments.
+    """
+    for op, target in _scan_stdin_ops(seg):
+        if _stdin_op_effect(op, target) == "supply":
+            return True
+    return False
+
+
+def _exec_shadowed_by_function(words, ps, all_funcs):
+    """True when a segment `exec` resolves to a shell function (Issue #637).
+
+    Bash prefers a same-name function over the builtin, and a function
+    invocation's redirects are temporary (restored afterwards, verified on
+    Bash), so a shadowed `exec <&-` never closes the shell's stdin while
+    `command exec`/`builtin exec` bypass functions and do. Only closes
+    consult this: a shadowed supply stays fail-closed (still taints), since
+    a definition placed after the use would not have shadowed it yet.
+    """
+    if _func_call_name("exec", ps) not in (all_funcs or {}):
+        return False
+    i = 0
+    for _ in range(4):
+        while i < len(words) and (words[i] in KEYWORDS or ASSIGN.match(words[i])):
+            i += 1
+        if i < len(words) and words[i] == "!":
+            i += 1
+            continue
+        if i < len(words) and words[i] == "time":
+            i += 1
+            if i < len(words) and words[i] == "-p":
+                i += 1
+            continue
+        if i < len(words) and words[i] in ("builtin", "command"):
+            return False
+        break
+    return i < len(words) and words[i] == "exec"
+
+
+def _exec_segment_effect(words, seg):
+    """Persistent stdin effect of one segment: 'supply', 'close', or None.
+
+    Only a segment whose command is bare `exec` (no command word after its
+    options) changes the current shell's descriptors persistently (verified
+    on Bash): with a command, `exec` replaces the shell (later segments are
+    dead code, analysed as usual) or exits, so only the segment's own
+    redirects matter there. `exec [-cl] [-a name]` options are skipped; an
+    unknown option form counts as having a command (fail-closed: 'supply'
+    still applies when an stdin redirect is present). Output-only and
+    non-stdin-fd redirects never change stdin. The last stdin-affecting
+    redirect in the segment wins (`< a <&-` closes, `<&- < a` supplies).
+    """
+    i = 0
+    # Same-shell prefixes that still run an `exec` in this shell (verified
+    # on Bash): `!`, `time -p`, `builtin exec`, `command [-p|--] exec` all
+    # persistently redirect the current shell. `command -v/-V` merely
+    # describes and executes nothing. Anything else (wrappers, options)
+    # runs elsewhere or is unparseable, so it is not a persistent redirect.
+    for _ in range(4):
+        while i < len(words) and (words[i] in KEYWORDS or ASSIGN.match(words[i])):
+            i += 1
+        if i < len(words) and words[i] in ("!", "builtin"):
+            i += 1
+            continue
+        if i < len(words) and words[i] == "time":
+            i += 1
+            if i < len(words) and words[i] == "-p":
+                i += 1
+            continue
+        if i < len(words) and words[i] == "command":
+            i += 1
+            if i < len(words) and words[i] in ("-p", "--"):
+                i += 1
+            elif i < len(words) and words[i] in ("-v", "-V"):
+                return None
+            continue
+        break
+    if i >= len(words) or words[i] != "exec":
+        return None
+    # Skip redirect operators and their targets: they select no program.
+    clean, skip = [], False
+    for w in words[i + 1:]:
+        if skip:
+            skip = False
+            continue
+        if w.startswith(REDIR_MARK):
+            skip = True
+            continue
+        clean.append(w)
+    j = 0
+    while j < len(clean):
+        a = clean[j]
+        if a == "--":
+            j += 1
+            break
+        if len(a) >= 2 and a[0] == "-" and a[1] != "-":
+            k, valid, need_next = 1, True, False
+            while k < len(a):
+                ch = a[k]
+                if ch in "cl":
+                    k += 1
+                elif ch == "a":
+                    if k + 1 == len(a):
+                        need_next = True
+                    k = len(a)
+                else:
+                    valid = False
+                    break
+            if not valid:
+                break  # unknown option: treat the rest as a command
+            if need_next:
+                if j + 1 >= len(clean):
+                    break  # missing -a value: unparseable, treat as command
+                j += 2
+            else:
+                j += 1
+            continue
+        break
+    has_command = j < len(clean)
+    last = None
+    for op, target in _scan_stdin_ops(seg):
+        e = _stdin_op_effect(op, target)
+        if e is not None:
+            last = e
+    if last == "supply":
+        return "supply"
+    if last == "close" and not has_command:
+        return "close"
+    return None
+
+
+def stdin_program_refusal(words, piped, seg):
+    """Deny when an interpreter's program comes from stdin and is not visible in argv (Issue #637).
+
+    Refused: `python3 -` (explicit stdin program, piped or not; see python_rule), a piped stdin with no
+    program word (`... | python3`, `... | python3 -W ignore`), an explicit `-` stdin program for any
+    interpreter (`node -`, `perl -`; piped or not), and a bare or flags-only perl/node/ruby/php/lua/awk
+    with piped or `<`-redirected stdin (`... | node --no-warnings`, `node --no-warnings < code.js`;
+    these read their program from stdin when no -e/file names one). Each interpreter has its own
+    option grammar (_node_program, _perl_program, ...): an option and a script-file operand are told
+    apart, an unknown option form is fail-closed (never read as a file), and syntax differences are
+    not ignored with one blanket ALLOW. Returns a Deny, or None when no rule fires.
+
+    Kept as they are (documented): a script file operand (`python3 x.py`, `node x.js`, including
+    `node --no-warnings script.js` and `node -- script.js`) and `-c`/`-m`/`-e` with stdin as data
+    (the code or module is named in argv and judged; file content is the X3d residual, out of #637
+    scope), and unpiped bare or flags-only interpreters with no delivered code (no stdin taint).
+    Pipes through `(...)`, `{...}`, control keywords (`if/while/until/for/case`), wrappers and
+    nested `sh -c`/`bash -c` strings are marked (MAJOR-1/2): the interpreter shares the pipe-fed
+    stdin across `;` inside pipe-fed compounds and into inner shell strings (fail-closed OR of outer
+    and inner pipe marks). An independent command after the top-level pipeline (`... | cat; node`)
+    stays unmarked. Too deep compound nesting is fail-closed DENY (depth limit).
+    Known overreach (fail-closed, rare): a file operand literally named like an interpreter
+    (`... | sort perl`, `... | tee node`) reads as a bare interpreter and is refused; the established
+    X1 scan accepts the same trade-off for wrapper-hidden python (`nice python3`).
+    """
+    def _check_prog(name, prog, piped_here, seg_here):
+        if prog in ('code', 'file'):
+            return None
+        if prog == 'stdin':
+            return Deny("stdin-program", name + " with `-` runs its program from stdin: not inspected")
+        if prog in ('none', 'unknown'):
+            if piped_here or _has_input_redirect(seg_here):
+                return Deny("stdin-program", name + " with piped or redirected stdin and no program word runs stdin: not inspected")
+            return None
+        return None
+
+    i = 0
+    while i < len(words) and (words[i] in KEYWORDS or ASSIGN.match(words[i])):
+        i += 1
+    if i < len(words) and _cmd_name(words[i]) in NON_EXEC_COMMANDS:
+        return None
+    for j in range(i, len(words)):
+        name = _cmd_name(words[j])
+        if PY_NAME.match(name):
+            if piped and _python_program(words[j + 1:]) == 'none':
+                return Deny("stdin-program", "python with piped stdin and no program word runs stdin: not inspected")
+            return None
+        if name in INTERP:
+            prog = _interp_program(name, words[j + 1:])
+            hit = _check_prog(name, prog, piped, seg)
+            if hit is not None:
+                return hit
+            return None
+    for j in range(i, len(words)):
+        w = words[j]
+        if ' ' not in w and '\t' not in w:
+            continue
+        if '\n' in w or '$' in w or '`' in w or SUBST in w:
+            continue
+        # A `<` inside a multi-word string is a quoted redirect of nested
+        # code (`sh -c 'exec <&-; node'`): the nested analysis judges the
+        # inner stdin precisely (including explicit closes), while this
+        # text scan cannot tell supply from close. Skip it here instead of
+        # guessing (fail-closed: the nested pass still denies when the
+        # inner interpreter really reads stdin as its program).
+        if '<' in w:
+            continue
+        parts = w.split()
+        if not parts:
+            continue
+        for k, part in enumerate(parts):
+            pname = _cmd_name(part)
+            if PY_NAME.match(pname):
+                if piped and _python_program(parts[k + 1:]) == 'none':
+                    return Deny("stdin-program", "python with piped stdin and no program word runs stdin: not inspected")
+                break
+            if pname in INTERP:
+                prog = _interp_program(pname, parts[k + 1:])
+                if prog in ('code', 'file'):
+                    break
+                if prog == 'stdin':
+                    return Deny("stdin-program", pname + " with `-` runs its program from stdin: not inspected")
+                if prog in ('none', 'unknown') and piped:
+                    return Deny("stdin-program", pname + " with piped or redirected stdin and no program word runs stdin: not inspected")
+                break
+    return None
+
+
 def python_rule(args):
     # A shell variable or substitution in a python argument: its value is not visible here.
     for arg in args:
         if "$" in arg or "`" in arg or SUBST in arg:
             raise Deny("unexpanded", "python argument with an unexpanded variable or substitution is not inspected")
+    # A standalone `-` in program position names stdin as the program (Issue #637): the code is not in
+    # argv, so there is nothing to judge. `python3 -` and `python3 - args` are refused; `x.py -` (a script
+    # with `-` in its own argv) and `-m mod -` select their program from argv and stay as they are.
+    if _python_program(args) == 'stdin':
+        raise Deny("stdin-program", "python with `-` runs its program from stdin: not inspected")
     for code in python_c_codes(args):
         # Python NFKC-normalises identifiers, so ｏｐｅｎ(...) is open(...). Match the raw text (as before) and the
         # normalised text. Normalising alone would let a word with a combining mark (remove + U+0301) through.
@@ -1900,17 +3220,22 @@ def python_rule(args):
             raise Deny("python-c", "python -c with a file or process operation")
 
 
-def shell_rule(args, ctx, depth):
+def shell_rule(args, ctx, depth, fed=False):
+    # MAJOR-2: outer pipe-fed stdin is inherited by the inner "sh -c" string.
+    # The inner text is analysed with inherited_fed so that "node;" / "(node)"
+    # with no inner pipe still sees the outer pipe (fail-closed). A fresh
+    # child shell shares no function definitions, so outer_funcs is not
+    # passed (an unexported function is not visible inside sh -c).
     for i, a in enumerate(args):
         if short_has(a, "c"):
             if i + 1 >= len(args):
                 raise Deny("shell", "shell -c without code")
-            _nested_text(args[i + 1], ctx, False, depth + 1)
+            _nested_text(args[i + 1], ctx, False, depth + 1, fed=fed)
             return
     raise Deny("shell", "shell without -c is not inspected")
 
 
-def pwsh_rule(args, ctx, depth):
+def pwsh_rule(args, ctx, depth, fed=False):
     low = [a.lower() for a in args]
     for a in low:
         if a.startswith("-enc") or a in ("-e", "-ec"):
@@ -1919,7 +3244,7 @@ def pwsh_rule(args, ctx, depth):
             raise Deny("powershell", "-File script is not inspected")
     for i, a in enumerate(low):
         if a == "-c" or (len(a) > 2 and "-command".startswith(a)):
-            _nested_text(" ".join(args[i + 1:]), ctx, True, depth + 1)
+            _nested_text(" ".join(args[i + 1:]), ctx, True, depth + 1, fed=fed)
             return
 
 
@@ -2134,7 +3459,8 @@ def command_name(w):
     return name
 
 
-def analyze_argv(words, ctx, ps, depth):
+def analyze_argv(words, ctx, ps, depth, fed=False, outer_funcs=None,
+                  via_builtin=False):
     if depth > MAX_DEPTH:
         raise Deny("depth", "command nesting too deep")
     # A program-naming environment variable anywhere in the command (prefix, export, env -S, a shell string) is denied.
@@ -2198,13 +3524,14 @@ def analyze_argv(words, ctx, ps, depth):
             rest = words[1:]
             if not rest:
                 raise Deny("coproc", "coproc without a command is not resolvable")
-            _nested_argv(rest, ctx, ps, depth + 1)
+            _nested_argv(rest, ctx, ps, depth + 1, fed, outer_funcs)
             if len(rest) >= 2 and rest[0] not in COPROC_COMPOUND:
                 # Simple-command form has no explicit name: the suffix is
                 # validated, but taint from the impossible named parse is
                 # not exported (Piece D, #636). A recognised unnamed
                 # compound was already covered once by the primary parse.
-                analyze_argv(rest[1:], ctx.copy(), ps, depth + 1)
+                # Issue #637: the alternative reading shares this stdin.
+                analyze_argv(rest[1:], ctx.copy(), ps, depth + 1, fed, outer_funcs)
             return
         if SUBST in w0:
             raise Deny("command-word", "command substitution in command position")
@@ -2232,7 +3559,7 @@ def analyze_argv(words, ctx, ps, depth):
             # timeout's option grammar (long options with a separate value, non-integer durations) is not parsed, so
             # the command it runs is taken from its grammar (timeout_candidates), with conservative extra candidates.
             for cand in timeout_candidates(words[1:]):
-                _nested_argv(cand, ctx, ps, depth + 1)
+                _nested_argv(cand, ctx, ps, depth + 1, fed, outer_funcs)
             return
         if handoff(name):
             # String visits below are alternative parses of this same
@@ -2250,7 +3577,12 @@ def analyze_argv(words, ctx, ps, depth):
                 idx = same_shell_target_index(name, words[1:], ctx)
                 if idx is not None and command_name(words[1:][idx]) in SAME_SHELL_NAMES:
                     same_shell_consumed = words[1:][idx:]
-                    _nested_argv_same_shell(same_shell_consumed, ctx, ps, depth + 1)
+                    # Only `command`/`builtin` bypass a shadowing function;
+                    # `time` runs functions in the current shell, so the
+                    # builtin form is not assumed there.
+                    _nested_argv_same_shell(same_shell_consumed, ctx, ps, depth + 1,
+                                            fed, outer_funcs,
+                                            via_builtin=(name in ("command", "builtin")))
             for cand in wrapper_candidates(name, words[1:], ctx):
                 if same_shell_consumed is not None and cand == same_shell_consumed:
                     # Already validated above (its taint/cwd merged once):
@@ -2262,7 +3594,7 @@ def analyze_argv(words, ctx, ps, depth):
                 # For a wrapper with a grammar the command word is exact, so it is analysed even when it looks like an option.
                 if name not in WRAPPER_OPTS and cand and (cand[0].startswith("-") or cand[0].isdigit()):
                     continue
-                _nested_argv(cand, ctx, ps, depth + 1)
+                _nested_argv(cand, ctx, ps, depth + 1, fed, outer_funcs)
             if name in STRING_LAUNCHERS:
                 # A shell string argument is text, whatever its shape: a quoted string with a space (sudo -s "rm -rf x"),
                 # the value after -c or --command (flock -c rm lock), and the value after --name= (flock --command="rm").
@@ -2279,19 +3611,39 @@ def analyze_argv(words, ctx, ps, depth):
                 for k in range(1, len(words)):
                     if not words[k].startswith("-") and any(ch.isspace() for ch in words[k]):
                         if cmd_word is None or k == cmd_word:
-                            _nested_text_from(words[k], ctx, wrapper_tainted, ps, depth + 1)
+                            _nested_text_from(words[k], ctx, wrapper_tainted, ps, depth + 1,
+                                              fed=fed)
                         else:
                             sub = ctx.copy()
                             sub.tainted = wrapper_tainted
-                            analyze_text(words[k], sub, ps, depth + 1)
+                            analyze_text(words[k], sub, ps, depth + 1, inherited_fed=fed)
                     if words[k] in ("-c", "--command") and k + 1 < len(words):
-                        _nested_text_from(words[k + 1], ctx, wrapper_tainted, ps, depth + 1)
+                        _nested_text_from(words[k + 1], ctx, wrapper_tainted, ps, depth + 1,
+                                          fed=fed)
                     if words[k].startswith("--") and "=" in words[k]:
-                        _nested_text_from(words[k].split("=", 1)[1], ctx, wrapper_tainted, ps, depth + 1)
+                        _nested_text_from(words[k].split("=", 1)[1], ctx, wrapper_tainted, ps,
+                                          depth + 1, fed=fed)
             return
         break
     args = words[1:]
     program_option_rule(name, args, ctx)
+    # MAJOR-B (review 5968211099): enforce stdin-program on the resolved
+    # interpreter argv (wrapper-resolved via handoff recursion carries fed),
+    # not the text-scan first token (which may be a wrapper operand).
+    # Named code/file stays ALLOW (stdin as data); bare/unknown with fed
+    # (pipe-fed OR input-redirected seg_taint) is DENY with stdin-program.
+    if PY_NAME.match(name):
+        _prog = _python_program(args)
+        if _prog == 'stdin':
+            raise Deny("stdin-program", "python with `-` runs its program from stdin: not inspected")
+        if _prog in ('none', 'unknown') and fed:
+            raise Deny("stdin-program", "python with piped or redirected stdin and no program word runs stdin: not inspected")
+    elif name in INTERP:
+        _prog = _interp_program(name, args)
+        if _prog == 'stdin':
+            raise Deny("stdin-program", name + " with `-` runs its program from stdin: not inspected")
+        if _prog in ('none', 'unknown') and fed:
+            raise Deny("stdin-program", name + " with piped or redirected stdin and no program word runs stdin: not inspected")
     if ps and name in PS_LAUNCH_NAMES:
         # A PowerShell process launcher runs its arguments as a command line, and its options (-FilePath, -ArgumentList)
         # may come first, so every suffix of the arguments is analysed as a command line. Bounded: a longer argument
@@ -2304,7 +3656,8 @@ def analyze_argv(words, ctx, ps, depth):
         # so a destructive command after a separator in the same token ("tools\app.exe;rm -rf /") is still analysed.
         entry_tainted = ctx.tainted
         for k in range(len(tokens)):
-            _nested_text_from(" ".join(tokens[k:]), ctx, entry_tainted, True, depth + 1)
+            _nested_text_from(" ".join(tokens[k:]), ctx, entry_tainted, True, depth + 1,
+                              fed=fed)
     if name in (".", "source") and any(("$" in a or "`" in a or SUBST in a) for a in args):
         # Sourcing a path that names a variable (or a substitution) is a file that is not known here (fail closed).
         raise Deny("unexpanded", "sourcing a variable or substitution is not inspected")
@@ -2326,12 +3679,24 @@ def analyze_argv(words, ctx, ps, depth):
         # Piece D (#636, CRITICAL-1): eval runs in the calling shell, so
         # a cd inside it moves the parent cwd. The nested text is analysed
         # in a copy and both taint and cwd merge back; a subshell inside
-        # the eval text is still scoped by analyze_text.
-        _nested_text(" ".join(args), ctx, ps, depth + 1, merge_cwd=True)
+        # the eval text is still scoped by analyze_text. Issue #637: eval
+        # runs in the calling shell, so this segment's stdin and visible
+        # function definitions are passed through, and a persistent stdin
+        # redirect inside the eval text (e.g. `exec < file`) moves the
+        # parent's stdin too when this eval runs the builtin (merge_exec;
+        # verified on Bash). A `command`/`builtin` prefix bypasses a
+        # shadowing `eval` function and always runs the builtin, while a
+        # bare `eval` with a shadowing function calls that function instead
+        # (its string is an argument, not code). A redirect on the eval
+        # command itself does not persist (verified: restored after the
+        # command), so it sets no persistent flag.
+        _nested_text(" ".join(args), ctx, ps, depth + 1, fed=fed,
+                     outer_funcs=outer_funcs, merge_cwd=True,
+                     merge_exec=(via_builtin or _func_call_name("eval", ps) not in (outer_funcs or {})))
     elif name in SHELLS:
-        shell_rule(args, ctx, depth)
+        shell_rule(args, ctx, depth, fed)
     elif name in PS_HOSTS:
-        pwsh_rule(args, ctx, depth)
+        pwsh_rule(args, ctx, depth, fed)
     elif name in CD_NAMES:
         if args and args[0].startswith("-"):
             raise Deny("cd", "cd with option is not inspected")
@@ -2350,7 +3715,7 @@ def analyze_argv(words, ctx, ps, depth):
     elif name == "git":
         git_rule(args, ctx)
     elif name == "find":
-        find_rule(args, ps, ctx, depth)
+        find_rule(args, ps, ctx, depth, fed)
     elif PY_NAME.match(name):
         python_rule(args)
     elif path_word:
@@ -2376,7 +3741,507 @@ def analyze_argv(words, ctx, ps, depth):
 MAX_REDIRECTS = 64  # each redirection is a path check; an unbounded number of them is refused (fail closed, time bound)
 
 
-def analyze_text(text, ctx, ps, depth):
+def _stdin_prepass(segs, ps, inherited_fed, all_funcs=None):
+    """Stdin provenance per segment over the sentinel stream (Issue #637).
+
+    split_segments runs fully before analysis, so this pre-pass can compute
+    stdin taint for every segment up front, including retroactive group
+    taint (`(node) < file`, `fi < file`) that a single forward pass cannot
+    see when it analyses the inner segments. Returns (pipe, eff, is_stage,
+    subdepth, end_exec, suppressed, in_cond), each parallel to segs
+    (sentinels read False/0):
+    - pipe[i]: the segment reads a tainted stdin. This joins three
+      provenance layers tracked separately (Issue #637 MAJOR follow-up):
+      `inh` (inherited from the enclosing invocation: the caller's pipe,
+      redirect, or exec-persistent stdin; never cleared by this text's own
+      command boundaries), `fed` (this text's own local pipeline stage),
+      and the persistent `exec` flag. Its own `<` redirect is NOT included
+      (expansion precedes redirection, so a substitution in the segment
+      still sees the pre-redirect stdin).
+    - eff[i]: pipe[i] or its own input redirect (the taint an interpreter
+      in this segment, a function called here, or a nested shell string
+      actually observes).
+    - is_stage[i]: the pipe taint comes from a real pipeline (a fork: a
+      function body called here cannot leak an `exec` back to the caller).
+    - subdepth[i]: subshell/coprocess nesting depth (same reason).
+    - suppressed[i]: inside a function definition body (never executes there).
+    - in_cond[i]: inside a conditional/loop compound (may not execute).
+    - end_exec: the persistent exec-stdin flag after the last segment (for
+      function-body queries; forked contexts never export it).
+
+    Bash `exec` with an stdin redirect and no command changes the current
+    shell's descriptors persistently (verified on Bash): a later bare
+    interpreter reads its program from the redirected stdin. Output-only
+    and non-stdin-fd `exec` redirects (`> log`, `3< f`) change nothing, a
+    bare interpreter with a named file (`node script.js`) or a data reader
+    (`cat`) is unaffected, and an explicit stdin close (`exec <&-`) clears
+    the flag again (a closed stdin delivers EOF, no program). An `exec`
+    inside a pipeline stage, background job, subshell or coprocess is
+    local to that fork and never leaks out (over-approximation stays
+    fail-closed: pipeline-left and background `exec` still taint). A function
+    definition body never executes at definition time, so an `exec` inside
+    one (`f() { exec < f; }`, `function f { exec < f; }`) is suppressed there
+    and only takes effect through a call (analysed at the call site).
+    """
+    n = len(segs)
+    pipe = [False] * n
+    eff = [False] * n
+    is_stage = [False] * n
+    subdepth = [0] * n
+    suppressed = [False] * n
+    in_cond = [False] * n
+    # inh: stdin inherited from the enclosing invocation (the caller's pipe,
+    # redirect, or exec-persistent stdin). A `;`/newline/`&&`/`||`/`&`/`|`
+    # boundary ends a command or a local pipeline stage, never the outer
+    # fd-0 input stream, so inh is never cleared by boundaries (verified on
+    # Bash: function bodies and `sh -c` strings keep reading inherited
+    # stdin across `;`). Only an explicit stdin close at this same shell
+    # level clears it (fail-closed: a close inside a conditional may never
+    # execute, so conditional closes never clear).
+    inh = bool(inherited_fed)
+    fed = False
+    pfed = False
+    exec_flag = False
+    exec_save = []
+    inh_save = []  # inherited-stdin snapshots per open subshell/coprocess
+    # (Issue #637 MAJOR: an inner `exec <&-` closes only the fork's fd 0;
+    # the enclosing text keeps its inherited stream, restored at the
+    # boundary, exactly like the persistent exec flag).
+    stack = []  # (kind, entered_fed, entered_pfed, opener_idx)
+    # kinds: if/loop/case, function (the `function` keyword), funcbody (an
+    # `f() {...}` / `f() (...)` body), paren, coproc, bbrace, pscond, psbrace.
+    subshell_depth = 0
+    pending_funcbody = False  # an `f()`-style signature awaits its body group
+    pending_cond = False  # a `&&`/`||` boundary precedes the next command (short-circuit: it may not execute)
+
+    def _transparent(idx):
+        return _seg_is_transparent(segs[idx], ps)
+
+    for i, seg in enumerate(segs):
+        if seg in _STDIN_SENTINELS:
+            if seg not in (BBRACE_OPEN, SUBSHELL_OPEN):
+                # Only a body group directly continues an `f()` signature;
+                # any other boundary ends the pending definition.
+                pending_funcbody = False
+            if seg == PIPE_BOUND:
+                fed = True
+                pfed = True
+            elif seg == COND_BOUND:
+                # Issue #637: the next command is conditional (may be
+                # skipped by short-circuit), so a stdin close there never
+                # clears. Consumed by the next real command segment below.
+                pending_cond = True
+            elif seg in (CMD_BOUND, BG_BOUND, PIPE_END):
+                if not any(e[1] for e in stack):
+                    fed = False
+                    pfed = False
+            elif seg in (SUBSHELL_OPEN, COPROC_OPEN):
+                if len(stack) >= MAX_DEPTH:
+                    raise Deny("depth", "command nesting too deep: not inspected")
+                if pending_funcbody and seg == SUBSHELL_OPEN:
+                    # An `f()` signature's `(...)` body: definitions do not
+                    # execute, so their `exec` never leaks (calls are
+                    # analysed at the call site instead).
+                    stack.append(("funcbody", fed, pfed, i))
+                    pending_funcbody = False
+                else:
+                    stack.append(("paren" if seg == SUBSHELL_OPEN else "coproc",
+                                  fed, pfed, i))
+                    pending_funcbody = False
+                exec_save.append(exec_flag)
+                inh_save.append(inh)
+                subshell_depth += 1
+            elif seg in (BBRACE_OPEN, PSCOND_OPEN, PSBRACE_OPEN):
+                if len(stack) >= MAX_DEPTH:
+                    raise Deny("depth", "command nesting too deep: not inspected")
+                if pending_funcbody and seg == BBRACE_OPEN:
+                    # An `f()` signature's `{...}` body: same suppression.
+                    stack.append(("funcbody", fed, pfed, i))
+                    pending_funcbody = False
+                else:
+                    stack.append(("bbrace" if seg == BBRACE_OPEN else (
+                        "pscond" if seg == PSCOND_OPEN else "psbrace"), fed, pfed, i))
+                    pending_funcbody = False
+            elif seg in (SUBSHELL_CLOSE, COPROC_CLOSE):
+                want = ("paren", "funcbody") if seg == SUBSHELL_CLOSE else ("coproc",)
+                if stack and stack[-1][0] in want:
+                    _, _efed, _epfed, opener_idx = stack.pop()
+                    exec_flag = exec_save.pop()
+                    inh = inh_save.pop()
+                    if stack and stack[-1][0] == "function":
+                        # A non-empty `(...)` group closed directly inside a
+                        # `function` body is that body: the definition ends
+                        # here (an empty `()` is only the signature, whose
+                        # body still follows). A `case`-pattern `)` never
+                        # matches (mismatch pops nothing).
+                        _inner_empty = True
+                        for _kk in range(opener_idx + 1, i):
+                            if segs[_kk] not in _STDIN_SENTINELS and not _transparent(_kk):
+                                _inner_empty = False
+                                break
+                        if not _inner_empty:
+                            stack.pop()
+                    if (seg == SUBSHELL_CLOSE and not ps) or seg == COPROC_CLOSE:
+                        # A trailing input redirect applies to the whole
+                        # group (`(node) < file`): taint the enclosed range
+                        # fail-closed (verified on Bash). A redirect to
+                        # another descriptor (`3< f`) or output-only (`>`)
+                        # changes no stdin. The trailing segment itself
+                        # keeps the restored (outer) stdin: a substitution
+                        # in it is expanded by the parent (verified on Bash).
+                        j = i + 1
+                        while j < n and segs[j] not in _STDIN_SENTINELS and _transparent(j):
+                            if _has_input_redirect(segs[j]):
+                                for kk in range(opener_idx, i + 1):
+                                    pipe[kk] = True
+                                    eff[kk] = True
+                                break
+                            j += 1
+                    subshell_depth -= 1
+                    if not any(e[1] for e in stack):
+                        fed = False
+                        pfed = False
+                    if not ps and seg == SUBSHELL_CLOSE and opener_idx is not None:
+                        # An `f()`-style signature: empty parens directly after
+                        # a single-word name, directly followed by a body
+                        # group. The body never executes at definition time.
+                        _empty = True
+                        for _kk in range(opener_idx + 1, i):
+                            if segs[_kk] not in _STDIN_SENTINELS and not _transparent(_kk):
+                                _empty = False
+                                break
+                        if _empty:
+                            _p = opener_idx - 1
+                            while _p >= 0 and segs[_p] not in _STDIN_SENTINELS and _transparent(_p):
+                                _p -= 1
+                            if _p >= 0 and segs[_p] not in _STDIN_SENTINELS:
+                                try:
+                                    _pw = words_of(segs[_p], ps)
+                                except Deny:
+                                    _pw = []
+                                if (len(_pw) == 1 and _FUNCDEF_NAME.fullmatch(_pw[0])
+                                        and _pw[0] not in KEYWORDS
+                                        and _pw[0] not in ("function", "time", "coproc")):
+                                    _j2 = i + 1
+                                    while _j2 < n and segs[_j2] not in _STDIN_SENTINELS and _transparent(_j2):
+                                        _j2 += 1
+                                    if _j2 < n and segs[_j2] in (BBRACE_OPEN, SUBSHELL_OPEN):
+                                        pending_funcbody = True
+                # Mismatch (e.g. a case pattern `)`): keep tainted, pop nothing.
+            elif seg in (BBRACE_CLOSE, PSCOND_CLOSE, PSBRACE_CLOSE):
+                want = (("bbrace", "funcbody") if seg == BBRACE_CLOSE else
+                        (("pscond",) if seg == PSCOND_CLOSE else ("psbrace",)))
+                if stack and stack[-1][0] in want:
+                    _, _efed, _epfed, opener_idx = stack.pop()
+                    if stack and stack[-1][0] == "function":
+                        # The `{...}` body of a `function` definition ends
+                        # here (a `{` brace group is always a real body).
+                        stack.pop()
+                    if seg == BBRACE_CLOSE and not ps:
+                        j = i + 1
+                        while j < n and segs[j] not in _STDIN_SENTINELS and _transparent(j):
+                            if _has_input_redirect(segs[j]):
+                                for kk in range(opener_idx, i + 1):
+                                    pipe[kk] = True
+                                    eff[kk] = True
+                                break
+                            j += 1
+                    if not any(e[1] for e in stack):
+                        fed = False
+                        pfed = False
+            continue
+        try:
+            words = words_of(seg, ps)
+        except Deny:
+            raise
+        if strip_redirections(words) == []:
+            # Empty or redirect-only: transparent for pipe/exec tracking
+            # (a redirect-only segment runs no command). Its own redirect
+            # still counts for its substitutions and for eff.
+            pipe[i] = fed or inh
+            own = _has_input_redirect(seg)
+            eff[i] = pipe[i] or exec_flag or own
+            is_stage[i] = pfed
+            subdepth[i] = subshell_depth
+            suppressed[i] = any(e[0] in ("function", "funcbody") for e in stack)
+            in_cond[i] = any(e[0] in ("if", "loop", "case") for e in stack)
+            continue
+        in_cond[i] = any(e[0] in ("if", "loop", "case") for e in stack) or pending_cond
+        seg_cond = pending_cond
+        pending_cond = False
+        pipe[i] = fed or inh
+        exec_before = exec_flag
+        own = _has_input_redirect(seg)
+        eff[i] = pipe[i] or exec_before or own
+        is_stage[i] = pfed
+        subdepth[i] = subshell_depth
+        suppressed[i] = any(e[0] in ("function", "funcbody") for e in stack)
+        if not ps:
+            k = 0
+            while k < len(words) and words[k] in ("!", "time", "coproc"):
+                k += 1
+            first = words[k] if k < len(words) else ""
+            opener = None
+            if first == "if":
+                opener = "if"
+            elif first in ("while", "until", "for", "select"):
+                opener = "loop"
+            elif first == "case":
+                opener = "case"
+            elif first == "function":
+                opener = "function"
+            if opener is not None:
+                if len(stack) >= MAX_DEPTH:
+                    raise Deny("depth", "command nesting too deep: not inspected")
+                stack.append((opener, fed, pfed, i))
+            elif first in ("fi", "done", "esac"):
+                want = {"fi": "if", "done": "loop", "esac": "case"}[first]
+                if stack and stack[-1][0] == want:
+                    _, _efed, _epfed, opener_idx = stack.pop()
+                    if own:
+                        # A closer carrying an input redirect (`fi < file`)
+                        # redirects the whole compound (verified on Bash).
+                        for kk in range(opener_idx, i + 1):
+                            pipe[kk] = True
+                            eff[kk] = True
+            elif first == "}":
+                if stack and stack[-1][0] == "function":
+                    _, _efed, _epfed, opener_idx = stack.pop()
+                    if own:
+                        for kk in range(opener_idx, i + 1):
+                            pipe[kk] = True
+                            eff[kk] = True
+            effect = _exec_segment_effect(words, seg)
+            _suppressed = any(e[0] in ("function", "funcbody") for e in stack)
+            _in_cond_here = any(e[0] in ("if", "loop", "case") for e in stack) or seg_cond
+            if effect == "supply":
+                # MAJOR (Issue #637): a persistent redirect applies to the
+                # active shell scope, including a subshell/coprocess body
+                # (`(exec < f; node)` reads f there, verified on Bash). The
+                # matching close restores the saved outer state, so a
+                # completed fork never leaks out (fail-closed).
+                if (not pfed and not _suppressed
+                        and not _followed_by_fork_boundary(segs, i, ps)):
+                    exec_flag = True
+            elif effect == "close":
+                # An explicit stdin close at this same shell level clears
+                # both the persistent flag and the inherited provenance
+                # (a closed stdin delivers EOF, no program). A close inside
+                # a conditional may never execute, so it never clears
+                # (fail-open otherwise). Forked positions never leak: the
+                # saved state is restored at the fork's closing boundary.
+                if (not pfed and not _suppressed
+                        and not _in_cond_here
+                        and not _followed_by_fork_boundary(segs, i, ps)
+                        and not _exec_shadowed_by_function(words, ps, all_funcs)):
+                    exec_flag = False
+                    inh = False
+    return pipe, eff, is_stage, subdepth, exec_flag, suppressed, in_cond
+
+
+def _eval_command_text(words, ps, all_funcs):
+    """Eval string of a same-shell `eval` invocation, or None (Issue #637).
+
+    Resolves `eval` through same-shell prefixes (`!`, `time -p`, `builtin`,
+    `command [-p|--]`; `command -v/-V` merely describes) but never through
+    forking wrappers (`coproc`, `sudo`, ...) or a shadowing shell function
+    named `eval` (Bash prefers the function, like any other command).
+    Output-only redirections on the eval command are skipped; the code
+    words keep their lexer marks so the nested scan classifies them.
+    """
+    if ps:
+        return None
+    j = 0
+    while j < len(words) and (words[j] in KEYWORDS or ASSIGN.match(words[j])):
+        j += 1
+    for _ in range(4):
+        if j < len(words) and words[j] in ("!", "builtin"):
+            j += 1
+            continue
+        if j < len(words) and words[j] == "time":
+            j += 1
+            if j < len(words) and words[j] == "-p":
+                j += 1
+            continue
+        if j < len(words) and words[j] == "command":
+            j += 1
+            if j < len(words) and words[j] in ("-p", "--"):
+                j += 1
+            elif j < len(words) and words[j] in ("-v", "-V"):
+                return None
+            continue
+        break
+    if j >= len(words) or words[j] != "eval":
+        return None
+    if _func_call_name("eval", ps) in (all_funcs or {}):
+        # A shell function shadows the builtin: the words are its
+        # arguments, not code (handled by the function-call path).
+        return None
+    rest, skip, out = words[j + 1:], False, []
+    for w in rest:
+        if skip:
+            skip = False
+            continue
+        if w.startswith(REDIR_MARK):
+            skip = True
+            continue
+        out.append(w)
+    return " ".join(out)
+
+
+def _body_sets_exec_stdin(body, ps, funcs=None, _seen=None, strict=True):
+    """True when a function body persistently redirects the caller's stdin.
+
+    A function called in the current shell runs in it, so a bare
+    `exec < file` in its body changes the caller's stdin (verified on
+    Bash). Calls to other known functions are followed transitively (a
+    call cycle never returns, so a repeated name stops the search: sound).
+    The scan is syntactic (split + pre-pass only): conditionals inside the
+    body are over-approximated fail-closed, while forked positions
+    (subshells, coprocesses, pipeline stages, `coproc` calls) never leak.
+    strict=True (function bodies): an unparseable body is fail-closed True.
+    strict=False (eval-text pre-scan): unparseable text returns False
+    because the precise nested analysis denies it anyway (fail-closed there).
+    """
+    if ps:
+        return False
+    try:
+        segs = split_segments(body, ps)[0]
+    except Deny:
+        return strict
+    try:
+        _pipe, _eff, _stage, _subdepth, end_exec, _supp, _cond = _stdin_prepass(segs, ps, False, funcs)
+    except Deny:
+        return strict
+    if end_exec:
+        return True
+    if not funcs:
+        return False
+    if _seen is None:
+        _seen = set()
+    for idx_b, seg_b in enumerate(segs):
+        if seg_b in _STDIN_SENTINELS:
+            continue
+        try:
+            words_b = words_of(seg_b, ps)
+        except Deny:
+            return strict
+        if strip_redirections(words_b) == []:
+            continue
+        fkey_b, saw_coproc_b, _first_b = _call_target(words_b, ps)
+        if _is_funcdef_name(segs, idx_b, ps):
+            continue  # a nested definition installs without running
+        if not saw_coproc_b and not _stage[idx_b] and _subdepth[idx_b] == 0 and not _supp[idx_b]:
+            # A same-shell eval in the body persistently redirects it, too
+            # (resolved before the function-call check: `eval` itself is
+            # not a function name, so it would otherwise be skipped).
+            _ev_b = _eval_command_text(words_b, ps, funcs)
+            if _ev_b is not None and _body_sets_exec_stdin(_ev_b, ps, funcs, _seen, strict):
+                return True
+        if fkey_b is None or fkey_b not in funcs or fkey_b in _seen:
+            continue
+        if saw_coproc_b or _stage[idx_b] or _subdepth[idx_b] > 0 or _supp[idx_b]:
+            continue  # forked call or nested definition: no leak back
+        _seen.add(fkey_b)
+        for _b in funcs[fkey_b]:
+            if _b is None:
+                return strict
+            if _body_sets_exec_stdin(_b, ps, funcs, _seen, strict):
+                return True
+    return False
+
+
+
+def _followed_by_fork_boundary(segs, idx, ps):
+    """True when the command in segment idx runs in a forked child.
+
+    A Bash `|`-pipeline stage or `&`-background job forks, so a persistent
+    stdin change there never reaches the parent shell (verified on Bash:
+    `exec < f | cat` and `exec < f &` leave the parent stdin alone).
+    `&&`/`||` (PIPE_END) and `;`/newlines are sequential in the same shell.
+    Only empty segments are skipped (a trailing redirect-only segment
+    belongs to the preceding command, not to a following boundary).
+    PowerShell forks no pipeline/background children this way, so only
+    Bash `|`/`&` count (ps keeps its prior behavior exactly).
+    """
+    if ps:
+        return False
+    n = len(segs)
+    j = idx + 1
+    while j < n:
+        if segs[j] in _STDIN_SENTINELS:
+            return segs[j] in (PIPE_BOUND, BG_BOUND)
+        try:
+            _w = words_of(segs[j], ps)
+        except Deny:
+            return False
+        if strip_redirections(_w) != []:
+            return False
+        j += 1
+    return False
+
+def _seg_is_transparent(seg, ps):
+    """True when a segment is empty or redirect-only (runs no command)."""
+    if seg in _STDIN_SENTINELS:
+        return False
+    return strip_redirections(words_of(seg, ps)) == []
+
+
+def _is_funcdef_name(segs, idx, ps):
+    """True when segment idx is a function-definition name (`f` in `f() {...}`).
+
+    A definition installs the body without running it, so the name is not
+    a call (no stdin-DENY analysis, no exec-out). Only the `f()`-style form
+    needs this: `function f` puts `function` in command position, which
+    never resolves to a definition. `(...)` with a non-empty body is not
+    a signature (`f (node)` is not a definition).
+    """
+    n = len(segs)
+    j = idx + 1
+    while j < n:
+        s = segs[j]
+        if s in _STDIN_SENTINELS:
+            if s == SUBSHELL_OPEN:
+                break
+            return False
+        try:
+            if not _seg_is_transparent(s, ps):
+                return False
+        except Deny:
+            return False
+        j += 1
+    if j >= n or segs[j] != SUBSHELL_OPEN:
+        return False
+    k = j + 1
+    while k < n:
+        s = segs[k]
+        if s in _STDIN_SENTINELS:
+            return s == SUBSHELL_CLOSE
+        try:
+            if not _seg_is_transparent(s, ps):
+                return False
+        except Deny:
+            return False
+        k += 1
+    return False
+
+
+_STDIN_SENTINELS = frozenset([
+    SUBSHELL_OPEN, SUBSHELL_CLOSE, PIPE_BOUND, BG_BOUND, CMD_BOUND,
+    PIPE_END, COPROC_OPEN, COPROC_CLOSE, PSCOND_OPEN, PSCOND_CLOSE,
+    BBRACE_OPEN, BBRACE_CLOSE, PSBRACE_OPEN, PSBRACE_CLOSE,
+    COND_BOUND,
+])
+
+# A plausible `f()`-style function name for pending-definition detection:
+# any single non-metacharacter word (the lexer already removed quotes),
+# excluding keywords and reserved words. Over-matching only suppresses an
+# `exec` inside what follows (fail-closed over-denial); under-matching
+# (e.g. a `-`-leading name) only over-taints (fail-closed too).
+_FUNCDEF_NAME = re.compile(r"[^\s;|&<>()=]+")
+
+
+def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None):
     if depth > MAX_DEPTH:
         raise Deny("depth", "command nesting too deep")
     if ps and METHOD_CALL_RE.search(text):
@@ -2384,26 +4249,164 @@ def analyze_text(text, ctx, ps, depth):
     if ps and PS_PROC_LAUNCH_RE.search(text) and EXPR_SYNTAX_RE.search(text):
         raise Deny("launcher", "PowerShell process launcher with expression syntax is not inspected")
     segs, subs, redirs = split_segments(text, ps)
+    # MAJOR function: collect shell function definitions in this text and merge
+    # with outer (caller) definitions for lexical sibling resolution. ANY unsafe
+    # body makes tainted calls fail-closed DENY (redefinition safe over-denial).
+    # Built before the stdin prepass: a function named `exec` shadows the
+    # builtin (its redirects are temporary), so closes must see it.
+    try:
+        func_defs = _extract_function_defs(text, ps)
+    except Deny:
+        # Unparseable function syntax: fail-closed taint (never ALLOW guessed).
+        # Mark as unknown body for a synthetic name that no call will match?
+        # Simpler: treat whole text as tainted unknown -> rely on per-seg checks.
+        func_defs = {}
+    if outer_funcs:
+        # Review 5968136032: copy each inherited body list (dict() alone shares
+        # lists; a child `eval` define via extend would pollute the parent map
+        # and deny a later sibling for a body Bash never installed there).
+        all_funcs = {k: list(v) for k, v in outer_funcs.items()}
+        for _k, _v in func_defs.items():
+            all_funcs.setdefault(_k, []).extend(_v)
+    else:
+        all_funcs = func_defs
+    # Issue #637: stdin provenance per segment (pipe-fed, exec-persistent,
+    # group-redirect). Nested shells (sh -c, wrappers, eval, subs) inherit
+    # the outer taint fail-closed (OR of outer and inner marks).
+    _stdin_pipe, _stdin_eff, _stdin_stage, _stdin_subdepth, _prepass_end, _stdin_suppressed, _stdin_in_cond = _stdin_prepass(
+        segs, ps, inherited_fed, all_funcs)
     # A python command whose argv is not certain (unquoted or double-quoted expansion characters) is refused.
-    for seg in segs:
-        if seg == SUBSHELL_OPEN or seg == SUBSHELL_CLOSE:
+    # dyn_at records the function-exec stdin flag before each segment, so the
+    # scope machine below observes the same taint the checks here saw.
+    dyn_exec = False
+    dyn_at = [False] * len(segs)
+    dyn_save = []  # dynamic stdin snapshots per open subshell/coprocess
+    # (Issue #637 MAJOR: function/eval persistent effects apply inside the
+    # active fork as well; the saved outer state is restored at the fork's
+    # close so a completed fork never leaks back. A brace group runs in the
+    # calling shell, so it shares the dyn flag with no save/restore.)
+    for idx, seg in enumerate(segs):
+        if seg == SUBSHELL_OPEN or seg == COPROC_OPEN:
+            dyn_save.append(dyn_exec)
+            continue
+        if seg == SUBSHELL_CLOSE or seg == COPROC_CLOSE:
+            if dyn_save:
+                dyn_exec = dyn_save.pop()
             continue
         if seg == PIPE_BOUND or seg == BG_BOUND or seg == CMD_BOUND:
             continue
-        if seg == PIPE_END:
+        if seg == COND_BOUND:
+            # Issue #637: same-shell list-conditional marker. No scope
+            # effect here; the stdin prepass already folded it into
+            # _stdin_in_cond for the close gates below.
             continue
-        if seg == COPROC_OPEN or seg == COPROC_CLOSE:
+        if seg == PIPE_END:
             continue
         if seg == PSCOND_OPEN or seg == PSCOND_CLOSE:
             continue
         if seg == BBRACE_OPEN or seg == BBRACE_CLOSE:
             continue
-        pargs = python_position_args(words_of(seg, ps))
+        if seg == PSBRACE_OPEN or seg == PSBRACE_CLOSE:
+            continue
+        dyn_at[idx] = dyn_exec
+        here_pipe = _stdin_pipe[idx] or dyn_exec
+        here_eff = _stdin_eff[idx] or dyn_exec
+        seg_words = words_of(seg, ps)
+        pargs = python_position_args(seg_words)
         if pargs is not None:
             if not python_word_certainty(seg):
                 raise Deny("unexpanded", "python command whose argv depends on shell expansion is not inspected")
             # The python arguments are judged here too, so a wrapper that dispatch does not know cannot hide -c code.
             python_rule(pargs)
+        # Issue #637: an interpreter whose program comes from stdin and is not named in argv is refused.
+        refusal = stdin_program_refusal(seg_words, here_pipe, seg)
+        if refusal is not None:
+            raise refusal
+        # MAJOR function: pipe-fed or redirected calls to locally defined functions
+        # whose bodies may run stdin-as-program interpreters are fail-closed DENY.
+        # Only the command position is considered (not args like "echo f"), and
+        # only same-shell prefixes ("!", "time", "coproc") are skipped -- external
+        # wrappers ("sudo", "env", ...) do NOT run shell functions.
+        # A same-shell call whose body persistently redirects stdin (`exec < f`
+        # at its top level) changes the caller's stdin for later segments
+        # (verified on Bash); forked calls (pipeline stages, subshells,
+        # coprocesses) never leak back.
+        call_taint = here_eff
+        if all_funcs:
+            _fkey, _saw_coproc, _first_idx = _call_target(seg_words, ps)
+            if _fkey is not None and _fkey in all_funcs and not _is_funcdef_name(segs, idx, ps):
+                if call_taint:
+                    for _body in all_funcs[_fkey]:
+                        if _body is None:
+                            raise Deny("function", "function '" + _fkey + "' with uninspectable body called with stdin: not inspected")
+                        try:
+                            analyze_text(_body, ctx.copy(), ps, depth + 1, inherited_fed=True, outer_funcs=all_funcs)
+                        except Deny as _d:
+                            raise _d
+                # MAJOR (review 5967514206): Bash is case-sensitive, PowerShell is
+                # not — _func_call_name resolves per shell, never lowercasing
+                # Bash `F-X` to `f-x` and never missing `+` names.
+                # MAJOR-A (review 5968211099): Bash prefers same-name functions
+                # over builtins/NON_EXEC, so the local function resolves before
+                # the NON_EXEC shortcut (fail-closed for pipe-fed
+                # `cat() { node; }; ... | cat`).
+                if (not _stdin_stage[idx]
+                        and not _saw_coproc and not _stdin_suppressed[idx]
+                        and not _followed_by_fork_boundary(segs, idx, ps)):
+                    for _body in all_funcs[_fkey]:
+                        if _body is None or _body_sets_exec_stdin(_body, ps, all_funcs):
+                            dyn_exec = True
+                            break
+            elif _first_idx < len(seg_words) and _func_call_name(seg_words[_first_idx], ps) in NON_EXEC_COMMANDS:
+                pass
+        # MAJOR (review 5971146586): a same-shell `eval` whose text
+        # persistently redirects stdin (`eval 'exec < f'`, `eval 'f'`) changes
+        # the caller's stdin for later segments (verified on Bash). The
+        # syntactic pre-scan here is certain-only (strict=False): forked
+        # positions never leak, and unparseable text is left to the precise
+        # nested analysis (fail-closed DENY there). The scope-machine loop
+        # below additionally merges the precise nested result.
+        if (not ps and not _stdin_stage[idx]
+                and not _stdin_suppressed[idx]
+                and not _followed_by_fork_boundary(segs, idx, ps)):
+            _ev_text = _eval_command_text(seg_words, ps, all_funcs)
+            if _ev_text is not None and _body_sets_exec_stdin(
+                    _ev_text, ps, all_funcs, strict=False):
+                dyn_exec = True
+        # A bare `exec` supply/close at a same-shell position updates the
+        # dynamic flag too (mirrors the prepass): pipe-fed, suppressed, or
+        # forked (pipeline/background) positions never leak to the parent.
+        # A close clears only when its execution is certain (unconditional
+        # and unforked); a conditional/loop close may never run, so
+        # clearing there would under-taint (fail-open).
+        if not ps and not _stdin_stage[idx] and not _stdin_suppressed[idx]:
+            _fx = _exec_segment_effect(seg_words, seg)
+            if _fx == "supply" and not _followed_by_fork_boundary(segs, idx, ps):
+                dyn_exec = True
+            elif (_fx == "close" and not _stdin_in_cond[idx]
+                    and not _followed_by_fork_boundary(segs, idx, ps)
+                    and not _exec_shadowed_by_function(seg_words, ps, all_funcs)):
+                dyn_exec = False
+        # MAJOR CodeRabbit 5985627085: same-shell eval installs function
+        # definitions in the calling shell (verified harmless: eval
+        # 'f() { echo hi; }' then f runs it, as does split-arg eval 'f()'
+        # '{ ...; }'). Propagate them for later segments (fail-closed:
+        # a later pipe-fed call DENYs via the function-body path).
+        # Forked or definition-body positions never leak (same gates as
+        # dyn_exec); conditionals propagate fail-closed (assuming defined
+        # is safe). Child-scope isolation is preserved by the gates:
+        # pipeline/coprocess/background and suppressed bodies do not merge.
+        if (not ps and not _stdin_stage[idx]
+                and not _stdin_suppressed[idx]
+                and not _followed_by_fork_boundary(segs, idx, ps)):
+            _ev_def_text = _eval_command_text(seg_words, ps, all_funcs)
+            if _ev_def_text is not None:
+                try:
+                    _ev_defs = _extract_function_defs(_ev_def_text, ps)
+                except Deny:
+                    _ev_defs = {}
+                for _k, _v in _ev_defs.items():
+                    all_funcs.setdefault(_k, []).extend(_v)
     if sum(len(ops) for ops in redirs) > MAX_REDIRECTS:
         raise Deny("redirect", "more than %d redirections are not inspected" % MAX_REDIRECTS)
     rest_subs = list(subs)
@@ -2451,7 +4454,19 @@ def analyze_text(text, ctx, ps, depth):
     # the whole in-scope list, so the parent continues from the cwd the
     # in-scope list started with (after the last in-scope `;`), not from
     # the outer bg_start.
-    for seg, ops in zip(segs, redirs):
+    # Issue #637: eval-discovered persistent stdin (same-shell nested eval)
+    # is found during this loop, after the first loop snapshotted dyn_at.
+    live_exec = False
+    live_save = []  # resolved-effect snapshots per open subshell/coprocess
+    # (Issue #637 MAJOR: same scoping as dyn_exec in the first loop; a
+    # fork-local discovery never leaks past the fork's close. Kept in this
+    # separate block so the scope-machine anchors below stay untouched.)
+    for idx, (seg, ops) in enumerate(zip(segs, redirs)):
+        if seg == SUBSHELL_OPEN or seg == COPROC_OPEN:
+            live_save.append(live_exec)
+        elif seg == SUBSHELL_CLOSE or seg == COPROC_CLOSE:
+            if live_save:
+                live_exec = live_save.pop()
         if seg == SUBSHELL_OPEN:
             if not ps:
                 if prev_was_pipe and pipe_entry is not None:
@@ -2595,6 +4610,11 @@ def analyze_text(text, ctx, ps, depth):
                 # arm restarts from this base and joins at its own close.
                 ps_arm_stack.append(entry)
             continue
+        if seg == COND_BOUND:
+            # Issue #637: same-shell `&&`/`||` marker. No cwd/scope effect
+            # (unlike CMD_BOUND/PIPE_END it restores nothing); the stdin
+            # prepass already folded it into in_cond for the close gates.
+            continue
         if seg == CMD_BOUND:
             # A `;`/newline ends a pipeline and a background list: later
             # foreground segments are judged from the pipeline-entry cwd,
@@ -2674,6 +4694,10 @@ def analyze_text(text, ctx, ps, depth):
                 pipe_entry = None
                 prev_was_pipe = False
                 scope_just_closed = False
+            continue
+        if seg == PSBRACE_OPEN or seg == PSBRACE_CLOSE:
+            # Issue #637: stdin-provenance marker for ps `{ ... }`; the cwd
+            # machine ignores it (calling scope, like PSCOND bodies).
             continue
         seg_words = words_of(seg, ps)
         first_cmd = next((w for w in seg_words if not ASSIGN.match(w)), None)
@@ -2762,12 +4786,17 @@ def analyze_text(text, ctx, ps, depth):
             pipe_entry = None
         prev_was_pipe = False
         # A substitution runs when its containing segment runs: analyse it
-        # with this segment's incoming taint, so it taints only this and
-        # later segments (Piece D, #636).
+        # with this segment's incoming stdin taint (Issue #637: pipe-fed or
+        # exec-redirected stdin reaches the substitution, but not the
+        # segment's own `<` redirect, which applies after expansion), so it
+        # taints only this and later segments (Piece D, #636).
+        # live_exec (same-shell eval discovery in this loop) joins here too.
         n = seg.count(SUBST)
         bodies, rest_subs = rest_subs[:n], rest_subs[n:]
         for body in bodies:
-            _nested_text(body, ctx, ps, depth + 1)
+            _nested_text(body, ctx, ps, depth + 1,
+                         fed=(_stdin_pipe[idx] or dyn_at[idx] or live_exec),
+                         outer_funcs=all_funcs)
         if ops and inside_claude(ctx.cwd, ctx):
             raise Deny("claude-write", "redirect while cwd is inside .claude/ is denied")
         # Redirects of one segment share its incoming taint for their checks;
@@ -2779,7 +4808,31 @@ def analyze_text(text, ctx, ps, depth):
             wrote = wrote or ctx.tainted
         if wrote:
             ctx.tainted = True
-        analyze_argv(words_of(seg, ps), ctx, ps, depth)
+        analyze_argv(words_of(seg, ps), ctx, ps, depth,
+                     fed=(_stdin_eff[idx] or dyn_at[idx] or live_exec),
+                     outer_funcs=all_funcs)
+        if ctx.exec_out:
+            # A same-shell nested eval persistently redirected stdin during
+            # this segment (MAJOR review 5971146586). Forked positions never
+            # leak: a pipeline stage, subshell, or coprocess eval runs in a
+            # child, and a definition body never executes, so only unforked
+            # positions outside definitions propagate to later segments.
+            # PowerShell has no eval/exec persistent-redirect semantics.
+            ctx.exec_out = False
+            if (not ps and not _stdin_stage[idx]
+                    and not _stdin_suppressed[idx]
+                    and not _followed_by_fork_boundary(segs, idx, ps)):
+                live_exec = True
+        # A certain bare-exec close clears the live flag too (mirrors the
+        # first-loop dyn handling): a conditional/loop close may never run,
+        # so only unconditional closes clear (fail-open otherwise). The
+        # save/restore above scopes the clear to the active fork.
+        if (live_exec and not ps and not _stdin_stage[idx]
+                and not _stdin_suppressed[idx] and not _stdin_in_cond[idx]
+                and not _followed_by_fork_boundary(segs, idx, ps)
+                and not _exec_shadowed_by_function(seg_words, ps, all_funcs)
+                and _exec_segment_effect(seg_words, seg) == "close"):
+            live_exec = False
         if cond_stack and ctx.cwd != cond_stack[-1]["cwd"]:
             # run-12 OQww: any move inside the scope makes the outcome
             # uncertain, even when a later arm moves it back.
@@ -2804,7 +4857,8 @@ def analyze_text(text, ctx, ps, depth):
                 run_start = (ctx.cwd, ctx.cwd_fuzzy)
     for body in rest_subs:
         # Defensive: a body no segment claimed is still analysed, never skipped.
-        _nested_text(body, ctx, ps, depth + 1)
+        # Fail-closed tainted: an unclaimed body may belong to any segment.
+        _nested_text(body, ctx, ps, depth + 1, fed=True, outer_funcs=all_funcs)
     if scope_stack:
         # An unclosed subshell never runs in a real shell: refuse instead
         # of judging later segments against a guessed cwd (fail closed).
@@ -2812,6 +4866,14 @@ def analyze_text(text, ctx, ps, depth):
     if bbrace_stack:
         # An unclosed Bash brace group never runs either (fail closed).
         raise Deny("parse", "unbalanced brace grouping is not inspected")
+    # Issue #637: report the persistent stdin state for same-shell callers
+    # (eval/function merging). Static pre-pass taint or any later dynamic
+    # (function/eval) propagation both count as persistent.
+    # MAJOR (Issue #637): a persistent stdin effect found by resolved
+    # dispatch (live_exec) counts like the static findings: an enclosing
+    # same-shell eval inherits it through merge_exec. Static and resolved
+    # findings are scoped identically, so no fork-local effect leaks here.
+    return bool(_prepass_end or dyn_exec or live_exec)
 
 
 def load_registry(root):

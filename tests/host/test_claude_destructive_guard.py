@@ -3468,6 +3468,1211 @@ class PythonCommandPositionTests(unittest.TestCase):
                 self.assertEqual(self._d(cmd)[0], "ALLOW")
 
 
+class StdinProgramTests(unittest.TestCase):
+    """Issue #637: an interpreter program fed over stdin is refused (decision-level only; executed never).
+
+    Policy (a): blanket DENY for stdin-as-program forms. The program must be named in argv (-c code,
+    -m module, a script file); otherwise stdin can only be the program and is refused. `|` is a pipe;
+    `<` covers `<`, `<<` and `<<<` (heredoc and here-string are already refused for python by the argv
+    certainty rule; this class locks that and extends it to `-`, pipes and the other interpreters).
+
+    Behavior table (each row is asserted below):
+
+    | command                                  | verdict | rule                                  |
+    |------------------------------------------|---------|---------------------------------------|
+    | `echo ... \| python3`                    | DENY    | piped stdin, no program word (new)    |
+    | `cat x.py \| python3`                     | DENY    | piped stdin, no program word (new)    |
+    | `echo x \| python3 -W ignore`            | DENY    | valued option, still no program (new) |
+    | `echo x \|\\npython3` (continuation)     | DENY    | pipe carries over the newline (new)   |
+    | `python3 -`, `python3 - foo`, `-- -`     | DENY    | `-` names stdin as the program (new)  |
+    | `python3 - -c '...'`                     | DENY    | `-` first: `-c` never runs (new)      |
+    | `echo hi \| perl`, `perl < code.pl`       | DENY    | bare interp, stdin is program (new)   |
+    | `echo hi \| node`, `node < app.js`        | DENY    | bare interp, stdin is program (new)   |
+    | `echo hi \| ruby/php/lua/awk`, `<` forms | DENY    | bare interp, stdin is program (new)   |
+    | `echo x \| nice perl`, `env python3`     | DENY    | wrapper does not hide stdin (new)     |
+    | `python3 < x.py`, `<<<`, `<<EOF` heredoc | DENY    | pre-existing certainty refusal (kept) |
+    | `echo hi \| sh`, `\| bash -s`             | DENY    | pre-existing shell-without--c (kept)  |
+    | `python3 x.py`, `\| python3 x.py`        | ALLOW   | program is a file (X3d residual)      |
+    | `python3 x.py -`, `-m mod -`             | ALLOW   | `-` is that run's argv, not program   |
+    | `... \| python3 -c '...'`                 | ALLOW   | code named in argv and judged         |
+    | `... \| python3 -m mod`                  | ALLOW   | module named in argv                  |
+    | `node x.js`, `\| node x.js`, `< data`    | ALLOW   | program is a file (X3d residual)      |
+    | `python3`, `perl`, `node` (bare, unpiped)| ALLOW   | no delivered code (unchanged)         |
+    | `node "a<b"`, `python3 "a<b"`          | ALLOW   | quoted `<` is an argument, not input  |
+    | `cat x \| grep y`, `echo a \| cat`       | ALLOW   | stdin is data for a non-interpreter   |
+    """
+
+    def _d(self, cmd, tool="Bash"):
+        return guard.decide(json.dumps({"tool_name": tool, "tool_input": {"command": cmd}, "cwd": REPO}),
+                            repo_root=REPO)
+
+    def test_piped_bare_python_is_refused(self):
+        for cmd in ['echo "print(1)" | python3', "cat x.py | python3",
+                    "echo x | python3 -W ignore", "echo x | python3 -Wignore",
+                    "echo x | python3 -X utf8", "echo x |\npython3",
+                    "echo x | sudo python3", "echo x | env python3", "echo x | nice python3"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertIn("stdin-program", reason)
+
+    def test_dash_names_stdin_program(self):
+        for cmd in ["python3 -", "python3 - foo.py", "python3 -- -", "echo x | python3 -- -",
+                    "python3 - -c 'print(1)'", "python3 -Wignore -", "echo x | sudo python3 -"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertIn("stdin-program", reason)
+
+    def test_bare_other_interpreters_with_piped_or_redirected_stdin_are_refused(self):
+        for cmd in ["echo hi | perl", "perl < code.pl", "echo hi | node", "node < app.js",
+                    "echo hi | ruby", "ruby < x.rb", "echo hi | php", "php < x.php",
+                    "echo hi | lua", "lua < x.lua", "echo x | awk", "awk < prog.awk",
+                    "echo x | gawk", "echo hi | perl -", "echo x | nice perl"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+
+    def test_stdin_refusals_hold_under_powershell(self):
+        for cmd in ["echo x | python3", "python3 -", "echo hi | perl", "perl < code.pl"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self._d(cmd, tool="PowerShell")[0], "DENY")
+
+    def test_stdin_data_and_named_programs_stay_allowed(self):
+        for cmd in ["python3 script.py", "echo data | python3 script.py",
+                    "python3 foo.py -", "python3 -m mod -", "python3 -W ignore foo.py",
+                    "python3 -X utf8 foo.py", "python3 -B -E foo.py", "python3 -- foo.py",
+                    "python3 -- foo.py -", "node script.js", "echo x | node script.js",
+                    "node script.js < data", "python3", "perl", "node",
+                    "node \"a<b\"", "python3 \"a<b\"", "cat x | grep y", "echo a | cat",
+                    "echo data | python3 -c 'import sys; print(sys.stdin.read())'",
+                    "echo data | python3 -m json.tool", "python3 -m unittest",
+                    "python3 -c 'print(1)'"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self._d(cmd)[0], "ALLOW")
+
+    def test_piped_node_options_only_is_refused(self):
+        # MAJOR #814: `node --no-warnings` / `node -` with piped stdin runs stdin
+        # as the program (node is in DEV_TOOLS, so dev_tool_rule does not refuse).
+        # Each DENY must carry the stdin-program reason, not a generic DENY.
+        for cmd in ['echo "hi" | node --no-warnings',
+                    'printf \'console.log("safe")\\n\' | node --no-warnings',
+                    'echo hi | node --no-warnings --no-deprecation',
+                    'echo hi | node -c',
+                    'echo hi | node --check',
+                    'echo hi | node -r mymod',
+                    'echo hi | node --require mymod',
+                    'echo hi | node --require=mymod',
+                    'echo hi | node --unknown-flag',
+                    'echo hi | node --unknown-opt=val',
+                    'echo hi | node -Z',
+                    'echo hi | node --no-warnings < code.js',
+                    'node --no-warnings < code.js',
+                    'echo hi | node inspect']:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertIn("stdin-program", reason)
+
+    def test_node_explicit_dash_is_refused(self):
+        for cmd in ["node -",
+                    "node -- -",
+                    "node --no-warnings -- -",
+                    "node - --no-warnings",
+                    'echo hi | node -',
+                    'printf \'x\\n\' | node -',
+                    "echo x | sudo node -",
+                    "node - < code.js"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertIn("stdin-program", reason)
+
+    def test_node_file_operand_stays_allowed(self):
+        for cmd in ["node script.js",
+                    "echo data | node script.js",
+                    "node script.js < data",
+                    "node --no-warnings script.js",
+                    "echo x | node --no-warnings script.js",
+                    "node --no-warnings script.js < data",
+                    "node -- script.js",
+                    "node --no-warnings -- script.js",
+                    "echo x | node --no-warnings -- script.js",
+                    "node -r mymod script.js",
+                    "echo x | node -r mymod script.js",
+                    "echo x | node --require mymod script.js",
+                    "node -C cond script.js",
+                    "node -c script.js",
+                    "node --check script.js",
+                    "node inspect script.js",
+                    "echo x | node inspect script.js"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_node_option_forms_classified(self):
+        # Option order, separate vs attached values, `--`, concatenated shorts,
+        # and fail-closed unknown forms. DENY cases must be stdin-program.
+        deny_stdin = ["echo hi | node --no-warnings",
+                      "echo hi | node -r mymod",
+                      "echo hi | node -rmymod",
+                      "echo hi | node --require mymod",
+                      "echo hi | node --require=mymod",
+                      "echo hi | node -C cond",
+                      "echo hi | node -Ccond",
+                      "echo hi | node --conditions=foo",
+                      "node --no-warnings < code.js",
+                      "echo hi | node --unknown-flag",
+                      "echo hi | node --unknown-flag script.js",
+                      "echo hi | node --unknown-opt=val",
+                      "echo hi | node -Z",
+                      "echo hi | node -Z script.js"]
+        for cmd in deny_stdin:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertIn("stdin-program", reason)
+        # Code forms stay DENY downstream (dev-tool), not stdin-program; file
+        # forms stay ALLOW. Only the verdict is locked here.
+        for cmd in ['node -e "x"', 'echo data | node -e "x"',
+                    'node --eval="x"', 'node -p "x"']:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self._d(cmd)[0], "DENY")
+        for cmd in ["node --no-warnings script.js", "node -r mymod script.js"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self._d(cmd)[0], "ALLOW")
+
+    def test_wrapper_stdin_refused(self):
+        for cmd in ["echo hi | sudo node --no-warnings",
+                    "echo hi | nice node --no-warnings",
+                    "echo hi | env node --no-warnings",
+                    "echo hi | sudo node -",
+                    "echo hi | nice perl -W",
+                    'echo hi | sh -c "node --no-warnings"',
+                    'echo hi | sh -c "python3 -W ignore"',
+                    'echo hi | bash -c "perl -W"',
+                    "printf x | sudo -s 'node --no-warnings'",
+                    "printf x | doas 'node --no-warnings'",
+                    "doas 'node --no-warnings' < data.txt",
+                    "sudo node --no-warnings < code.js"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertIn("stdin-program", reason)
+
+    def test_other_interpreters_options_only_refused(self):
+        for cmd in ["echo hi | perl -W",
+                    "echo hi | perl -I /tmp -W",
+                    "echo hi | perl -MMod",
+                    "echo hi | ruby -w",
+                    "echo hi | ruby -r lib",
+                    "echo hi | php -n",
+                    "echo hi | php -d foo=bar",
+                    "echo hi | lua -v",
+                    "echo hi | lua -l mod",
+                    "echo hi | awk -F:",
+                    "echo hi | awk -v var=val",
+                    "echo hi | gawk -W interactive",
+                    "perl -W < code.pl",
+                    "ruby -w < x.rb"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertIn("stdin-program", reason)
+
+    def test_awk_later_dash_selects_stdin_program(self):
+        # CodeRabbit (PR #814): GNU awk concatenates every -f source, so a
+        # later `-f -` still runs program text from stdin even when a file
+        # is named first (attached `-ffile` and separate `-f file` alike).
+        # The classifier reports stdin for any -f dash.
+        for cmd in ["awk -f -", "awk -f safe.awk -f -", "awk -ffile -f -"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertIn("stdin-program", reason)
+
+    def test_powershell_node_stdin_refused(self):
+        for cmd in ["echo hi | node --no-warnings",
+                    "node -",
+                    "node --no-warnings < code.js",
+                    "echo hi | perl -W"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd, tool="PowerShell")
+                self.assertEqual(verdict, "DENY")
+                self.assertIn("stdin-program", reason)
+        for cmd in ["node script.js", "echo x | node --no-warnings script.js"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self._d(cmd, tool="PowerShell")[0], "ALLOW")
+
+    def test_compound_pipe_inherits_across_semicolons(self):
+        # MAJOR-1: ";" inside a pipe-fed compound does not end the pipe.
+        for cmd in ["printf 'x\\n' | if true; then node --no-warnings; fi",
+                    "printf 'x\\n' | (true; node --no-warnings)",
+                    "printf 'x\\n' | { true; node --no-warnings; }",
+                    "echo x | while true; do ruby -w; done",
+                    "echo x | until false; do node --no-warnings; done",
+                    "echo x | for i in 1 2; do node --no-warnings; done",
+                    'echo x | case y in a) node --no-warnings;; esac',
+                    'echo x | case y in a) true; node --no-warnings;; esac',
+                    "echo hi | if true; then true && node --no-warnings; fi",
+                    "echo hi | if true; then false || node --no-warnings; fi"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertIn("stdin-program", reason)
+
+    def test_independent_command_after_pipeline_stays_allowed(self):
+        # Pipe ends at top-level ";": following independent command has no stdin taint.
+        for cmd in ["echo hi | cat; node --no-warnings",
+                    "echo hi | cat && node --no-warnings",
+                    "echo hi | cat || node --no-warnings",
+                    "printf data | (cat; ); node --no-warnings",
+                    "printf data | (cat); node --no-warnings",
+                    "echo hi | if true; then cat; fi; node --no-warnings",
+                    "echo hi | (cat); node --no-warnings"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_nested_shell_inherits_pipe(self):
+        # MAJOR-2: outer pipe-fed stdin is inherited by inner sh -c strings.
+        for cmd in ["printf 'x\\n' | sh -c 'node;'",
+                    "printf 'x\\n' | sh -c '(node)'",
+                    "printf 'x\\n' | bash -c 'node --no-warnings;'",
+                    "echo x | sh -c 'python3 -W ignore;'",
+                    "echo x | env sh -c '(node)'",
+                    "echo x | sudo sh -c 'node --no-warnings;'",
+                    "echo x | sh -c 'if true; then node --no-warnings; fi'"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertIn("stdin-program", reason)
+
+    def test_nested_shell_safe_forms_stay_allowed(self):
+        for cmd in ["echo data | sh -c 'cat'",
+                    "echo data | sh -c 'node script.js'",
+                    "echo data | sh -c 'node --no-warnings script.js'",
+                    "echo data | sudo sh -c 'cat'",
+                    "sh -c 'node --no-warnings'",
+                    "sh -c 'node script.js'"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self._d(cmd)[0], "ALLOW")
+
+    def test_compound_depth_is_fail_closed(self):
+        # Too deep nesting is DENY with a dedicated depth reason (not via
+        # stdin-program, so removing the depth limit would ALLOW and be caught).
+        # Use a data-only nested command (`cat` reads stdin as data, never as
+        # program) so the DENY must come from the depth limit itself.
+        # Spaced parens are real subshells in Bash (unspaced `(((...)))`
+        # parses as arithmetic, not nesting): the depth limit counts the
+        # same grouping the shell would actually fork.
+        deep = "echo hi | " + "( " * 9 + "cat" + " )" * 9
+        verdict, reason = self._d(deep)
+        self.assertEqual(verdict, "DENY")
+        self.assertIn("depth", reason, reason)
+        self.assertNotIn("unknown", reason)
+        self.assertNotIn("external command", reason)
+        # An otherwise equivalent shallow command passes (no over-denial).
+        shallow = "echo hi | ( ( cat ) )"
+        self.assertEqual(self._d(shallow)[0], "ALLOW")
+
+    def test_command_substitution_inherits_pipe(self):
+        # MAJOR subs: "$(...)" in a pipe-fed segment inherits outer pipe-fed stdin.
+        for cmd in ['printf \'console.log(123)\' | echo "$(node)"',
+                    'printf \'print(42)\' | echo "$(python3)"',
+                    'printf \'console.log(123)\' | echo "$(sh -c \'node\')"',
+                    'printf \'console.log(123)\' | (echo "$(node)")',
+                    'printf \'console.log(123)\' | { echo "$(node)"; }',
+                    'echo x | echo "$(node)" "$(python3)"',
+                    'echo ok; echo hi | echo "$(node)"',
+                    'printf "x" | echo "$(echo "$(node)")"',
+                    'printf "x" | echo "`node`"',
+                    'printf "x" | if true; then echo "$(node)"; fi',
+                    'f() { node; }; printf \'x\\n\' | echo "$(f)"']:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertTrue("stdin-program" in reason or "compound" in reason or "depth" in reason or "parse" in reason, reason)
+                self.assertNotIn("external command", reason)
+                # Generic unknown without stdin-program is not counted as fixed.
+                if "unknown" in reason:
+                    self.assertIn("stdin-program", reason)
+
+    def test_command_substitution_independent_stays_allowed(self):
+        for cmd in ["echo data | node script.js",
+                    "echo data | sh -c 'cat'",
+                    "echo data | sh -c 'node script.js'",
+                    'echo hi | cat; echo "$(node)"',
+                    "node script.js",
+                    "python3 -m unittest",
+                    'echo "$(node)"',
+                    'echo data | echo "$(cat)"',
+                    'echo hi | echo "$(node script.js)"',
+                    'f() { cat; }; printf \'data\\n\' | echo "$(f)"',
+                    'f() { g; }; g() { cat; }; printf \'data\\n\' | echo "$(f)"']:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_function_calls_inherit_stdin(self):
+        # MAJOR function: pipe-fed/redirected calls to locally defined functions
+        # whose bodies may run stdin-as-program are DENY (fail-closed).
+        for cmd in ["f() { node; }\nprintf 'console.log(123)\\n' | f",
+                    "f() { node; }; f < code.js",
+                    "f() { python3; }; printf 'print(123)\\n' | f",
+                    "f() { sh -c 'node'; }; printf 'console.log(123)\\n' | f",
+                    "f() { node; }; printf 'data\\n' | f",
+                    "f() { python3 -W ignore; }; printf 'x\\n' | f",
+                    "f() { if true; then node; fi; }; printf 'x\\n' | f",
+                    "f() { (node); }; printf 'x\\n' | f",
+                    "f() { echo $(node); }; printf 'x\\n' | f",
+                    "f-x() { node; }; printf 'code\\n' | f-x",
+                    "f.foo() { node; }; printf 'code\\n' | f.foo",
+                    "f:foo() { node; }; printf 'code\\n' | f:foo",
+                    "function f-x { node; }; printf 'code\\n' | f-x",
+                    "f() { g; }; g() { node; }; printf 'x\\n' | f",
+                    "f() { node; }; printf 'x\\n' | time -p f",
+                    "f() { node; }; f() { node; }; printf 'x\\n' | f",
+                    "f() { node; echo hi; }; printf 'x\\n' | f",
+                    "f() (node); printf 'x\\n' | f",
+                    "f() { sudo node; }; printf 'x\\n' | f",
+                    "f() { `node`; }; printf 'x\\n' | f"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                # stdin-program preferred; function/depth/parse/compound/unexpanded are dedicated fail-closed (not generic).
+                self.assertTrue(any(k in reason for k in ("stdin-program", "function", "depth", "parse", "compound", "unexpanded")), reason)
+                self.assertNotIn("external command", reason)
+                if "unknown" in reason:
+                    self.assertIn("stdin-program", reason)
+
+    def test_function_safe_forms_stay_allowed(self):
+        for cmd in ["f() { cat; }; printf 'data\\n' | f",
+                    "f() { node script.js; }; printf 'data\\n' | f",
+                    "f() { node; }; f",
+                    "f() { echo hi; }; echo hi",
+                    "f() { g; }; g() { cat; }; printf 'data\\n' | f",
+                    "f-x() { cat; }; printf 'data\\n' | f-x",
+                    "f.foo() { node script.js; }; printf 'data\\n' | f.foo",
+                    "f:foo() { node; }; f:foo",
+                    "echo f-x",
+                    "node script.js",
+                    "python3 -m unittest"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_function_names_case_sensitive_bash(self):
+        # Review 5967514206 MAJOR: Bash function names are case-sensitive
+        # (`F-X` != `f-x`); PowerShell resolves case-insensitively.
+        # Pipe-fed calls must use the shell-correct key, never lowercased
+        # Bash misses. Reasons must be stdin-program/function (not generic).
+        for cmd in ["F-X() { node; }; printf 'code\\n' | F-X",
+                    "f+x() { node; }; printf 'code\\n' | f+x"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY", cmd)
+                self.assertIn("stdin-program", reason, cmd)
+        # Distinct Bash functions do not confuse each other.
+        verdict, reason = self._d("F-X() { node; }; f-x() { cat; }; printf 'code\\n' | F-X")
+        self.assertEqual(verdict, "DENY", reason)
+        verdict, reason = self._d("F-X() { node; }; f-x() { cat; }; printf 'code\\n' | f-x")
+        self.assertEqual(verdict, "ALLOW", reason)
+        verdict, reason = self._d("F-X() { node script.js; }; printf 'code\\n' | F-X")
+        self.assertEqual(verdict, "ALLOW", reason)
+        # PowerShell treats `F-X`/`f-x` as the same name (case-insensitive).
+        verdict, reason = self._d("function F-X { node }; printf 'code\\n' | f-x", tool="PowerShell")
+        self.assertEqual(verdict, "DENY", reason)
+        self.assertIn("stdin-program", reason, reason)
+
+    def test_nested_redirect_inherits_stdin(self):
+        # MAJOR redirect: outer input redirect taints inner sh -c / python / node.
+        for cmd in ["sh -c 'if true; then node; fi' < code.js",
+                    "sh -c 'if true; then node; fi' <<< 'console.log(456)'",
+                    "bash -c 'if true; then python3; fi' < code.py",
+                    "sh -c 'node' < code.js",
+                    "bash -c 'node' <<< 'console.log(456)'",
+                    "sh -c 'python3 -W ignore' < code.py",
+                    "bash -c 'node --no-warnings' < code.js",
+                    "node <<EOF\nconsole.log(1)\nEOF"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertTrue(any(k in reason for k in ("stdin-program", "function", "depth", "parse", "compound", "unexpanded")), reason)
+                self.assertNotIn("external command", reason)
+                if "unknown" in reason:
+                    self.assertIn("stdin-program", reason)
+
+    def test_nested_redirect_safe_forms_stay_allowed(self):
+        for cmd in ["sh -c 'node script.js' < data.txt",
+                    "sh -c 'echo ok' < data.txt",
+                    "bash -c 'cat' < data.txt",
+                    "echo data | node script.js",
+                    "echo data | sh -c 'cat'"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_compound_redirect_inherits_stdin(self):
+        # MAJOR-1 compound redirect: "if ...; fi < file" taints inner members.
+        for cmd in ["if true; then node; fi < code.js",
+                    "if true; then python3; fi < code.py",
+                    "if true; then sh -c 'node'; fi < code.js",
+                    "f() { node; }; if true; then f; fi < code.js",
+                    "{ true; node; } < code.js",
+                    "(node) < code.js",
+                    "(node) > out.log < code.js",
+                    "(node) < code.js > out.log",
+                    "(node;) < code.js",
+                    "if true; then node; fi < code.js; echo hi"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertTrue(any(k in reason for k in ("stdin-program", "function", "depth", "parse", "compound", "unexpanded")), reason)
+                self.assertNotIn("external command", reason)
+                if "unknown" in reason:
+                    self.assertIn("stdin-program", reason)
+
+    def test_compound_redirect_safe_forms_stay_allowed(self):
+        for cmd in ["if true; then node script.js; fi < data.txt",
+                    "if true; then cat; fi < data.txt",
+                    "if true; then echo ok; fi > output.txt",
+                    "(node) > out.log",
+                    "printf x | sh -c 'exec <&-; node'",
+                    "printf x | sudo -s 'exec <&-; node'",
+                    "echo data | cat; node script.js"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_exec_redirect_persists_stdin(self):
+        # MAJOR (independent review): bare `exec` with an stdin redirect and
+        # no command changes the current shell's descriptors persistently
+        # (verified on Bash), so a later bare interpreter reads its program
+        # from the redirected stdin. `;` and `&&` propagate (sequential,
+        # same shell); output-only and non-stdin-fd redirects change nothing.
+        for cmd in ["exec < code.js; node",
+                    "exec < code.py; python3",
+                    "exec < code.pl; perl",
+                    "exec < code.rb; ruby",
+                    "exec < code.php; php",
+                    "exec 0<&3; node",
+                    "exec <&3; node",
+                    "exec <<< 'console.log(1)'; node",
+                    "exec <<EOF; node\nconsole.log(1)\nEOF",
+                    "exec < code.js && node",
+                    "exec -c < code.js; node",
+                    "exec -a name < code.js; node",
+                    "exec -- < code.js; node",
+                    "command exec < code.js; node",
+                    "command -p exec < code.js; node",
+                    "builtin exec < code.js; node",
+                    "exec < a; exec < code.js; node",
+                    "exec > o; exec < code.js; node"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertIn("stdin-program", reason)
+
+    def test_exec_safe_forms_stay_allowed(self):
+        # An `exec` that does not redirect stdin (output-only, another
+        # descriptor, bare, an explicit close delivering EOF, or a forked
+        # `exec` in a subshell/pipeline/coprocess) leaves later bare
+        # interpreters alone, as does a named program or a data reader
+        # after a persistent redirect.
+        for cmd in ["exec > output.log; node",
+                    "exec 2> err.log; node",
+                    "exec 3< data.txt; node",
+                    "exec 5<&-; node",
+                    "exec; node",
+                    "command -v exec; node",
+                    "sudo exec < code.js; node",
+                    "exec -c; node",
+                    "exec < data.txt; node script.js",
+                    "exec < data.txt; node --no-warnings script.js",
+                    "exec < data.txt; python3 script.py",
+                    "exec < data.txt; cat",
+                    "exec < code.js; cat",
+                    "exec < code.js; exec <&-; node",
+                    "exec <&-; node",
+                    "(exec < code.js); node",
+                    "echo hi | exec < data.txt; node",
+                    "f() { exec < code.js; }; node",
+                    "echo hi | f() { node; }",
+                    "f() { exec > o; }; f; node"]:
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_eval_redirect_persists_stdin(self):
+        # MAJOR (review 5971146586): a same-shell `eval` whose text
+        # persistently redirects stdin changes the caller's stdin (verified
+        # on Bash, including nested and command/builtin forms). Forked evals
+        # (pipeline stage, subshell, coprocess, child process) never leak.
+        for cmd in ["eval 'exec < code.js'; node",
+                    "eval 'exec < code.py'; python3",
+                    "eval 'exec < code.pl'; perl",
+                    "eval 'exec < code.rb'; ruby",
+                    "eval 'exec < code.js' && node",
+                    "eval 'exec 0<&3'; node",
+                    "eval 'exec <&3'; node",
+                    "f() { exec < code.js; }; eval 'f'; node",
+                    "g() { exec < code.js; }; f() { g; }; eval 'f'; node",
+                    "command eval 'exec < code.js'; node",
+                    "command -p eval 'exec < code.js'; node",
+                    "builtin eval 'exec < code.js'; node",
+                    "eval 'eval \"exec < code.js\"'; node",
+                    'eval "eval \'eval \\"exec < code.js\\"\' "; node',
+                    "time eval 'exec < code.js'; node"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertIn("stdin-program", reason)
+        for cmd in ["eval 'exec > output.log'; node",
+                    "eval 'exec 3< data.txt'; node",
+                    "eval 'exec 5<&-'; node",
+                    "eval 'echo hi'; node",
+                    "eval 'f'; node",
+                    "(eval 'exec < code.js'); node",
+                    "echo hi | eval 'exec < code.js'; node",
+                    "coproc eval 'exec < code.js'; node",
+                    "sudo eval 'exec < code.js'; node",
+                    "sh -c 'exec < code.js'; node",
+                    "eval 'exec < code.js'; exec <&-; node",
+                    "eval 'echo hi' < code.js; node",
+                    "command -v eval; node"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_eval_function_call_inherits_stdin(self):
+        # An eval-persisted stdin reaches a later same-shell function call
+        # whose body reads it as a program (the first-loop eval scan carries
+        # the effect to the call-site analysis; the scope machine alone
+        # would miss bare-word calls).
+        # Residual asymmetry (fail-closed, rare): `function f { eval ...; }`
+        # (keyword form) analyses its body inline like any definition, so an
+        # uncalled definition may over-taint a later bare interpreter, while
+        # the `f() {...}` form suppresses definition bodies precisely. Both
+        # directions are safe; unifying them would change main-line
+        # definition-body analysis and is out of scope.
+        for cmd in ["f() { node; }; eval 'exec < code.js'; f",
+                    "eval 'exec < code.js'; f() { node; }; f",
+                    "g() { eval 'exec < code.js'; }; f() { g; }; f; node",
+                    "f() { eval 'exec < code.js'; }; f; node"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertIn("stdin-program", reason)
+        for cmd in ["f() { cat; }; eval 'exec < code.js'; f",
+                    "eval 'exec < code.js'; f() { cat; }; f",
+                    "f() { g() { eval 'exec < code.js'; }; }; f; node"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "ALLOW", reason)
+    def test_nested_pipe_inherits_stdin(self):
+        # MAJOR (review 5971146586): an inherited stdin survives inner
+        # command boundaries (`;`, newline, `&&`, `||`, `&`) inside nested
+        # scripts (function bodies, `sh -c` strings). Verified on Bash: a
+        # child shell and a function keep reading the same piped stdin
+        # across `;`. Only an explicit same-level close clears it.
+        for cmd in ["f() { echo ready; node; }\nprintf 'console.log(1)\n' | f",
+                    "printf 'console.log(1)\n' | sh -c 'echo ready\nnode'",
+                    "f() { echo ready; g; }\ng() { node; }\nprintf 'console.log(1)\n' | f",
+                    "printf 'console.log(1)\n' | sh -c 'echo ready; sh -c \"node\"'",
+                    "printf 'x\n' | sh -c 'echo ready; node'",
+                    "printf 'x\n' | sh -c 'echo ready\nnode'",
+                    "printf 'x\n' | sh -c 'echo a && node'",
+                    "printf 'x\n' | sh -c 'echo a || node'",
+                    "printf 'x\n' | sh -c 'echo a & node; wait'",
+                    "printf 'x\n' | (echo ready; node)",
+                    "printf 'x\n' | { echo ready; node; }",
+                    "printf 'x\n' | eval 'echo ready; node'",
+                    "printf 'x\n' | if true; then echo ready; node; fi",
+                    "printf 'x\n' | while read l; do node; done",
+                    "printf 'x\n' | time sh -c 'echo ready; node'",
+                    "printf 'x\n' | command sh -c 'echo ready; node'"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertIn("stdin-program", reason)
+        for cmd in ["printf x | sh -c 'echo ready; node script.js'",
+                    "printf x | cat; node",
+                    "printf x | sh -c 'echo ready; cat'",
+                    "printf x | sh -c 'exec <&-; node'",
+                    "printf x | sh -c 'echo ready; node script.js < data.txt'; node",
+                    "eval 'exec > output.log'; node",
+                    "(eval 'exec < code.js'); node"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_nested_conditional_close_keeps_taint(self):
+        # A conditional close may never execute (fail-open risk), so it
+        # never clears inherited or persistent stdin (verified on Bash: an
+        # untaken close branch leaves the descriptor readable).
+        for cmd in ["exec < code.js; if true; then exec <&-; fi; node",
+                    "f() { exec < code.js; if true; then exec <&-; fi; }; f; node",
+                    "if true; then exec < code.js; fi; if true; then exec <&-; fi; node",
+                    "printf x | sh -c 'exec < code.js; if true; then exec <&-; fi; node'"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertIn("stdin-program", reason)
+
+    def test_list_conditional_close_keeps_taint(self):
+        # CodeRabbit (PR #814): `&&`/`||` short-circuit, so a close after
+        # them may never execute (verified on Bash: `false && exec <&-`
+        # and `true || exec <&-` keep stdin for a later reader). The taint
+        # is preserved; only an unconditional same-shell close clears it.
+        # Fail-closed over-denial (same convention as the `if` form above):
+        # `true && exec <&-` does run, but is still kept statically.
+        for cmd in ["exec < code.js; false && exec <&-; node",
+                    "exec < code.js; true || exec <&-; node",
+                    "exec < code.js; true && exec <&-; node",
+                    "exec < code.js; a && b && exec <&-; node",
+                    "f() { exec < code.js; }; f; false && exec <&-; node"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertIn("stdin-program", reason)
+        verdict, reason = self._d("exec < code.js; exec <&-; node")
+        self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_eval_shadowed_by_function(self):
+        # A shell function named `eval` shadows the builtin (Bash prefers
+        # functions): a bare `eval '...'` call runs the function, whose
+        # string argument is data, not code. `command`/`builtin` bypass the
+        # shadowing and run the builtin (verified on Bash); `time` does not.
+        for cmd in ["eval() { echo hi; }; eval 'exec < code.js'; node",
+                    "eval() { echo hi; }; command -v eval; node",
+                    "eval() { echo hi; }; time eval 'exec < code.js'; node"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "ALLOW", reason)
+        for cmd in ["eval() { echo hi; }; command eval 'exec < code.js'; node",
+                    "eval() { echo hi; }; builtin eval 'exec < code.js'; node",
+                    "eval() { echo hi; }; command -p eval 'exec < code.js'; node"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertIn("stdin-program", reason)
+
+    def test_fork_child_close_keeps_parent_taint(self):
+        # A close that runs in a pipeline stage or background job forks, so
+        # the parent shell stdin keeps the earlier persistent redirect
+        # (verified on Bash: `exec < f | cat` / `exec < f &` leave the parent
+        # stdin alone). The following bare interpreter still reads it.
+        for cmd in ["exec < code.js; exec <&- | cat; node",
+                    "exec < code.js; exec <&- & node",
+                    "f() { exec < code.js; }; f; exec <&- | cat; node"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertIn("stdin-program", reason)
+
+    def test_forked_exec_never_taints_parent(self):
+        # A persistent redirect that runs in a pipeline stage or background
+        # job never reaches the parent shell (verified on Bash), so a later
+        # bare interpreter is unrelated to it.
+        for cmd in ["exec < code.js | cat; node",
+                    "exec < code.js & node",
+                    "f() { exec < code.js; }; f | cat; node",
+                    "f() { exec < code.js; }; f & node",
+                    "eval 'exec < code.js' | cat; node"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_shadowed_exec_close_keeps_taint(self):
+        # Bash prefers a same-name function over the `exec` builtin, and a
+        # function invocation's redirects are temporary (verified on Bash),
+        # so a shadowed `exec <&-` never closes the shell stdin. `command`
+        # / `builtin` bypass the shadowing (verified) and do close it.
+        for cmd in ["exec < code.js; exec() { true; }; exec <&-; node",
+                    "exec < code.js; exec() { true; }; exec 0<&-; node",
+                    "exec < code.js; exec() { true; }; time exec <&-; node"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertIn("stdin-program", reason)
+        for cmd in ["exec < code.js; exec() { true; }; command exec <&-; node",
+                    "exec < code.js; exec() { true; }; builtin exec <&-; node",
+                    "exec < code.js; exec() { true; }; command -p exec <&-; node"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_function_exec_persists_stdin(self):
+        # A same-shell function call whose body persistently redirects stdin
+        # changes the caller's stdin (verified on Bash); calls through a
+        # fork (pipeline stage, subshell, coprocess) never leak back.
+        for cmd in ["f() { exec < code.js; }; f; node",
+                    "f() { exec < code.py; }; f; python3",
+                    "f() { if true; then exec < code.js; fi; }; f; node",
+                    "f() { exec 0<&3; }; f; node",
+                    "function f { exec < code.js; }; f; node",
+                    "g() { exec < code.js; }; f() { g; }; f; node"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertIn("stdin-program", reason)
+        for cmd in ["f() { exec < code.js; }; coproc f; node",
+                    # A `(...)` body runs in a subshell (verified on Bash),
+                    # so its `exec` never reaches the caller (the brace
+                    # forms above stay DENY).
+                    "f() ( exec < code.js; ); f; node",
+                    "f() { exec < code.js; }; echo hi | f; node",
+                    "f() { exec < code.js; }; f; cat",
+                    "f() { g() { exec < code.js; }; }; f; node"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self._d(cmd)[0], "ALLOW")
+
+    def test_subshell_persistent_stdin_scoped(self):
+        # MAJOR (Issue #637): a persistent stdin redirect applies inside the
+        # active shell scope, including a subshell body (verified on Bash:
+        # `(exec < code.js; node)` runs code.js, as do the eval and function
+        # forms). The matching close restores the saved outer state, so a
+        # completed fork never leaks out and an inner close stays local.
+        for cmd in ["(exec < code.js; node)",
+                    "(exec < code.js; true; node)",
+                    "(eval 'exec < code.js'; node)",
+                    "f() { exec < code.js; }; (f; node)",
+                    "f() { exec < code.js; }; (eval 'f'; node)",
+                    "f() { exec < code.js; }; (f; true; node)",
+                    "eval 'exec < code.js'; (exec <&-; true); node",
+                    "f() { exec < code.js; }; f; (exec <&-; true); node",
+                    "printf 'x\\n' | sh -c '(exec <&-; node); node'"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertIn("stdin-program", reason)
+        for cmd in ["(exec < code.js); node",
+                    "(exec <&-; node)",
+                    "exec < code.js; (exec <&-; node)",
+                    "f() { exec < code.js; }; (true); node",
+                    "f() { exec < code.js; }; (eval 'f'); node"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_find_ok_does_not_inherit_pipe(self):
+        # MINOR (Issue #637): GNU find consumes a pipe itself for the -ok
+        # confirmation answer and hands the child /dev/null (verified:
+        # `echo | find -ok cat` leaves the child stdin closed), so a
+        # pipe-fed -ok/-okdir child is analysed without stdin taint while
+        # -exec/-execdir children still inherit it.
+        for cmd in ["printf 'y\\n' | find . -maxdepth 0 -ok node \\;",
+                    "printf 'y\\n' | find . -maxdepth 0 -okdir node \\;",
+                    "printf 'y\\n' | find . -maxdepth 0 -ok cat \\;"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "ALLOW", reason)
+        for cmd in ["printf 'y\\n' | find . -maxdepth 0 -exec node \\;",
+                    "printf 'y\\n' | find . -maxdepth 0 -execdir node \\;"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertIn("stdin-program", reason)
+
+    def test_subshell_fd3_stays_allowed(self):
+        # MINOR: a redirect to another descriptor (`3<`) on a subshell or
+        # compound supplies no stdin, unlike fd 0/default (`<`, `0<`).
+        for cmd in ["(node) 3< data.txt",
+                    "(node) 3<data.txt",
+                    "node 3<input.txt",
+                    "(node) 3< data.txt > out.log",
+                    "(python3) 3< x",
+                    "(node) > out.log",
+                    "if true; then node; fi 3< data.txt"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "ALLOW", reason)
+        for cmd in ["(node) 0< data.txt",
+                    "(node) < data.txt",
+                    "node 0<input.txt",
+                    "node <input.txt",
+                    "(node) > out.log < data.txt",
+                    "(node) < data.txt > out.log",
+                    "(node;) < data.txt",
+                    "if true; then node; fi 0< data.txt"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertIn("stdin-program", reason)
+
+    def test_leading_zero_fd_zero_supplies_stdin(self):
+        # MAJOR #814: Bash reads any all-zero fd spelling ("00", "000", ...)
+        # as fd 0 (verified harmless: `IFS= read -r x 00<<<...`, `cat 00< f`,
+        # `exec 3< f; read ... 00<&3` dups f onto stdin), so a bare
+        # interpreter with such a redirect reads its program from stdin and
+        # must be refused with stdin-program (fail-closed). Covers
+        # _scan_stdin_ops -> _stdin_op_effect -> _has_input_redirect ->
+        # stdin_program_refusal, plus persistent-exec and compound paths via
+        # _exec_segment_effect / _stdin_prepass / analyze_text. `00<&3`
+        # stays DENY even when fd 3 is closed at runtime (Bash errors there,
+        # the guard cannot know runtime fds, so fail-closed DENY either way).
+        for cmd in ["node 0< code.js",
+                    "node 00< code.js",
+                    "node 000< code.js",
+                    "node 0000000000< code.js",
+                    "perl 00< code.pl",
+                    "ruby 00< x.rb",
+                    "node 00<<< 'code'",
+                    "node 000<<< 'code'",
+                    "node 00<&3",
+                    "node 0<&3",
+                    "exec 00< code.js; node",
+                    "exec 000< code.js; node",
+                    "(node) 00< data.txt",
+                    "if true; then node; fi 00< data.txt",
+                    "sh -c 'node' 00< data.txt",
+                    "node " + "0" * 5000 + "< code.js"]:
+            with self.subTest(cmd=cmd[:80]):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertIn("stdin-program", reason)
+
+    def test_leading_zero_fd_nonzero_and_close_stay_safe(self):
+        # Companion ALLOW side: "3"/"03"/"003" stay fd 3 (verified: `03< f`
+        # leaves stdin alone), a named script keeps stdin as data, and an
+        # explicit stdin close (`00<&-`) delivers EOF (no program). `exec
+        # 00<&-` is ALLOW both without prior taint and after a prior supply
+        # (close clears), matching the `<&-` parity.
+        for cmd in ["node 3< code.js",
+                    "node 03< code.js",
+                    "node 003< code.js",
+                    "node script.js 00< data.txt",
+                    "node script.js 000< data.txt",
+                    "echo data | node script.js",
+                    "node 00<&-",
+                    "exec 00<&-; node",
+                    "exec 00< code.js; exec 00<&-; node",
+                    "exec < code.js; exec 00<&-; node",
+                    "(node) 03< data.txt",
+                    "if true; then node; fi 03< data.txt",
+                    "exec 03< data.txt; node",
+                    "exec 3< data.txt; node"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_eval_defines_function_for_later_pipe(self):
+        # MAJOR CodeRabbit 5985627085: same-shell eval installs definitions
+        # in the calling shell (verified harmless: eval 'f() { echo hi; }'
+        # then f runs it; split-arg eval 'f()' '{ ...; }' too). A later
+        # pipe-fed call must DENY via the function-body path. Covers
+        # analyze_text eval propagation (first-loop all_funcs merge).
+        for cmd in ["eval 'f() { node; }'; printf 'x\\n' | f",
+                    "eval 'f()' '{ node; }'; printf 'x\\n' | f",
+                    "command eval 'f() { node; }'; printf 'x\\n' | f",
+                    "builtin eval 'f() { node; }'; printf 'x\\n' | f",
+                    "eval 'g() { python3; }'; printf 'x\\n' | g"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertTrue(any(k in reason for k in ("stdin-program", "function", "depth", "parse")), reason)
+        for cmd in ["eval 'f() { node script.js; }'; printf 'x\\n' | f",
+                    "eval 'f() { cat; }'; printf 'x\\n' | f",
+                    "eval 'f() { node; }'; f",
+                    "eval 'f() { node; }'; printf 'x\\n' | cat"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "ALLOW", reason)
+
+
+class StdinProgramMutationTests(unittest.TestCase):
+    """Mutants of the Issue #637 layers. Each must make a named StdinProgramTests method fail (an assertion
+    failure, not an import error). Runs on every host (no symlink)."""
+
+    MUTANTS = {
+        "pipe flag never set": (
+            "            if seg == PIPE_BOUND:\n                fed = True\n                pfed = True",
+            "            if seg == PIPE_BOUND:\n                fed = False\n                pfed = False"),
+        "compound keyword tracking removed": (
+            "        if strip_redirections(words) == []:",
+            "        if True:  # mutant: every segment skips compound tracking"),
+        "dash program check removed": [
+            ("    if _python_program(args) == 'stdin':",
+             "    if False:"),
+            ("        _prog = _python_program(args)\n        if _prog == 'stdin':",
+             "        _prog = _python_program(args)\n        if False:"),],
+        "piped-nothing-to-run check removed": [
+            ("            if piped and _python_program(words[j + 1:]) == 'none':",
+             "            if False:"),
+            ("        if _prog in ('none', 'unknown') and fed:\n            raise Deny(\"stdin-program\", \"python with piped or redirected stdin and no program word runs stdin: not inspected\")",
+             "        if False:\n            raise Deny(\"stdin-program\", \"python with piped or redirected stdin and no program word runs stdin: not inspected\")"),],
+        "node option/file confusion allowed": (
+            "    if name == 'node':\n        return _node_program(args)",
+            "    if name == 'node':\n        return 'file'"),
+        "stdin dash check removed": [
+            ("        if prog in ('code', 'file'):\n            return None\n        if prog == 'stdin':",
+             "        if prog in ('code', 'file'):\n            return None\n        if False:"),
+            ("        _prog = _interp_program(name, args)\n        if _prog == 'stdin':",
+             "        _prog = _interp_program(name, args)\n        if False:"),],
+        "piped-or-redirected stdin check removed": (
+            "        if prog in ('none', 'unknown'):",
+            "        if False:"),
+        "semicolon clears inside pipe-fed compound": (
+            "            elif seg in (CMD_BOUND, BG_BOUND, PIPE_END):\n                if not any(e[1] for e in stack):\n                    fed = False\n                    pfed = False",
+            "            elif seg in (CMD_BOUND, BG_BOUND, PIPE_END):\n                if True:\n                    fed = False\n                    pfed = False"),
+        "sh-c pipe inheritance disabled": (
+            "            _nested_text(args[i + 1], ctx, False, depth + 1, fed=fed)",
+            "            _nested_text(args[i + 1], ctx, False, depth + 1, fed=False)"),
+        "nested inheritance ignored": (
+            "        for body in bodies:\n            _nested_text(body, ctx, ps, depth + 1,\n                         fed=(_stdin_pipe[idx] or dyn_at[idx] or live_exec),\n                         outer_funcs=all_funcs)",
+            "        for body in bodies:\n            _nested_text(body, ctx, ps, depth + 1,\n                         fed=inherited_fed,\n                         outer_funcs=all_funcs)"),
+        "paren taint lost": (
+            "                else:\n                    stack.append((\"paren\" if seg == SUBSHELL_OPEN else \"coproc\",\n                                  fed, pfed, i))",
+            "                else:\n                    stack.append((\"paren\" if seg == SUBSHELL_OPEN else \"coproc\",\n                                  False, False, i))"),
+        "case compound ignored": (
+            "            elif first == \"case\":",
+            "            elif False:  # mutant: case never opens a compound"),
+        "subs always untainted": (
+            "        for body in bodies:\n            _nested_text(body, ctx, ps, depth + 1,\n                         fed=(_stdin_pipe[idx] or dyn_at[idx] or live_exec),\n                         outer_funcs=all_funcs)",
+            "        for body in bodies:\n            _nested_text(body, ctx, ps, depth + 1,\n                         fed=False,\n                         outer_funcs=all_funcs)"),
+        "subs parent not propagated": (
+            "        for body in bodies:\n            _nested_text(body, ctx, ps, depth + 1,\n                         fed=(_stdin_pipe[idx] or dyn_at[idx] or live_exec),\n                         outer_funcs=all_funcs)",
+            "        for body in bodies:\n            _nested_text(body, ctx, ps, depth + 1,\n                         fed=(_stdin_eff[0] or dyn_at[0]),\n                         outer_funcs=all_funcs)"),
+        "nested subs inheritance disabled": (
+            "    sub = ctx.copy()\n    nested_end = analyze_text(text, sub, ps, depth, inherited_fed=fed, outer_funcs=outer_funcs)\n    if sub.tainted:\n        ctx.tainted = True\n    if merge_cwd:",
+            "    sub = ctx.copy()\n    nested_end = analyze_text(text, sub, ps, depth, inherited_fed=False, outer_funcs=outer_funcs)\n    if sub.tainted:\n        ctx.tainted = True\n    if merge_cwd:  # mutant"),
+        "string visit stdin inheritance removed": (
+            "                            _nested_text_from(words[k], ctx, wrapper_tainted, ps, depth + 1,\n                                              fed=fed)",
+            "                            _nested_text_from(words[k], ctx, wrapper_tainted, ps, depth + 1,\n                                              fed=False)"),
+        "subs global taint over-approximation": (
+            "        for body in bodies:\n            _nested_text(body, ctx, ps, depth + 1,\n                         fed=(_stdin_pipe[idx] or dyn_at[idx] or live_exec),\n                         outer_funcs=all_funcs)",
+            "        for body in bodies:\n            _nested_text(body, ctx, ps, depth + 1,\n                         fed=True,\n                         outer_funcs=all_funcs)"),
+        "function call taint removed": (
+            "        call_taint = here_eff",
+            "        call_taint = False"),
+        "function body inheritance disabled": (
+            "                            analyze_text(_body, ctx.copy(), ps, depth + 1, inherited_fed=True, outer_funcs=all_funcs)",
+            "                            analyze_text(_body, ctx.copy(), ps, depth + 1, inherited_fed=False, outer_funcs=all_funcs)"),
+        "compound redirect propagation disabled": (
+            "                if stack and stack[-1][0] == want:\n                    _, _efed, _epfed, opener_idx = stack.pop()\n                    if own:",
+            "                if stack and stack[-1][0] == want:\n                    _, _efed, _epfed, opener_idx = stack.pop()\n                    if False:  # compound redirect disabled"),
+        "independent later command over-tainted": (
+            "            elif seg in (CMD_BOUND, BG_BOUND, PIPE_END):\n                if not any(e[1] for e in stack):\n                    fed = False\n                    pfed = False",
+            "            elif seg in (CMD_BOUND, BG_BOUND, PIPE_END):\n                if False:  # mutant: pipe never ends\n                    fed = False\n                    pfed = False"),
+        "file-as-data wrongly denied": (
+            "        if prog in ('code', 'file'):\n            return None",
+            "        if prog in ('code', 'file'):\n            return Deny('stdin-program', 'file over-denied')"),
+        "subs sibling funcs ignored": (
+            "                         fed=(_stdin_pipe[idx] or dyn_at[idx] or live_exec),\n                         outer_funcs=all_funcs)",
+            "                         fed=(_stdin_pipe[idx] or dyn_at[idx] or live_exec),\n                         outer_funcs=None)"),
+        "hyphen-dot-colon functions ignored": (
+            "            if _fkey is not None and _fkey in all_funcs and not _is_funcdef_name(segs, idx, ps):",
+            "            if False:  # hyphen/dot/colon ignored"),
+        "function uppercase missed (Bash case-sensitive)": (
+            "            _fkey, _saw_coproc, _first_idx = _call_target(seg_words, ps)",
+            "            _fkey, _saw_coproc, _first_idx = (_cmd_name(seg_words[0]) if seg_words else None, False, 0)  # mutant: Bash case-insensitive"),
+        "function plus-sign missed": (
+            "    for m in _re.finditer(r'(?<![^\\s;|&<>()=])([^\\s;|&<>()=]+)\\s*\\(\\s*\\)\\s*(\\{|\\()', clean):",
+            "    for m in _re.finditer(r'(?<![A-Za-z0-9_.\\-:])([A-Za-z_][A-Za-z0-9_.:\\-_]*)\\s*\\(\\s*\\)\\s*(\\{|\\()', clean):  # mutant: plus missed"),
+        "heredoc ignored": (
+            "        if c == \"<\" and not (i + 1 < n and seg[i + 1] == \"(\"):",
+            "        if False:  # mutant: heredoc ignored"),
+        "exec persistent redirect ignored": (
+            "            effect = _exec_segment_effect(words, seg)",
+            "            effect = None  # mutant: exec redirect ignored"),
+        "exec close does not clear": (
+            "            elif effect == \"close\":",
+            "            elif False:  # mutant: exec close never clears"),
+        "fd number distinction removed": (
+            "        if fd.strip(\"0\") != \"\":\n            return None",
+            "        if False:  # mutant: every fd supplies stdin\n            return None"),
+        "fd-zero leading-zero spelling reverted": (
+            "        if fd.strip(\"0\") != \"\":\n            return None",
+            "        if fd not in (\"\", \"0\"):  # mutant: leading-zero reverted\n            return None"),
+        "multi-digit zero treated as non-stdin": (
+            "        if fd.strip(\"0\") != \"\":\n            return None",
+            "        if fd.strip(\"0\") != \"\" or len(fd) > 1:  # mutant: multi-digit zero non-stdin\n            return None"),
+        "fd 3 over-tainted as stdin": (
+            "        if fd.strip(\"0\") != \"\":\n            return None",
+            "        if fd.strip(\"0\") != \"\" and fd.strip(\"0\") != \"3\":  # mutant: fd 3 as stdin\n            return None"),
+        "stdin close treated as supply": (
+            "        return \"close\" if (target or \"\") == \"-\" else \"supply\"",
+            "        return \"supply\"  # mutant: close as supply"),
+        "persistent redirect supply lost": (
+            "    if last == \"supply\":\n        return \"supply\"",
+            "    if False:  # mutant: persistent supply lost\n        return \"supply\""),
+        "eval function-definition propagation removed": (
+            "                for _k, _v in _ev_defs.items():\n                    all_funcs.setdefault(_k, []).extend(_v)",
+            "                pass  # mutant: eval defs never propagate"),
+        "function-body exec suppression removed": (
+            "                if (not pfed and not _suppressed\n                        and not _followed_by_fork_boundary(segs, i, ps)):\n                    exec_flag = True",
+            "                if not pfed:\n                    exec_flag = True  # mutant: definition exec leaks"),
+        "subshell stdin scope leaks": [
+            ("                if (not pfed and not _suppressed\n                        and not _followed_by_fork_boundary(segs, i, ps)):\n                    exec_flag = True",
+             "                if not pfed and not _suppressed and subshell_depth == 0:  # mutant: subshell supply ignored\n                    exec_flag = True"),
+            ("                    exec_flag = exec_save.pop()",
+             "                    pass  # mutant: subshell exec not restored"),
+            ("                    inh = inh_save.pop()",
+             "                    pass  # mutant: subshell inheritance not restored"),],
+        "dyn scope restore removed": (
+            "            if dyn_save:\n                dyn_exec = dyn_save.pop()",
+            "            pass  # mutant: dyn scope not restored"),
+        "live scope restore removed": (
+            "            if live_save:\n                live_exec = live_save.pop()",
+            "            pass  # mutant: live scope not restored"),
+        "pipeline exec leaks": (
+            "                if (not pfed and not _suppressed\n                        and not _followed_by_fork_boundary(segs, i, ps)):\n                    exec_flag = True",
+            "                if not _suppressed:\n                    exec_flag = True  # mutant: pipeline exec leaks"),
+        "eval static scan disabled": (
+            "        _ev_text = _eval_command_text(seg_words, ps, all_funcs)",
+            "        _ev_text = None  # mutant: eval scan disabled"),
+        "eval nested merge disabled": (
+            "        _nested_text(\" \".join(args), ctx, ps, depth + 1, fed=fed,\n                     outer_funcs=outer_funcs, merge_cwd=True,\n                     merge_exec=(via_builtin or _func_call_name(\"eval\", ps) not in (outer_funcs or {})))",
+            "        _nested_text(\" \".join(args), ctx, ps, depth + 1, fed=fed,\n                     outer_funcs=outer_funcs, merge_cwd=True, merge_exec=False)  # mutant"),
+        "eval forked leak allowed": (
+            "            if (not ps and not _stdin_stage[idx]\n                    and not _stdin_suppressed[idx]\n                    and not _followed_by_fork_boundary(segs, idx, ps)):\n                live_exec = True",
+            "            if True:  # mutant: forked eval leaks\n                live_exec = True"),
+        "conditional close clears inherited stdin": (
+            '                if (not pfed and not _suppressed\n                        and not _in_cond_here\n                        and not _followed_by_fork_boundary(segs, i, ps)\n                        and not _exec_shadowed_by_function(words, ps, all_funcs)):\n                    exec_flag = False\n                    inh = False',
+            '                if (not pfed and not _suppressed\n                        and not _followed_by_fork_boundary(segs, i, ps)\n                        and not _exec_shadowed_by_function(words, ps, all_funcs)):\n                    exec_flag = False\n                    inh = False  # mutant: conditional close clears',
+        ),
+        "list-conditional close clears": [
+            # Defense-in-depth coupling (same shape as the fork-close
+            # compound): the prepass taint list and the same-segment gate
+            # each independently preserve a short-circuited close, so both
+            # must ignore it together to flip the verdict.
+            ('        in_cond[i] = any(e[0] in ("if", "loop", "case") for e in stack) or pending_cond\n        seg_cond = pending_cond\n        pending_cond = False',
+             '        in_cond[i] = any(e[0] in ("if", "loop", "case") for e in stack)\n        seg_cond = False  # mutant: list-conditional close clears\n        pending_cond = False'),
+            ('            _in_cond_here = any(e[0] in ("if", "loop", "case") for e in stack) or seg_cond',
+             '            _in_cond_here = any(e[0] in ("if", "loop", "case") for e in stack)  # mutant: list-conditional close clears'),],
+        "list-conditional marker removed": [
+            # The `&&` and `||` emitters each mark the next command
+            # conditional; both must be removed together to clear a
+            # short-circuited close.
+            ('                    if not ps:\n                        # Issue #637: `||` is conditional (short-circuit);\n                        # mark the next command so a close there never clears\n                        # stdin provenance (fail-closed).\n                        segs.append(COND_BOUND)\n                        redirs.append([])',
+             '                    pass  # mutant: || marker removed'),
+            ('                    # Issue #637: `&&` is conditional (short-circuit); mark\n                    # the next command so a close there never clears stdin\n                    # provenance (fail-closed). This branch is Bash-only.\n                    segs.append(COND_BOUND)\n                    redirs.append([])',
+             '                    pass  # mutant: && marker removed'),],
+        "awk later dash ignored": [
+            # Each `-f file` arm must keep scanning for a later `-f -`;
+            # returning at the first file hides the stdin program source.
+            # Both arms must regress together to flip the verdict.
+            ("                if rest:\n                    if rest == '-':\n                        return 'stdin'\n                    seen_file = True\n                    i += 1\n                    continue",
+             "                if rest:\n                    if rest == '-':\n                        return 'stdin'\n                    return 'file'  # mutant: later -f dash ignored"),
+            ("                if nxt.startswith('-') and nxt != '-':\n                    return 'unknown'\n                seen_file = True\n                i += 2\n                continue",
+             "                if nxt.startswith('-') and nxt != '-':\n                    return 'unknown'\n                return 'file'  # mutant: later -f dash ignored"),],
+        "fork boundary ignored for supply": (
+            '                if (not pfed and not _suppressed\n                        and not _followed_by_fork_boundary(segs, i, ps)):\n                    exec_flag = True',
+            '                if (not pfed and not _suppressed):  # mutant: forked supply leaks\n                    exec_flag = True',
+        ),
+        "fork boundary ignored for close": [
+            # Defense-in-depth coupling: the prepass taint, first-loop dyn,
+            # and second-loop live each independently preserve a fork-child
+            # close, so ignoring the boundary in only one layer cannot flip
+            # the verdict; all three must ignore it together.
+            ('                if (not pfed and not _suppressed\n                        and not _in_cond_here\n                        and not _followed_by_fork_boundary(segs, i, ps)\n                        and not _exec_shadowed_by_function(words, ps, all_funcs)):',
+             '                if (not pfed and not _suppressed\n                        and not _in_cond_here\n                        and not _exec_shadowed_by_function(words, ps, all_funcs)):  # mutant: forked close clears'),
+            ('        if not ps and not _stdin_stage[idx] and not _stdin_suppressed[idx]:\n            _fx = _exec_segment_effect(seg_words, seg)\n            if _fx == "supply" and not _followed_by_fork_boundary(segs, idx, ps):\n                dyn_exec = True\n            elif (_fx == "close" and not _stdin_in_cond[idx]\n                    and not _followed_by_fork_boundary(segs, idx, ps)\n                    and not _exec_shadowed_by_function(seg_words, ps, all_funcs)):\n                dyn_exec = False',
+             '        if not ps and not _stdin_stage[idx] and not _stdin_suppressed[idx]:  # mutant: forked dyn close clears\n            _fx = _exec_segment_effect(seg_words, seg)\n            if _fx == "supply" and not _followed_by_fork_boundary(segs, idx, ps):\n                dyn_exec = True\n            elif (_fx == "close" and not _stdin_in_cond[idx]\n                    and not _exec_shadowed_by_function(seg_words, ps, all_funcs)):\n                dyn_exec = False'),
+            ('        if (live_exec and not ps and not _stdin_stage[idx]\n                and not _stdin_suppressed[idx] and not _stdin_in_cond[idx]\n                and not _followed_by_fork_boundary(segs, idx, ps)\n                and not _exec_shadowed_by_function(seg_words, ps, all_funcs)\n                and _exec_segment_effect(seg_words, seg) == "close"):\n            live_exec = False',
+             '        if (live_exec and not ps and not _stdin_stage[idx]\n                and not _stdin_suppressed[idx] and not _stdin_in_cond[idx]\n                and not _exec_shadowed_by_function(seg_words, ps, all_funcs)\n                and _exec_segment_effect(seg_words, seg) == "close"):  # mutant: forked live close clears\n            live_exec = False'),],
+        "shadowed exec close treated as builtin": [
+            # Defense-in-depth coupling (same shape as the fork-close
+            # compound): each layer independently keeps a shadowed close,
+            # so all three must ignore the shadowing together to flip.
+            ('                if (not pfed and not _suppressed\n                        and not _in_cond_here\n                        and not _followed_by_fork_boundary(segs, i, ps)\n                        and not _exec_shadowed_by_function(words, ps, all_funcs)):',
+             '                if (not pfed and not _suppressed\n                        and not _in_cond_here\n                        and not _followed_by_fork_boundary(segs, i, ps)):  # mutant: shadowed close clears\n                    exec_flag = False\n                    inh = False'),
+            ('            elif (_fx == "close" and not _stdin_in_cond[idx]\n                    and not _followed_by_fork_boundary(segs, idx, ps)\n                    and not _exec_shadowed_by_function(seg_words, ps, all_funcs)):\n                dyn_exec = False',
+             '            elif (_fx == "close" and not _stdin_in_cond[idx]\n                    and not _followed_by_fork_boundary(segs, idx, ps)):  # mutant: shadowed dyn close clears\n                dyn_exec = False'),
+            ('        if (live_exec and not ps and not _stdin_stage[idx]\n                and not _stdin_suppressed[idx] and not _stdin_in_cond[idx]\n                and not _followed_by_fork_boundary(segs, idx, ps)\n                and not _exec_shadowed_by_function(seg_words, ps, all_funcs)\n                and _exec_segment_effect(seg_words, seg) == "close"):\n            live_exec = False',
+             '        if (live_exec and not ps and not _stdin_stage[idx]\n                and not _stdin_suppressed[idx] and not _stdin_in_cond[idx]\n                and not _followed_by_fork_boundary(segs, idx, ps)\n                and _exec_segment_effect(seg_words, seg) == "close"):  # mutant: shadowed live close clears\n            live_exec = False'),],
+
+        "nested return drops live stdin": (
+            '    return bool(_prepass_end or dyn_exec or live_exec)',
+            '    return bool(_prepass_end or dyn_exec)  # mutant: return drops live',
+        ),
+        "eval shadowing bypassed": (
+            '        _nested_text(" ".join(args), ctx, ps, depth + 1, fed=fed,\n                     outer_funcs=outer_funcs, merge_cwd=True,\n                     merge_exec=(via_builtin or _func_call_name("eval", ps) not in (outer_funcs or {})))',
+            '        _nested_text(" ".join(args), ctx, ps, depth + 1, fed=fed,\n                     outer_funcs=outer_funcs, merge_cwd=True, merge_exec=True)  # mutant: shadowing ignored',
+        ),
+        "text scan skips quoted redirect words": (
+            "        if '<' in w:\n            continue",
+            "        if False:  # mutant: text scan ignores inner redirects\n            pass"),
+        "inherited stdin ignored": (
+            "    inh = bool(inherited_fed)",
+            "    inh = False  # mutant: inherited stdin never taints"),
+        "inner boundary clears inherited stdin": (
+            "            elif seg in (CMD_BOUND, BG_BOUND, PIPE_END):\n                if not any(e[1] for e in stack):\n                    fed = False\n                    pfed = False",
+            "            elif seg in (CMD_BOUND, BG_BOUND, PIPE_END):\n                if not any(e[1] for e in stack):\n                    fed = False\n                    pfed = False\n                    inh = False  # mutant: inner boundary drops inheritance"),
+    }
+    DETECTING = ["test_piped_bare_python_is_refused", "test_dash_names_stdin_program",
+                 "test_bare_other_interpreters_with_piped_or_redirected_stdin_are_refused",
+                 "test_piped_node_options_only_is_refused", "test_node_explicit_dash_is_refused",
+                 "test_wrapper_stdin_refused", "test_node_option_forms_classified",
+                 "test_compound_pipe_inherits_across_semicolons", "test_nested_shell_inherits_pipe",
+                 "test_command_substitution_inherits_pipe",
+                 "test_command_substitution_independent_stays_allowed",
+                 "test_function_calls_inherit_stdin", "test_nested_redirect_inherits_stdin",
+                 "test_function_safe_forms_stay_allowed", "test_function_names_case_sensitive_bash", "test_nested_redirect_safe_forms_stay_allowed",
+                 "test_independent_command_after_pipeline_stays_allowed",
+                 "test_node_file_operand_stays_allowed",
+                 "test_compound_redirect_inherits_stdin",
+                 "test_compound_redirect_safe_forms_stay_allowed",
+                 "test_exec_redirect_persists_stdin", "test_exec_safe_forms_stay_allowed",
+                 "test_function_exec_persists_stdin", "test_subshell_fd3_stays_allowed",
+                 "test_leading_zero_fd_zero_supplies_stdin",
+                 "test_leading_zero_fd_nonzero_and_close_stay_safe",
+                 "test_eval_defines_function_for_later_pipe",
+                 "test_eval_redirect_persists_stdin", "test_eval_function_call_inherits_stdin",
+                 "test_subshell_persistent_stdin_scoped", "test_find_ok_does_not_inherit_pipe",
+                 "test_nested_pipe_inherits_stdin", "test_nested_conditional_close_keeps_taint",
+                 "test_eval_shadowed_by_function", "test_fork_child_close_keeps_parent_taint",
+                 "test_forked_exec_never_taints_parent", "test_shadowed_exec_close_keeps_taint",
+                 "test_list_conditional_close_keeps_taint", "test_awk_later_dash_selects_stdin_program"]
+
+    def _run(self, hook_text):
+        with tempfile.TemporaryDirectory() as td:
+            root = os.path.realpath(td)
+            hooks = os.path.join(root, ".claude", "hooks")
+            host = os.path.join(root, "tests", "host")
+            os.makedirs(hooks)
+            os.makedirs(host)
+            write_text(os.path.join(hooks, "guard_destructive.py"), hook_text)
+            with open(THIS_FILE, encoding="utf-8") as f:
+                write_text(os.path.join(host, "test_claude_destructive_guard.py"), f.read())
+            names = ["test_claude_destructive_guard.StdinProgramTests"]
+            env = dict(os.environ, PYTHON_COLORS="0")
+            proc = subprocess.run([sys.executable, "-m", "unittest", "-v"] + names, cwd=host,
+                                  capture_output=True, text=True, timeout=300,
+                                  env=env)
+            return proc.returncode, proc.stderr
+
+    def test_stdin_mutants_are_detected(self):
+        with open(HOOK, encoding="utf-8") as f:
+            original = f.read()
+        code, out = self._run(original)
+        self.assertEqual(code, 0, "unmutated copy must pass StdinProgramTests:\n" + out[-800:])
+        for name, spec in self.MUTANTS.items():
+            if name in KNOWN_UNRESOLVED_MUTANTS:
+                continue
+            # A mutant may disable a redundant pair of layers (defense in
+            # depth, review 5968211099 MAJOR-B): removing only one layer can
+            # leave the sibling DENY in place, so the pair is removed
+            # together to prove the intended named FAIL.
+            pairs = spec if isinstance(spec[0], tuple) else [spec]
+            with self.subTest(mutant=name):
+                mutated = original
+                for old, new in pairs:
+                    self.assertEqual(mutated.count(old), 1, "mutation target not found exactly once: " + name)
+                    mutated = mutated.replace(old, new)
+                code, out = self._run(mutated)
+                # Review 5968136032: require an expected FAIL and reject runs
+                # with ERRORs (fixture/test-body exceptions must not count).
+                # Internal-error DENYs are also rejected (no silent pass).
+                failing = [re.match(r"FAIL: (\S+) \(", ln) for ln in out.splitlines()
+                           if ln.startswith("FAIL:")]
+                names = [m.group(1) for m in failing if m]
+                has_error = any(ln.startswith("ERROR:") for ln in out.splitlines())
+                has_internal = "guard internal error" in out
+                detected = (not has_error and not has_internal) and any(n in self.DETECTING for n in names)
+                self.assertTrue(detected, "mutant not detected by a StdinProgramTests assertion: " + name)
+
+
 class PythonArgvMutationTests(unittest.TestCase):
     """Mutants of the X1 layers. Each must make a named PythonArgvCertaintyTests method fail (an assertion failure,
     not an import error). Runs on every host (no symlink)."""
@@ -3504,8 +4709,10 @@ class PythonArgvMutationTests(unittest.TestCase):
             with open(THIS_FILE, encoding="utf-8") as f:
                 write_text(os.path.join(host, "test_claude_destructive_guard.py"), f.read())
             names = ["test_claude_destructive_guard.PythonArgvCertaintyTests"]
+            env = dict(os.environ, PYTHON_COLORS="0")
             proc = subprocess.run([sys.executable, "-m", "unittest", "-v"] + names, cwd=host,
-                                  capture_output=True, text=True, timeout=300)
+                                  capture_output=True, text=True, timeout=300,
+                                  env=env)
             return proc.returncode, proc.stderr
 
     def test_argv_mutants_are_detected(self):
@@ -3519,10 +4726,14 @@ class PythonArgvMutationTests(unittest.TestCase):
             with self.subTest(mutant=name):
                 self.assertEqual(original.count(old), 1, "mutation target not found exactly once: " + name)
                 code, out = self._run(original.replace(old, new))
-                failing = [re.match(r"(?:FAIL|ERROR): (\S+) \(", ln) for ln in out.splitlines()
-                           if ln.startswith(("FAIL:", "ERROR:"))]
+                # Only a named assertion failure (FAIL:) counts; runs with
+                # ERROR: entries or guard internal errors never count.
+                failing = [re.match(r"FAIL: (\S+) \(", ln) for ln in out.splitlines()
+                           if ln.startswith("FAIL:")]
                 names = [m.group(1) for m in failing if m]
-                detected = any(n in self.DETECTING for n in names)
+                has_error = any(ln.startswith("ERROR:") for ln in out.splitlines())
+                has_internal = "guard internal error" in out
+                detected = (not has_error and not has_internal) and any(n in self.DETECTING for n in names)
                 self.assertTrue(detected, "mutant not detected by a PythonArgvCertaintyTests assertion: " + name)
 
 
@@ -3631,8 +4842,10 @@ class PythonOpenMutationTests(unittest.TestCase):
             with open(THIS_FILE, encoding="utf-8") as f:
                 write_text(os.path.join(host, "test_claude_destructive_guard.py"), f.read())
             names = ["test_claude_destructive_guard.PythonOpenTests"]
+            env = dict(os.environ, PYTHON_COLORS="0")
             proc = subprocess.run([sys.executable, "-m", "unittest", "-v"] + names, cwd=host,
-                                  capture_output=True, text=True, timeout=300)
+                                  capture_output=True, text=True, timeout=300,
+                                  env=env)
             return proc.returncode, proc.stderr
 
     def test_python_rule_mutants_are_detected(self):
@@ -3644,10 +4857,13 @@ class PythonOpenMutationTests(unittest.TestCase):
             with self.subTest(mutant=name):
                 self.assertEqual(original.count(old), 1, "mutation target not found exactly once: " + name)
                 code, out = self._run(original.replace(old, new))
-                # Only a named assertion failure (FAIL:) counts; an ERROR: is not a detection.
+                # Only a named assertion failure (FAIL:) counts; runs with
+                # ERROR: entries or guard internal errors never count.
                 failing = [re.match(r"FAIL: (\S+) \(", ln) for ln in out.splitlines() if ln.startswith("FAIL:")]
                 names = [m.group(1) for m in failing if m]
-                detected = any(n in self.DETECTING for n in names)
+                has_error = any(ln.startswith("ERROR:") for ln in out.splitlines())
+                has_internal = "guard internal error" in out
+                detected = (not has_error and not has_internal) and any(n in self.DETECTING for n in names)
                 self.assertTrue(detected, "mutant not detected by a PythonOpenTests assertion: " + name)
 
 
@@ -4405,8 +5621,9 @@ class ChainRulePieceDTests(unittest.TestCase):
         verdict, reason = self._decide("true |\ncd sub; rm ../file.txt")
         self.assertEqual(verdict, "DENY", reason)
         self.assertTrue(reason.startswith("rm-outside-repo"), reason)
-        # A newline after `&&` still ends nothing either: `&&` never emits
-        # a boundary, so sequential sharing is unchanged.
+        # A newline after `&&` still ends nothing either: `&&` emits only
+        # COND_BOUND (a same-shell conditional marker with no cwd/scope
+        # effect), so sequential sharing is unchanged.
         verdict, reason = self._decide("cd sub &&\nrm inner.txt")
         self.assertEqual(verdict, "ALLOW", reason)
 
@@ -4986,8 +6203,9 @@ class ChainRuleMutationTests(unittest.TestCase):
             '        incoming, wrote = ctx.tainted, False\n        for op, target in ops:\n            ctx.tainted = incoming\n            check_redirect(target, op, ctx, ps)\n            wrote = wrote or ctx.tainted\n        if wrote:\n            ctx.tainted = True',
             '        for op, target in ops:\n            check_redirect(target, op, ctx, ps)'),
         "string visit entry snapshot removed": (
-            '                        _nested_text_from(words[k + 1], ctx, wrapper_tainted, ps, depth + 1)',
-            '                        _nested_text(words[k + 1], ctx, ps, depth + 1)'),
+            '                        _nested_text_from(words[k + 1], ctx, wrapper_tainted, ps, depth + 1,\n'
+            '                                          fed=fed)',
+            '                        _nested_text(words[k + 1], ctx, ps, depth + 1, fed=fed)'),
         "substitution segment association removed": (
             '        bodies, rest_subs = rest_subs[:n], rest_subs[n:]',
             '        bodies, rest_subs = list(rest_subs), []'),
@@ -4998,14 +6216,15 @@ class ChainRuleMutationTests(unittest.TestCase):
             '    if rewrite:\n        entry_ctx.tainted = True',
             '    if False:\n        pass'),
         "nested taint merge removed": (
-            'def _nested_argv(words, ctx, ps, depth):\n    """Analyse nested argv, propagating chain taint back to the parent."""\n'
-            '    sub = ctx.copy()\n    analyze_argv(words, sub, ps, depth)\n'
+            'def _nested_argv(words, ctx, ps, depth, fed=False, outer_funcs=None):\n    """Analyse nested argv, propagating chain taint back to the parent."""\n'
+            '    sub = ctx.copy()\n    analyze_argv(words, sub, ps, depth, fed, outer_funcs)\n'
             '    if sub.tainted:\n        ctx.tainted = True',
-            'def _nested_argv(words, ctx, ps, depth):\n    """Analyse nested argv, propagating chain taint back to the parent."""\n'
-            '    sub = ctx.copy()\n    analyze_argv(words, sub, ps, depth)'),
+            'def _nested_argv(words, ctx, ps, depth, fed=False, outer_funcs=None):\n    """Analyse nested argv, propagating chain taint back to the parent."""\n'
+            '    sub = ctx.copy()\n    analyze_argv(words, sub, ps, depth, fed, outer_funcs)'),
         "eval cwd propagation removed": (
-            '        _nested_text(" ".join(args), ctx, ps, depth + 1, merge_cwd=True)',
-            '        _nested_text(" ".join(args), ctx, ps, depth + 1, merge_cwd=False)  # mutant'),
+            '        _nested_text(" ".join(args), ctx, ps, depth + 1, fed=fed,\n                     outer_funcs=outer_funcs, merge_cwd=True,\n                     merge_exec=(via_builtin or _func_call_name("eval", ps) not in (outer_funcs or {})))',
+        '        _nested_text(" ".join(args), ctx, ps, depth + 1, fed=fed,\n                     outer_funcs=outer_funcs, merge_cwd=False, merge_exec=(via_builtin or _func_call_name("eval", ps) not in (outer_funcs or {})))  # mutant',
+        ),
         "subshell scope open destroyed": (
             '                if not scope_stack and not bbrace_stack:\n                    # A top-level `( ... )` may be the whole first pipeline\n                    # stage: remember the pre-group cwd for the entry.\n                    scope_entry = (ctx.cwd, ctx.cwd_fuzzy)\n                    scope_just_closed = False\n                # run-13 (M1): the subshell owns its pipeline/list start:\n                # an inner `cd` moves the subshell\'s run, never the outer one.\n                run_scope.append((run_start, bg_start))\n                run_start = (ctx.cwd, ctx.cwd_fuzzy)\n                bg_start = (ctx.cwd, ctx.cwd_fuzzy)\n                scope_stack.append((ctx.cwd, ctx.cwd_fuzzy))\n                bg_scope.append((ctx.cwd, ctx.cwd_fuzzy))',
             '                if not scope_stack and not bbrace_stack:\n                    # A top-level `( ... )` may be the whole first pipeline\n                    # stage: remember the pre-group cwd for the entry.\n                    scope_entry = (ctx.cwd, ctx.cwd_fuzzy)\n                    scope_just_closed = False\n                pass  # mutant: subshell scope destroyed'),
@@ -5071,7 +6290,7 @@ class ChainRuleMutationTests(unittest.TestCase):
             '            if False:  # mutant: pipeline-end entry not restored\n                pass'),
 
         "pipeline continuation newline treated as boundary": (
-            '            if c == "\\n" and not ps and pipe_open and cur_blank:',
+            '            if c == "\\n" and pipe_open and cur_blank:',
             '            if False:  # mutant: pipeline continuation ends the list'),
         "brace group stage does not fork": (
             '            is_stage = bool(prev_was_pipe and pipe_entry is not None)\n            if is_stage:\n                ctx.cwd, ctx.cwd_fuzzy = pipe_entry',
