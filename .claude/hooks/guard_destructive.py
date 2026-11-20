@@ -4387,6 +4387,26 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None):
                     and not _followed_by_fork_boundary(segs, idx, ps)
                     and not _exec_shadowed_by_function(seg_words, ps, all_funcs)):
                 dyn_exec = False
+        # MAJOR CodeRabbit 5985627085: same-shell eval installs function
+        # definitions in the calling shell (verified harmless: eval
+        # 'f() { echo hi; }' then f runs it, as does split-arg eval 'f()'
+        # '{ ...; }'). Propagate them for later segments (fail-closed:
+        # a later pipe-fed call DENYs via the function-body path).
+        # Forked or definition-body positions never leak (same gates as
+        # dyn_exec); conditionals propagate fail-closed (assuming defined
+        # is safe). Child-scope isolation is preserved by the gates:
+        # pipeline/coprocess/background and suppressed bodies do not merge.
+        if (not ps and not _stdin_stage[idx]
+                and not _stdin_suppressed[idx]
+                and not _followed_by_fork_boundary(segs, idx, ps)):
+            _ev_def_text = _eval_command_text(seg_words, ps, all_funcs)
+            if _ev_def_text is not None:
+                try:
+                    _ev_defs = _extract_function_defs(_ev_def_text, ps)
+                except Deny:
+                    _ev_defs = {}
+                for _k, _v in _ev_defs.items():
+                    all_funcs.setdefault(_k, []).extend(_v)
     if sum(len(ops) for ops in redirs) > MAX_REDIRECTS:
         raise Deny("redirect", "more than %d redirections are not inspected" % MAX_REDIRECTS)
     rest_subs = list(subs)

@@ -4356,6 +4356,29 @@ class StdinProgramTests(unittest.TestCase):
                 verdict, reason = self._d(cmd)
                 self.assertEqual(verdict, "ALLOW", reason)
 
+    def test_eval_defines_function_for_later_pipe(self):
+        # MAJOR CodeRabbit 5985627085: same-shell eval installs definitions
+        # in the calling shell (verified harmless: eval 'f() { echo hi; }'
+        # then f runs it; split-arg eval 'f()' '{ ...; }' too). A later
+        # pipe-fed call must DENY via the function-body path. Covers
+        # analyze_text eval propagation (first-loop all_funcs merge).
+        for cmd in ["eval 'f() { node; }'; printf 'x\\n' | f",
+                    "eval 'f()' '{ node; }'; printf 'x\\n' | f",
+                    "command eval 'f() { node; }'; printf 'x\\n' | f",
+                    "builtin eval 'f() { node; }'; printf 'x\\n' | f",
+                    "eval 'g() { python3; }'; printf 'x\\n' | g"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertTrue(any(k in reason for k in ("stdin-program", "function", "depth", "parse")), reason)
+        for cmd in ["eval 'f() { node script.js; }'; printf 'x\\n' | f",
+                    "eval 'f() { cat; }'; printf 'x\\n' | f",
+                    "eval 'f() { node; }'; f",
+                    "eval 'f() { node; }'; printf 'x\\n' | cat"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "ALLOW", reason)
+
 
 class StdinProgramMutationTests(unittest.TestCase):
     """Mutants of the Issue #637 layers. Each must make a named StdinProgramTests method fail (an assertion
@@ -4473,6 +4496,9 @@ class StdinProgramMutationTests(unittest.TestCase):
         "persistent redirect supply lost": (
             "    if last == \"supply\":\n        return \"supply\"",
             "    if False:  # mutant: persistent supply lost\n        return \"supply\""),
+        "eval function-definition propagation removed": (
+            "                for _k, _v in _ev_defs.items():\n                    all_funcs.setdefault(_k, []).extend(_v)",
+            "                pass  # mutant: eval defs never propagate"),
         "function-body exec suppression removed": (
             "                if (not pfed and not _suppressed\n                        and not _followed_by_fork_boundary(segs, i, ps)):\n                    exec_flag = True",
             "                if not pfed:\n                    exec_flag = True  # mutant: definition exec leaks"),
@@ -4591,6 +4617,7 @@ class StdinProgramMutationTests(unittest.TestCase):
                  "test_function_exec_persists_stdin", "test_subshell_fd3_stays_allowed",
                  "test_leading_zero_fd_zero_supplies_stdin",
                  "test_leading_zero_fd_nonzero_and_close_stay_safe",
+                 "test_eval_defines_function_for_later_pipe",
                  "test_eval_redirect_persists_stdin", "test_eval_function_call_inherits_stdin",
                  "test_subshell_persistent_stdin_scoped", "test_find_ok_does_not_inherit_pipe",
                  "test_nested_pipe_inherits_stdin", "test_nested_conditional_close_keeps_taint",
