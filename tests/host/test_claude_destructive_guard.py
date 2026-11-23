@@ -4357,16 +4357,20 @@ class StdinProgramTests(unittest.TestCase):
                 self.assertEqual(verdict, "ALLOW", reason)
 
     def test_eval_defines_function_for_later_pipe(self):
-        # MAJOR CodeRabbit 5985627085: same-shell eval installs definitions
-        # in the calling shell (verified harmless: eval 'f() { echo hi; }'
-        # then f runs it; split-arg eval 'f()' '{ ...; }' too). A later
-        # pipe-fed call must DENY via the function-body path. Covers
-        # analyze_text eval propagation (first-loop all_funcs merge).
+        # MAJOR CodeRabbit 5985627085 + follow-ups 5986155667: same-shell eval
+        # installs definitions in the calling shell (verified harmless).
+        # A later pipe-fed call must DENY via the function-body path. Covers
+        # analyze_text eval propagation, forced-builtin, conditional
+        # shadowing, nested eval, and subshell isolation.
         for cmd in ["eval 'f() { node; }'; printf 'x\\n' | f",
                     "eval 'f()' '{ node; }'; printf 'x\\n' | f",
                     "command eval 'f() { node; }'; printf 'x\\n' | f",
                     "builtin eval 'f() { node; }'; printf 'x\\n' | f",
-                    "eval 'g() { python3; }'; printf 'x\\n' | g"]:
+                    "eval 'g() { python3; }'; printf 'x\\n' | g",
+                    "false && eval 'eval() { true; }'; eval 'f()' '{ node; }'; printf 'x\\n' | f",
+                    "eval() { true; }; builtin eval 'f()' '{ node; }'; printf 'x\\n' | f",
+                    'eval \'eval "f() { node; }"\'; printf \'x\\n\' | f',
+                    "(eval 'eval() { true; }'); eval 'f()' '{ node; }'; printf 'x\\n' | f"]:
             with self.subTest(cmd=cmd):
                 verdict, reason = self._d(cmd)
                 self.assertEqual(verdict, "DENY")
@@ -4434,8 +4438,8 @@ class StdinProgramMutationTests(unittest.TestCase):
             "        for body in bodies:\n            _nested_text(body, ctx, ps, depth + 1,\n                         fed=(_stdin_pipe[idx] or dyn_at[idx] or live_exec),\n                         outer_funcs=all_funcs)",
             "        for body in bodies:\n            _nested_text(body, ctx, ps, depth + 1,\n                         fed=(_stdin_eff[0] or dyn_at[0]),\n                         outer_funcs=all_funcs)"),
         "nested subs inheritance disabled": (
-            "    sub = ctx.copy()\n    nested_end = analyze_text(text, sub, ps, depth, inherited_fed=fed, outer_funcs=outer_funcs)\n    if sub.tainted:\n        ctx.tainted = True\n    if merge_cwd:",
-            "    sub = ctx.copy()\n    nested_end = analyze_text(text, sub, ps, depth, inherited_fed=False, outer_funcs=outer_funcs)\n    if sub.tainted:\n        ctx.tainted = True\n    if merge_cwd:  # mutant"),
+            "    nested_end = analyze_text(text, sub, ps, depth, inherited_fed=fed, outer_funcs=outer_funcs,\n                              defs_out=defs_out)",
+            "    nested_end = analyze_text(text, sub, ps, depth, inherited_fed=False, outer_funcs=outer_funcs,\n                              defs_out=defs_out)  # mutant"),
         "string visit stdin inheritance removed": (
             "                            _nested_text_from(words[k], ctx, wrapper_tainted, ps, depth + 1,\n                                              fed=fed)",
             "                            _nested_text_from(words[k], ctx, wrapper_tainted, ps, depth + 1,\n                                              fed=False)"),
@@ -4497,8 +4501,22 @@ class StdinProgramMutationTests(unittest.TestCase):
             "    if last == \"supply\":\n        return \"supply\"",
             "    if False:  # mutant: persistent supply lost\n        return \"supply\""),
         "eval function-definition propagation removed": (
-            "                for _k, _v in _ev_defs.items():\n                    all_funcs.setdefault(_k, []).extend(_v)",
-            "                pass  # mutant: eval defs never propagate"),
+            "            _ev_def_text = _eval_command_text(seg_words, ps, all_funcs)",
+            "            _ev_def_text = None  # mutant: eval defs never propagate"),
+        "builtin eval shadowing bypass removed": (
+            "    if not forced and _func_call_name(\"eval\", ps) in (all_funcs or {}):",
+            "    if _func_call_name(\"eval\", ps) in (all_funcs or {}):  # mutant: forced builtin ignored"),
+        "conditional eval shadowing not preserved": [
+            ("                    if _k == \"eval\" and _stdin_in_cond[idx]:\n                        continue",
+             "                    pass  # mutant: conditional eval shadows"),
+            ("                if _stdin_in_cond[idx] and not _had_eval_before and \"eval\" in all_funcs:",
+             "                if False:  # mutant: conditional eval shadows"),],
+        "subshell function map restore removed": (
+            "            if funcs_save:\n                all_funcs = funcs_save.pop()",
+            "            pass  # mutant: subshell defs leak"),
+        "nested eval definitions ignored": (
+            "                if depth + 1 <= MAX_DEPTH and _ev_def_text.strip() != \"\":",
+            "                if False:  # mutant: nested eval ignored"),
         "function-body exec suppression removed": (
             "                if (not pfed and not _suppressed\n                        and not _followed_by_fork_boundary(segs, i, ps)):\n                    exec_flag = True",
             "                if not pfed:\n                    exec_flag = True  # mutant: definition exec leaks"),

@@ -303,7 +303,7 @@ def _require_untainted(ctx, what):
 
 
 def _nested_text(text, ctx, ps, depth, fed=False, outer_funcs=None, merge_cwd=False,
-                 merge_exec=False):
+                 merge_exec=False, defs_out=None):
     """Analyse nested command text, propagating chain taint back to the parent.
 
     merge_cwd (eval only, #636): the nested text runs in the calling shell,
@@ -321,7 +321,8 @@ def _nested_text(text, ctx, ps, depth, fed=False, outer_funcs=None, merge_cwd=Fa
     effect for callers that merge it themselves.
     """
     sub = ctx.copy()
-    nested_end = analyze_text(text, sub, ps, depth, inherited_fed=fed, outer_funcs=outer_funcs)
+    nested_end = analyze_text(text, sub, ps, depth, inherited_fed=fed, outer_funcs=outer_funcs,
+                              defs_out=defs_out)
     if sub.tainted:
         ctx.tainted = True
     if merge_cwd:
@@ -4054,8 +4055,11 @@ def _eval_command_text(words, ps, all_funcs):
     j = 0
     while j < len(words) and (words[j] in KEYWORDS or ASSIGN.match(words[j])):
         j += 1
+    forced = False
     for _ in range(4):
         if j < len(words) and words[j] in ("!", "builtin"):
+            if words[j] == "builtin":
+                forced = True
             j += 1
             continue
         if j < len(words) and words[j] == "time":
@@ -4069,13 +4073,16 @@ def _eval_command_text(words, ps, all_funcs):
                 j += 1
             elif j < len(words) and words[j] in ("-v", "-V"):
                 return None
+            forced = True
             continue
         break
     if j >= len(words) or words[j] != "eval":
         return None
-    if _func_call_name("eval", ps) in (all_funcs or {}):
+    if not forced and _func_call_name("eval", ps) in (all_funcs or {}):
         # A shell function shadows the builtin: the words are its
         # arguments, not code (handled by the function-call path).
+        # `builtin`/`command` bypass the function and always run the
+        # builtin (verified on Bash), so forced forms still return code.
         return None
     rest, skip, out = words[j + 1:], False, []
     for w in rest:
@@ -4241,7 +4248,7 @@ _STDIN_SENTINELS = frozenset([
 _FUNCDEF_NAME = re.compile(r"[^\s;|&<>()=]+")
 
 
-def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None):
+def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None, defs_out=None):
     if depth > MAX_DEPTH:
         raise Deny("depth", "command nesting too deep")
     if ps and METHOD_CALL_RE.search(text):
@@ -4281,6 +4288,7 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None):
     dyn_exec = False
     dyn_at = [False] * len(segs)
     dyn_save = []  # dynamic stdin snapshots per open subshell/coprocess
+    funcs_save = []  # function-map snapshots per open subshell/coprocess
     # (Issue #637 MAJOR: function/eval persistent effects apply inside the
     # active fork as well; the saved outer state is restored at the fork's
     # close so a completed fork never leaks back. A brace group runs in the
@@ -4288,10 +4296,13 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None):
     for idx, seg in enumerate(segs):
         if seg == SUBSHELL_OPEN or seg == COPROC_OPEN:
             dyn_save.append(dyn_exec)
+            funcs_save.append({k: list(v) for k, v in all_funcs.items()})
             continue
         if seg == SUBSHELL_CLOSE or seg == COPROC_CLOSE:
             if dyn_save:
                 dyn_exec = dyn_save.pop()
+            if funcs_save:
+                all_funcs = funcs_save.pop()
             continue
         if seg == PIPE_BOUND or seg == BG_BOUND or seg == CMD_BOUND:
             continue
@@ -4387,26 +4398,65 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None):
                     and not _followed_by_fork_boundary(segs, idx, ps)
                     and not _exec_shadowed_by_function(seg_words, ps, all_funcs)):
                 dyn_exec = False
-        # MAJOR CodeRabbit 5985627085: same-shell eval installs function
-        # definitions in the calling shell (verified harmless: eval
-        # 'f() { echo hi; }' then f runs it, as does split-arg eval 'f()'
-        # '{ ...; }'). Propagate them for later segments (fail-closed:
-        # a later pipe-fed call DENYs via the function-body path).
-        # Forked or definition-body positions never leak (same gates as
-        # dyn_exec); conditionals propagate fail-closed (assuming defined
-        # is safe). Child-scope isolation is preserved by the gates:
-        # pipeline/coprocess/background and suppressed bodies do not merge.
+        # MAJOR CodeRabbit 5985627085 + follow-ups 5986155667: same-shell
+        # eval installs function definitions in the calling shell (verified
+        # harmless: eval 'f() { echo hi; }' then f runs it, as does split-arg
+        # eval 'f()' '{ ...; }'). Propagate them for later segments
+        # (fail-closed: a later pipe-fed call DENYs via the function-body
+        # path). Forked, subshell/coprocess (via funcs_save restore) or
+        # definition-body positions never leak to the parent (same gates as
+        # dyn_exec plus fork-map restore); conditionals propagate f-defs
+        # fail-closed (assuming defined is safe) but never install a
+        # conditional `eval` shadowing (preserve the builtin alternative so
+        # a later builtin eval still defines f). `builtin`/`command` bypass
+        # shadowing via _eval_command_text forced-builtin (verified on Bash).
         if (not ps and not _stdin_stage[idx]
                 and not _stdin_suppressed[idx]
                 and not _followed_by_fork_boundary(segs, idx, ps)):
             _ev_def_text = _eval_command_text(seg_words, ps, all_funcs)
             if _ev_def_text is not None:
+                _had_eval_before = "eval" in all_funcs
                 try:
                     _ev_defs = _extract_function_defs(_ev_def_text, ps)
                 except Deny:
                     _ev_defs = {}
                 for _k, _v in _ev_defs.items():
+                    if _k == "eval" and _stdin_in_cond[idx]:
+                        continue
                     all_funcs.setdefault(_k, []).extend(_v)
+                # Transitive same-shell nested eval (`eval "eval 'f()'..."`
+                # installs f only via the inner eval). Collect via an
+                # isolated nested analysis (fail-closed: Deny here is
+                # ignored, the precise DENY fires in the scope-machine pass).
+                # Child-shell definitions never merge (nested uses a copy).
+                if depth + 1 <= MAX_DEPTH and _ev_def_text.strip() != "":
+                    try:
+                        _snap_keys = set(all_funcs.keys())
+                        _child_defs = {}
+                        _tmp = ctx.copy()
+                        analyze_text(_ev_def_text, _tmp, ps, depth + 1,
+                                     inherited_fed=False, outer_funcs=all_funcs,
+                                     defs_out=_child_defs)
+                        for _ck, _cv in _child_defs.items():
+                            if _ck not in _snap_keys:
+                                if _ck == "eval" and _stdin_in_cond[idx]:
+                                    continue
+                                all_funcs[_ck] = list(_cv)
+                            else:
+                                for _b in _cv:
+                                    if _b not in all_funcs[_ck]:
+                                        if _ck == "eval" and _stdin_in_cond[idx]:
+                                            continue
+                                        all_funcs[_ck].append(_b)
+                    except Deny:
+                        pass
+                if _stdin_in_cond[idx] and not _had_eval_before and "eval" in all_funcs:
+                    # Conditional outer must not install definite `eval`
+                    # shadowing (preserve the builtin alternative for later).
+                    # Possible `eval` bodies stay for calls (fail-closed) via
+                    # all_funcs, but definite shadowing is removed: drop the
+                    # just-installed conditional `eval` entries.
+                    del all_funcs["eval"]
     if sum(len(ops) for ops in redirs) > MAX_REDIRECTS:
         raise Deny("redirect", "more than %d redirections are not inspected" % MAX_REDIRECTS)
     rest_subs = list(subs)
@@ -4873,6 +4923,10 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None):
     # dispatch (live_exec) counts like the static findings: an enclosing
     # same-shell eval inherits it through merge_exec. Static and resolved
     # findings are scoped identically, so no fork-local effect leaks here.
+    if defs_out is not None:
+        defs_out.clear()
+        for _k, _v in all_funcs.items():
+            defs_out[_k] = list(_v)
     return bool(_prepass_end or dyn_exec or live_exec)
 
 
