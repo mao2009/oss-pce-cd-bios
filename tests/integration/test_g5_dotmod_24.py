@@ -196,6 +196,9 @@ res_base:
 # and WITHOUT remapping (remapping first would unmap this code: MPR1 selects
 # the $2000-$3FFF bank, so a live MPR1=$FF makes the payload itself
 # unreachable -- the guard must therefore check-then-act, never act-then-check).
+# The refusal case therefore proves a REQUESTED $FF mapping is rejected before
+# install (live MPR1 stays $F8 at refused_halt), not detection of an
+# already-invalid live MPR1.
 # With BREAK_MPR1=0 the candidate is $F8 and the call runs normally.
 MPR1_ASM = r"""
 .setcpu "huc6280"
@@ -761,6 +764,10 @@ class Dotmod24Synthetic(unittest.TestCase):
                                                          0x06, 0x66, 0x77))
         cold, warm = self._buf(rec)
         self._check_c0(cold, base)  # control: values GREEN
+        # Baseline validity: both original buffers must already balance SP --
+        # otherwise the negative below would pass on an invalid baseline.
+        self._check_sp(cold, base, 0xFF)
+        self._check_sp(warm, base, 0xFF)
         for buf, cycle in ((cold, "cold"), (warm, "warm")):
             for pos in (5, 21):
                 with self.subTest(cycle=cycle, pos=pos):
@@ -938,8 +945,18 @@ class Dotmod24Synthetic(unittest.TestCase):
         self.assertIn(c.get("stack_check"),
                       ("MATCH", "MISMATCH", "UNKNOWN"),
                       f"refusal {tag} APICALL bad stack_check")
-        self.assertIn(c.get("return_matches_caller"), (True, False, None),
-                      f"refusal {tag} APICALL bad return_matches_caller")
+        # return_matches_caller must be IDENTICAL to the value the probe
+        # emits for the stack_check state (True/MATCH, False/MISMATCH,
+        # None/UNKNOWN). Membership would accept JSON number 1 (1 == True).
+        if c.get("stack_check") == "MATCH":
+            self.assertIs(c.get("return_matches_caller"), True,
+                          f"refusal {tag} MATCH must carry True")
+        elif c.get("stack_check") == "MISMATCH":
+            self.assertIs(c.get("return_matches_caller"), False,
+                          f"refusal {tag} MISMATCH must carry False")
+        else:
+            self.assertIsNone(c.get("return_matches_caller"),
+                              f"refusal {tag} UNKNOWN must carry None")
         for field in ("caller_a", "caller_x", "caller_y", "caller_p",
                       "idr", "irr"):
             self.assertTrue(type(c.get(field)) is int
@@ -1042,11 +1059,17 @@ class Dotmod24Synthetic(unittest.TestCase):
                          f"refusal {tag} reached $E06C (must refuse BEFORE JSR)")
 
     def test_mpr1_precondition_refused_before_jsr(self):
-        # T13: the harness validates MPR1 BEFORE JSR $E06C. With MPR1=$FF
-        # the harness refuses at refused_halt WITHOUT executing JSR: no
-        # $24 APICALL exists in either cycle. Rationale: JSR itself writes
-        # 2 return bytes through the MPR1 mapping before any body gate runs,
-        # so a body-internal gate cannot make the call side-effect-free.
+        # T13: the harness validates the REQUESTED MPR1 BEFORE installing it.
+        # With a requested MPR1=$FF the harness refuses at refused_halt
+        # WITHOUT executing JSR and without installing $FF: live MPR1 stays
+        # $F8 at the refusal (the TAM of the candidate runs only on the $F8
+        # path), so no $24 APICALL exists in either cycle. This proves a
+        # requested-$FF mapping is rejected before install -- not detection
+        # of an already-invalid live MPR1 (which would unmap the payload
+        # itself; hence check-then-act). Rationale: a JSR through a live
+        # $FF mapping would write 2 return bytes outside work RAM before any
+        # body gate runs, so a body-internal gate cannot make the call
+        # side-effect-free.
         # Strictness (MEDIUM-1): the RUN list is validated raw (never a
         # per-cycle dict, which collapses duplicates); truncations are
         # rejected (a gapped trace cannot prove no JSR); the halt pc must
@@ -1305,28 +1328,47 @@ class Dotmod24Synthetic(unittest.TestCase):
         self._check_mpr1_refusal_strict(rec, pc, tag="parser-zero")
 
     def test_mpr1_parser_dropped_event(self):
-        # Warm emission line dropped: RUN says observed=1/1 but only the
-        # cold line parses. The per-cycle count cross-check must fire.
+        # Warm emission line dropped: the other cycle is a genuine zero
+        # (observed=0, no lines) so only the warm parsed/observed mismatch
+        # can fire. The mismatch diagnostic is required, not just any raise.
         pc = 0x3100
         rec = self._run_fake_probe("fp-drop", [
-            ("RUN", self._fake_probe_run("cold", pc, 1)),
+            ("RUN", self._fake_probe_run("cold", pc, 0)),
             ("RUN", self._fake_probe_run("warm", pc, 1)),
-            ("APICALL", self._fake_strict_arrival("cold")),
         ])
-        with self.assertRaises(AssertionError, msg="dropped event accepted"):
+        with self.assertRaisesRegex(AssertionError,
+                                     "parsed/observed APICALL mismatch",
+                                     msg="dropped event accepted"):
             self._check_mpr1_refusal_strict(rec, pc, tag="parser-drop")
 
     def test_mpr1_parser_cold_line_missing(self):
-        # Cold line missing while cold observed=1: same asymmetry, cold side.
+        # Mirror image: cold line missing while cold observed=1, warm a
+        # genuine zero. The cold mismatch diagnostic must fire.
         pc = 0x3100
         rec = self._run_fake_probe("fp-coldmiss", [
             ("RUN", self._fake_probe_run("cold", pc, 1)),
             ("RUN", self._fake_probe_run("warm", pc, 0)),
+        ])
+        with self.assertRaisesRegex(AssertionError,
+                                     "parsed/observed APICALL mismatch",
+                                     msg="cold line gap accepted"):
+            self._check_mpr1_refusal_strict(rec, pc, tag="parser-coldmiss")
+
+    def test_mpr1_parser_nonzero_counts_rejected(self):
+        # Matching nonzero counts agree parsed-vs-observed, so the refusal
+        # must still fail -- on the genuine-zero requirement, not the gap.
+        pc = 0x3100
+        rec = self._run_fake_probe("fp-nonzero", [
+            ("RUN", self._fake_probe_run("cold", pc, 1)),
+            ("RUN", self._fake_probe_run("warm", pc, 1)),
+            ("APICALL", self._fake_strict_arrival("cold", slot=0x02,
+                                                    entry_pc=0xE006)),
             ("APICALL", self._fake_strict_arrival("warm", slot=0x02,
                                                     entry_pc=0xE006)),
         ])
-        with self.assertRaises(AssertionError, msg="cold line gap accepted"):
-            self._check_mpr1_refusal_strict(rec, pc, tag="parser-coldmiss")
+        with self.assertRaisesRegex(AssertionError, "must be zero",
+                                     msg="nonzero counts accepted as refusal"):
+            self._check_mpr1_refusal_strict(rec, pc, tag="parser-nonzero")
 
     def test_mpr1_parser_missing_count(self):
         # RUN rows without the observed-count field: independence broken.
@@ -1364,16 +1406,25 @@ class Dotmod24Synthetic(unittest.TestCase):
             self._check_mpr1_refusal_strict(rec, pc, tag="parser-badcount")
 
     def test_mpr1_parser_bad_json(self):
-        # Malformed APICALL line: the parser itself must refuse the output.
+        # Malformed APICALL line with BOTH RUN rows present: if the parser
+        # started ignoring malformed APICALL JSON, the RUN-count gate would
+        # still pass and the refusal validator would see zero lines -- so
+        # the test requires the parser's own invalid-output diagnostic.
+        import json
         pc = 0x3100
+        cold = self._fake_probe_run("cold", pc, 0)
+        warm = self._fake_probe_run("warm", pc, 0)
         script = self.out / "fp-badjson.py"
-        script.write_text("#!/usr/bin/env python3\nimport sys\n"
-                          "sys.stdout.write('RUN {\"cycle\":\"cold\"}\\n')\n"
-                          "sys.stdout.write('APICALL {oops\\n')\n",
-                          encoding="ascii")
+        script.write_text(
+            "#!/usr/bin/env python3\nimport sys, json\n"
+            f"sys.stdout.write('RUN {json.dumps(cold)}\\n')\n"
+            f"sys.stdout.write('RUN {json.dumps(warm)}\\n')\n"
+            "sys.stdout.write('APICALL {oops\\n')\n",
+            encoding="ascii")
         script.chmod(0o755)
         import geargrafx_api_entry as Eentry
-        with self.assertRaises(ValueError, msg="malformed JSON accepted"):
+        with self.assertRaisesRegex(ValueError, "probe output invalid",
+                                     msg="malformed JSON accepted"):
             Eentry.run_probe(script, self.out / "dummy.rom",
                              self.out / "dummy.cue",
                              self.out / "dummy.labels", BUDGET,
@@ -1429,7 +1480,12 @@ class Dotmod24Synthetic(unittest.TestCase):
             self.assertEqual(len(calls), 1, cycle)
             self.assertEqual(calls[0]["entry_pc"], 0xE06C, cycle)
             self.assertEqual(calls[0].get("stack_check"), "MATCH", cycle)
-            self.assertTrue(calls[0].get("return_matches_caller"), cycle)
+            # Exact JSON value (identity, not truthiness: JSON 1 == True
+            # would pass assertTrue) plus the JSR-specific fields: only a
+            # real in-table JSR with its 2-byte push counts as arrival.
+            self.assertIs(calls[0].get("return_matches_caller"), True, cycle)
+            self.assertIs(calls[0].get("in_table"), True, cycle)
+            self.assertEqual(calls[0].get("sp_delta"), 2, cycle)
             run = runs_by_cycle[cycle]
             self.assertIn("apicalls_observed", run, cycle)
             self.assertTrue(type(run["apicalls_observed"]) is int, cycle)

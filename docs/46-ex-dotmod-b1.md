@@ -161,7 +161,8 @@ write history, cold+warm).
 - T12 SP depth: `$FF` and `$06` GREEN and balanced; below-minimum (`$00`,
   `$05`) refused pre-execution by the writes probe (exit 2, no RESULT),
   never run on the real core.
-- T13 MPR1 pre-JSR: `$FF` refuses at `refused_halt` with zero `$24`
+- T13 MPR1 pre-JSR: a requested `$FF` refuses at `refused_halt` before
+  install (live MPR1 stays `$F8`) with zero `$24`
   APICALL in both cycles (strict validator: raw RUN list, truncations
   rejected, pc == refused_halt symbol, probe-emitted per-cycle observed
   count matched against parsed count, every record schema-checked);

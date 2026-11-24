@@ -180,8 +180,9 @@ All fixtures are project-authored HuC6280; no commercial/game/reference bytes.
   on history even when final values match (history-vs-final distinction, not
   same-value detection). SP is restored/balanced; stacked bytes are NOT
   scrubbed.
-- MPR1 precondition validated by harness BEFORE JSR (T13-analog): a `$FF`
-  candidate refuses at refused_halt without executing JSR, never reaches
+- MPR1 precondition validated by harness BEFORE JSR (T13-analog): a requested
+  `$FF` candidate refuses at refused_halt before install (live MPR1 stays
+  `$F8`) without executing JSR, never reaches
   `$24`, never remaps first (strict validator: raw RUN list, truncations
   rejected, pc == refused_halt symbol, probe-emitted per-cycle observed
   count matched against parsed count, every APICALL record schema-checked).
