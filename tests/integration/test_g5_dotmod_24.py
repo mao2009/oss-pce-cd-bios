@@ -1194,14 +1194,16 @@ class Dotmod24Synthetic(unittest.TestCase):
     def test_mpr1_refusal_rejects_slot24_arrival(self):
         # A $24 APICALL in either cycle disproves pre-JSR refusal, even when
         # the RUN rows look like a clean refusal. Full records here so the
-        # schema passes and the arrival filter itself must fire.
+        # schema passes and counts agree; the genuine-zero requirement itself
+        # must fire (arrival records are incompatible with zero observed).
         pc = 0x3100
         rec = self._fake_refusal_rec([
             self._fake_refusal_run("cold", pc, observed=1),
             self._fake_refusal_run("warm", pc, observed=1),
         ], apicalls=[self._fake_strict_arrival("cold"),
                       self._fake_strict_arrival("warm")])
-        with self.assertRaises(AssertionError, msg="$24 arrival accepted"):
+        with self.assertRaisesRegex(AssertionError, "must be zero",
+                                     msg="$24 arrival accepted"):
             self._check_mpr1_refusal_strict(rec, pc, tag="arrival-control")
 
     def test_mpr1_refusal_rejects_empty_record(self):
@@ -1267,13 +1269,16 @@ class Dotmod24Synthetic(unittest.TestCase):
 
     def test_mpr1_refusal_rejects_count_mismatch(self):
         # Probe observed one event but the trace carries none: dropped
-        # emission stream, not zero events.
+        # emission stream, not zero events. The parsed/observed mismatch
+        # diagnostic must fire (not merely the later zero-hit check).
         pc = 0x3100
         rec = self._fake_refusal_rec([
             self._fake_refusal_run("cold", pc, observed=1),
             self._fake_refusal_run("warm", pc, observed=1),
         ])
-        with self.assertRaises(AssertionError, msg="count mismatch accepted"):
+        with self.assertRaisesRegex(AssertionError,
+                                     "parsed/observed APICALL mismatch",
+                                     msg="count mismatch accepted"):
             self._check_mpr1_refusal_strict(rec, pc, tag="mismatch-count-control")
 
     def test_mpr1_refusal_rejects_bad_count_type(self):
@@ -1383,7 +1388,8 @@ class Dotmod24Synthetic(unittest.TestCase):
             self._check_mpr1_refusal_strict(rec, pc, tag="parser-nocount")
 
     def test_mpr1_parser_count_mismatch(self):
-        # Observed=2 but a single line emitted: truncated/gapped stream.
+        # Observed=2 per cycle but one line each parsed: the parsed/observed
+        # mismatch diagnostic must fire (not merely the later zero-hit check).
         pc = 0x3100
         rec = self._run_fake_probe("fp-mismatch", [
             ("RUN", self._fake_probe_run("cold", pc, 2)),
@@ -1391,7 +1397,9 @@ class Dotmod24Synthetic(unittest.TestCase):
             ("APICALL", self._fake_strict_arrival("cold")),
             ("APICALL", self._fake_strict_arrival("warm")),
         ])
-        with self.assertRaises(AssertionError, msg="parser count mismatch accepted"):
+        with self.assertRaisesRegex(AssertionError,
+                                     "parsed/observed APICALL mismatch",
+                                     msg="parser count mismatch accepted"):
             self._check_mpr1_refusal_strict(rec, pc, tag="parser-mismatch")
 
     def test_mpr1_parser_bad_count_type(self):
