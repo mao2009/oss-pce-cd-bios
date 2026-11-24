@@ -4307,43 +4307,16 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None, de
     # shadow builtins for `_eval_command_text`. Merely possible (conditional or
     # fork-local) definitions stay in all_funcs for fail-closed call analysis
     # but never suppress the builtin alternative (CodeRabbit 6031635927).
+    # Definite installs are recorded in execution order as the first loop
+    # reaches each unconditional definition (see below); pre-populating here
+    # would let a later definition shadow an earlier builtin call.
     definite = set(outer_definite or ())
-    if not ps:
-        for _di, _dseg in enumerate(segs):
-            if _dseg in _STDIN_SENTINELS:
-                continue
-            if (_stdin_stage[_di] or _stdin_subdepth[_di] != 0
-                    or _stdin_suppressed[_di] or _stdin_in_cond[_di]):
-                continue
-            if _followed_by_fork_boundary(segs, _di, ps):
-                continue
-            if not _is_funcdef_name(segs, _di, ps):
-                # `function NAME` form puts `function` in command position.
-                try:
-                    _dw = words_of(_dseg, ps)
-                except Deny:
-                    continue
-                if (len(_dw) >= 2 and _dw[0].lower() == "function"
-                        and _FUNCDEF_NAME.fullmatch(_dw[1] or "")
-                        and _dw[1] not in KEYWORDS):
-                    _dk = _func_key(_dw[1], ps)
-                    if _dk in all_funcs:
-                        definite.add(_dk)
-                continue
-            try:
-                _dw = words_of(_dseg, ps)
-            except Deny:
-                continue
-            if not _dw:
-                continue
-            _dk, _, _ = _call_target(_dw, ps)
-            if _dk is not None and _dk in all_funcs:
-                definite.add(_dk)
     # A python command whose argv is not certain (unquoted or double-quoted expansion characters) is refused.
     # dyn_at records the function-exec stdin flag before each segment, so the
     # scope machine below observes the same taint the checks here saw.
     dyn_exec = False
     dyn_at = [False] * len(segs)
+    definite_at = [None] * len(segs)  # per-segment definite snapshots (execution order)
     dyn_save = []  # dynamic stdin snapshots per open subshell/coprocess
     funcs_save = []  # function-map snapshots per open subshell/coprocess
     definite_save = []  # definite-installation snapshots per open subshell/coprocess
@@ -4381,6 +4354,35 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None, de
         if seg == PSBRACE_OPEN or seg == PSBRACE_CLOSE:
             continue
         dyn_at[idx] = dyn_exec
+        # Execution-order definite installs (CodeRabbit 6031635927): a direct
+        # definition installs when its segment is reached, so earlier calls
+        # never see later definitions. Unconditional, same-shell, unforked
+        # only; conditional/fork-local installs stay possible-only.
+        if not ps:
+            _def_uncond = (not _stdin_stage[idx] and _stdin_subdepth[idx] == 0
+                           and not _stdin_suppressed[idx] and not _stdin_in_cond[idx]
+                           and not _followed_by_fork_boundary(segs, idx, ps))
+            if _def_uncond:
+                if _is_funcdef_name(segs, idx, ps):
+                    try:
+                        _dnw = words_of(seg, ps)
+                    except Deny:
+                        _dnw = []
+                    if _dnw:
+                        _dk, _, _ = _call_target(_dnw, ps)
+                        if _dk is not None and _dk in all_funcs:
+                            definite.add(_dk)
+                else:
+                    try:
+                        _dnw = words_of(seg, ps)
+                    except Deny:
+                        _dnw = []
+                    if (len(_dnw) >= 2 and _dnw[0].lower() == "function"
+                            and _FUNCDEF_NAME.fullmatch(_dnw[1] or "")
+                            and _dnw[1] not in KEYWORDS
+                            and _dnw[1] in all_funcs):
+                        definite.add(_func_key(_dnw[1], ps))
+        definite_at[idx] = set(definite)
         here_pipe = _stdin_pipe[idx] or dyn_exec
         here_eff = _stdin_eff[idx] or dyn_exec
         seg_words = words_of(seg, ps)
@@ -4448,8 +4450,13 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None, de
                         and not _csaw
                         and not _is_funcdef_name(segs, idx, ps)):
                     _call_snap = set(definite)
+                    _call_def_sets = []
+                    _call_has_unknown = False
                     for _cb in all_funcs[_ckey]:
-                        if _cb is None or depth + 1 > MAX_DEPTH:
+                        if _cb is None:
+                            _call_has_unknown = True
+                            continue
+                        if depth + 1 > MAX_DEPTH:
                             continue
                         try:
                             _cdefs = {}
@@ -4468,10 +4475,14 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None, de
                                 for _ddb in _dv:
                                     if _ddb not in all_funcs[_dk]:
                                         all_funcs[_dk].append(_ddb)
-                        _new_definite = _cdef - _call_snap
+                        _call_def_sets.append(set(_cdef) - _call_snap)
+                        _call_snap.update(_cdef - _call_snap)
+                    # Definite only what every feasible body installs; an
+                    # uninspectable (None) body may install anything.
+                    if not _call_has_unknown and _call_def_sets:
+                        _call_both = set.intersection(*_call_def_sets)
                         if not _stdin_in_cond[idx]:
-                            definite.update(_new_definite)
-                        _call_snap.update(_new_definite)
+                            definite.update(_call_both)
         # MAJOR (review 5971146586): a same-shell `eval` whose text
         # persistently redirects stdin (`eval 'exec < f'`, `eval 'f'`) changes
         # the caller's stdin for later segments (verified on Bash). The
@@ -4522,6 +4533,11 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None, de
                     _ev_defs = _extract_function_defs(_ev_def_text, ps)
                 except Deny:
                     _ev_defs = {}
+                # Raw-scan installs stay possible-only: whether a definition
+                # inside the string is reached is decided by the scoped child
+                # analysis below (CodeRabbit 6031635927). Promoting here on
+                # the outer position alone lets a skipped branch suppress a
+                # later builtin check.
                 for _k, _v in _ev_defs.items():
                     if _k not in all_funcs:
                         all_funcs[_k] = list(_v)
@@ -4529,8 +4545,6 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None, de
                         for _b in _v:
                             if _b not in all_funcs[_k]:
                                 all_funcs[_k].append(_b)
-                    if not _stdin_in_cond[idx]:
-                        definite.add(_k)
                 # Transitive same-shell nested eval (`eval "eval 'f()'..."`
                 # installs f only via the inner eval). Collect via an
                 # isolated nested analysis (fail-closed: Deny here is
@@ -4947,7 +4961,8 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None, de
         for body in bodies:
             _nested_text(body, ctx, ps, depth + 1,
                          fed=(_stdin_pipe[idx] or dyn_at[idx] or live_exec),
-                         outer_funcs=all_funcs, outer_definite=definite)
+                         outer_funcs=all_funcs,
+                         outer_definite=definite_at[idx] if definite_at[idx] is not None else definite)
         if ops and inside_claude(ctx.cwd, ctx):
             raise Deny("claude-write", "redirect while cwd is inside .claude/ is denied")
         # Redirects of one segment share its incoming taint for their checks;
@@ -4961,7 +4976,8 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None, de
             ctx.tainted = True
         analyze_argv(words_of(seg, ps), ctx, ps, depth,
                      fed=(_stdin_eff[idx] or dyn_at[idx] or live_exec),
-                     outer_funcs=all_funcs, outer_definite=definite)
+                     outer_funcs=all_funcs,
+                     outer_definite=definite_at[idx] if definite_at[idx] is not None else definite)
         if ctx.exec_out:
             # A same-shell nested eval persistently redirected stdin during
             # this segment (MAJOR review 5971146586). Forked positions never
