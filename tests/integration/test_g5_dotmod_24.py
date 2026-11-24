@@ -913,38 +913,38 @@ class Dotmod24Synthetic(unittest.TestCase):
         # unvalidated record: a malformed record passing a .get() filter is
         # a false negative, not an absence.
         self.assertIsInstance(c, dict,
-                              f"refusal {tag} APICALL record not an object")
+                              f"{tag} APICALL record not an object")
         for field in ("cycle", "step", "caller_pc", "entry_pc",
                       "in_table", "slot", "sp_before", "sp_after",
                       "sp_delta", "caller_a", "caller_x", "caller_y",
                       "caller_p", "stack_check", "return_matches_caller",
                       "mpr", "idr", "irr"):
             self.assertIn(field, c,
-                          f"refusal {tag} APICALL record missing {field}")
+                          f"{tag} APICALL record missing {field}")
         self.assertIn(c.get("cycle"), ("cold", "warm"),
-                      f"refusal {tag} APICALL bad cycle {c.get('cycle')!r}")
+                      f"{tag} APICALL bad cycle {c.get('cycle')!r}")
         self.assertTrue(type(c.get("slot")) is int and 0 <= c["slot"] <= 0x51,
-                        f"refusal {tag} APICALL bad slot {c.get('slot')!r}")
+                        f"{tag} APICALL bad slot {c.get('slot')!r}")
         self.assertTrue(type(c.get("entry_pc")) is int
                         and 0xE000 <= c["entry_pc"] <= 0xE0F2,
-                        f"refusal {tag} APICALL bad entry_pc {c.get('entry_pc')!r}")
+                        f"{tag} APICALL bad entry_pc {c.get('entry_pc')!r}")
         self.assertIsInstance(c.get("in_table"), bool,
-                              f"refusal {tag} APICALL in_table not bool")
+                              f"{tag} APICALL in_table not bool")
         if c.get("in_table"):
             self.assertEqual((c["entry_pc"] - 0xE000) % 3, 0,
-                             f"refusal {tag} APICALL entry_pc off-table")
+                             f"{tag} APICALL entry_pc off-table")
             self.assertEqual(c["slot"], (c["entry_pc"] - 0xE000) // 3,
-                             f"refusal {tag} APICALL slot/entry_pc mismatch")
+                             f"{tag} APICALL slot/entry_pc mismatch")
         for field in ("sp_before", "sp_after", "sp_delta"):
             self.assertTrue(type(c.get(field)) is int
                             and 0 <= c[field] <= 0xFF,
-                            f"refusal {tag} APICALL {field} bad")
+                            f"{tag} APICALL {field} bad")
         self.assertEqual((c["sp_before"] - c["sp_after"]) & 0xFF,
                          c["sp_delta"],
-                         f"refusal {tag} APICALL sp_delta inconsistent")
+                         f"{tag} APICALL sp_delta inconsistent")
         self.assertIn(c.get("stack_check"),
                       ("MATCH", "MISMATCH", "UNKNOWN"),
-                      f"refusal {tag} APICALL bad stack_check")
+                      f"{tag} APICALL bad stack_check")
         # return_matches_caller must be IDENTICAL to the value the probe
         # emits for the stack_check state (True/MATCH, False/MISMATCH,
         # None/UNKNOWN). Membership would accept JSON number 1 (1 == True).
@@ -961,18 +961,18 @@ class Dotmod24Synthetic(unittest.TestCase):
                       "idr", "irr"):
             self.assertTrue(type(c.get(field)) is int
                             and 0 <= c[field] <= 0xFF,
-                            f"refusal {tag} APICALL {field} bad")
+                            f"{tag} APICALL {field} bad")
         for field in ("step", "caller_pc"):
             self.assertTrue(type(c.get(field)) is int and c[field] >= 0,
-                            f"refusal {tag} APICALL {field} bad")
+                            f"{tag} APICALL {field} bad")
         mpr = c.get("mpr")
         self.assertIsInstance(mpr, list,
-                              f"refusal {tag} APICALL mpr not a list")
+                              f"{tag} APICALL mpr not a list")
         self.assertEqual(len(mpr), 8,
-                         f"refusal {tag} APICALL mpr len != 8")
+                         f"{tag} APICALL mpr len != 8")
         for i, v in enumerate(mpr):
             self.assertTrue(type(v) is int and 0 <= v <= 0xFF,
-                            f"refusal {tag} APICALL mpr[{i}] bad")
+                            f"{tag} APICALL mpr[{i}] bad")
 
     def _check_mpr1_refusal_strict(self, rec, refused_pc, tag=""):
         # Strict T13 pre-JSR refusal validator. A refusal counts ONLY when
@@ -1005,7 +1005,7 @@ class Dotmod24Synthetic(unittest.TestCase):
                       f"refusal {tag} missing APICALL (harness failure)")
         calls = rec["APICALL"]
         self.assertIsInstance(calls, list,
-                              f"refusal {tag} APICALL not a list (harness failure)")
+                              f"{tag} APICALL not a list (harness failure)")
         # Strict per-record validation BEFORE any filter: malformed records
         # ({} / missing keys / contradictions) must raise here, never pass
         # a .get() filter silently.
@@ -1022,7 +1022,7 @@ class Dotmod24Synthetic(unittest.TestCase):
             self.assertIs(r.get("halt_confirmed"), True,
                           f"refusal {tag} halt not confirmed (harness failure)")
             self.assertIs(r.get("apicall_truncated"), False,
-                          f"refusal {tag} APICALL truncated (trace gap, not proof)")
+                          f"{tag} APICALL truncated (trace gap, not proof)")
             self.assertIs(r.get("ret_truncated"), False,
                           f"refusal {tag} APIRETURN truncated (trace gap, not proof)")
             self.assertIsInstance(r.get("pc"), int,
@@ -1461,48 +1461,446 @@ class Dotmod24Synthetic(unittest.TestCase):
         with self.assertRaises(AssertionError, msg="loader budget accepted"):
             self._check_mpr1_refusal_strict(rec, pc, tag="budget-control")
 
+    def _check_mpr1_positive_strict(self, rec, tag=""):
+        # Independent T13 positive-control validator (MEDIUM-1). The MPR1=$F8
+        # payload executes exactly one BIOS-entry JSR per cycle, so the call
+        # evidence must be exactly one observed and one parsed APICALL per
+        # cycle (2 total), with each sole record proving a real $24 JSR.
+        # RUN shape/halt/buffers via _buf (2-list, cold+warm, cd_halt_ok,
+        # halt_confirmed True, truncations False, valid 2048B buffers, same
+        # pc). Every APICALL record is schema-validated BEFORE any filtering,
+        # so unknown cycles, malformed rows, or extra BIOS transitions can
+        # never hide behind a slot filter. Stacked-return entry evidence
+        # only -- never confused with an RTS-landing observation (APIRETURN
+        # is not collected; per-call return is proved end-to-end, not here).
+        cold, warm = self._buf(rec)
+        self.assertEqual(cold, warm,
+                         f"positive {tag} cold/warm buffers differ (harness failure)")
+        self.assertIn("APICALL", rec,
+                      f"positive {tag} missing APICALL (harness failure)")
+        calls = rec["APICALL"]
+        self.assertIsInstance(calls, list,
+                              f"positive {tag} APICALL not a list (harness failure)")
+        for c in calls:
+            self._check_apicall_record_strict(c, tag=tag)
+        self.assertEqual(len(calls), 2,
+                         f"positive {tag} total APICALL count != 2")
+        by_cycle = {r["cycle"]: r for r in rec["RUN"]}  # _buf proved cold+warm once each
+        for cycle in ("cold", "warm"):
+            r = by_cycle[cycle]
+            self.assertIn("apicalls_observed", r,
+                          f"positive {tag} {cycle} missing observed count")
+            self.assertTrue(type(r["apicalls_observed"]) is int,
+                            f"positive {tag} {cycle} observed count bad type")
+            parsed = [c for c in calls if c.get("cycle") == cycle]
+            self.assertEqual(len(parsed), r["apicalls_observed"],
+                             f"positive {tag} {cycle} parsed/observed APICALL mismatch")
+            self.assertEqual(r["apicalls_observed"], 1,
+                             f"positive {tag} {cycle} expected exactly 1 observed APICALL")
+            self.assertEqual(len(parsed), 1,
+                             f"positive {tag} {cycle} expected exactly 1 parsed APICALL")
+            sole = parsed[0]
+            self.assertEqual(sole["slot"], 0x24,
+                             f"positive {tag} {cycle} sole APICALL not slot $24")
+            self.assertEqual(sole["entry_pc"], 0xE06C,
+                             f"positive {tag} {cycle} sole APICALL not $E06C")
+            self.assertIs(sole["in_table"], True,
+                          f"positive {tag} {cycle} sole APICALL not in_table")
+            self.assertEqual(sole["sp_delta"], 2,
+                             f"positive {tag} {cycle} sole APICALL sp_delta != 2")
+            self.assertEqual(sole["stack_check"], "MATCH",
+                             f"positive {tag} {cycle} sole APICALL not MATCH")
+            self.assertIs(sole["return_matches_caller"], True,
+                          f"positive {tag} {cycle} sole APICALL return not True")
+            self.assertEqual(sole["mpr"][1], 0xF8,
+                             f"positive {tag} {cycle} sole APICALL MPR1 != $F8")
+        return cold, warm
+
     def test_mpr1_precondition_positive_control(self):
         # T13 positive control: with MPR1=$F8 the same harness shape runs
         # JSR normally (GREEN preservation + canary). The $24 call shows
-        # proven arrival (in_table, sp_delta 2, MATCH, return_matches_caller)
-        # and balanced SP on both cycles -- the actual call-and-return path
-        # the refusal case never takes.
+        # proven arrival via the independent positive validator: exactly one
+        # observed and one parsed APICALL per cycle (2 total), in_table,
+        # sp_delta 2, MATCH, return_matches_caller True, MPR1=$F8 on the
+        # sole record -- the actual call-and-return path the refusal case
+        # never takes. Entry evidence only (stacked return bytes at entry
+        # time); per-call RTS resumption is proved end-to-end elsewhere,
+        # never from APICALL alone.
         rec, base = self._run("mpr1ok", {"asm": MPR1_ASM,
                                            "defs": {"BREAK_MPR1": 0}})
-        cold, warm = self._buf(rec)
-        self.assertEqual(cold, warm)
+        cold, warm = self._check_mpr1_positive_strict(rec, tag="mpr1ok")
         self.assertEqual(cold[base], 0xAA)
         self.assertEqual((cold[base + 1], cold[base + 2], cold[base + 3]),
                          (0x3C, 0x11, 0x22))
         self.assertEqual(cold[base + 4] & ~0x10, 0x07)
         self.assertEqual(cold[base + 5], 0xFF)
         self.assertEqual(warm[base + 5], 0xFF)
-        # Observed-vs-parsed independence on the positive path too: the RUN
-        # rows carry the probe's own per-cycle entry count; it must equal
-        # the parsed APICALL count for that cycle.
-        runs_by_cycle = {r["cycle"]: r for r in rec["RUN"]}
-        self.assertEqual(sorted(runs_by_cycle), ["cold", "warm"])
-        for cycle in ("cold", "warm"):
-            calls = [c for c in rec["APICALL"]
-                       if c["cycle"] == cycle and c["slot"] == 0x24]
-            self.assertEqual(len(calls), 1, cycle)
-            self.assertEqual(calls[0]["entry_pc"], 0xE06C, cycle)
-            self.assertEqual(calls[0].get("stack_check"), "MATCH", cycle)
-            # Exact JSON value (identity, not truthiness: JSON 1 == True
-            # would pass assertTrue) plus the JSR-specific fields: only a
-            # real in-table JSR with its 2-byte push counts as arrival.
-            self.assertIs(calls[0].get("return_matches_caller"), True, cycle)
-            self.assertIs(calls[0].get("in_table"), True, cycle)
-            self.assertEqual(calls[0].get("sp_delta"), 2, cycle)
-            run = runs_by_cycle[cycle]
-            self.assertIn("apicalls_observed", run, cycle)
-            self.assertTrue(type(run["apicalls_observed"]) is int, cycle)
-            parsed_cycle = [c for c in rec["APICALL"]
-                            if c.get("cycle") == cycle]
-            self.assertEqual(len(parsed_cycle), run["apicalls_observed"],
-                             f"{cycle}: parsed/observed APICALL mismatch")
-            for c in calls:
-                self._check_apicall_record_strict(c, tag="mpr1ok")
+
+    def _fake_positive_run(self, cycle, pc, observed):
+        # Fabricated positive RUN row: shape-valid for _buf (cd_halt_ok,
+        # confirmed, untruncated, valid 2048B buffer). apicalls_observed is
+        # the probe-side count under test.
+        return {"cycle": cycle, "reason": "cd_halt_ok",
+                "halt_confirmed": True, "pc": pc,
+                "buffer_hex": self._fake_buf_hex(),
+                "apicall_truncated": False, "ret_truncated": False,
+                "apicalls_observed": observed}
+
+    def _fake_positive_rec(self, runs, apicalls):
+        return {"RUN": runs, "APICALL": apicalls}
+
+    def test_mpr1_positive_accepts_genuine(self):
+        # Genuine control: exactly one observed and one parsed $24 JSR per
+        # cycle (2 total). Must validate without raising.
+        pc = 0x3100
+        rec = self._fake_positive_rec([
+            self._fake_positive_run("cold", pc, 1),
+            self._fake_positive_run("warm", pc, 1),
+        ], apicalls=[self._fake_strict_arrival("cold"),
+                      self._fake_strict_arrival("warm")])
+        self._check_mpr1_positive_strict(rec, tag="genuine-control")
+
+    def test_mpr1_positive_rejects_extra_cold(self):
+        # Extra cold record (minimal {cycle, slot} shape) with observed
+        # bumped to 2: the strict per-record schema must fire first.
+        pc = 0x3100
+        rec = self._fake_positive_rec([
+            self._fake_positive_run("cold", pc, 2),
+            self._fake_positive_run("warm", pc, 1),
+        ], apicalls=[self._fake_strict_arrival("cold"),
+                      {"cycle": "cold", "slot": 3},
+                      self._fake_strict_arrival("warm")])
+        with self.assertRaises(AssertionError, msg="extra cold record accepted"):
+            self._check_mpr1_positive_strict(rec, tag="extra-cold-control")
+
+    def test_mpr1_positive_rejects_extra_valid_slot(self):
+        # Extra record with a complete valid schema (other slot) and
+        # matching counts: per-cycle counts agree and the total is 2, so
+        # the exactly-1 rule itself must fire on the doubled cycle. Warm
+        # stays a genuine zero so the validator reaches the cold check.
+        pc = 0x3100
+        rec = self._fake_positive_rec([
+            self._fake_positive_run("cold", pc, 2),
+            self._fake_positive_run("warm", pc, 0),
+        ], apicalls=[self._fake_strict_arrival("cold"),
+                      self._fake_strict_arrival("cold", slot=0x03,
+                                                entry_pc=0xE009)])
+        with self.assertRaisesRegex(AssertionError, "exactly 1",
+                                     msg="extra valid record accepted"):
+            self._check_mpr1_positive_strict(rec, tag="extra-valid-control")
+
+    def test_mpr1_positive_rejects_unknown_cycle(self):
+        # Unknown-cycle extra record with matching counts: strict schema
+        # must fire before any filter can ignore it.
+        pc = 0x3100
+        rec = self._fake_positive_rec([
+            self._fake_positive_run("cold", pc, 1),
+            self._fake_positive_run("warm", pc, 1),
+        ], apicalls=[self._fake_strict_arrival("cold"),
+                      self._fake_strict_arrival("warm"),
+                      self._fake_strict_arrival("cold", slot=0x03,
+                                                entry_pc=0xE009)])
+        rec["APICALL"][2]["cycle"] = "other"
+        with self.assertRaisesRegex(AssertionError, "bad cycle",
+                                     msg="unknown cycle accepted"):
+            self._check_mpr1_positive_strict(rec, tag="unknown-cycle-control")
+
+    def test_mpr1_positive_rejects_malformed_extra(self):
+        # {} passes every .get() filter silently -- schema rejects it.
+        pc = 0x3100
+        rec = self._fake_positive_rec([
+            self._fake_positive_run("cold", pc, 1),
+            self._fake_positive_run("warm", pc, 1),
+        ], apicalls=[self._fake_strict_arrival("cold"),
+                      self._fake_strict_arrival("warm"),
+                      {}])
+        with self.assertRaises(AssertionError, msg="malformed extra accepted"):
+            self._check_mpr1_positive_strict(rec, tag="malformed-control")
+
+    def test_mpr1_positive_rejects_missing_cycle(self):
+        pc = 0x3100
+        bad = self._fake_strict_arrival("cold")
+        del bad["cycle"]
+        rec = self._fake_positive_rec([
+            self._fake_positive_run("cold", pc, 1),
+            self._fake_positive_run("warm", pc, 1),
+        ], apicalls=[self._fake_strict_arrival("cold"),
+                      self._fake_strict_arrival("warm"),
+                      bad])
+        with self.assertRaises(AssertionError, msg="missing cycle accepted"):
+            self._check_mpr1_positive_strict(rec, tag="missing-cycle-control")
+
+    def test_mpr1_positive_rejects_bad_cycle_type(self):
+        pc = 0x3100
+        bad = self._fake_strict_arrival("cold")
+        bad["cycle"] = 123
+        rec = self._fake_positive_rec([
+            self._fake_positive_run("cold", pc, 1),
+            self._fake_positive_run("warm", pc, 1),
+        ], apicalls=[self._fake_strict_arrival("cold"),
+                      self._fake_strict_arrival("warm"),
+                      bad])
+        with self.assertRaises(AssertionError, msg="bad cycle type accepted"):
+            self._check_mpr1_positive_strict(rec, tag="bad-cycle-control")
+
+    def test_mpr1_positive_rejects_missing_slot(self):
+        pc = 0x3100
+        bad = self._fake_strict_arrival("cold")
+        del bad["slot"]
+        rec = self._fake_positive_rec([
+            self._fake_positive_run("cold", pc, 1),
+            self._fake_positive_run("warm", pc, 1),
+        ], apicalls=[self._fake_strict_arrival("cold"),
+                      self._fake_strict_arrival("warm"),
+                      bad])
+        with self.assertRaises(AssertionError, msg="missing slot accepted"):
+            self._check_mpr1_positive_strict(rec, tag="missing-slot-control")
+
+    def test_mpr1_positive_rejects_missing_entry(self):
+        pc = 0x3100
+        bad = self._fake_strict_arrival("cold")
+        del bad["entry_pc"]
+        rec = self._fake_positive_rec([
+            self._fake_positive_run("cold", pc, 1),
+            self._fake_positive_run("warm", pc, 1),
+        ], apicalls=[self._fake_strict_arrival("cold"),
+                      self._fake_strict_arrival("warm"),
+                      bad])
+        with self.assertRaises(AssertionError, msg="missing entry_pc accepted"):
+            self._check_mpr1_positive_strict(rec, tag="missing-entry-control")
+
+    def test_mpr1_positive_rejects_slot_entry_mismatch(self):
+        pc = 0x3100
+        rec = self._fake_positive_rec([
+            self._fake_positive_run("cold", pc, 1),
+            self._fake_positive_run("warm", pc, 1),
+        ], apicalls=[self._fake_strict_arrival("cold", slot=0x24,
+                                                entry_pc=0xE00C),
+                      self._fake_strict_arrival("warm")])
+        with self.assertRaises(AssertionError, msg="slot/entry mismatch accepted"):
+            self._check_mpr1_positive_strict(rec, tag="mismatch-control")
+
+    def test_mpr1_positive_rejects_mpr1_not_f8(self):
+        pc = 0x3100
+        bad = self._fake_strict_arrival("cold")
+        bad["mpr"] = list(bad["mpr"])
+        bad["mpr"][1] = 0xFF
+        rec = self._fake_positive_rec([
+            self._fake_positive_run("cold", pc, 1),
+            self._fake_positive_run("warm", pc, 1),
+        ], apicalls=[bad, self._fake_strict_arrival("warm")])
+        with self.assertRaisesRegex(AssertionError, "MPR1",
+                                     msg="MPR1 != $F8 accepted"):
+            self._check_mpr1_positive_strict(rec, tag="mpr1-control")
+
+    def test_mpr1_positive_rejects_bad_sp(self):
+        # Coherent but wrong push: SP FF->FE delta 1 satisfies arithmetic
+        # yet is not the 2-byte JSR the control requires.
+        pc = 0x3100
+        bad = self._fake_strict_arrival("cold")
+        bad["sp_after"] = 0xFE
+        bad["sp_delta"] = 1
+        rec = self._fake_positive_rec([
+            self._fake_positive_run("cold", pc, 1),
+            self._fake_positive_run("warm", pc, 1),
+        ], apicalls=[bad, self._fake_strict_arrival("warm")])
+        with self.assertRaisesRegex(AssertionError, "sp_delta",
+                                     msg="bad sp accepted"):
+            self._check_mpr1_positive_strict(rec, tag="sp-control")
+
+    def test_mpr1_positive_rejects_bad_return(self):
+        # MATCH with return False is self-contradictory (identity, not truthy).
+        pc = 0x3100
+        bad = self._fake_strict_arrival("cold")
+        bad["return_matches_caller"] = False
+        rec = self._fake_positive_rec([
+            self._fake_positive_run("cold", pc, 1),
+            self._fake_positive_run("warm", pc, 1),
+        ], apicalls=[bad, self._fake_strict_arrival("warm")])
+        with self.assertRaisesRegex(AssertionError, "must carry True",
+                                     msg="bad return accepted"):
+            self._check_mpr1_positive_strict(rec, tag="return-control")
+
+    def test_mpr1_positive_rejects_missing_24(self):
+        # No $24 record at all (valid non-$24 traffic, counts agree): the
+        # sole-record $24 requirement must fire.
+        pc = 0x3100
+        rec = self._fake_positive_rec([
+            self._fake_positive_run("cold", pc, 1),
+            self._fake_positive_run("warm", pc, 1),
+        ], apicalls=[self._fake_strict_arrival("cold", slot=0x02,
+                                                entry_pc=0xE006),
+                      self._fake_strict_arrival("warm", slot=0x02,
+                                                entry_pc=0xE006)])
+        with self.assertRaisesRegex(AssertionError, "not slot \\$24",
+                                     msg="missing $24 accepted"):
+            self._check_mpr1_positive_strict(rec, tag="no24-control")
+
+    def test_mpr1_positive_rejects_duplicate_24(self):
+        # Two $24 arrivals cold with observed=2 (warm genuine zero): counts
+        # and total agree, so the exactly-1 rule itself must fire.
+        pc = 0x3100
+        rec = self._fake_positive_rec([
+            self._fake_positive_run("cold", pc, 2),
+            self._fake_positive_run("warm", pc, 0),
+        ], apicalls=[self._fake_strict_arrival("cold"),
+                      self._fake_strict_arrival("cold")])
+        with self.assertRaisesRegex(AssertionError, "exactly 1",
+                                     msg="duplicate $24 accepted"):
+            self._check_mpr1_positive_strict(rec, tag="dup24-control")
+
+    def test_mpr1_positive_rejects_short_run(self):
+        pc = 0x3100
+        rec = self._fake_positive_rec(
+            [self._fake_positive_run("cold", pc, 1)],
+            apicalls=[self._fake_strict_arrival("cold")])
+        with self.assertRaises(AssertionError, msg="short RUN accepted"):
+            self._check_mpr1_positive_strict(rec, tag="short-control")
+
+    def test_mpr1_positive_rejects_extra_run(self):
+        pc = 0x3100
+        rec = self._fake_positive_rec([
+            self._fake_positive_run("cold", pc, 1),
+            self._fake_positive_run("warm", pc, 1),
+            self._fake_positive_run("warm", pc, 1),
+        ], apicalls=[self._fake_strict_arrival("cold"),
+                      self._fake_strict_arrival("warm")])
+        with self.assertRaises(AssertionError, msg="extra RUN accepted"):
+            self._check_mpr1_positive_strict(rec, tag="extra-control")
+
+    def test_mpr1_positive_rejects_dup_cycle_run(self):
+        pc = 0x3100
+        rec = self._fake_positive_rec([
+            self._fake_positive_run("cold", pc, 1),
+            self._fake_positive_run("cold", pc, 1),
+        ], apicalls=[self._fake_strict_arrival("cold"),
+                      self._fake_strict_arrival("cold")])
+        with self.assertRaises(AssertionError, msg="dup-cycle RUN accepted"):
+            self._check_mpr1_positive_strict(rec, tag="dupcycle-control")
+
+    def test_mpr1_positive_rejects_truncated(self):
+        for field in ("apicall_truncated", "ret_truncated"):
+            pc = 0x3100
+            cold = self._fake_positive_run("cold", pc, 1)
+            warm = self._fake_positive_run("warm", pc, 1)
+            cold[field] = True
+            warm[field] = True
+            rec = self._fake_positive_rec(
+                [cold, warm],
+                apicalls=[self._fake_strict_arrival("cold"),
+                          self._fake_strict_arrival("warm")])
+            with self.subTest(field=field):
+                with self.assertRaises(AssertionError,
+                                        msg=f"truncated {field} accepted"):
+                    self._check_mpr1_positive_strict(rec, tag="trunc-control")
+
+    def test_mpr1_positive_rejects_missing_count(self):
+        pc = 0x3100
+        runs = [self._fake_positive_run("cold", pc, 1),
+                self._fake_positive_run("warm", pc, 1)]
+        for r in runs:
+            del r["apicalls_observed"]
+        rec = self._fake_positive_rec(
+            runs, apicalls=[self._fake_strict_arrival("cold"),
+                            self._fake_strict_arrival("warm")])
+        with self.assertRaises(AssertionError, msg="missing count accepted"):
+            self._check_mpr1_positive_strict(rec, tag="count-missing")
+
+    def test_mpr1_positive_rejects_bad_count_type(self):
+        pc = 0x3100
+        for bad_count in ("1", True, 1.0):
+            runs = [self._fake_positive_run("cold", pc, 1),
+                    self._fake_positive_run("warm", pc, 1)]
+            for r in runs:
+                r["apicalls_observed"] = bad_count
+            rec = self._fake_positive_rec(
+                runs, apicalls=[self._fake_strict_arrival("cold"),
+                                self._fake_strict_arrival("warm")])
+            with self.subTest(count=bad_count):
+                with self.assertRaises(AssertionError,
+                                        msg=f"bad count accepted ({bad_count!r})"):
+                    self._check_mpr1_positive_strict(rec, tag="count-type")
+
+    def test_mpr1_positive_rejects_count_mismatch(self):
+        # Two parsed lines on cold with observed=1 (warm genuine zero):
+        # total and warm agree, so the cold parsed/observed mismatch
+        # diagnostic itself must fire.
+        pc = 0x3100
+        rec = self._fake_positive_rec([
+            self._fake_positive_run("cold", pc, 1),
+            self._fake_positive_run("warm", pc, 0),
+        ], apicalls=[self._fake_strict_arrival("cold"),
+                      self._fake_strict_arrival("cold", slot=0x02,
+                                                entry_pc=0xE006)])
+        with self.assertRaisesRegex(AssertionError,
+                                     "parsed/observed APICALL mismatch",
+                                     msg="count mismatch accepted"):
+            self._check_mpr1_positive_strict(rec, tag="count-mismatch")
+
+    def test_mpr1_parser_positive_genuine(self):
+        # Genuine positive through the real parser: observed=1/1 with one
+        # valid $24 line per cycle validates without raising.
+        pc = 0x3100
+        cold = self._fake_probe_run("cold", pc, 1, reason="cd_halt_ok")
+        warm = self._fake_probe_run("warm", pc, 1, reason="cd_halt_ok")
+        import json
+        cold["buffer_hex"] = "ab" * 2048
+        warm["buffer_hex"] = "ab" * 2048
+        rec = self._run_fake_probe("fp-pos", [
+            ("RUN", cold), ("RUN", warm),
+            ("APICALL", self._fake_strict_arrival("cold")),
+            ("APICALL", self._fake_strict_arrival("warm")),
+        ])
+        self._check_mpr1_positive_strict(rec, tag="parser-positive")
+
+    def test_mpr1_parser_positive_extra_valid(self):
+        # Extra valid-schema other-slot line with matching counts (cold
+        # observed=2 + 2 lines, warm genuine zero): the exactly-1 rule
+        # itself must fire.
+        pc = 0x3100
+        rec = self._run_fake_probe("fp-posextra", [
+            ("RUN", self._fake_probe_run("cold", pc, 2, reason="cd_halt_ok")),
+            ("RUN", self._fake_probe_run("warm", pc, 0, reason="cd_halt_ok")),
+            ("APICALL", self._fake_strict_arrival("cold")),
+            ("APICALL", self._fake_strict_arrival("cold", slot=0x03,
+                                                    entry_pc=0xE009)),
+        ])
+        with self.assertRaisesRegex(AssertionError, "exactly 1",
+                                     msg="parser extra accepted"):
+            self._check_mpr1_positive_strict(rec, tag="parser-posextra")
+
+    def test_mpr1_parser_positive_unknown_cycle(self):
+        # Unknown-cycle line through the real parser: strict schema fires
+        # before the per-cycle count comparison can ignore it.
+        pc = 0x3100
+        other = self._fake_strict_arrival("cold", slot=0x03,
+                                          entry_pc=0xE009)
+        other["cycle"] = "other"
+        rec = self._run_fake_probe("fp-posunknown", [
+            ("RUN", self._fake_probe_run("cold", pc, 1, reason="cd_halt_ok")),
+            ("RUN", self._fake_probe_run("warm", pc, 1, reason="cd_halt_ok")),
+            ("APICALL", self._fake_strict_arrival("cold")),
+            ("APICALL", self._fake_strict_arrival("warm")),
+            ("APICALL", other),
+        ])
+        with self.assertRaisesRegex(AssertionError, "bad cycle",
+                                     msg="parser unknown cycle accepted"):
+            self._check_mpr1_positive_strict(rec, tag="parser-posunknown")
+
+    def test_mpr1_parser_positive_count_2(self):
+        # Observed=2 with one line per cycle: the mismatch diagnostic must
+        # fire (not merely the later exactly-1 check).
+        pc = 0x3100
+        rec = self._run_fake_probe("fp-poscount2", [
+            ("RUN", self._fake_probe_run("cold", pc, 2, reason="cd_halt_ok")),
+            ("RUN", self._fake_probe_run("warm", pc, 2, reason="cd_halt_ok")),
+            ("APICALL", self._fake_strict_arrival("cold")),
+            ("APICALL", self._fake_strict_arrival("warm")),
+        ])
+        with self.assertRaisesRegex(AssertionError,
+                                     "parsed/observed APICALL mismatch",
+                                     msg="parser count-2 accepted"):
+            self._check_mpr1_positive_strict(rec, tag="parser-poscount2")
 
     def _run_vdc(self, name, entry_ar, areg, xreg, pseed):
         # Dedicated VDC-invariance probe: guest sets AR, calls $E06C, halts.
