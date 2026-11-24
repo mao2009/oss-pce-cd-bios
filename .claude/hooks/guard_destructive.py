@@ -2515,12 +2515,16 @@ def _awk_program(args):
         if a == '--':
             rest = args[i + 1:]
             if not rest:
-                return 'none' if not seen_program_text else 'file'
-            if rest[0] == '-' and not seen_program_text:
+                return 'none' if not (seen_program_text or seen_file) else 'file'
+            if rest[0] == '-' and not seen_program_text and not seen_file:
                 return 'stdin'
             return 'file'
         if a == '-':
-            if seen_program_text:
+            # A bare `-` names stdin: as the program when nothing names one
+            # (fail-closed), but as a data file once `-f`/program text did
+            # (verified on gawk: `awk -f prog.awk -` runs the file program).
+            # `-f -` (a `-` *value* to `-f`) is still always stdin program.
+            if seen_program_text or seen_file:
                 i += 1
                 continue
             return 'stdin'
@@ -2965,6 +2969,36 @@ def _redirect_op_may_fail(op, target):
     return True
 
 
+def _scan_redirect_target(seg, j, n):
+# Unquoted target word starting at op end j; None when uncertain.
+# A quote anywhere inside the word (not just a leading one) makes the
+# target unresolved: only a complete literal word counts as a close.
+# Verified on Bash: only the complete expanded word closes fd 0.
+    t = j
+    while t < n and seg[t] in " \t":
+        t += 1
+    if t >= n or seg[t] in "'\"":
+        return None
+    u = t
+    quoted_target = False
+    while u < n and seg[u] not in " \t" + REDIR_MARK:
+        if seg[u] in "'\"":
+            quoted_target = True
+            q = seg[u]
+            u += 1
+            while u < n and seg[u] != q:
+                u += 1
+            u += 1
+            continue
+        if seg[u] == "\\":
+            u += 2
+            continue
+        u += 1
+    if quoted_target:
+        return None
+    return seg[t:u]
+
+
 def _scan_stdin_ops(seg):
     """Yield (op, target) for each unquoted `<`- or `>&`-family operator.
 
@@ -3008,16 +3042,7 @@ def _scan_stdin_ops(seg):
             while j < n and seg[j] in "<&":
                 j += 1
             op = fd + seg[i:j]
-            t = j
-            while t < n and seg[t] in " \t":
-                t += 1
-            if t < n and seg[t] in "'\"":
-                target = None
-            else:
-                u = t
-                while u < n and seg[u] not in " \t" + REDIR_MARK + "'\"":
-                    u += 1
-                target = seg[t:u]
+            target = _scan_redirect_target(seg, j, n)
             ops.append((op, target))
             i = j
             continue
@@ -3035,16 +3060,7 @@ def _scan_stdin_ops(seg):
             while j < n and seg[j] in ">&|":
                 j += 1
             op = fd + seg[i:j]
-            t = j
-            while t < n and seg[t] in " \t":
-                t += 1
-            if t < n and seg[t] in "'\"":
-                target = None
-            else:
-                u = t
-                while u < n and seg[u] not in " \t" + REDIR_MARK + "'\"":
-                    u += 1
-                target = seg[t:u]
+            target = _scan_redirect_target(seg, j, n)
             ops.append((op, target))
             i = j
             continue
@@ -3057,16 +3073,7 @@ def _scan_stdin_ops(seg):
             while j < n and seg[j] == ">":
                 j += 1
             op = seg[i:j]
-            t = j
-            while t < n and seg[t] in " \t":
-                t += 1
-            if t < n and seg[t] in "'\"":
-                target = None
-            else:
-                u = t
-                while u < n and seg[u] not in " \t" + REDIR_MARK + "'\"":
-                    u += 1
-                target = seg[t:u]
+            target = _scan_redirect_target(seg, j, n)
             ops.append((op, target))
             i = j
             continue
@@ -4434,14 +4441,16 @@ def _funcdef_end_idx(segs, idx, ps, function_form=False):
         if j < 0 or j >= n:
             return None
     else:
-        # Optional empty signature parens: `function f ()`.
+        # Optional empty signature parens: `function f ()`. A non-empty
+        # parenthesised group is not a signature but the subshell body
+        # itself (`function f ( true )` installs f; verified on Bash).
         if segs[j] == SUBSHELL_OPEN:
-            j = _match(SUBSHELL_OPEN, SUBSHELL_CLOSE, j, empty_only=True)
-            if j is None or j < 0:
-                return None
-            j = _skip(j + 1)
-            if j < 0 or j >= n:
-                return None
+            k = _match(SUBSHELL_OPEN, SUBSHELL_CLOSE, j, empty_only=True)
+            if k is not None and k >= 0:
+                j = _skip(k + 1)
+                if j < 0 or j >= n:
+                    return None
+            # else: fall through and match this group as the body below.
     if j < n and segs[j] in (BBRACE_OPEN, SUBSHELL_OPEN):
         opener = segs[j]
         closer = BBRACE_CLOSE if opener == BBRACE_OPEN else SUBSHELL_CLOSE

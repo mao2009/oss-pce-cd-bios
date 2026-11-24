@@ -3680,6 +3680,23 @@ class StdinProgramTests(unittest.TestCase):
                 self.assertEqual(verdict, "DENY")
                 self.assertIn("stdin-program", reason)
 
+    def test_awk_named_program_with_dash_data_operand(self):
+        # A bare "-" (or "--") after a "-f" program names
+        # stdin as a *data* file, not the program (verified on gawk:
+        # "awk -f prog.awk -" runs the file program). The classifier
+        # must not report stdin-program there; the invocation stays
+        # DENY via the established unknown-external rule (no ALLOW change:
+        # "awk -f prog.awk" itself is not allowlisted).
+        for cmd in ["printf \'x\n\' | awk -f report.awk -",
+                    "printf \'x\n\' | awk -f report.awk --",
+                    "printf \'x\n\' | awk -f report.awk -- -",
+                    "awk -f report.awk - data.txt",
+                    "awk -f report.awk -- data.txt"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertNotIn("stdin-program", reason)
+
     def test_awk_later_dash_selects_stdin_program(self):
         # CodeRabbit (PR #814): GNU awk concatenates every -f source, so a
         # later `-f -` still runs program text from stdin even when a file
@@ -4148,7 +4165,8 @@ class StdinProgramTests(unittest.TestCase):
         for cmd in ["eval() { echo hi; }; eval 'exec < code.js'; node",
                     "eval() { echo hi; }; command -v eval; node",
                     "eval() { echo hi; }; time eval 'exec < code.js'; node",
-                    "f() { eval() { :; }; eval 'exec < code.js'; }; f; node"]:
+                    "f() { eval() { :; }; eval 'exec < code.js'; }; f; node",
+                    "function eval ( true ); eval 'exec < /dev/null'; node"]:
             with self.subTest(cmd=cmd):
                 verdict, reason = self._d(cmd)
                 self.assertEqual(verdict, "ALLOW", reason)
@@ -4428,7 +4446,10 @@ class StdinProgramTests(unittest.TestCase):
                     "exec 3< /tmp/x; exec 0>&3; exec > output.log <&-; node",
                     "exec 3< /tmp/x; exec 0>&3; exec <&- > output.log; node",
                     "exec <&- <<EOF; node\nEOF",
-                    "exec 0>&- <<< 'x'; node"]:
+                    "exec 0>&- <<< 'x'; node",
+                    "exec 0>&3; exec 0>&-\"x\"; node",
+                    "exec <&3; exec <&-\"x\"; node",
+                    "exec < /tmp/stdin-probe.py; exec 0>&-\"x\"; node"]:
             with self.subTest(cmd=cmd[:80]):
                 verdict, reason = self._d(cmd)
                 self.assertEqual(verdict, "DENY")
@@ -4649,12 +4670,28 @@ class StdinProgramMutationTests(unittest.TestCase):
         "output-family close treated as supply": (
             "        if (target or \"\") == \"-\":\n            return \"close\"",
             "        if False:  # mutant: output close as supply\n            return \"close\""),
+        "output scan stops at quotes": (
+            "    while u < n and seg[u] not in \" \\t\" + REDIR_MARK:",
+            "    while u < n and seg[u] not in \" \\t\" + REDIR_MARK + \"'\\\"\":  # mutant: prefix dash closes",
+        ),
+        "function paren body missed": (
+            "    else:\n        # Optional empty signature parens: `function f ()`. A non-empty\n        # parenthesised group is not a signature but the subshell body\n        # itself (`function f ( true )` installs f; verified on Bash).\n        if segs[j] == SUBSHELL_OPEN:\n            k = _match(SUBSHELL_OPEN, SUBSHELL_CLOSE, j, empty_only=True)\n            if k is not None and k >= 0:\n                j = _skip(k + 1)\n                if j < 0 or j >= n:\n                    return None\n            # else: fall through and match this group as the body below.",
+            "    else:\n        # Optional empty signature parens: `function f ()`.\n        if segs[j] == SUBSHELL_OPEN:\n            j = _match(SUBSHELL_OPEN, SUBSHELL_CLOSE, j, empty_only=True)\n            if j is None or j < 0:\n                return None\n            j = _skip(j + 1)\n            if j < 0 or j >= n:\n                return None  # mutant: paren body missed"
+        ),
         "uncertain close clears provenance": (
             "        if all(not _redirect_op_may_fail(o, t) for o, t in ops):\n            return \"close\"\n        return None",
             "        return \"close\"  # mutant: uncertain close clears"),
         "in-body close treated as infallible": (
             "    if base in (\"<&\", \">&\"):\n        return (target or \"\") != \"-\"",
             "    return True  # mutant: closes may fail"),
+        "awk bare dash with seen program or file": (
+            "            if seen_program_text or seen_file:\n                i += 1\n                continue\n            return 'stdin'",
+            "            if seen_program_text:  # mutant: data dash is stdin program\n                i += 1\n                continue\n            return 'stdin'",
+        ),
+        "awk double dash ignores seen file": (
+            "            if rest[0] == '-' and not seen_program_text and not seen_file:",
+            "            if rest[0] == '-' and not seen_program_text:  # mutant: -- ignores seen file",
+        ),
         "eval function-definition propagation removed": (
             "            _ev_def_text = _eval_command_text(seg_words, ps, all_funcs, definite)",
             "            _ev_def_text = None  # mutant: eval defs never propagate"),
@@ -4808,7 +4845,7 @@ class StdinProgramMutationTests(unittest.TestCase):
                  "test_nested_pipe_inherits_stdin", "test_nested_conditional_close_keeps_taint",
                  "test_eval_shadowed_by_function", "test_fork_child_close_keeps_parent_taint",
                  "test_forked_exec_never_taints_parent", "test_shadowed_exec_close_keeps_taint",
-                 "test_list_conditional_close_keeps_taint", "test_awk_later_dash_selects_stdin_program"]
+                 "test_list_conditional_close_keeps_taint", "test_awk_later_dash_selects_stdin_program", "test_awk_named_program_with_dash_data_operand"]
 
     def _run(self, hook_text):
         with tempfile.TemporaryDirectory() as td:
