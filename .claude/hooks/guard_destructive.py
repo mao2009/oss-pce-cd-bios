@@ -303,7 +303,7 @@ def _require_untainted(ctx, what):
 
 
 def _nested_text(text, ctx, ps, depth, fed=False, outer_funcs=None, merge_cwd=False,
-                 merge_exec=False, defs_out=None):
+                 merge_exec=False, defs_out=None, outer_definite=None, definite_out=None):
     """Analyse nested command text, propagating chain taint back to the parent.
 
     merge_cwd (eval only, #636): the nested text runs in the calling shell,
@@ -322,7 +322,8 @@ def _nested_text(text, ctx, ps, depth, fed=False, outer_funcs=None, merge_cwd=Fa
     """
     sub = ctx.copy()
     nested_end = analyze_text(text, sub, ps, depth, inherited_fed=fed, outer_funcs=outer_funcs,
-                              defs_out=defs_out)
+                              outer_definite=outer_definite, defs_out=defs_out,
+                              definite_out=definite_out)
     if sub.tainted:
         ctx.tainted = True
     if merge_cwd:
@@ -408,10 +409,10 @@ def same_shell_target_index(name, args, ctx):
 
 
 def _nested_argv_same_shell(words, ctx, ps, depth, fed=False, outer_funcs=None,
-                            via_builtin=False):
+                            via_builtin=False, outer_definite=None):
     """Same-shell wrapper target: merge chain taint and cwd back to the parent."""
     sub = ctx.copy()
-    analyze_argv(words, sub, ps, depth, fed, outer_funcs, via_builtin)
+    analyze_argv(words, sub, ps, depth, fed, outer_funcs, via_builtin, outer_definite)
     if sub.tainted:
         ctx.tainted = True
     if sub.exec_out:
@@ -3461,7 +3462,7 @@ def command_name(w):
 
 
 def analyze_argv(words, ctx, ps, depth, fed=False, outer_funcs=None,
-                  via_builtin=False):
+                  via_builtin=False, outer_definite=None):
     if depth > MAX_DEPTH:
         raise Deny("depth", "command nesting too deep")
     # A program-naming environment variable anywhere in the command (prefix, export, env -S, a shell string) is denied.
@@ -3583,7 +3584,8 @@ def analyze_argv(words, ctx, ps, depth, fed=False, outer_funcs=None,
                     # builtin form is not assumed there.
                     _nested_argv_same_shell(same_shell_consumed, ctx, ps, depth + 1,
                                             fed, outer_funcs,
-                                            via_builtin=(name in ("command", "builtin")))
+                                            via_builtin=(name in ("command", "builtin")),
+                                            outer_definite=outer_definite)
             for cand in wrapper_candidates(name, words[1:], ctx):
                 if same_shell_consumed is not None and cand == same_shell_consumed:
                     # Already validated above (its taint/cwd merged once):
@@ -3691,9 +3693,11 @@ def analyze_argv(words, ctx, ps, depth, fed=False, outer_funcs=None,
         # (its string is an argument, not code). A redirect on the eval
         # command itself does not persist (verified: restored after the
         # command), so it sets no persistent flag.
+        _shadow_for_exec = outer_definite if outer_definite is not None else outer_funcs
         _nested_text(" ".join(args), ctx, ps, depth + 1, fed=fed,
                      outer_funcs=outer_funcs, merge_cwd=True,
-                     merge_exec=(via_builtin or _func_call_name("eval", ps) not in (outer_funcs or {})))
+                     outer_definite=outer_definite,
+                     merge_exec=(via_builtin or _func_call_name("eval", ps) not in (_shadow_for_exec or {})))
     elif name in SHELLS:
         shell_rule(args, ctx, depth, fed)
     elif name in PS_HOSTS:
@@ -3814,6 +3818,10 @@ def _stdin_prepass(segs, ps, inherited_fed, all_funcs=None):
     subshell_depth = 0
     pending_funcbody = False  # an `f()`-style signature awaits its body group
     pending_cond = False  # a `&&`/`||` boundary precedes the next command (short-circuit: it may not execute)
+    cond_brace = []  # per-open-brace conditional flags: a `{ ... }` group opened
+    # right after `&&`/`||` may be skipped whole, so every command inside it is
+    # conditional even after the first one consumes pending_cond (CodeRabbit
+    # 6031635927: `false && { ...; exec <&-; }` must not clear stdin).
 
     def _transparent(idx):
         return _seg_is_transparent(segs[idx], ps)
@@ -3862,6 +3870,9 @@ def _stdin_prepass(segs, ps, inherited_fed, all_funcs=None):
                 else:
                     stack.append(("bbrace" if seg == BBRACE_OPEN else (
                         "pscond" if seg == PSCOND_OPEN else "psbrace"), fed, pfed, i))
+                    if seg == BBRACE_OPEN and not ps:
+                        cond_brace.append(bool(pending_cond))
+                        pending_cond = False
                     pending_funcbody = False
             elif seg in (SUBSHELL_CLOSE, COPROC_CLOSE):
                 want = ("paren", "funcbody") if seg == SUBSHELL_CLOSE else ("coproc",)
@@ -3933,7 +3944,9 @@ def _stdin_prepass(segs, ps, inherited_fed, all_funcs=None):
                 want = (("bbrace", "funcbody") if seg == BBRACE_CLOSE else
                         (("pscond",) if seg == PSCOND_CLOSE else ("psbrace",)))
                 if stack and stack[-1][0] in want:
-                    _, _efed, _epfed, opener_idx = stack.pop()
+                    _kind, _efed, _epfed, opener_idx = stack.pop()
+                    if seg == BBRACE_CLOSE and not ps and _kind == "bbrace" and cond_brace:
+                        cond_brace.pop()
                     if stack and stack[-1][0] == "function":
                         # The `{...}` body of a `function` definition ends
                         # here (a `{` brace group is always a real body).
@@ -3965,9 +3978,11 @@ def _stdin_prepass(segs, ps, inherited_fed, all_funcs=None):
             is_stage[i] = pfed
             subdepth[i] = subshell_depth
             suppressed[i] = any(e[0] in ("function", "funcbody") for e in stack)
-            in_cond[i] = any(e[0] in ("if", "loop", "case") for e in stack)
+            in_cond[i] = (any(e[0] in ("if", "loop", "case") for e in stack)
+                           or pending_cond or any(cond_brace))
             continue
-        in_cond[i] = any(e[0] in ("if", "loop", "case") for e in stack) or pending_cond
+        in_cond[i] = (any(e[0] in ("if", "loop", "case") for e in stack) or pending_cond
+                        or any(cond_brace))
         seg_cond = pending_cond
         pending_cond = False
         pipe[i] = fed or inh
@@ -4014,7 +4029,8 @@ def _stdin_prepass(segs, ps, inherited_fed, all_funcs=None):
                             eff[kk] = True
             effect = _exec_segment_effect(words, seg)
             _suppressed = any(e[0] in ("function", "funcbody") for e in stack)
-            _in_cond_here = any(e[0] in ("if", "loop", "case") for e in stack) or seg_cond
+            _in_cond_here = (any(e[0] in ("if", "loop", "case") for e in stack) or seg_cond
+                               or any(cond_brace))
             if effect == "supply":
                 # MAJOR (Issue #637): a persistent redirect applies to the
                 # active shell scope, including a subshell/coprocess body
@@ -4040,7 +4056,7 @@ def _stdin_prepass(segs, ps, inherited_fed, all_funcs=None):
     return pipe, eff, is_stage, subdepth, exec_flag, suppressed, in_cond
 
 
-def _eval_command_text(words, ps, all_funcs):
+def _eval_command_text(words, ps, all_funcs, definite=None):
     """Eval string of a same-shell `eval` invocation, or None (Issue #637).
 
     Resolves `eval` through same-shell prefixes (`!`, `time -p`, `builtin`,
@@ -4078,11 +4094,15 @@ def _eval_command_text(words, ps, all_funcs):
         break
     if j >= len(words) or words[j] != "eval":
         return None
-    if not forced and _func_call_name("eval", ps) in (all_funcs or {}):
+    _shadow_map = definite if definite is not None else all_funcs
+    if not forced and _func_call_name("eval", ps) in (_shadow_map or {}):
         # A shell function shadows the builtin: the words are its
         # arguments, not code (handled by the function-call path).
         # `builtin`/`command` bypass the function and always run the
         # builtin (verified on Bash), so forced forms still return code.
+        # When a definite map is passed, only definite installations shadow:
+        # a merely possible (conditional) `eval` preserves the builtin
+        # alternative fail-closed (CodeRabbit 5986155667/6031635927).
         return None
     rest, skip, out = words[j + 1:], False, []
     for w in rest:
@@ -4248,7 +4268,8 @@ _STDIN_SENTINELS = frozenset([
 _FUNCDEF_NAME = re.compile(r"[^\s;|&<>()=]+")
 
 
-def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None, defs_out=None):
+def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None, defs_out=None,
+                 outer_definite=None, definite_out=None):
     if depth > MAX_DEPTH:
         raise Deny("depth", "command nesting too deep")
     if ps and METHOD_CALL_RE.search(text):
@@ -4282,6 +4303,42 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None, de
     # the outer taint fail-closed (OR of outer and inner marks).
     _stdin_pipe, _stdin_eff, _stdin_stage, _stdin_subdepth, _prepass_end, _stdin_suppressed, _stdin_in_cond = _stdin_prepass(
         segs, ps, inherited_fed, all_funcs)
+    # Definite installations (unconditional, same-shell, unforked): only these
+    # shadow builtins for `_eval_command_text`. Merely possible (conditional or
+    # fork-local) definitions stay in all_funcs for fail-closed call analysis
+    # but never suppress the builtin alternative (CodeRabbit 6031635927).
+    definite = set(outer_definite or ())
+    if not ps:
+        for _di, _dseg in enumerate(segs):
+            if _dseg in _STDIN_SENTINELS:
+                continue
+            if (_stdin_stage[_di] or _stdin_subdepth[_di] != 0
+                    or _stdin_suppressed[_di] or _stdin_in_cond[_di]):
+                continue
+            if _followed_by_fork_boundary(segs, _di, ps):
+                continue
+            if not _is_funcdef_name(segs, _di, ps):
+                # `function NAME` form puts `function` in command position.
+                try:
+                    _dw = words_of(_dseg, ps)
+                except Deny:
+                    continue
+                if (len(_dw) >= 2 and _dw[0].lower() == "function"
+                        and _FUNCDEF_NAME.fullmatch(_dw[1] or "")
+                        and _dw[1] not in KEYWORDS):
+                    _dk = _func_key(_dw[1], ps)
+                    if _dk in all_funcs:
+                        definite.add(_dk)
+                continue
+            try:
+                _dw = words_of(_dseg, ps)
+            except Deny:
+                continue
+            if not _dw:
+                continue
+            _dk, _, _ = _call_target(_dw, ps)
+            if _dk is not None and _dk in all_funcs:
+                definite.add(_dk)
     # A python command whose argv is not certain (unquoted or double-quoted expansion characters) is refused.
     # dyn_at records the function-exec stdin flag before each segment, so the
     # scope machine below observes the same taint the checks here saw.
@@ -4289,6 +4346,7 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None, de
     dyn_at = [False] * len(segs)
     dyn_save = []  # dynamic stdin snapshots per open subshell/coprocess
     funcs_save = []  # function-map snapshots per open subshell/coprocess
+    definite_save = []  # definite-installation snapshots per open subshell/coprocess
     # (Issue #637 MAJOR: function/eval persistent effects apply inside the
     # active fork as well; the saved outer state is restored at the fork's
     # close so a completed fork never leaks back. A brace group runs in the
@@ -4297,12 +4355,15 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None, de
         if seg == SUBSHELL_OPEN or seg == COPROC_OPEN:
             dyn_save.append(dyn_exec)
             funcs_save.append({k: list(v) for k, v in all_funcs.items()})
+            definite_save.append(set(definite))
             continue
         if seg == SUBSHELL_CLOSE or seg == COPROC_CLOSE:
             if dyn_save:
                 dyn_exec = dyn_save.pop()
             if funcs_save:
                 all_funcs = funcs_save.pop()
+            if definite_save:
+                definite = definite_save.pop()
             continue
         if seg == PIPE_BOUND or seg == BG_BOUND or seg == CMD_BOUND:
             continue
@@ -4351,7 +4412,8 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None, de
                         if _body is None:
                             raise Deny("function", "function '" + _fkey + "' with uninspectable body called with stdin: not inspected")
                         try:
-                            analyze_text(_body, ctx.copy(), ps, depth + 1, inherited_fed=True, outer_funcs=all_funcs)
+                            analyze_text(_body, ctx.copy(), ps, depth + 1, inherited_fed=True, outer_funcs=all_funcs,
+                                         outer_definite=definite)
                         except Deny as _d:
                             raise _d
                 # MAJOR (review 5967514206): Bash is case-sensitive, PowerShell is
@@ -4370,6 +4432,46 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None, de
                             break
             elif _first_idx < len(seg_words) and _func_call_name(seg_words[_first_idx], ps) in NON_EXEC_COMMANDS:
                 pass
+            # MAJOR CodeRabbit 6031635927 (outside-diff 4349): same-shell calls
+            # install definitions even when their incoming stdin is untainted
+            # (verified: `f() { eval 'g()...'; }; f` installs g). Collect scoped
+            # definition effects from actually-executed calls (fail-closed for
+            # later pipe-fed calls). Forked/suppressed/definition positions
+            # never leak (same gates as the dyn leak above). Uninspectable
+            # (None) bodies stay as-is.
+            if (not ps and not _stdin_stage[idx]
+                    and not _stdin_suppressed[idx]
+                    and _stdin_subdepth[idx] == 0
+                    and not _followed_by_fork_boundary(segs, idx, ps)):
+                _ckey, _csaw, _cfirst = _call_target(seg_words, ps)
+                if (_ckey is not None and _ckey in all_funcs
+                        and not _csaw
+                        and not _is_funcdef_name(segs, idx, ps)):
+                    _call_snap = set(definite)
+                    for _cb in all_funcs[_ckey]:
+                        if _cb is None or depth + 1 > MAX_DEPTH:
+                            continue
+                        try:
+                            _cdefs = {}
+                            _cdef = set()
+                            _ctmp = ctx.copy()
+                            analyze_text(_cb, _ctmp, ps, depth + 1,
+                                         inherited_fed=False, outer_funcs=all_funcs,
+                                         outer_definite=definite,
+                                         defs_out=_cdefs, definite_out=_cdef)
+                        except Deny:
+                            continue
+                        for _dk, _dv in _cdefs.items():
+                            if _dk not in all_funcs:
+                                all_funcs[_dk] = list(_dv)
+                            else:
+                                for _ddb in _dv:
+                                    if _ddb not in all_funcs[_dk]:
+                                        all_funcs[_dk].append(_ddb)
+                        _new_definite = _cdef - _call_snap
+                        if not _stdin_in_cond[idx]:
+                            definite.update(_new_definite)
+                        _call_snap.update(_new_definite)
         # MAJOR (review 5971146586): a same-shell `eval` whose text
         # persistently redirects stdin (`eval 'exec < f'`, `eval 'f'`) changes
         # the caller's stdin for later segments (verified on Bash). The
@@ -4380,7 +4482,7 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None, de
         if (not ps and not _stdin_stage[idx]
                 and not _stdin_suppressed[idx]
                 and not _followed_by_fork_boundary(segs, idx, ps)):
-            _ev_text = _eval_command_text(seg_words, ps, all_funcs)
+            _ev_text = _eval_command_text(seg_words, ps, all_funcs, definite)
             if _ev_text is not None and _body_sets_exec_stdin(
                     _ev_text, ps, all_funcs, strict=False):
                 dyn_exec = True
@@ -4398,32 +4500,37 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None, de
                     and not _followed_by_fork_boundary(segs, idx, ps)
                     and not _exec_shadowed_by_function(seg_words, ps, all_funcs)):
                 dyn_exec = False
-        # MAJOR CodeRabbit 5985627085 + follow-ups 5986155667: same-shell
-        # eval installs function definitions in the calling shell (verified
-        # harmless: eval 'f() { echo hi; }' then f runs it, as does split-arg
-        # eval 'f()' '{ ...; }'). Propagate them for later segments
+        # MAJOR CodeRabbit 5985627085 + follow-ups 5986155667/6031635927:
+        # same-shell eval installs function definitions in the calling shell
+        # (verified harmless: eval 'f() { echo hi; }' then f runs it, as does
+        # split-arg eval 'f()' '{ ...; }'). Propagate them for later segments
         # (fail-closed: a later pipe-fed call DENYs via the function-body
         # path). Forked, subshell/coprocess (via funcs_save restore) or
         # definition-body positions never leak to the parent (same gates as
-        # dyn_exec plus fork-map restore); conditionals propagate f-defs
-        # fail-closed (assuming defined is safe) but never install a
-        # conditional `eval` shadowing (preserve the builtin alternative so
-        # a later builtin eval still defines f). `builtin`/`command` bypass
+        # dyn_exec plus fork-map restore). `builtin`/`command` bypass
         # shadowing via _eval_command_text forced-builtin (verified on Bash).
+        # Possible (conditional) definitions stay in all_funcs for call
+        # analysis but only unconditional installs join definite, so a merely
+        # possible `eval` never suppresses the builtin alternative while a
+        # later pipe-fed `eval` call still inspects the possible body.
         if (not ps and not _stdin_stage[idx]
                 and not _stdin_suppressed[idx]
                 and not _followed_by_fork_boundary(segs, idx, ps)):
-            _ev_def_text = _eval_command_text(seg_words, ps, all_funcs)
+            _ev_def_text = _eval_command_text(seg_words, ps, all_funcs, definite)
             if _ev_def_text is not None:
-                _had_eval_before = "eval" in all_funcs
                 try:
                     _ev_defs = _extract_function_defs(_ev_def_text, ps)
                 except Deny:
                     _ev_defs = {}
                 for _k, _v in _ev_defs.items():
-                    if _k == "eval" and _stdin_in_cond[idx]:
-                        continue
-                    all_funcs.setdefault(_k, []).extend(_v)
+                    if _k not in all_funcs:
+                        all_funcs[_k] = list(_v)
+                    else:
+                        for _b in _v:
+                            if _b not in all_funcs[_k]:
+                                all_funcs[_k].append(_b)
+                    if not _stdin_in_cond[idx]:
+                        definite.add(_k)
                 # Transitive same-shell nested eval (`eval "eval 'f()'..."`
                 # installs f only via the inner eval). Collect via an
                 # isolated nested analysis (fail-closed: Deny here is
@@ -4432,31 +4539,25 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None, de
                 if depth + 1 <= MAX_DEPTH and _ev_def_text.strip() != "":
                     try:
                         _snap_keys = set(all_funcs.keys())
+                        _snap_def = set(definite)
                         _child_defs = {}
+                        _child_def = set()
                         _tmp = ctx.copy()
                         analyze_text(_ev_def_text, _tmp, ps, depth + 1,
                                      inherited_fed=False, outer_funcs=all_funcs,
-                                     defs_out=_child_defs)
+                                     outer_definite=definite,
+                                     defs_out=_child_defs, definite_out=_child_def)
                         for _ck, _cv in _child_defs.items():
                             if _ck not in _snap_keys:
-                                if _ck == "eval" and _stdin_in_cond[idx]:
-                                    continue
                                 all_funcs[_ck] = list(_cv)
                             else:
                                 for _b in _cv:
                                     if _b not in all_funcs[_ck]:
-                                        if _ck == "eval" and _stdin_in_cond[idx]:
-                                            continue
                                         all_funcs[_ck].append(_b)
+                        if not _stdin_in_cond[idx]:
+                            definite.update(_child_def - _snap_def)
                     except Deny:
                         pass
-                if _stdin_in_cond[idx] and not _had_eval_before and "eval" in all_funcs:
-                    # Conditional outer must not install definite `eval`
-                    # shadowing (preserve the builtin alternative for later).
-                    # Possible `eval` bodies stay for calls (fail-closed) via
-                    # all_funcs, but definite shadowing is removed: drop the
-                    # just-installed conditional `eval` entries.
-                    del all_funcs["eval"]
     if sum(len(ops) for ops in redirs) > MAX_REDIRECTS:
         raise Deny("redirect", "more than %d redirections are not inspected" % MAX_REDIRECTS)
     rest_subs = list(subs)
@@ -4846,7 +4947,7 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None, de
         for body in bodies:
             _nested_text(body, ctx, ps, depth + 1,
                          fed=(_stdin_pipe[idx] or dyn_at[idx] or live_exec),
-                         outer_funcs=all_funcs)
+                         outer_funcs=all_funcs, outer_definite=definite)
         if ops and inside_claude(ctx.cwd, ctx):
             raise Deny("claude-write", "redirect while cwd is inside .claude/ is denied")
         # Redirects of one segment share its incoming taint for their checks;
@@ -4860,7 +4961,7 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None, de
             ctx.tainted = True
         analyze_argv(words_of(seg, ps), ctx, ps, depth,
                      fed=(_stdin_eff[idx] or dyn_at[idx] or live_exec),
-                     outer_funcs=all_funcs)
+                     outer_funcs=all_funcs, outer_definite=definite)
         if ctx.exec_out:
             # A same-shell nested eval persistently redirected stdin during
             # this segment (MAJOR review 5971146586). Forked positions never
@@ -4927,6 +5028,9 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None, de
         defs_out.clear()
         for _k, _v in all_funcs.items():
             defs_out[_k] = list(_v)
+    if definite_out is not None:
+        definite_out.clear()
+        definite_out.update(definite)
     return bool(_prepass_end or dyn_exec or live_exec)
 
 

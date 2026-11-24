@@ -4130,7 +4130,9 @@ class StdinProgramTests(unittest.TestCase):
                     "exec < code.js; true || exec <&-; node",
                     "exec < code.js; true && exec <&-; node",
                     "exec < code.js; a && b && exec <&-; node",
-                    "f() { exec < code.js; }; f; false && exec <&-; node"]:
+                    "f() { exec < code.js; }; f; false && exec <&-; node",
+                    "exec < code.js; false && { echo skipped; exec <&-; }; node",
+                    "exec < code.js; true || { echo skipped; exec <&-; }; node"]:
             with self.subTest(cmd=cmd):
                 verdict, reason = self._d(cmd)
                 self.assertEqual(verdict, "DENY")
@@ -4370,7 +4372,12 @@ class StdinProgramTests(unittest.TestCase):
                     "false && eval 'eval() { true; }'; eval 'f()' '{ node; }'; printf 'x\\n' | f",
                     "eval() { true; }; builtin eval 'f()' '{ node; }'; printf 'x\\n' | f",
                     'eval \'eval "f() { node; }"\'; printf \'x\\n\' | f',
-                    "(eval 'eval() { true; }'); eval 'f()' '{ node; }'; printf 'x\\n' | f"]:
+                    "(eval 'eval() { true; }'); eval 'f()' '{ node; }'; printf 'x\\n' | f",
+                    "f() { eval 'g()' '{ node; }'; }; f; printf 'x\\n' | g",
+                    "f() { eval 'g() { node; }'; }; f; printf 'x\\n' | g",
+                    "true && eval 'eval()' '{ node; }'; printf x | eval true",
+                    "f() { eval 'g() { node; }'; }; false && f; printf 'x\\n' | g",
+                    "(eval 'g() { node; }'; printf 'x\\n' | g)"]:
             with self.subTest(cmd=cmd):
                 verdict, reason = self._d(cmd)
                 self.assertEqual(verdict, "DENY")
@@ -4378,7 +4385,11 @@ class StdinProgramTests(unittest.TestCase):
         for cmd in ["eval 'f() { node script.js; }'; printf 'x\\n' | f",
                     "eval 'f() { cat; }'; printf 'x\\n' | f",
                     "eval 'f() { node; }'; f",
-                    "eval 'f() { node; }'; printf 'x\\n' | cat"]:
+                    "eval 'f() { node; }'; printf 'x\\n' | cat",
+                    "f() { eval 'g() { node script.js; }'; }; f; printf 'x\\n' | g",
+                    "f() { eval 'g() { cat; }'; }; f; printf 'x\\n' | g",
+                    "f() { eval 'g() { node; }'; }; printf 'x\\n' | g",
+                    "f() { eval 'g() { cat; }'; }; echo hi | f; printf 'x\\n' | g"]:
             with self.subTest(cmd=cmd):
                 verdict, reason = self._d(cmd)
                 self.assertEqual(verdict, "ALLOW", reason)
@@ -4423,8 +4434,8 @@ class StdinProgramMutationTests(unittest.TestCase):
             "            _nested_text(args[i + 1], ctx, False, depth + 1, fed=fed)",
             "            _nested_text(args[i + 1], ctx, False, depth + 1, fed=False)"),
         "nested inheritance ignored": (
-            "        for body in bodies:\n            _nested_text(body, ctx, ps, depth + 1,\n                         fed=(_stdin_pipe[idx] or dyn_at[idx] or live_exec),\n                         outer_funcs=all_funcs)",
-            "        for body in bodies:\n            _nested_text(body, ctx, ps, depth + 1,\n                         fed=inherited_fed,\n                         outer_funcs=all_funcs)"),
+            "        for body in bodies:\n            _nested_text(body, ctx, ps, depth + 1,\n                         fed=(_stdin_pipe[idx] or dyn_at[idx] or live_exec),\n                         outer_funcs=all_funcs, outer_definite=definite)",
+            "        for body in bodies:\n            _nested_text(body, ctx, ps, depth + 1,\n                         fed=inherited_fed,\n                         outer_funcs=all_funcs, outer_definite=definite)"),
         "paren taint lost": (
             "                else:\n                    stack.append((\"paren\" if seg == SUBSHELL_OPEN else \"coproc\",\n                                  fed, pfed, i))",
             "                else:\n                    stack.append((\"paren\" if seg == SUBSHELL_OPEN else \"coproc\",\n                                  False, False, i))"),
@@ -4432,26 +4443,26 @@ class StdinProgramMutationTests(unittest.TestCase):
             "            elif first == \"case\":",
             "            elif False:  # mutant: case never opens a compound"),
         "subs always untainted": (
-            "        for body in bodies:\n            _nested_text(body, ctx, ps, depth + 1,\n                         fed=(_stdin_pipe[idx] or dyn_at[idx] or live_exec),\n                         outer_funcs=all_funcs)",
-            "        for body in bodies:\n            _nested_text(body, ctx, ps, depth + 1,\n                         fed=False,\n                         outer_funcs=all_funcs)"),
+            "        for body in bodies:\n            _nested_text(body, ctx, ps, depth + 1,\n                         fed=(_stdin_pipe[idx] or dyn_at[idx] or live_exec),\n                         outer_funcs=all_funcs, outer_definite=definite)",
+            "        for body in bodies:\n            _nested_text(body, ctx, ps, depth + 1,\n                         fed=False,\n                         outer_funcs=all_funcs, outer_definite=definite)"),
         "subs parent not propagated": (
-            "        for body in bodies:\n            _nested_text(body, ctx, ps, depth + 1,\n                         fed=(_stdin_pipe[idx] or dyn_at[idx] or live_exec),\n                         outer_funcs=all_funcs)",
-            "        for body in bodies:\n            _nested_text(body, ctx, ps, depth + 1,\n                         fed=(_stdin_eff[0] or dyn_at[0]),\n                         outer_funcs=all_funcs)"),
+            "        for body in bodies:\n            _nested_text(body, ctx, ps, depth + 1,\n                         fed=(_stdin_pipe[idx] or dyn_at[idx] or live_exec),\n                         outer_funcs=all_funcs, outer_definite=definite)",
+            "        for body in bodies:\n            _nested_text(body, ctx, ps, depth + 1,\n                         fed=(_stdin_eff[0] or dyn_at[0]),\n                         outer_funcs=all_funcs, outer_definite=definite)"),
         "nested subs inheritance disabled": (
-            "    nested_end = analyze_text(text, sub, ps, depth, inherited_fed=fed, outer_funcs=outer_funcs,\n                              defs_out=defs_out)",
-            "    nested_end = analyze_text(text, sub, ps, depth, inherited_fed=False, outer_funcs=outer_funcs,\n                              defs_out=defs_out)  # mutant"),
+            "    nested_end = analyze_text(text, sub, ps, depth, inherited_fed=fed, outer_funcs=outer_funcs,\n                              outer_definite=outer_definite, defs_out=defs_out,\n                              definite_out=definite_out)",
+            "    nested_end = analyze_text(text, sub, ps, depth, inherited_fed=False, outer_funcs=outer_funcs,\n                              outer_definite=outer_definite, defs_out=defs_out,\n                              definite_out=definite_out)  # mutant"),
         "string visit stdin inheritance removed": (
             "                            _nested_text_from(words[k], ctx, wrapper_tainted, ps, depth + 1,\n                                              fed=fed)",
             "                            _nested_text_from(words[k], ctx, wrapper_tainted, ps, depth + 1,\n                                              fed=False)"),
         "subs global taint over-approximation": (
-            "        for body in bodies:\n            _nested_text(body, ctx, ps, depth + 1,\n                         fed=(_stdin_pipe[idx] or dyn_at[idx] or live_exec),\n                         outer_funcs=all_funcs)",
-            "        for body in bodies:\n            _nested_text(body, ctx, ps, depth + 1,\n                         fed=True,\n                         outer_funcs=all_funcs)"),
+            "        for body in bodies:\n            _nested_text(body, ctx, ps, depth + 1,\n                         fed=(_stdin_pipe[idx] or dyn_at[idx] or live_exec),\n                         outer_funcs=all_funcs, outer_definite=definite)",
+            "        for body in bodies:\n            _nested_text(body, ctx, ps, depth + 1,\n                         fed=True,\n                         outer_funcs=all_funcs, outer_definite=definite)"),
         "function call taint removed": (
             "        call_taint = here_eff",
             "        call_taint = False"),
         "function body inheritance disabled": (
-            "                            analyze_text(_body, ctx.copy(), ps, depth + 1, inherited_fed=True, outer_funcs=all_funcs)",
-            "                            analyze_text(_body, ctx.copy(), ps, depth + 1, inherited_fed=False, outer_funcs=all_funcs)"),
+            "                            analyze_text(_body, ctx.copy(), ps, depth + 1, inherited_fed=True, outer_funcs=all_funcs,\n                                         outer_definite=definite)",
+            "                            analyze_text(_body, ctx.copy(), ps, depth + 1, inherited_fed=False, outer_funcs=all_funcs,\n                                         outer_definite=definite)"),
         "compound redirect propagation disabled": (
             "                if stack and stack[-1][0] == want:\n                    _, _efed, _epfed, opener_idx = stack.pop()\n                    if own:",
             "                if stack and stack[-1][0] == want:\n                    _, _efed, _epfed, opener_idx = stack.pop()\n                    if False:  # compound redirect disabled"),
@@ -4462,8 +4473,8 @@ class StdinProgramMutationTests(unittest.TestCase):
             "        if prog in ('code', 'file'):\n            return None",
             "        if prog in ('code', 'file'):\n            return Deny('stdin-program', 'file over-denied')"),
         "subs sibling funcs ignored": (
-            "                         fed=(_stdin_pipe[idx] or dyn_at[idx] or live_exec),\n                         outer_funcs=all_funcs)",
-            "                         fed=(_stdin_pipe[idx] or dyn_at[idx] or live_exec),\n                         outer_funcs=None)"),
+            "                         fed=(_stdin_pipe[idx] or dyn_at[idx] or live_exec),\n                         outer_funcs=all_funcs, outer_definite=definite)",
+            "                         fed=(_stdin_pipe[idx] or dyn_at[idx] or live_exec),\n                         outer_funcs=None, outer_definite=None)"),
         "hyphen-dot-colon functions ignored": (
             "            if _fkey is not None and _fkey in all_funcs and not _is_funcdef_name(segs, idx, ps):",
             "            if False:  # hyphen/dot/colon ignored"),
@@ -4501,19 +4512,22 @@ class StdinProgramMutationTests(unittest.TestCase):
             "    if last == \"supply\":\n        return \"supply\"",
             "    if False:  # mutant: persistent supply lost\n        return \"supply\""),
         "eval function-definition propagation removed": (
-            "            _ev_def_text = _eval_command_text(seg_words, ps, all_funcs)",
+            "            _ev_def_text = _eval_command_text(seg_words, ps, all_funcs, definite)",
             "            _ev_def_text = None  # mutant: eval defs never propagate"),
         "builtin eval shadowing bypass removed": (
-            "    if not forced and _func_call_name(\"eval\", ps) in (all_funcs or {}):",
-            "    if _func_call_name(\"eval\", ps) in (all_funcs or {}):  # mutant: forced builtin ignored"),
-        "conditional eval shadowing not preserved": [
-            ("                    if _k == \"eval\" and _stdin_in_cond[idx]:\n                        continue",
-             "                    pass  # mutant: conditional eval shadows"),
-            ("                if _stdin_in_cond[idx] and not _had_eval_before and \"eval\" in all_funcs:",
-             "                if False:  # mutant: conditional eval shadows"),],
-        "subshell function map restore removed": (
-            "            if funcs_save:\n                all_funcs = funcs_save.pop()",
-            "            pass  # mutant: subshell defs leak"),
+            "    if not forced and _func_call_name(\"eval\", ps) in (_shadow_map or {}):",
+            "    if _func_call_name(\"eval\", ps) in (_shadow_map or {}):  # mutant: forced builtin ignored"),
+        "eval shadowing uses possible map": (
+            "    _shadow_map = definite if definite is not None else all_funcs",
+            "    _shadow_map = all_funcs  # mutant: conditional shadows builtin"),
+        "conditional eval joins definite set": (
+            "                    if not _stdin_in_cond[idx]:\n                        definite.add(_k)",
+            "                    definite.add(_k)  # mutant: conditional shadows builtin"),
+        "subshell function map restore removed": [
+            ("            if funcs_save:\n                all_funcs = funcs_save.pop()",
+             "            pass  # mutant: subshell defs leak"),
+            ("            if definite_save:\n                definite = definite_save.pop()",
+             "            pass  # mutant: subshell definite leaks"),],
         "nested eval definitions ignored": (
             "                if depth + 1 <= MAX_DEPTH and _ev_def_text.strip() != \"\":",
             "                if False:  # mutant: nested eval ignored"),
@@ -4537,11 +4551,11 @@ class StdinProgramMutationTests(unittest.TestCase):
             "                if (not pfed and not _suppressed\n                        and not _followed_by_fork_boundary(segs, i, ps)):\n                    exec_flag = True",
             "                if not _suppressed:\n                    exec_flag = True  # mutant: pipeline exec leaks"),
         "eval static scan disabled": (
-            "        _ev_text = _eval_command_text(seg_words, ps, all_funcs)",
-            "        _ev_text = None  # mutant: eval scan disabled"),
+            "            _ev_text = _eval_command_text(seg_words, ps, all_funcs, definite)",
+            "            _ev_text = None  # mutant: eval scan disabled"),
         "eval nested merge disabled": (
-            "        _nested_text(\" \".join(args), ctx, ps, depth + 1, fed=fed,\n                     outer_funcs=outer_funcs, merge_cwd=True,\n                     merge_exec=(via_builtin or _func_call_name(\"eval\", ps) not in (outer_funcs or {})))",
-            "        _nested_text(\" \".join(args), ctx, ps, depth + 1, fed=fed,\n                     outer_funcs=outer_funcs, merge_cwd=True, merge_exec=False)  # mutant"),
+            "                     merge_exec=(via_builtin or _func_call_name(\"eval\", ps) not in (_shadow_for_exec or {})))",
+            "                     merge_exec=False)  # mutant: eval exec never merges"),
         "eval forked leak allowed": (
             "            if (not ps and not _stdin_stage[idx]\n                    and not _stdin_suppressed[idx]\n                    and not _followed_by_fork_boundary(segs, idx, ps)):\n                live_exec = True",
             "            if True:  # mutant: forked eval leaks\n                live_exec = True"),
@@ -4554,9 +4568,9 @@ class StdinProgramMutationTests(unittest.TestCase):
             # compound): the prepass taint list and the same-segment gate
             # each independently preserve a short-circuited close, so both
             # must ignore it together to flip the verdict.
-            ('        in_cond[i] = any(e[0] in ("if", "loop", "case") for e in stack) or pending_cond\n        seg_cond = pending_cond\n        pending_cond = False',
+            ('        in_cond[i] = (any(e[0] in ("if", "loop", "case") for e in stack) or pending_cond\n                        or any(cond_brace))\n        seg_cond = pending_cond\n        pending_cond = False',
              '        in_cond[i] = any(e[0] in ("if", "loop", "case") for e in stack)\n        seg_cond = False  # mutant: list-conditional close clears\n        pending_cond = False'),
-            ('            _in_cond_here = any(e[0] in ("if", "loop", "case") for e in stack) or seg_cond',
+            ('            _in_cond_here = (any(e[0] in ("if", "loop", "case") for e in stack) or seg_cond\n                               or any(cond_brace))',
              '            _in_cond_here = any(e[0] in ("if", "loop", "case") for e in stack)  # mutant: list-conditional close clears'),],
         "list-conditional marker removed": [
             # The `&&` and `||` emitters each mark the next command
@@ -4605,8 +4619,8 @@ class StdinProgramMutationTests(unittest.TestCase):
             '    return bool(_prepass_end or dyn_exec)  # mutant: return drops live',
         ),
         "eval shadowing bypassed": (
-            '        _nested_text(" ".join(args), ctx, ps, depth + 1, fed=fed,\n                     outer_funcs=outer_funcs, merge_cwd=True,\n                     merge_exec=(via_builtin or _func_call_name("eval", ps) not in (outer_funcs or {})))',
-            '        _nested_text(" ".join(args), ctx, ps, depth + 1, fed=fed,\n                     outer_funcs=outer_funcs, merge_cwd=True, merge_exec=True)  # mutant: shadowing ignored',
+            '                     merge_exec=(via_builtin or _func_call_name("eval", ps) not in (_shadow_for_exec or {})))',
+            '                     merge_exec=True)  # mutant: shadowing ignored',
         ),
         "text scan skips quoted redirect words": (
             "        if '<' in w:\n            continue",
@@ -6240,8 +6254,8 @@ class ChainRuleMutationTests(unittest.TestCase):
             'def _nested_argv(words, ctx, ps, depth, fed=False, outer_funcs=None):\n    """Analyse nested argv, propagating chain taint back to the parent."""\n'
             '    sub = ctx.copy()\n    analyze_argv(words, sub, ps, depth, fed, outer_funcs)'),
         "eval cwd propagation removed": (
-            '        _nested_text(" ".join(args), ctx, ps, depth + 1, fed=fed,\n                     outer_funcs=outer_funcs, merge_cwd=True,\n                     merge_exec=(via_builtin or _func_call_name("eval", ps) not in (outer_funcs or {})))',
-        '        _nested_text(" ".join(args), ctx, ps, depth + 1, fed=fed,\n                     outer_funcs=outer_funcs, merge_cwd=False, merge_exec=(via_builtin or _func_call_name("eval", ps) not in (outer_funcs or {})))  # mutant',
+            '        _nested_text(" ".join(args), ctx, ps, depth + 1, fed=fed,\n                     outer_funcs=outer_funcs, merge_cwd=True,\n                     outer_definite=outer_definite,',
+            '        _nested_text(" ".join(args), ctx, ps, depth + 1, fed=fed,\n                     outer_funcs=outer_funcs, merge_cwd=False,  # mutant: eval cwd lost\n                     outer_definite=outer_definite,',
         ),
         "subshell scope open destroyed": (
             '                if not scope_stack and not bbrace_stack:\n                    # A top-level `( ... )` may be the whole first pipeline\n                    # stage: remember the pre-group cwd for the entry.\n                    scope_entry = (ctx.cwd, ctx.cwd_fuzzy)\n                    scope_just_closed = False\n                # run-13 (M1): the subshell owns its pipeline/list start:\n                # an inner `cd` moves the subshell\'s run, never the outer one.\n                run_scope.append((run_start, bg_start))\n                run_start = (ctx.cwd, ctx.cwd_fuzzy)\n                bg_start = (ctx.cwd, ctx.cwd_fuzzy)\n                scope_stack.append((ctx.cwd, ctx.cwd_fuzzy))\n                bg_scope.append((ctx.cwd, ctx.cwd_fuzzy))',
