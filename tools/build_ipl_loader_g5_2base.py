@@ -22,6 +22,10 @@ experimental real-processing bodies:
     -> JMP ex_scrmod_entry (EX_SCRMOD B1 preservation-only SIMULATED scaffold,
     src/ex_scrmod.s) with cd_25="experimental" (Issue #47; default keeps
     every existing test and the SIMULATED separation intact).
+  slot $24: $E06C table entry stays on the linked fallback stub by default, or
+    -> JMP ex_dotmod_entry (EX_DOTMOD B1-analogous preservation-only SIMULATED
+    scaffold, src/ex_dotmod.s) with cd_24="experimental" (Issue #46; default
+    keeps every existing test and the SIMULATED separation intact).
   slot $36: $E0A2 table entry stays on the linked fallback stub by default, or
     -> JMP ex_satclr_entry (EX_SATCLR B1-analogous preservation-only SIMULATED
     scaffold, src/ex_satclr.s) with cd_36="experimental" (Issue #64; default
@@ -55,6 +59,12 @@ as real processing. Opt-in experimental wiring lives behind cd_4a=
 $25 (EX_SCRMOD) is stub by default here. Opt-in experimental wiring lives
 behind cd_25="experimental" (Issue #47 B1 preservation-only SIMULATED
 scaffold, docs/47-ex-scrmod-contract.md + docs/47-ex-scrmod-b1.md).
+$24 (EX_DOTMOD) is stub by default here. Opt-in experimental wiring lives
+behind cd_24="experimental" (Issue #46 B1-analogous preservation-only
+SIMULATED scaffold, docs/46-ex-dotmod-contract.md + docs/46-ex-dotmod-b1.md).
+$36 (EX_SATCLR) is stub by default here. Opt-in experimental wiring lives
+behind cd_36="experimental" (Issue #64 B1-analogous preservation-only
+SIMULATED scaffold, docs/64-ex-satclr-contract.md + docs/64-ex-satclr-b1.md).
 """
 from __future__ import annotations
 
@@ -78,15 +88,24 @@ if __package__:
         _redirect_slot33_to_body,
         _redirect_slot4a_to_body,
         _redirect_slot25_to_body,
+        _redirect_slot24_to_body,
         _redirect_slot36_to_body,
         unified_api_windows,
         unified_api_windows_4a,
         unified_api_windows_25,
         unified_api_windows_4a_25,
+        unified_api_windows_24,
+        unified_api_windows_4a_24,
+        unified_api_windows_25_24,
+        unified_api_windows_4a_25_24,
         unified_api_windows_36,
         unified_api_windows_4a_36,
         unified_api_windows_25_36,
         unified_api_windows_4a_25_36,
+        unified_api_windows_24_36,
+        unified_api_windows_4a_24_36,
+        unified_api_windows_25_24_36,
+        unified_api_windows_4a_25_24_36,
     )
     from .environment import DEPENDENCIES, executable
 else:
@@ -99,15 +118,24 @@ else:
         _redirect_slot33_to_body,
         _redirect_slot4a_to_body,
         _redirect_slot25_to_body,
+        _redirect_slot24_to_body,
         _redirect_slot36_to_body,
         unified_api_windows,
         unified_api_windows_4a,
         unified_api_windows_25,
         unified_api_windows_4a_25,
+        unified_api_windows_24,
+        unified_api_windows_4a_24,
+        unified_api_windows_25_24,
+        unified_api_windows_4a_25_24,
         unified_api_windows_36,
         unified_api_windows_4a_36,
         unified_api_windows_25_36,
         unified_api_windows_4a_25_36,
+        unified_api_windows_24_36,
+        unified_api_windows_4a_24_36,
+        unified_api_windows_25_24_36,
+        unified_api_windows_4a_25_24_36,
     )
     from environment import DEPENDENCIES, executable
 
@@ -122,6 +150,8 @@ MEMOPEN_SOURCE = ROOT / "src" / "ex_memopen.s"
 MEMOPEN_ENTRY = "ex_memopen_entry"
 SCRMOD_SOURCE = ROOT / "src" / "ex_scrmod.s"
 SCRMOD_ENTRY = "ex_scrmod_entry"
+DOTMOD_SOURCE = ROOT / "src" / "ex_dotmod.s"
+DOTMOD_ENTRY = "ex_dotmod_entry"
 SATCLR_SOURCE = ROOT / "src" / "ex_satclr.s"
 SATCLR_ENTRY = "ex_satclr_entry"
 BANK0_CFG = ROOT / "src" / "bank0.cfg"
@@ -132,6 +162,7 @@ EXP_LABELS = ("api_slot_02", "api_unimplemented", "cd_base_2base_entry",
               "api_slot_33", "experimental_slot_33",
               "api_slot_4A", "ex_memopen_entry",
               "api_slot_25", "ex_scrmod_entry",
+              "api_slot_24", "ex_dotmod_entry",
               "api_slot_36", "ex_satclr_entry",
               "experimental_selection")
 ALL_LABELS = tuple(dict.fromkeys(list(LOADER_REQUIRED) + list(EXP_LABELS)))
@@ -266,7 +297,7 @@ def _g5_leaf_names(variant: str) -> list:
     names += [f"{ov[slot].stem}.o" for slot in sorted(ov)]
     names += [f"cd_base_2base_{variant}.o", f"cd_read_commercial_{variant}.o",
               f"cd_read_link_{variant}.o", f"ex_memopen_{variant}.o",
-              f"ex_scrmod_{variant}.o", f"ex_satclr_{variant}.o",
+              f"ex_scrmod_{variant}.o", f"ex_dotmod_{variant}.o", f"ex_satclr_{variant}.o",
               f"ipl_loader_g5_glue_{variant}.o", f"ipl_loader_{variant}.o",
               "bank0-ipl-loader-g5.cfg",
               f"bank0-{variant}-g5.bin", f"ipl-loader-g5-{variant}.lbl",
@@ -349,7 +380,7 @@ def _normalize_defines(defines) -> tuple:
 def g5_manifest(sel: int, track: int, mode: str, variant: str, defines: list,
                 data: bytes, symbols: dict, link_labels: dict, rom_name: str,
                 private_input: bool = False, cd_read: str = "commercial",
-                cd_4a: str = "stub", cd_25: str = "stub", cd_36: str = "stub") -> dict:
+                cd_4a: str = "stub", cd_25: str = "stub", cd_24: str = "stub", cd_36: str = "stub") -> dict:
     # `defines` must be the canonical argv from _normalize_defines, so this
     # strict equality classifies exactly the build ca65 performed (MEDIUM-1:
     # no guessing from substrings like ["-I", "IPL_PUBLIC"]).
@@ -372,6 +403,7 @@ def g5_manifest(sel: int, track: int, mode: str, variant: str, defines: list,
                                   "src/ex_dspoff.s (via glue, single source)"])
                                 + (["src/ex_memopen.s"] if cd_4a == "experimental" else [])
                                 + (["src/ex_scrmod.s"] if cd_25 == "experimental" else [])
+                                + (["src/ex_dotmod.s"] if cd_24 == "experimental" else [])
                                 + (["src/ex_satclr.s"] if cd_36 == "experimental" else [])),
         "defines": list(defines), "symbols": dict(symbols), "labels": dict(link_labels),
         "pinned_cc65": DEPENDENCIES["cc65"]["revision"],
@@ -385,9 +417,11 @@ def g5_manifest(sel: int, track: int, mode: str, variant: str, defines: list,
         "experimental_slots": (["$02", "$03", "$33"]
                                 + (["$4A"] if cd_4a == "experimental" else [])
                                 + (["$25"] if cd_25 == "experimental" else [])
+                                + (["$24"] if cd_24 == "experimental" else [])
                                 + (["$36"] if cd_36 == "experimental" else [])),
         "cd_4a": cd_4a,
         "cd_25": cd_25,
+        "cd_24": cd_24,
         "cd_36": cd_36,
         "reference_jsr": "0/81", "abi_verified": "0/81",
         "private_media_used": bool(private_input),
@@ -410,6 +444,7 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
                             cd_read: str = "commercial",
                             cd_4a: str = "stub",
                             cd_25: str = "stub",
+                            cd_24: str = "stub",
                             cd_36: str = "stub"):
     """Return (rom_path, symbols). `sel` is the 16-bit INDEX 01 LBA.
 
@@ -433,10 +468,10 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
     stays on the linked fallback stub, preserving every existing test and the
     SIMULATED separation) or "experimental" (Issue #47 B1 preservation-only
     SIMULATED scaffold, $E06F -> JMP ex_scrmod_entry). Anything else is refused.
-    `cd_36` selects the $36 wiring: "stub" (default; the $E0A2 table entry
+    `cd_24` selects the $24 wiring: "stub" (default; the $E06C table entry
     stays on the linked fallback stub, preserving every existing test and the
-    SIMULATED separation) or "experimental" (Issue #64 B1-analogous
-    preservation-only SIMULATED scaffold, $E0A2 -> JMP ex_satclr_entry).
+    SIMULATED separation) or "experimental" (Issue #46 B1-analogous
+    preservation-only SIMULATED scaffold, $E06C -> JMP ex_dotmod_entry).
     Anything else is refused.
     """
     if cd_read not in ("commercial", "link"):
@@ -445,6 +480,8 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
         raise ValueError("cd_4a must be 'stub' or 'experimental'")
     if cd_25 not in ("stub", "experimental"):
         raise ValueError("cd_25 must be 'stub' or 'experimental'")
+    if cd_24 not in ("stub", "experimental"):
+        raise ValueError("cd_24 must be 'stub' or 'experimental'")
     if cd_36 not in ("stub", "experimental"):
         raise ValueError("cd_36 must be 'stub' or 'experimental'")
     link_source = LINK_SOURCE_COMMERCIAL if cd_read == "commercial" else LINK_SOURCE_V1
@@ -452,8 +489,8 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
     # MAJOR-1: experimental bodies are opt-in only. A stub default must not
     # require, assemble, link, or expect the body's label/symbol; otherwise
     # BOOT gains bytes and the default image is no longer byte-identical.
-    # Labels are built incrementally so the (stub, stub) default keeps the
-    # exact prior order plus the always-present api_slot_25 table label.
+    # Labels are built incrementally so the (stub, stub, stub, stub) default keeps the
+    # exact prior order plus the always-present api_slot_25/api_slot_24/api_slot_36 table labels.
     exp_labels = ["api_slot_02", "api_unimplemented", "cd_base_2base_entry",
                   "api_slot_03", link_entry,
                   "api_slot_33", "experimental_slot_33",
@@ -463,6 +500,9 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
     exp_labels.append("api_slot_25")
     if cd_25 == "experimental":
         exp_labels.append(SCRMOD_ENTRY)
+    exp_labels.append("api_slot_24")
+    if cd_24 == "experimental":
+        exp_labels.append(DOTMOD_ENTRY)
     exp_labels.append("api_slot_36")
     if cd_36 == "experimental":
         exp_labels.append(SATCLR_ENTRY)
@@ -483,6 +523,8 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
         required_sources.append(MEMOPEN_SOURCE)
     if cd_25 == "experimental":
         required_sources.append(SCRMOD_SOURCE)
+    if cd_24 == "experimental":
+        required_sources.append(DOTMOD_SOURCE)
     if cd_36 == "experimental":
         required_sources.append(SATCLR_SOURCE)
     required_sources = tuple(required_sources)
@@ -530,13 +572,15 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
     objects = assemble_api_objects(output, mode)
     exp_defs = _exp_defines(sel, track)
     # MAJOR-1: link each experimental body only when it is selected. The
-    # (stub, stub) order (proto, link, glue) is unchanged, so the default
-    # image stays byte-identical to the pre-$25 baseline.
+    # (stub, stub, stub, stub) order (proto, link, glue) is unchanged, so the default
+    # image stays byte-identical to the prior all-stub baseline.
     g5_sources = [(PROTO_SOURCE, exp_defs), (link_source, [])]
     if cd_4a == "experimental":
         g5_sources.append((MEMOPEN_SOURCE, []))
     if cd_25 == "experimental":
         g5_sources.append((SCRMOD_SOURCE, []))
+    if cd_24 == "experimental":
+        g5_sources.append((DOTMOD_SOURCE, []))
     if cd_36 == "experimental":
         g5_sources.append((SATCLR_SOURCE, []))
     g5_sources.append((GLUE_SOURCE, exp_defs))
@@ -567,7 +611,7 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
         raise ValueError("G5 pre-patch bank changed the API table/override area")
     # Ordered fail-closed patches: slot-$02 first, then slot-$33, then slot-$03
     # (same order and checks as tools/build_experimental_bios_boot.py), plus
-    # the opt-in slot-$4A / slot-$25 / slot-$36 redirects last (stub defaults keep prior
+    # the opt-in slot-$4A / slot-$25 / slot-$24 / slot-$36 redirects last (stub defaults keep prior
     # images byte-identical).
     patched = _patch_slot02_to_proto(
         bank_bytes, symbols["api_slot_02"], symbols["api_unimplemented"],
@@ -582,22 +626,41 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
     if cd_25 == "experimental":
         patched = _redirect_slot25_to_body(
             patched, symbols["api_slot_25"], symbols[SCRMOD_ENTRY])
+    if cd_24 == "experimental":
+        patched = _redirect_slot24_to_body(
+            patched, symbols["api_slot_24"], symbols[DOTMOD_ENTRY])
     if cd_36 == "experimental":
         patched = _redirect_slot36_to_body(
             patched, symbols["api_slot_36"], symbols[SATCLR_ENTRY])
     slot02_addr = symbols["api_slot_02"]
-    if cd_4a == "experimental" and cd_25 == "experimental" and cd_36 == "experimental":
+    if cd_4a == "experimental" and cd_25 == "experimental" and cd_24 == "experimental" and cd_36 == "experimental":
+        allowed = unified_api_windows_4a_25_24_36(slot02_addr)
+    elif cd_4a == "experimental" and cd_25 == "experimental" and cd_24 == "experimental":
+        allowed = unified_api_windows_4a_25_24(slot02_addr)
+    elif cd_4a == "experimental" and cd_25 == "experimental" and cd_36 == "experimental":
         allowed = unified_api_windows_4a_25_36(slot02_addr)
+    elif cd_4a == "experimental" and cd_24 == "experimental" and cd_36 == "experimental":
+        allowed = unified_api_windows_4a_24_36(slot02_addr)
+    elif cd_25 == "experimental" and cd_24 == "experimental" and cd_36 == "experimental":
+        allowed = unified_api_windows_25_24_36(slot02_addr)
     elif cd_4a == "experimental" and cd_25 == "experimental":
         allowed = unified_api_windows_4a_25(slot02_addr)
+    elif cd_4a == "experimental" and cd_24 == "experimental":
+        allowed = unified_api_windows_4a_24(slot02_addr)
     elif cd_4a == "experimental" and cd_36 == "experimental":
         allowed = unified_api_windows_4a_36(slot02_addr)
+    elif cd_25 == "experimental" and cd_24 == "experimental":
+        allowed = unified_api_windows_25_24(slot02_addr)
     elif cd_25 == "experimental" and cd_36 == "experimental":
         allowed = unified_api_windows_25_36(slot02_addr)
+    elif cd_24 == "experimental" and cd_36 == "experimental":
+        allowed = unified_api_windows_24_36(slot02_addr)
     elif cd_4a == "experimental":
         allowed = unified_api_windows_4a(slot02_addr)
     elif cd_25 == "experimental":
         allowed = unified_api_windows_25(slot02_addr)
+    elif cd_24 == "experimental":
+        allowed = unified_api_windows_24(slot02_addr)
     elif cd_36 == "experimental":
         allowed = unified_api_windows_36(slot02_addr)
     else:
@@ -630,6 +693,14 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
         if bytes(patched[3 * 0x25:3 * 0x25 + 3]) != \
                 bytes((0x4C, scrmod_addr & 0xFF, (scrmod_addr >> 8) & 0xFF)):
             raise ValueError("slot-$25 window is not the expected JMP body")
+    slot24_window = set(range(3 * 0x24, 3 * 0x24 + 3))
+    if cd_24 == "experimental":
+        if not (set(api_diff) & slot24_window):
+            raise ValueError("G5 image is missing the $24 patch window; refusing silent no-op")
+        dotmod_addr = symbols[DOTMOD_ENTRY]
+        if bytes(patched[3 * 0x24:3 * 0x24 + 3]) != \
+                bytes((0x4C, dotmod_addr & 0xFF, (dotmod_addr >> 8) & 0xFF)):
+            raise ValueError("slot-$24 window is not the expected JMP body")
     slot36_window = set(range(3 * 0x36, 3 * 0x36 + 3))
     if cd_36 == "experimental":
         if not (set(api_diff) & slot36_window):
@@ -661,6 +732,11 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
     if cd_25 == "stub":
         if bytes(patched[at_25:at_25 + 3]) != bytes(original[at_25:at_25 + 3]):
             raise ValueError("$25 table entry changed; stub default must stay separate")
+    # $24 stays a stub unless the experimental body is selected.
+    at_24 = 3 * 0x24
+    if cd_24 == "stub":
+        if bytes(patched[at_24:at_24 + 3]) != bytes(original[at_24:at_24 + 3]):
+            raise ValueError("$24 table entry changed; stub default must stay separate")
     at_36 = 3 * 0x36
     if cd_36 == "stub":
         if bytes(patched[at_36:at_36 + 3]) != bytes(original[at_36:at_36 + 3]):
@@ -705,6 +781,7 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
         "api_slot_33": symbols["api_slot_33"],
         "api_slot_4A": symbols["api_slot_4A"],
         "api_slot_25": symbols["api_slot_25"],
+        "api_slot_24": symbols["api_slot_24"],
         "api_slot_36": symbols["api_slot_36"],
         "api_unimplemented": symbols["api_unimplemented"],
         "cd_base_2base_entry": symbols["cd_base_2base_entry"],
@@ -716,6 +793,7 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
         "slot_33_table_entry": 0xE000 + 3 * 0x33,
         "slot_4a_table_entry": 0xE000 + 3 * 0x4A,
         "slot_25_table_entry": 0xE000 + 3 * 0x25,
+        "slot_24_table_entry": 0xE000 + 3 * 0x24,
         "slot_36_table_entry": 0xE000 + 3 * 0x36,
     }
     # MAJOR-1: record each experimental entry only when linked.
@@ -723,11 +801,13 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
         link_labels[MEMOPEN_ENTRY] = symbols[MEMOPEN_ENTRY]
     if cd_25 == "experimental":
         link_labels[SCRMOD_ENTRY] = symbols[SCRMOD_ENTRY]
+    if cd_24 == "experimental":
+        link_labels[DOTMOD_ENTRY] = symbols[DOTMOD_ENTRY]
     if cd_36 == "experimental":
         link_labels[SATCLR_ENTRY] = symbols[SATCLR_ENTRY]
     manifest = g5_manifest(sel, track, mode, variant, canon_defines, data, symbols,
                            link_labels, rom.name, private_input=private_input,
-                           cd_read=cd_read, cd_4a=cd_4a, cd_25=cd_25, cd_36=cd_36)
+                           cd_read=cd_read, cd_4a=cd_4a, cd_25=cd_25, cd_24=cd_24, cd_36=cd_36)
     _atomic_write(output / manifest_name,
                   json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8") + b"\n")
     lines = "".join(f"{name} {value:04x}\n" for name, value in symbols.items())
