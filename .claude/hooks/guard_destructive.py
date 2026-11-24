@@ -4070,8 +4070,8 @@ def _stdin_prepass(segs, ps, inherited_fed, all_funcs=None):
                     if seg == BBRACE_CLOSE and not ps and _kind == "bbrace" and bbrace_exec_save:
                         _b_exec = bbrace_exec_save.pop()
                         _b_inh = bbrace_inh_save.pop()
-                        if _trailing_input_redirect(segs, i, ps):
-                            # Trailing input redirect: the group ran with
+                        if _trailing_fd0_redirect(segs, i, ps):
+                            # Trailing fd-0 redirect (supply or close): the group ran with
                             # redirected stdin, so the pre-group state is
                             # restored on exit (verified on Bash). Without
                             # one the group shares the calling shell and
@@ -4344,20 +4344,47 @@ def _followed_by_fork_boundary(segs, idx, ps):
         j += 1
     return False
 
-def _trailing_input_redirect(segs, idx, ps):
-    """True when a group-closing segment has a trailing input redirect.
+def _fd0_scope_change(seg):
+    """True when a segment transiently modifies fd 0 (supply or close).
 
-    A trailing `<` redirect applies to the whole compound (`(node) < file`,
-    `{ node; } < file`) and, for brace groups, restores the pre-group stdin
-    on exit (verified on Bash: inner `exec <&-` does not leak out, while an
-    unredirected brace group shares the calling shell). Scans forward over
+    Any fd-0 redirect — a supply (`< f`, `0>&3`) or a close (`<&-`,
+    `0>&-`, leading-zero spellings like `00<&-`) — scopes its compound:
+    Bash saves fd 0, applies the redirect for the group, and restores the
+    pre-group fd 0 on exit; a failed redirect skips the group, which also
+    leaves the pre-group state (all verified on Bash with harmless
+    fixtures). Non-fd-0 redirects (`3<&-`, `>&2`) and unrecognised forms
+    (None effect) touch another descriptor or nothing. Built on the same
+    `_scan_stdin_ops`/`_stdin_op_effect` classification as
+    `_has_input_redirect`, so supply-vs-scope semantics stay unified at a
+    single decision point. Supply-only stdin taint stays with
+    `_has_input_redirect` (unchanged): a close delivers no program.
+    """
+    for op, target in _scan_stdin_ops(seg):
+        if _stdin_op_effect(op, target) is not None:
+            return True
+    return False
+
+
+def _trailing_fd0_redirect(segs, idx, ps):
+    """True when a group-closing segment has a trailing fd-0 redirect.
+
+    A trailing fd-0 redirect applies to the whole compound (`(node) < file`,
+    `{ node; } < file`, `{ node; } 0<&-`) and, for brace groups, restores
+    the pre-group stdin on exit: Bash saves fd 0 for the group scope and
+    restores it afterwards for supplies and closes alike (verified on Bash:
+    inner `exec <&-` does not leak out past a close-only `0<&-` trailer,
+    while an unredirected brace group shares the calling shell). A failed
+    trailing redirect skips the group, which likewise leaves the pre-group
+    state, so success and failure both restore. Scans forward over
     transparent (empty or redirect-only) segments exactly like the
-    retroactive group-taint pass. Used to decide stdin-map restoration.
+    retroactive group-taint pass. Used to decide stdin-map restoration in
+    all three passes (prepass, dynamic, live). Supply-only stdin taint
+    stays with `_has_input_redirect` (a close delivers no program).
     """
     n = len(segs)
     j = idx + 1
     while j < n and segs[j] not in _STDIN_SENTINELS and _seg_is_transparent(segs[j], ps):
-        if _has_input_redirect(segs[j]):
+        if _fd0_scope_change(segs[j]):
             return True
         j += 1
     return False
@@ -4636,7 +4663,7 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None, de
         if seg == BBRACE_CLOSE and not ps:
             if bbrace_dyn_save:
                 _b_dyn = bbrace_dyn_save.pop()
-                if _trailing_input_redirect(segs, idx, ps):
+                if _trailing_fd0_redirect(segs, idx, ps):
                     dyn_exec = _b_dyn
                 # else: discard (inner changes persist in the calling shell)
             continue
@@ -4909,7 +4936,7 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None, de
         elif seg == BBRACE_CLOSE and not ps:
             if bbrace_live_save:
                 _b_live = bbrace_live_save.pop()
-                if _trailing_input_redirect(segs, idx, ps):
+                if _trailing_fd0_redirect(segs, idx, ps):
                     live_exec = _b_live
                 # else: discard (inner changes persist in the calling shell)
         if seg == SUBSHELL_OPEN:

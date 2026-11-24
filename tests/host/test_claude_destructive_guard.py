@@ -4584,6 +4584,51 @@ class StdinProgramTests(unittest.TestCase):
                 verdict, reason = self._d(cmd)
                 self.assertEqual(verdict, "ALLOW", reason)
 
+    def test_brace_group_close_only_trailer_restores_stdin(self):
+        # MAJOR (independent review 6036886963): a trailing close-only
+        # fd-0 redirect (`0<&-`, `<&-`, `0>&-`, leading-zero spellings)
+        # scopes the brace group exactly like a supply: Bash saves fd 0,
+        # applies the close for the group, and restores the pre-group fd 0
+        # on exit (verified on Bash, harmless fixtures only; a failed
+        # trailing redirect skips the group, which likewise leaves the
+        # pre-group state). The restore predicate therefore covers any
+        # scoped fd-0 modification (supply or close), while supply-only
+        # stdin taint stays separate (a close delivers no program).
+        for cmd in ["printf 'print(1)' | bash -c '{ exec 0<&-; } 0<&-; python3'",
+                    "printf 'print(1)' | bash -c '{ exec 0<&-; } <&-; python3'",
+                    "printf 'print(1)' | bash -c '{ exec 0<&-; } 0>&-; python3'",
+                    "printf 'print(1)' | bash -c '{ exec 0<&-; } 00<&-; python3'",
+                    "exec < /tmp/x.py; { exec 0>&-; } 0>&-; node",
+                    "exec < /tmp/x.py; { exec <&-; } <&-; node",
+                    "eval 'exec < /tmp/x.py'; { exec <&-; } 0<&-; node",
+                    "printf x | bash -c '{ { exec 0<&-; }; } 0<&-; node'",
+                    "printf x | bash -c '{ { exec 0<&-; } 0<&-; } 0<&-; node'",
+                    "printf x | bash -c 'f() { exec <&-; }; { f; } 0<&-; node'",
+                    "f() { exec < /tmp/x.py; }; f; { exec <&-; } 0<&-; node",
+                    "eval 'eval \"exec < /tmp/x.py\"'; { exec <&-; } 0<&-; node",
+                    "exec < /tmp/x.py; eval 'g() { exec <&-; }'; { g; } <&-; node",
+                    "printf x | bash -c '{ exec < /tmp/x.py; } 0<&-; node'",
+                    "printf x | bash -c '{ exec 0<&-; } 0<&- < /nonexistent; node'",
+                    "printf x | bash -c '{ exec 0<&-; } 0<&$u; node'",
+                    "printf x | bash -c '{ exec 0<&-; } 0>&word; node'",
+                    "printf x | bash -c '{ exec 0<&-; } 0>&\"-\"; node'"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertIn("stdin-program", reason)
+        # Controls: without an fd-0 trailer the group shares the calling
+        # shell (inner close persists); a non-fd-0 trailer touches another
+        # descriptor; unfed groups stay allowed.
+        for cmd in ["printf x | bash -c '{ exec 0<&-; }; node'",
+                    "printf x | bash -c '{ exec 0<&-; } 3<&-; node'",
+                    "printf x | bash -c '{ exec 0<&-; } > /dev/null; node'",
+                    "exec < /tmp/x.py; { exec <&-; } > /dev/null; node",
+                    "bash -c '{ exec <&-; } 0<&-; node'",
+                    "bash -c '{ exec <&-; } 0<&- < /nonexistent; node'"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "ALLOW", reason)
+
 
 class StdinProgramMutationTests(unittest.TestCase):
     """Mutants of the Issue #637 layers. Each must make a named StdinProgramTests method fail (an assertion
@@ -4724,6 +4769,24 @@ class StdinProgramMutationTests(unittest.TestCase):
         "in-body close treated as infallible": (
             "    if base in (\"<&\", \">&\"):\n        return (target or \"\") != \"-\"",
             "    return True  # mutant: closes may fail"),
+        "close-only trailer not restored (supply-only regression)": (
+            "    for op, target in _scan_stdin_ops(seg):\n        if _stdin_op_effect(op, target) is not None:\n            return True\n    return False",
+            "    for op, target in _scan_stdin_ops(seg):\n        if _stdin_op_effect(op, target) == \"supply\":  # mutant: supply-only restore\n            return True\n    return False"),
+        "prepass brace restore removed": (
+            "                        if _trailing_fd0_redirect(segs, i, ps):",
+            "                        if False:  # mutant: prepass brace not restored"),
+        "dynamic brace restore removed": (
+            "            if bbrace_dyn_save:\n                _b_dyn = bbrace_dyn_save.pop()\n                if _trailing_fd0_redirect(segs, idx, ps):\n                    dyn_exec = _b_dyn",
+            "            if bbrace_dyn_save:\n                _b_dyn = bbrace_dyn_save.pop()\n                if False:  # mutant: dynamic brace not restored\n                    dyn_exec = _b_dyn"),
+        "live brace restore removed": (
+            "            if bbrace_live_save:\n                _b_live = bbrace_live_save.pop()\n                if _trailing_fd0_redirect(segs, idx, ps):\n                    live_exec = _b_live",
+            "            if bbrace_live_save:\n                _b_live = bbrace_live_save.pop()\n                if False:  # mutant: live brace not restored\n                    live_exec = _b_live"),
+        "non-stdin fd trailer wrongly restores": (
+            "    for op, target in _scan_stdin_ops(seg):\n        if _stdin_op_effect(op, target) is not None:\n            return True\n    return False",
+            "    for op, target in _scan_stdin_ops(seg):\n        if True:  # mutant: any trailer restores\n            return True\n    return False"),
+        "prepass brace save removed (scope mismatch)": (
+            "                        bbrace_exec_save.append(exec_flag)\n                        bbrace_inh_save.append(inh)",
+            "                        pass  # mutant: prepass brace save removed"),
         "awk bare dash with seen program or file": (
             "            if seen_program_text or seen_file:\n                i += 1\n                continue\n            return 'stdin'",
             "            if seen_program_text:  # mutant: data dash is stdin program\n                i += 1\n                continue\n            return 'stdin'",
@@ -4885,7 +4948,8 @@ class StdinProgramMutationTests(unittest.TestCase):
                  "test_nested_pipe_inherits_stdin", "test_nested_conditional_close_keeps_taint",
                  "test_eval_shadowed_by_function", "test_fork_child_close_keeps_parent_taint",
                  "test_forked_exec_never_taints_parent", "test_shadowed_exec_close_keeps_taint",
-                 "test_list_conditional_close_keeps_taint", "test_awk_later_dash_selects_stdin_program", "test_awk_named_program_with_dash_data_operand"]
+                 "test_list_conditional_close_keeps_taint", "test_awk_later_dash_selects_stdin_program", "test_awk_named_program_with_dash_data_operand",
+                 "test_brace_group_trailing_redirect_restores_stdin", "test_brace_group_close_only_trailer_restores_stdin"]
 
     def _run(self, hook_text):
         with tempfile.TemporaryDirectory() as td:
