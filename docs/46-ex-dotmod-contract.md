@@ -159,10 +159,13 @@ All fixtures are project-authored HuC6280; no commercial/game/reference bytes.
 - Preservation: entry-C=0 and C=1 (forced-CLC mutant must RED on C=1 class
   as M7a-C1-preservation; forced-SEC mutant must RED on C=0 class;
   no fabricated flag). Nonzero A/X/Y incl A!=P vectors (clobber mutant RED).
-- VDC/VCE invariance (B1-analogous): dedicated probe asserts AR unchanged
-  for several entry AR values, all 20 VDC regs unchanged, VCE `$0400`
-  control/mask state unchanged (read-back where readable; write-history
-  where not), MPRs/IDR/IRR unchanged. Any VDC/VCE write mutant RED.
+- VDC invariance + VCE no-write by construction (B1-analogous): dedicated
+  VDC-only probe asserts AR unchanged for several entry AR values, all 20
+  VDC regs unchanged, MPRs/IDR/IRR unchanged. VCE `$0400` is write-only on
+  the pinned core so no dynamic VCE-state oracle exists; VCE invariance
+  holds by construction (the 9-byte body contains no store opcode, hence
+  no VCE write is possible). Any VDC write mutant RED; VCE-write mutants
+  are N/A by construction (no store to mutate toward VCE).
 - Work-RAM scope: 256-byte canary + full-buffer cold/warm equality +
   per-instruction write-history (tracer): scaffold writes exactly the 6
   transient stack bytes and nothing else; write-then-restore mutant RED
@@ -235,7 +238,7 @@ D2 scaffold (IF selected) is accepted ONLY if ALL hold:
 - (a) Contract doc (this file) + B1-analogous design doc merged (or same-PR docs) with S1-S8 provenance, §3 UNKNOWN verdict, §4 NO-I/O discipline, §5 non-dependence analysis, §6 T01-T14 plan, §7 D2-conditional verdict, §8 U1-U8.
 - (b) `src/ex_dotmod.s` 9-byte preservation skeleton (PHP/PHA/PHX/PHY/PLY/PLX/PLA/PLP/RTS), BOOT segment, `ex_dotmod_entry` export, header stating NOT genuine, NOT DEV_CALLABLE, SIMULATED, MPR1=`$F8` caller precondition, no I/O, Carry preserved, latch-exact note, stack/NMI notes, ORIGINAL MIT provenance.
 - (c) Wiring behind `cd_24="experimental"` (default `stub` byte-identical): `build_experimental_bios_boot.py` (`_redirect_slot24_to_body`, `unified_api_windows_24[_4a][_25][_4a_25]`), `build_ipl_loader_g5_2base.py` (`cd_24` param, incremental labels/sources/links, patch+window checks per combination, manifest `cd_24` + slots + sources, link_labels `ex_dotmod_entry`), normal DEV ROM untouched, 256KiB + `$FFF6` + BOOT-span (`entry+9 <= $FFF6`) enforced, unallowed diffs refused.
-- (d) Host builder tests (stub default, experimental opt-in, fail-closed guards, 9-byte pin, ROM identity/routing, mutant RED) + real-core suite (§6 T01-T14, VDC/VCE-invariance probe, write-history probe, chain `$33->$4A->$23->$25->$24`, cold/warm identical every run) ALL GREEN on pinned core.
+- (d) Host builder tests (stub default, experimental opt-in, fail-closed guards, 9-byte pin, ROM identity/routing, mutant RED) + real-core suite (§6 T01-T14, VDC-only probe (VCE by construction) + write-history probe, chain `$33->$4A->$23->$25->$24`, cold/warm identical every run) ALL GREEN on pinned core.
 - (e) `make test`, `make check` (EXIT 0), `git diff --check`, RED→GREEN, mutants (wrong-input/flag/save/MPR/SP/VDC-write/shadow-missing/side-effect-missing/RTS/success/wiring/boundary/default-mix-in all RED or N/A-with-reason), ALLOW/DENY regression, default-variant identity, normal DEV ROM invariance, ROM capacity/boundary, Required CI all GREEN, independent review CRITICAL/MAJOR/MEDIUM=0, CodeRabbit `@coderabbitai review` with zero unresolved.
 - (f) Commercial ExpC re-observation (Phase G variant table, cold/warm, sanitized only) showing `$24` experimental return → next API reached (or next stub halt with slot+classification), plus CUE[1] `$1C` regression check. G5_OBSERVED stays false unless title evidence exists (not expected).
 - (g) Safety gates unchanged (reference JSR 0/81, VERIFIED 0/81, DEV_CALLABLE false, release_eligible false, fail-closed, DEV invariance, SIMULATED vs genuine vs synthetic vs real-core vs commercial strictly distinguished).

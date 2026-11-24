@@ -39,9 +39,11 @@ value:
   check-then-act guard is proved by the MPR1 precondition test, and every
   real `$24` APICALL in every test carries MPR1=`$F8`).
 - AR unchanged (scaffold executes no ST0/ST1/ST2); all 20 VDC registers
-  unchanged on the pinned core (dedicated VDC probe, entry AR
-  0/5/9/18); VCE `$0400` control state unchanged (no VCE write of any
-  kind); no PSG/timer/CD access.
+  unchanged on the pinned core (dedicated VDC-only probe, entry AR
+  0/5/9/18; no dynamic VCE-state oracle — VCE `$0400` is write-only on the
+  pinned core, so VCE invariance holds by construction: the 9-byte body
+  contains no store opcode of any kind, hence no VCE write is possible);
+  no PSG/timer/CD access.
 - No work-RAM writes outside the transient caller-stack bytes: 256-byte
   canary at `$2900`-`$29FF` intact plus guest-observed zp `$10` pre/post
   invariance on the real core, plus full-buffer cold/warm equality.
@@ -96,8 +98,10 @@ compat are strictly distinguished per the task.
 Real-core suite `tests/integration/test_g5_dotmod_24.py` (analogous to
 `test_g5_scrmod_25.py`): host-side oracle negatives + synthetic
 return-probe runs (PUBLIC IPL 2-base boot, `cd_4a`+`cd_25`+`cd_24`
-experimental, cold+warm identical every run) + dedicated VDC/VCE probe
-(`tests/integration/geargrafx_dotmod24_probe.cpp`) + dedicated WRAM
+experimental, cold+warm identical every run) + dedicated VDC-only probe
+(`tests/integration/geargrafx_dotmod24_probe.cpp`: VDC R[0..19] + AR +
+MPRs + IDR/IRR before/after; VCE `$0400` is write-only so no dynamic VCE
+oracle exists — VCE invariance is by construction, see §1) + dedicated WRAM
 write-tracer probe
 (`tests/integration/geargrafx_dotmod24_writes_probe.cpp`, per-instruction
 write history, cold+warm).
@@ -129,8 +133,8 @@ write history, cold+warm).
 - T13 MPR1 pre-JSR: `$FF` refuses at `refused_halt` with zero `$24`
   APICALL in both cycles; `$F8` positive control GREEN with proven
   arrival.
-- T14: cold==warm every run; C=0/C=1 both GREEN; VDC/VCE probe covers
-  entry AR variants.
+- T14: cold==warm every run; C=0/C=1 both GREEN; VDC-only probe covers
+  entry AR variants (no dynamic VCE oracle; VCE by construction).
 - Chain (synthetic G5 leg): `$33`->`$4A`->`$23`->`$25`->`$24` through the
   real table entries, per-call APICALL evidence, MPR1=`$F8` at every
   entry, end-to-end preservation. Entry state labeled SIMULATED-entry,
@@ -168,7 +172,8 @@ access for this design document).
 - `spec/c3_static_contracts.json` (fixture classification only)
 - `tests/host/test_build_g5_24_host.py` (new)
 - `tests/integration/test_g5_dotmod_24.py` (new)
-- `tests/integration/geargrafx_dotmod24_probe.cpp` (new, VDC/VCE probe)
+- `tests/integration/geargrafx_dotmod24_probe.cpp` (new, VDC-only probe:
+  VCE write-only so invariance is by construction, not by dynamic read-back)
 - `tests/integration/geargrafx_dotmod24_writes_probe.cpp` (new, tracer)
 - `docs/46-ex-dotmod-b1.md` (this file, renamed from B1-analogous;
   file name keeps `-b1` suffix for parallel discovery with `47-*-b1.md`)
