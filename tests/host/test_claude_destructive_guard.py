@@ -4147,10 +4147,22 @@ class StdinProgramTests(unittest.TestCase):
         # shadowing and run the builtin (verified on Bash); `time` does not.
         for cmd in ["eval() { echo hi; }; eval 'exec < code.js'; node",
                     "eval() { echo hi; }; command -v eval; node",
-                    "eval() { echo hi; }; time eval 'exec < code.js'; node"]:
+                    "eval() { echo hi; }; time eval 'exec < code.js'; node",
+                    "f() { eval() { :; }; eval 'exec < code.js'; }; f; node"]:
             with self.subTest(cmd=cmd):
                 verdict, reason = self._d(cmd)
                 self.assertEqual(verdict, "ALLOW", reason)
+        # Execution order and fork scope for shadowing (CodeRabbit 6031635927):
+        # a later or conditional or forked `eval()` never shadows an earlier
+        # builtin call (verified on Bash), so the persistent redirect counts.
+        for cmd in ["f() { eval 'exec < code.js'; }; f; node; eval() { :; }",
+                    "false && eval() { :; }; f() { eval 'exec < code.js'; }; f; node",
+                    "eval() { :; } & eval 'exec < code.js'; node",
+                    "eval() { :; } | cat; eval 'exec < code.js'; node"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertIn("stdin-program", reason)
         for cmd in ["eval() { echo hi; }; command eval 'exec < code.js'; node",
                     "eval() { echo hi; }; builtin eval 'exec < code.js'; node",
                     "eval() { echo hi; }; command -p eval 'exec < code.js'; node"]:
@@ -4537,6 +4549,12 @@ class StdinProgramMutationTests(unittest.TestCase):
         "conditional nested eval joins definite": (
             "                        if not _stdin_in_cond[idx]:\n                            definite.update(_child_def - _snap_def)",
             "                        definite.update(_child_def - _snap_def)  # mutant: conditional shadows"),
+        "body-scan eval shadowing uses possible map": (
+            "            _ev_b = _eval_command_text(words_b, ps, funcs, definite_here)",
+            "            _ev_b = _eval_command_text(words_b, ps, funcs)  # mutant: possible shadows in body"),
+        "fork checked at definition name": (
+            "    if _followed_by_fork_boundary(segs, end, ps):",
+            "    if _followed_by_fork_boundary(segs, idx, ps):  # mutant: fork checked at name"),
         "subshell function map restore removed": [
             ("            if funcs_save:\n                all_funcs = funcs_save.pop()",
              "            pass  # mutant: subshell defs leak"),

@@ -4116,7 +4116,7 @@ def _eval_command_text(words, ps, all_funcs, definite=None):
     return " ".join(out)
 
 
-def _body_sets_exec_stdin(body, ps, funcs=None, _seen=None, strict=True):
+def _body_sets_exec_stdin(body, ps, funcs=None, _seen=None, strict=True, definite=None):
     """True when a function body persistently redirects the caller's stdin.
 
     A function called in the current shell runs in it, so a bare
@@ -4146,6 +4146,9 @@ def _body_sets_exec_stdin(body, ps, funcs=None, _seen=None, strict=True):
         return False
     if _seen is None:
         _seen = set()
+    # In-order definite installs within the scanned body (execution order):
+    # a direct definition shadows later builtin uses inside the same body.
+    definite_here = set(definite or ())
     for idx_b, seg_b in enumerate(segs):
         if seg_b in _STDIN_SENTINELS:
             continue
@@ -4155,6 +4158,9 @@ def _body_sets_exec_stdin(body, ps, funcs=None, _seen=None, strict=True):
             return strict
         if strip_redirections(words_b) == []:
             continue
+        _note_definite_install(segs, idx_b, _stage[idx_b], _subdepth[idx_b],
+                               _supp[idx_b], _cond[idx_b], ps,
+                               words_b, funcs, definite_here)
         fkey_b, saw_coproc_b, _first_b = _call_target(words_b, ps)
         if _is_funcdef_name(segs, idx_b, ps):
             continue  # a nested definition installs without running
@@ -4162,8 +4168,8 @@ def _body_sets_exec_stdin(body, ps, funcs=None, _seen=None, strict=True):
             # A same-shell eval in the body persistently redirects it, too
             # (resolved before the function-call check: `eval` itself is
             # not a function name, so it would otherwise be skipped).
-            _ev_b = _eval_command_text(words_b, ps, funcs)
-            if _ev_b is not None and _body_sets_exec_stdin(_ev_b, ps, funcs, _seen, strict):
+            _ev_b = _eval_command_text(words_b, ps, funcs, definite_here)
+            if _ev_b is not None and _body_sets_exec_stdin(_ev_b, ps, funcs, _seen, strict, definite_here):
                 return True
         if fkey_b is None or fkey_b not in funcs or fkey_b in _seen:
             continue
@@ -4173,7 +4179,7 @@ def _body_sets_exec_stdin(body, ps, funcs=None, _seen=None, strict=True):
         for _b in funcs[fkey_b]:
             if _b is None:
                 return strict
-            if _body_sets_exec_stdin(_b, ps, funcs, _seen, strict):
+            if _body_sets_exec_stdin(_b, ps, funcs, _seen, strict, definite_here):
                 return True
     return False
 
@@ -4259,6 +4265,123 @@ _STDIN_SENTINELS = frozenset([
     BBRACE_OPEN, BBRACE_CLOSE, PSBRACE_OPEN, PSBRACE_CLOSE,
     COND_BOUND,
 ])
+
+
+def _funcdef_end_idx(segs, idx, ps, function_form=False):
+    """Index of the segment closing a function definition (Issue #637).
+
+    idx is the definition name (`f` in `f() {...}`, or the `function f`
+    segment). Returns the body-group close index, or None when the shape is
+    not recognized. A trailing fork boundary must be tested at the returned
+    index, not right after the name: `f() {...} &` installs nothing in the
+    parent (verified on Bash). Matching failure is fail-closed (caller treats
+    the definition as not definitely installed).
+    """
+    n = len(segs)
+
+    def _skip(k):
+        while k < n:
+            s = segs[k]
+            if s in _STDIN_SENTINELS:
+                return k
+            try:
+                if _seg_is_transparent(s, ps):
+                    k += 1
+                    continue
+            except Deny:
+                return -1
+            return k
+        return k
+
+    def _match(opener, closer, k, empty_only=False):
+        # Match a group open at k to its close. Signature parens must hold
+        # only transparent segments (empty_only); body groups match by depth
+        # and may hold anything (a stray `}` stays an ordinary word, while a
+        # case-pattern `)` inside a paren body can end the match early:
+        # that only yields fail-closed under-definite, never a wrong end).
+        depth = 0
+        while k < n:
+            s = segs[k]
+            if s == opener:
+                depth += 1
+            elif s == closer:
+                depth -= 1
+                if depth == 0:
+                    return k
+            elif empty_only and depth == 1 and s not in _STDIN_SENTINELS:
+                try:
+                    if not _seg_is_transparent(s, ps):
+                        return -1
+                except Deny:
+                    return -1
+            k += 1
+        return -1
+
+    j = _skip(idx + 1)
+    if j < 0 or j >= n:
+        return None
+    if not function_form:
+        if segs[j] != SUBSHELL_OPEN:
+            return None
+        j = _match(SUBSHELL_OPEN, SUBSHELL_CLOSE, j, empty_only=True)
+        if j is None or j < 0:
+            return None
+        j = _skip(j + 1)
+        if j < 0 or j >= n:
+            return None
+    else:
+        # Optional empty signature parens: `function f ()`.
+        if segs[j] == SUBSHELL_OPEN:
+            j = _match(SUBSHELL_OPEN, SUBSHELL_CLOSE, j, empty_only=True)
+            if j is None or j < 0:
+                return None
+            j = _skip(j + 1)
+            if j < 0 or j >= n:
+                return None
+    if j < n and segs[j] in (BBRACE_OPEN, SUBSHELL_OPEN):
+        opener = segs[j]
+        closer = BBRACE_CLOSE if opener == BBRACE_OPEN else SUBSHELL_CLOSE
+        k = _match(opener, closer, j)
+        if k is None or k < 0:
+            return None
+        return k
+    return None
+
+
+def _note_definite_install(segs, idx, is_stage, subdepth, suppressed, in_cond, ps,
+                           seg_words, all_funcs, definite):
+    """Record an unconditional same-shell definition reaching execution.
+
+    Returns True when a name joined `definite`. Conditional, forked
+    (pipeline/background stages, subshells, trailing fork boundaries),
+    suppressed, and PowerShell positions never count; a trailing fork
+    boundary is tested past the whole definition body (Issue #637).
+    """
+    if ps or is_stage or subdepth != 0 or suppressed or in_cond:
+        return False
+    key = None
+    function_form = False
+    if _is_funcdef_name(segs, idx, ps):
+        if not seg_words:
+            return False
+        key, _, _ = _call_target(seg_words, ps)
+        if key is None or key not in all_funcs:
+            return False
+    elif (seg_words and len(seg_words) >= 2 and seg_words[0].lower() == "function"
+            and _FUNCDEF_NAME.fullmatch(seg_words[1] or "")
+            and seg_words[1] not in KEYWORDS
+            and _func_key(seg_words[1], ps) in all_funcs):
+        key = _func_key(seg_words[1], ps)
+        function_form = True
+    else:
+        return False
+    end = _funcdef_end_idx(segs, idx, ps, function_form)
+    if end is None:
+        return False
+    if _followed_by_fork_boundary(segs, end, ps):
+        return False
+    definite.add(key)
+    return True
 
 # A plausible `f()`-style function name for pending-definition detection:
 # any single non-metacharacter word (the lexer already removed quotes),
@@ -4354,38 +4477,17 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None, de
         if seg == PSBRACE_OPEN or seg == PSBRACE_CLOSE:
             continue
         dyn_at[idx] = dyn_exec
-        # Execution-order definite installs (CodeRabbit 6031635927): a direct
-        # definition installs when its segment is reached, so earlier calls
-        # never see later definitions. Unconditional, same-shell, unforked
-        # only; conditional/fork-local installs stay possible-only.
-        if not ps:
-            _def_uncond = (not _stdin_stage[idx] and _stdin_subdepth[idx] == 0
-                           and not _stdin_suppressed[idx] and not _stdin_in_cond[idx]
-                           and not _followed_by_fork_boundary(segs, idx, ps))
-            if _def_uncond:
-                if _is_funcdef_name(segs, idx, ps):
-                    try:
-                        _dnw = words_of(seg, ps)
-                    except Deny:
-                        _dnw = []
-                    if _dnw:
-                        _dk, _, _ = _call_target(_dnw, ps)
-                        if _dk is not None and _dk in all_funcs:
-                            definite.add(_dk)
-                else:
-                    try:
-                        _dnw = words_of(seg, ps)
-                    except Deny:
-                        _dnw = []
-                    if (len(_dnw) >= 2 and _dnw[0].lower() == "function"
-                            and _FUNCDEF_NAME.fullmatch(_dnw[1] or "")
-                            and _dnw[1] not in KEYWORDS
-                            and _dnw[1] in all_funcs):
-                        definite.add(_func_key(_dnw[1], ps))
         definite_at[idx] = set(definite)
         here_pipe = _stdin_pipe[idx] or dyn_exec
         here_eff = _stdin_eff[idx] or dyn_exec
         seg_words = words_of(seg, ps)
+        # Execution-order definite installs (CodeRabbit 6031635927): a direct
+        # definition reaching execution joins definite, so earlier calls never
+        # see later definitions. Unconditional, same-shell, unforked, whole
+        # definition (fork boundary tested past its body) only.
+        _note_definite_install(segs, idx, _stdin_stage[idx], _stdin_subdepth[idx],
+                               _stdin_suppressed[idx], _stdin_in_cond[idx], ps,
+                               seg_words, all_funcs, definite)
         pargs = python_position_args(seg_words)
         if pargs is not None:
             if not python_word_certainty(seg):
@@ -4429,7 +4531,7 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None, de
                         and not _saw_coproc and not _stdin_suppressed[idx]
                         and not _followed_by_fork_boundary(segs, idx, ps)):
                     for _body in all_funcs[_fkey]:
-                        if _body is None or _body_sets_exec_stdin(_body, ps, all_funcs):
+                        if _body is None or _body_sets_exec_stdin(_body, ps, all_funcs, definite=definite):
                             dyn_exec = True
                             break
             elif _first_idx < len(seg_words) and _func_call_name(seg_words[_first_idx], ps) in NON_EXEC_COMMANDS:
@@ -4495,7 +4597,7 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None, de
                 and not _followed_by_fork_boundary(segs, idx, ps)):
             _ev_text = _eval_command_text(seg_words, ps, all_funcs, definite)
             if _ev_text is not None and _body_sets_exec_stdin(
-                    _ev_text, ps, all_funcs, strict=False):
+                    _ev_text, ps, all_funcs, strict=False, definite=definite):
                 dyn_exec = True
         # A bare `exec` supply/close at a same-shell position updates the
         # dynamic flag too (mirrors the prepass): pipe-fed, suppressed, or
