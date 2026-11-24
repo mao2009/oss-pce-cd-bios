@@ -42,7 +42,7 @@ value:
   unchanged on the pinned core (dedicated VDC-only probe, entry AR
   0/5/9/18; no dynamic VCE-state oracle — VCE `$0400` is write-only on the
   pinned core, so VCE invariance holds by construction: the 9-byte body
-  contains no store opcode of any kind, hence no VCE write is possible);
+  contains no MMIO/I/O store opcode (stack pushes write only transient WRAM), hence no VCE write is possible);
   no PSG/timer/CD access.
 - No work-RAM writes outside the transient caller-stack bytes: 256-byte
   canary at `$2900`-`$29FF` intact plus guest-observed zp `$10` pre/post
