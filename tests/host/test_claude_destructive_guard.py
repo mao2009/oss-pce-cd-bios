@@ -4544,6 +4544,46 @@ class StdinProgramTests(unittest.TestCase):
                 verdict, reason = self._d(cmd)
                 self.assertEqual(verdict, "ALLOW", reason)
 
+    def test_subshell_function_visible_in_substitution(self):
+        # MAJOR (independent review): a function defined inside a subshell
+        # stays visible to a later command substitution in the same fork
+        # (verified on Bash: the Node body runs piped stdin). The guard
+        # must analyse the substitution body against the function map as
+        # of its owning segment (per-segment snapshots), not the restored
+        # parent map. Fork-external code still cannot see the definition.
+        for cmd in ['(eval \'f()\' \'{ node; }\'; printf 42 | echo "$(f)")',
+                    "(eval 'f() { node; }'; printf 42 | echo \"$(f)\")",
+                    '(eval \'f() { node; }\'; (printf 42 | echo "$(f)"))']:
+            with self.subTest(cmd=cmd[:60]):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertIn("stdin-program", reason)
+        for cmd in ['(eval \'f() { cat; }\'; printf 42 | echo "$(f)")',
+                    '(eval \'g() { cat; }\'; printf 42 | echo "$(g)" | cat)']:
+            with self.subTest(cmd=cmd[:60]):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "ALLOW", reason)
+
+    def test_brace_group_trailing_redirect_restores_stdin(self):
+        # MAJOR (independent review): a trailing input redirect scopes the
+        # whole brace group and restores pre-group stdin on exit (verified
+        # on Bash). An inner `exec <&-` must not clear provenance past a
+        # redirected group close. Without a trailing redirect the group
+        # shares the calling shell, so inner closes persist (verified).
+        for cmd in ["exec < /tmp/x.py; { exec 0>&-; } < /dev/null; node",
+                    "exec < /tmp/x.py; { exec <&-; } < /dev/null; node",
+                    "printf x | bash -c '{ exec <&-; } < /dev/null; node'",
+                    "printf x | bash -c '{ exec 0>&-; } < /dev/null; node'"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertIn("stdin-program", reason)
+        for cmd in ["exec < /tmp/x.py; { exec 0>&-; }; node",
+                    "printf x | bash -c 'exec <&-; node'"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "ALLOW", reason)
+
 
 class StdinProgramMutationTests(unittest.TestCase):
     """Mutants of the Issue #637 layers. Each must make a named StdinProgramTests method fail (an assertion
@@ -4584,8 +4624,8 @@ class StdinProgramMutationTests(unittest.TestCase):
             "            _nested_text(args[i + 1], ctx, False, depth + 1, fed=fed)",
             "            _nested_text(args[i + 1], ctx, False, depth + 1, fed=False)"),
         "nested inheritance ignored": (
-            "        for body in bodies:\n            _nested_text(body, ctx, ps, depth + 1,\n                         fed=(_stdin_pipe[idx] or dyn_at[idx] or live_exec),\n                         outer_funcs=all_funcs,\n                         outer_definite=definite_at[idx] if definite_at[idx] is not None else definite)",
-            "        for body in bodies:\n            _nested_text(body, ctx, ps, depth + 1,\n                         fed=inherited_fed,\n                         outer_funcs=all_funcs,\n                         outer_definite=definite_at[idx] if definite_at[idx] is not None else definite)"),
+            "        for body in bodies:\n            _nested_text(body, ctx, ps, depth + 1,\n                         fed=(_stdin_pipe[idx] or dyn_at[idx] or live_exec),\n                         outer_funcs=(all_funcs_at[idx] if all_funcs_at[idx] is not None else all_funcs),\n                         outer_definite=definite_at[idx] if definite_at[idx] is not None else definite)",
+            "        for body in bodies:\n            _nested_text(body, ctx, ps, depth + 1,\n                         fed=inherited_fed,\n                         outer_funcs=(all_funcs_at[idx] if all_funcs_at[idx] is not None else all_funcs),\n                         outer_definite=definite_at[idx] if definite_at[idx] is not None else definite)"),
         "paren taint lost": (
             "                else:\n                    stack.append((\"paren\" if seg == SUBSHELL_OPEN else \"coproc\",\n                                  fed, pfed, i))",
             "                else:\n                    stack.append((\"paren\" if seg == SUBSHELL_OPEN else \"coproc\",\n                                  False, False, i))"),
@@ -4593,11 +4633,11 @@ class StdinProgramMutationTests(unittest.TestCase):
             "            elif first == \"case\":",
             "            elif False:  # mutant: case never opens a compound"),
         "subs always untainted": (
-            "        for body in bodies:\n            _nested_text(body, ctx, ps, depth + 1,\n                         fed=(_stdin_pipe[idx] or dyn_at[idx] or live_exec),\n                         outer_funcs=all_funcs,\n                         outer_definite=definite_at[idx] if definite_at[idx] is not None else definite)",
-            "        for body in bodies:\n            _nested_text(body, ctx, ps, depth + 1,\n                         fed=False,\n                         outer_funcs=all_funcs,\n                         outer_definite=definite_at[idx] if definite_at[idx] is not None else definite)"),
+            "        for body in bodies:\n            _nested_text(body, ctx, ps, depth + 1,\n                         fed=(_stdin_pipe[idx] or dyn_at[idx] or live_exec),\n                         outer_funcs=(all_funcs_at[idx] if all_funcs_at[idx] is not None else all_funcs),\n                         outer_definite=definite_at[idx] if definite_at[idx] is not None else definite)",
+            "        for body in bodies:\n            _nested_text(body, ctx, ps, depth + 1,\n                         fed=False,\n                         outer_funcs=(all_funcs_at[idx] if all_funcs_at[idx] is not None else all_funcs),\n                         outer_definite=definite_at[idx] if definite_at[idx] is not None else definite)"),
         "subs parent not propagated": (
-            "        for body in bodies:\n            _nested_text(body, ctx, ps, depth + 1,\n                         fed=(_stdin_pipe[idx] or dyn_at[idx] or live_exec),\n                         outer_funcs=all_funcs,\n                         outer_definite=definite_at[idx] if definite_at[idx] is not None else definite)",
-            "        for body in bodies:\n            _nested_text(body, ctx, ps, depth + 1,\n                         fed=(_stdin_eff[0] or dyn_at[0]),\n                         outer_funcs=all_funcs,\n                         outer_definite=definite_at[idx] if definite_at[idx] is not None else definite)"),
+            "        for body in bodies:\n            _nested_text(body, ctx, ps, depth + 1,\n                         fed=(_stdin_pipe[idx] or dyn_at[idx] or live_exec),\n                         outer_funcs=(all_funcs_at[idx] if all_funcs_at[idx] is not None else all_funcs),\n                         outer_definite=definite_at[idx] if definite_at[idx] is not None else definite)",
+            "        for body in bodies:\n            _nested_text(body, ctx, ps, depth + 1,\n                         fed=(_stdin_eff[0] or dyn_at[0]),\n                         outer_funcs=(all_funcs_at[idx] if all_funcs_at[idx] is not None else all_funcs),\n                         outer_definite=definite_at[idx] if definite_at[idx] is not None else definite)"),
         "nested subs inheritance disabled": (
             "    nested_end = analyze_text(text, sub, ps, depth, inherited_fed=fed, outer_funcs=outer_funcs,\n                              outer_definite=outer_definite, defs_out=defs_out,\n                              definite_out=definite_out)",
             "    nested_end = analyze_text(text, sub, ps, depth, inherited_fed=False, outer_funcs=outer_funcs,\n                              outer_definite=outer_definite, defs_out=defs_out,\n                              definite_out=definite_out)  # mutant"),
@@ -4605,8 +4645,8 @@ class StdinProgramMutationTests(unittest.TestCase):
             "                            _nested_text_from(words[k], ctx, wrapper_tainted, ps, depth + 1,\n                                              fed=fed)",
             "                            _nested_text_from(words[k], ctx, wrapper_tainted, ps, depth + 1,\n                                              fed=False)"),
         "subs global taint over-approximation": (
-            "        for body in bodies:\n            _nested_text(body, ctx, ps, depth + 1,\n                         fed=(_stdin_pipe[idx] or dyn_at[idx] or live_exec),\n                         outer_funcs=all_funcs,\n                         outer_definite=definite_at[idx] if definite_at[idx] is not None else definite)",
-            "        for body in bodies:\n            _nested_text(body, ctx, ps, depth + 1,\n                         fed=True,\n                         outer_funcs=all_funcs,\n                         outer_definite=definite_at[idx] if definite_at[idx] is not None else definite)"),
+            "        for body in bodies:\n            _nested_text(body, ctx, ps, depth + 1,\n                         fed=(_stdin_pipe[idx] or dyn_at[idx] or live_exec),\n                         outer_funcs=(all_funcs_at[idx] if all_funcs_at[idx] is not None else all_funcs),\n                         outer_definite=definite_at[idx] if definite_at[idx] is not None else definite)",
+            "        for body in bodies:\n            _nested_text(body, ctx, ps, depth + 1,\n                         fed=True,\n                         outer_funcs=(all_funcs_at[idx] if all_funcs_at[idx] is not None else all_funcs),\n                         outer_definite=definite_at[idx] if definite_at[idx] is not None else definite)"),
         "function call taint removed": (
             "        call_taint = here_eff",
             "        call_taint = False"),
@@ -4623,7 +4663,7 @@ class StdinProgramMutationTests(unittest.TestCase):
             "        if prog in ('code', 'file'):\n            return None",
             "        if prog in ('code', 'file'):\n            return Deny('stdin-program', 'file over-denied')"),
         "subs sibling funcs ignored": (
-            "                         fed=(_stdin_pipe[idx] or dyn_at[idx] or live_exec),\n                         outer_funcs=all_funcs,\n                         outer_definite=definite_at[idx] if definite_at[idx] is not None else definite)",
+            "                         fed=(_stdin_pipe[idx] or dyn_at[idx] or live_exec),\n                         outer_funcs=(all_funcs_at[idx] if all_funcs_at[idx] is not None else all_funcs),\n                         outer_definite=definite_at[idx] if definite_at[idx] is not None else definite)",
             "                         fed=(_stdin_pipe[idx] or dyn_at[idx] or live_exec),\n                         outer_funcs=None, outer_definite=None)"),
         "hyphen-dot-colon functions ignored": (
             "            if _fkey is not None and _fkey in all_funcs and not _is_funcdef_name(segs, idx, ps):",

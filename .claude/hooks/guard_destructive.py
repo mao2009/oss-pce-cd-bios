@@ -3920,6 +3920,8 @@ def _stdin_prepass(segs, ps, inherited_fed, all_funcs=None):
     exec_flag = False
     exec_save = []
     inh_save = []  # inherited-stdin snapshots per open subshell/coprocess
+    bbrace_exec_save = []  # stdin snapshots per open Bash brace group
+    bbrace_inh_save = []  # (restored only with a trailing input redirect)
     # (Issue #637 MAJOR: an inner `exec <&-` closes only the fork's fd 0;
     # the enclosing text keeps its inherited stream, restored at the
     # boundary, exactly like the persistent exec flag).
@@ -3979,8 +3981,15 @@ def _stdin_prepass(segs, ps, inherited_fed, all_funcs=None):
                     stack.append(("funcbody", fed, pfed, i))
                     pending_funcbody = False
                 else:
-                    stack.append(("bbrace" if seg == BBRACE_OPEN else (
-                        "pscond" if seg == PSCOND_OPEN else "psbrace"), fed, pfed, i))
+                    _bkind = ("bbrace" if seg == BBRACE_OPEN else (
+                        "pscond" if seg == PSCOND_OPEN else "psbrace"))
+                    stack.append((_bkind, fed, pfed, i))
+                    if _bkind == "bbrace" and not ps:
+                        # A trailing `<` redirect scopes the whole group and
+                        # restores the pre-group stdin on exit (verified on
+                        # Bash); save it here, restore conditionally at close.
+                        bbrace_exec_save.append(exec_flag)
+                        bbrace_inh_save.append(inh)
                     if seg == BBRACE_OPEN and not ps:
                         cond_brace.append(bool(pending_cond))
                         pending_cond = False
@@ -4058,6 +4067,17 @@ def _stdin_prepass(segs, ps, inherited_fed, all_funcs=None):
                     _kind, _efed, _epfed, opener_idx = stack.pop()
                     if seg == BBRACE_CLOSE and not ps and _kind == "bbrace" and cond_brace:
                         cond_brace.pop()
+                    if seg == BBRACE_CLOSE and not ps and _kind == "bbrace" and bbrace_exec_save:
+                        _b_exec = bbrace_exec_save.pop()
+                        _b_inh = bbrace_inh_save.pop()
+                        if _trailing_input_redirect(segs, i, ps):
+                            # Trailing input redirect: the group ran with
+                            # redirected stdin, so the pre-group state is
+                            # restored on exit (verified on Bash). Without
+                            # one the group shares the calling shell and
+                            # inner changes persist (verified on Bash).
+                            exec_flag = _b_exec
+                            inh = _b_inh
                     if stack and stack[-1][0] == "function":
                         # The `{...}` body of a `function` definition ends
                         # here (a `{` brace group is always a real body).
@@ -4324,6 +4344,25 @@ def _followed_by_fork_boundary(segs, idx, ps):
         j += 1
     return False
 
+def _trailing_input_redirect(segs, idx, ps):
+    """True when a group-closing segment has a trailing input redirect.
+
+    A trailing `<` redirect applies to the whole compound (`(node) < file`,
+    `{ node; } < file`) and, for brace groups, restores the pre-group stdin
+    on exit (verified on Bash: inner `exec <&-` does not leak out, while an
+    unredirected brace group shares the calling shell). Scans forward over
+    transparent (empty or redirect-only) segments exactly like the
+    retroactive group-taint pass. Used to decide stdin-map restoration.
+    """
+    n = len(segs)
+    j = idx + 1
+    while j < n and segs[j] not in _STDIN_SENTINELS and _seg_is_transparent(segs[j], ps):
+        if _has_input_redirect(segs[j]):
+            return True
+        j += 1
+    return False
+
+
 def _seg_is_transparent(seg, ps):
     """True when a segment is empty or redirect-only (runs no command)."""
     if seg in _STDIN_SENTINELS:
@@ -4553,9 +4592,11 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None, de
     dyn_exec = False
     dyn_at = [False] * len(segs)
     definite_at = [None] * len(segs)  # per-segment definite snapshots (execution order)
+    all_funcs_at = [None] * len(segs)  # per-segment function-map snapshots (execution order)
     dyn_save = []  # dynamic stdin snapshots per open subshell/coprocess
     funcs_save = []  # function-map snapshots per open subshell/coprocess
     definite_save = []  # definite-installation snapshots per open subshell/coprocess
+    bbrace_dyn_save = []  # dynamic stdin snapshots per open Bash brace group
     # (Issue #637 MAJOR: function/eval persistent effects apply inside the
     # active fork as well; the saved outer state is restored at the fork's
     # close so a completed fork never leaks back. A brace group runs in the
@@ -4585,11 +4626,26 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None, de
             continue
         if seg == PSCOND_OPEN or seg == PSCOND_CLOSE:
             continue
+        if seg == BBRACE_OPEN and not ps:
+            # A trailing `<` redirect scopes the whole group and restores
+            # the pre-group stdin on exit (verified on Bash); save it here
+            # and restore conditionally at the matching close. Without a
+            # trailing redirect the group shares the calling shell.
+            bbrace_dyn_save.append(dyn_exec)
+            continue
+        if seg == BBRACE_CLOSE and not ps:
+            if bbrace_dyn_save:
+                _b_dyn = bbrace_dyn_save.pop()
+                if _trailing_input_redirect(segs, idx, ps):
+                    dyn_exec = _b_dyn
+                # else: discard (inner changes persist in the calling shell)
+            continue
         if seg == BBRACE_OPEN or seg == BBRACE_CLOSE:
             continue
         if seg == PSBRACE_OPEN or seg == PSBRACE_CLOSE:
             continue
         dyn_at[idx] = dyn_exec
+        all_funcs_at[idx] = {k: list(v) for k, v in all_funcs.items()}
         definite_at[idx] = set(definite)
         here_pipe = _stdin_pipe[idx] or dyn_exec
         here_eff = _stdin_eff[idx] or dyn_exec
@@ -4838,6 +4894,7 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None, de
     # is found during this loop, after the first loop snapshotted dyn_at.
     live_exec = False
     live_save = []  # resolved-effect snapshots per open subshell/coprocess
+    bbrace_live_save = []  # resolved-effect snapshots per open Bash brace group
     # (Issue #637 MAJOR: same scoping as dyn_exec in the first loop; a
     # fork-local discovery never leaks past the fork's close. Kept in this
     # separate block so the scope-machine anchors below stay untouched.)
@@ -4847,6 +4904,14 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None, de
         elif seg == SUBSHELL_CLOSE or seg == COPROC_CLOSE:
             if live_save:
                 live_exec = live_save.pop()
+        if seg == BBRACE_OPEN and not ps:
+            bbrace_live_save.append(live_exec)
+        elif seg == BBRACE_CLOSE and not ps:
+            if bbrace_live_save:
+                _b_live = bbrace_live_save.pop()
+                if _trailing_input_redirect(segs, idx, ps):
+                    live_exec = _b_live
+                # else: discard (inner changes persist in the calling shell)
         if seg == SUBSHELL_OPEN:
             if not ps:
                 if prev_was_pipe and pipe_entry is not None:
@@ -5176,7 +5241,7 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None, de
         for body in bodies:
             _nested_text(body, ctx, ps, depth + 1,
                          fed=(_stdin_pipe[idx] or dyn_at[idx] or live_exec),
-                         outer_funcs=all_funcs,
+                         outer_funcs=(all_funcs_at[idx] if all_funcs_at[idx] is not None else all_funcs),
                          outer_definite=definite_at[idx] if definite_at[idx] is not None else definite)
         if ops and inside_claude(ctx.cwd, ctx):
             raise Deny("claude-write", "redirect while cwd is inside .claude/ is denied")
@@ -5191,7 +5256,7 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None, de
             ctx.tainted = True
         analyze_argv(words_of(seg, ps), ctx, ps, depth,
                      fed=(_stdin_eff[idx] or dyn_at[idx] or live_exec),
-                     outer_funcs=all_funcs,
+                     outer_funcs=(all_funcs_at[idx] if all_funcs_at[idx] is not None else all_funcs),
                      outer_definite=definite_at[idx] if definite_at[idx] is not None else definite)
         if ctx.exec_out:
             # A same-shell nested eval persistently redirected stdin during
