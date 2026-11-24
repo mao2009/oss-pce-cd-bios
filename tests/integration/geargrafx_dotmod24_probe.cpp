@@ -4,10 +4,19 @@
 //   SEI/CLD, MPR1=$F8, SP=$FF, MPR0=$FF to select VDC AR=entry_ar via ST0,
 //   MPR0=$F8 restore, entry regs A=areg/X=xreg/Y=$A5/P=pseed, JSR $E06C,
 //   record A/P/X/Y/SP/MPR0-7 into $2200, halt (BRA -2).
-// The C++ side snapshots VDC R[0..19] + AR + MPRs + IDR/IRR BEFORE running
-// and AFTER the halt. Python asserts: VDC regs unchanged, AR_after ==
-// entry_ar (B1 touched no VDC port), MPRs unchanged, IDR/IRR unchanged,
-// A/X/Y/P/SP preserved. Genuine $24 semantics stay UNKNOWN/BLOCKED.
+// The C++ side runs the guest cold then warm (ResetMedia between, like the
+// writes probe) with an explicit cycle tag per RESULT. Per cycle it snapshots
+// VDC R[0..19] + AR + MPRs + IDR/IRR as the cycle baseline BEFORE running,
+// then single-steps the guest and snapshots again AFTER the halt. Halt is
+// confirmed only by 16 consecutive steps that START and END at halt (the
+// arrival step does NOT count; departure resets; same 16 start-and-end
+// contract as the writes probe). Budget exhaustion or an unconfirmed halt
+// reports halted=false -- never success (the Python checker requires halted
+// true, so an unconfirmed tail is a harness failure). VCE `$0400` is
+// write-only on the pinned core, so no dynamic VCE-state oracle exists --
+// VCE invariance holds by construction (the 9-byte body contains no store
+// opcode of any kind), never by dynamic read-back. Genuine $24 semantics
+// stay UNKNOWN/BLOCKED.
 #include "geargrafx_core.h"
 #include "input.h"
 #include "media.h"
@@ -98,29 +107,48 @@ int main(int argc, char** argv) {
 
     HuC6280* cpu = core.GetHuC6280();
     Memory* mem = core.GetMemory();
-    HuC6270::HuC6270_State* vs = core.GetHuC6270_1()->GetState();
+    auto vdc = core.GetHuC6270_1();
 
-    u16 vdc_r_before[20], vdc_r_after[20];
-    for (int i = 0; i < 20; i++) vdc_r_before[i] = vs->R[i];
-    unsigned vdc_ar_before = *vs->AR;
-    unsigned mpr_before[8], mpr_after[8];
-    for (int i = 0; i < 8; i++) mpr_before[i] = mem->GetMpr(i);
-    unsigned idr_before = *cpu->GetState()->IDR;
-    unsigned irr_before = *cpu->GetState()->IRR;
+    const char* cycle = "cold";
+    auto run_once = [&](bool warm) {
+        cycle = warm ? "warm" : "cold";
+        HuC6270::HuC6270_State* vs = vdc->GetState();
+        // Per-cycle baselines: captured after the inter-cycle ResetMedia,
+        // before the guest runs -- a cold/warm baseline difference is a
+        // platform reset fact, never callee behavior. Only the within-cycle
+        // before/after delta is attributed to the call.
+        u16 vdc_r_before[20], vdc_r_after[20];
+        for (int i = 0; i < 20; i++) vdc_r_before[i] = vs->R[i];
+        unsigned vdc_ar_before = *vs->AR;
+        unsigned mpr_before[8], mpr_after[8];
+        for (int i = 0; i < 8; i++) mpr_before[i] = mem->GetMpr(i);
+        unsigned idr_before = *cpu->GetState()->IDR;
+        unsigned irr_before = *cpu->GetState()->IRR;
 
-    for (long i = 0; i < steps; ++i) {
-        cpu->RunInstruction();
-        if (cpu->GetState()->PC->GetValue() == halt) break;
-    }
-    const HuC6280::HuC6280_State* st = cpu->GetState();
-    const u8* wram = mem->GetWorkingRAM() + (store - 0x2000);
-    for (int i = 0; i < 20; i++) vdc_r_after[i] = vs->R[i];
-    unsigned vdc_ar_after = *vs->AR;
-    for (int i = 0; i < 8; i++) mpr_after[i] = mem->GetMpr(i);
-    unsigned idr_after = *st->IDR;
-    unsigned irr_after = *st->IRR;
-    std::printf("RESULT {\"pc\":%u,\"halt\":%u,\"a\":%u,\"p\":%u,\"x\":%u,\"y\":%u,\"sp\":%u,",
-        st->PC->GetValue(), halt, wram[0], wram[1], wram[2], wram[3], wram[4]);
+        bool halted = false;
+        long run_steps = 0;
+        long confirm = 0;
+        for (long i = 0; i < steps; ++i) {
+            const auto pc_before = cpu->GetState()->PC->GetValue();
+            cpu->RunInstruction();
+            run_steps++;
+            if (pc_before == halt && cpu->GetState()->PC->GetValue() == halt) {
+                if (++confirm >= 16) { halted = true; break; }
+            } else {
+                confirm = 0;
+            }
+        }
+        const HuC6280::HuC6280_State* st = cpu->GetState();
+        const u8* wram = mem->GetWorkingRAM() + (store - 0x2000);
+        for (int i = 0; i < 20; i++) vdc_r_after[i] = vs->R[i];
+        unsigned vdc_ar_after = *vs->AR;
+        for (int i = 0; i < 8; i++) mpr_after[i] = mem->GetMpr(i);
+        unsigned idr_after = *st->IDR;
+        unsigned irr_after = *st->IRR;
+        std::printf("RESULT {\"cycle\":\"%s\",\"pc\":%u,\"halt\":%u,\"halted\":%s,\"steps\":%ld,"
+            "\"a\":%u,\"p\":%u,\"x\":%u,\"y\":%u,\"sp\":%u,",
+            cycle, st->PC->GetValue(), halt, halted ? "true" : "false", run_steps,
+            wram[0], wram[1], wram[2], wram[3], wram[4]);
     std::printf("\"mpr_store\":[%u,%u,%u,%u,%u,%u,%u,%u],", wram[5], wram[6], wram[7], wram[8],
         wram[9], wram[10], wram[11], wram[12]);
     std::printf("\"mpr_before\":[%u,%u,%u,%u,%u,%u,%u,%u],", mpr_before[0], mpr_before[1],
@@ -133,5 +161,9 @@ int main(int argc, char** argv) {
     for (int i = 0; i < 20; i++) std::printf("%s%u", i ? "," : "", vdc_r_after[i]);
     std::printf("],\"idr_before\":%u,\"idr_after\":%u,\"irr_before\":%u,\"irr_after\":%u}\n",
         idr_before, idr_after, irr_before, irr_after);
+    };
+    run_once(false);
+    core.ResetMedia(true);
+    run_once(true);
     return 0;
 }

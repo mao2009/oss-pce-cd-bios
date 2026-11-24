@@ -118,7 +118,9 @@ Real-core suite `tests/integration/test_g5_dotmod_24.py` (analogous to
 return-probe runs (PUBLIC IPL 2-base boot, `cd_4a`+`cd_25`+`cd_24`
 experimental, cold+warm identical every run) + dedicated VDC-only probe
 (`tests/integration/geargrafx_dotmod24_probe.cpp`: VDC R[0..19] + AR +
-MPRs + IDR/IRR before/after; VCE `$0400` is write-only so no dynamic VCE
+MPRs + IDR/IRR per-cycle baselines, cold then warm with ResetMedia between,
+explicit cycle tags, 16 start-and-end halt confirmation; VCE `$0400` is
+write-only so no dynamic VCE
 oracle exists — VCE invariance is by construction, see §1) + dedicated WRAM
 write-tracer probe
 (`tests/integration/geargrafx_dotmod24_writes_probe.cpp`, per-instruction
@@ -163,15 +165,19 @@ write history, cold+warm).
   APICALL in both cycles; `$F8` positive control GREEN with proven
   arrival.
 - T14: cold==warm every run; C=0/C=1 both GREEN; VDC-only probe covers
-  entry AR variants (no dynamic VCE oracle; VCE by construction).
+  entry AR variants cold+warm (per-cycle baselines, explicit cycle tags,
+  16 start-and-end halt confirmation; no dynamic VCE oracle; VCE by construction).
 - Chain (synthetic G5 leg): `$33`->`$4A`->`$23`->`$25`->`$24` through the
   real table entries, per-call APICALL entry evidence (stacked-return bytes
   at entry time, not RTS-landing proof; APIRETURN is not collected),
   MPR1=`$F8` at every
   entry, end-to-end preservation (final records + halt). Entry state labeled SIMULATED-entry,
   never genuine inputs. No commercial continuation claimed. Per-call return
-  resumption is NOT claimed from APICALL alone.
-- Structural pins: 9-byte body pinned host + real-core; stub-default ROM
+  resumption is NOT claimed from APICALL alone. The $24 9-byte pin excludes
+  a stacked-return-rewriting trampoline for the $24 call only; companion
+  legs ($33/$4A/$23/$25) are constrained by no pin here and their individual
+  returns are not proved per-call.
+- Structural pins ($24-scoped): 9-byte body pinned host + real-core; stub-default ROM
   pinned to pre-$24 baseline SHA; table routing pinned on all variant
   combinations.
 - Oracle strictness: same strict-validator matrix as B1 (cold-duplicate,
@@ -208,7 +214,8 @@ access for this design document).
 - `tests/host/test_build_g5_24_host.py` (new)
 - `tests/integration/test_g5_dotmod_24.py` (new)
 - `tests/integration/geargrafx_dotmod24_probe.cpp` (new, VDC-only probe:
-  VCE write-only so invariance is by construction, not by dynamic read-back)
+  cold+warm with per-cycle baselines, explicit cycle tags and halt
+  confirmation; VCE write-only so invariance is by construction, not by dynamic read-back)
 - `tests/integration/geargrafx_dotmod24_writes_probe.cpp` (new, tracer)
 - `docs/46-ex-dotmod-b1.md` (this file, renamed from B1-analogous;
   file name keeps `-b1` suffix for parallel discovery with `47-*-b1.md`)

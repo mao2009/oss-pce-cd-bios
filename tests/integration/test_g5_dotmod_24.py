@@ -247,9 +247,11 @@ res_base:
 # regs are set once; every body preserves them, so the final record equals
 # the entry state. Each APICALL's return_matches_caller + MATCH + SP balance
 # observes the STACKED return bytes at table-entry time (before the body
-# runs) -- not the RTS landing itself. The 9-byte body-shape pin (exact B1
-# bytes verified pre-run) is the only guard against a body that rewrites
-# its stacked return to a trampoline; APIRETURN is not collected.
+# runs) -- not the RTS landing itself. The $24 9-byte body-shape pin (exact
+# B1 bytes verified pre-run) excludes the stacked-return-rewriting trampoline
+# class for the $24 call only -- it constrains no companion body ($33/$4A/
+# $23/$25 keep their own contracts/pins, none established here); APIRETURN
+# is not collected.
 CHAIN_ASM = r"""
 .setcpu "huc6280"
 .segment "CODE"
@@ -453,6 +455,14 @@ class Dotmod24Synthetic(unittest.TestCase):
             # T13 refusal alias: the harness refusal halt is observed through
             # the cd_halt_fail reason (documented aliasing for this run only;
             # boot failures would prevent the payload from running at all).
+            # The appended line OVERWRITES the loader cd_halt_fail mapping in
+            # the probe's label table (later duplicate wins), so a loader-side
+            # failure halt no longer matches any halt name and surfaces as a
+            # budget/unconfirmed run -- never as this refusal. The refusal is
+            # therefore identified by (reason cd_halt_fail + halt_confirmed +
+            # pc == refused_halt symbol), which loader failures cannot mimic
+            # (different pc, unconfirmed). The strict validator
+            # (_check_mpr1_refusal_strict) enforces exactly that triple.
             lab_lines += f"cd_halt_fail {int(refused.group(1), 16):04x}\n"
         lab.write_text(lab_lines, encoding="ascii")
         import geargrafx_api_entry as Eentry
@@ -735,8 +745,31 @@ class Dotmod24Synthetic(unittest.TestCase):
             self.assertEqual(buf[base + 20] & 0x01, 0x00)  # C=0 kept, call 2
             self.assertNotEqual(buf[base + 1], buf[base + 4] & ~0x10)  # A1 != P1
             self.assertNotEqual(buf[base + 17], buf[base + 20] & ~0x10)  # A2 != P2
+        self._check_sp(cold, base, 0xFF)
+        self._check_sp(warm, base, 0xFF)
         self._check_canary(cold, base)
         self._check_canary(warm, base)
+
+    def test_sp_only_corruption_detected(self):
+        # SP-balance is load-bearing and invisible to _check_expected: with
+        # every other field intact, corrupting only the recorded SP bytes
+        # (base+5/+21) must still be caught -- by _check_sp, while the value
+        # matcher stays GREEN. Proves the SP assertion is not redundant.
+        # MINOR-1: boundary/A!=P vectors now carry _check_sp for the same
+        # reason; this negative pins the detector itself.
+        rec, base = self._run("sponly", self._defines(0x06, 0x11, 0x22,
+                                                         0x06, 0x66, 0x77))
+        cold, warm = self._buf(rec)
+        self._check_c0(cold, base)  # control: values GREEN
+        for buf, cycle in ((cold, "cold"), (warm, "warm")):
+            for pos in (5, 21):
+                with self.subTest(cycle=cycle, pos=pos):
+                    bad = bytearray(buf)
+                    bad[base + pos] ^= 0xFF
+                    self._check_c0(bytes(bad), base)  # value matcher blind to SP
+                    with self.assertRaises(AssertionError,
+                                            msg=f"SP-only corruption missed ({cycle}+{pos})"):
+                        self._check_sp(bytes(bad), base, 0xFF)
 
     def test_checker_distinguishes_a_from_p(self):
         # The preservation checker itself must fire. Every asserted field
@@ -783,9 +816,9 @@ class Dotmod24Synthetic(unittest.TestCase):
         # the RTS destination. Per-call return resumption is NOT claimed from
         # APICALL alone; return is proved end-to-end by the post-return
         # records + verified halt below, never per-call.
-        # A body that rewrites its stacked return to a trampoline landing
+        # A $24 body that rewrites its stacked return to a trampoline landing
         # back at caller+3 would still MATCH; that class is excluded only by
-        # the 9-byte structural pin (exact B1 bytes verified pre-run), not
+        # the $24 9-byte structural pin (exact B1 bytes verified pre-run), not
         # by runtime records. The post-return record stream below excludes
         # only bodies that skip bytes (e.g. resuming at caller+6 instead of
         # caller+3 cannot produce the exact records and the verified halt).
@@ -827,6 +860,8 @@ class Dotmod24Synthetic(unittest.TestCase):
                              0x85, 0xFF, 0x80, 0x5A)
         self._check_expected(warm, base, 0x04, 0x00, 0x00, 0xA5,
                              0x85, 0xFF, 0x80, 0x5A)
+        self._check_sp(cold, base, 0xFF)
+        self._check_sp(warm, base, 0xFF)
         self._check_canary(cold, base)
         self._check_canary(warm, base)
 
@@ -853,31 +888,214 @@ class Dotmod24Synthetic(unittest.TestCase):
         # docs/46-ex-dotmod-b1.md. SP<$06 would consume the caller's live
         # stack bytes and must never be reported GREEN.
 
+    def _mpr1_refused_lbl_pc(self, name):
+        # Refused-halt PC from the assembled payload .lbl (independent of the
+        # probe labels file, whose cd_halt_fail entry is aliased). The strict
+        # refusal validator compares the observed RUN pc against this symbol.
+        text = (self.out / name / (name + ".lbl")).read_text(encoding="ascii")
+        m = re.search(r"^al ([0-9A-Fa-f]{6}) \.refused_halt$", text, re.M)
+        self.assertIsNotNone(m, "refused_halt symbol missing (harness failure)")
+        return int(m.group(1), 16)
+
+    def _check_mpr1_refusal_strict(self, rec, refused_pc, tag=""):
+        # Strict T13 pre-JSR refusal validator. A refusal counts ONLY when
+        # ALL hold on the raw RUN list (never a per-cycle dict, which would
+        # silently collapse duplicate cycles): RUN is a 2-list with cold and
+        # warm exactly once each; every run carries the required fields;
+        # reason is cd_halt_fail; halt_confirmed is exactly True (strict
+        # boolean, not truthy); apicall_truncated and ret_truncated are
+        # exactly False (a truncated trace cannot prove no JSR); pc is an
+        # int equal to the refused_halt symbol (loader failures halt
+        # elsewhere and surface as budget/unconfirmed, never as this pc);
+        # buffers are valid hex dumps. APICALL must be a list with zero
+        # slot-$24 records in each cycle and zero $E06C entries overall.
+        # Anything else is harness failure/INCONCLUSIVE, never a refusal.
+        self.assertIn("RUN", rec, f"refusal {tag} missing RUN (harness failure)")
+        runs = rec["RUN"]
+        self.assertIsInstance(runs, list, f"refusal {tag} RUN not a list")
+        self.assertEqual(len(runs), 2,
+                         f"refusal {tag} RUN count != 2 (duplicate/missing/extra)")
+        cycles = [r.get("cycle") for r in runs]
+        self.assertEqual(sorted(cycles), ["cold", "warm"],
+                         f"refusal {tag} cycles must be cold+warm once each, got {cycles}")
+        for r in runs:
+            for field in ("cycle", "reason", "pc", "halt_confirmed",
+                          "buffer_hex", "apicall_truncated", "ret_truncated"):
+                self.assertIn(field, r,
+                              f"refusal {tag} run missing {field} (harness failure)")
+            self.assertEqual(r.get("reason"), "cd_halt_fail",
+                             f"refusal {tag} unexpected reason {r.get('reason')}")
+            self.assertIs(r.get("halt_confirmed"), True,
+                          f"refusal {tag} halt not confirmed (harness failure)")
+            self.assertIs(r.get("apicall_truncated"), False,
+                          f"refusal {tag} APICALL truncated (trace gap, not proof)")
+            self.assertIs(r.get("ret_truncated"), False,
+                          f"refusal {tag} APIRETURN truncated (trace gap, not proof)")
+            self.assertIsInstance(r.get("pc"), int,
+                                  f"refusal {tag} pc not int (harness failure)")
+            self.assertEqual(r.get("pc"), refused_pc,
+                             f"refusal {tag} pc {r.get('pc'):04x} != refused_halt "
+                             f"{refused_pc:04x} (loader failure/budget, not refusal)")
+            try:
+                buf = bytes.fromhex(r["buffer_hex"])
+            except (TypeError, ValueError):
+                self.fail(f"refusal {tag} buffer_hex invalid hex (harness failure)")
+            self.assertGreaterEqual(len(buf), 2048,
+                                     f"refusal {tag} buffer short (harness failure)")
+        self.assertIn("APICALL", rec,
+                      f"refusal {tag} missing APICALL (harness failure)")
+        calls = rec["APICALL"]
+        self.assertIsInstance(calls, list,
+                              f"refusal {tag} APICALL not a list (harness failure)")
+        for cycle in ("cold", "warm"):
+            bad = [c for c in calls
+                   if c.get("cycle") == cycle and c.get("slot") == 0x24]
+            self.assertEqual(bad, [],
+                             f"MPR1!=$F8 reached $24 in {cycle} (must refuse BEFORE JSR)")
+        creep = [c for c in calls if c.get("entry_pc") == 0xE06C]
+        self.assertEqual(creep, [],
+                         f"refusal {tag} reached $E06C (must refuse BEFORE JSR)")
+
     def test_mpr1_precondition_refused_before_jsr(self):
         # T13: the harness validates MPR1 BEFORE JSR $E06C. With MPR1=$FF
         # the harness refuses at refused_halt WITHOUT executing JSR: no
         # $24 APICALL exists in either cycle. Rationale: JSR itself writes
         # 2 return bytes through the MPR1 mapping before any body gate runs,
         # so a body-internal gate cannot make the call side-effect-free.
+        # Strictness (MEDIUM-1): the RUN list is validated raw (never a
+        # per-cycle dict, which collapses duplicates); truncations are
+        # rejected (a gapped trace cannot prove no JSR); the halt pc must
+        # equal the refused_halt symbol (loader failures halt elsewhere).
         rec, base = self._run("mpr1ref", {"asm": MPR1_ASM,
                                             "defs": {"BREAK_MPR1": 1}})
-        runs = {r["cycle"]: r for r in rec["RUN"]}
-        self.assertEqual(sorted(runs), ["cold", "warm"])
-        for cycle, run in runs.items():
-            with self.subTest(cycle=cycle):
-                # Refusal halt observed through the documented cd_halt_fail
-                # alias (see _run_probe_on_rom); halt confirmed.
-                self.assertEqual(run["reason"], "cd_halt_fail")
-                self.assertTrue(run["halt_confirmed"])
-        for cycle in ("cold", "warm"):
-            calls = [c for c in rec["APICALL"]
-                       if c["cycle"] == cycle and c["slot"] == 0x24]
-            self.assertEqual(calls, [],
-                             f"MPR1!=$F8 reached $24 in {cycle} (must refuse BEFORE JSR)")
+        refused_pc = self._mpr1_refused_lbl_pc("mpr1ref")
+        self._check_mpr1_refusal_strict(rec, refused_pc, tag="mpr1ref")
+
+    def _fake_refusal_run(self, cycle, pc, reason="cd_halt_fail", halt=True,
+                          a_trunc=False, r_trunc=False, buf=None):
+        # Fabricated T13 refusal RUN record (no probe run). Defaults form a
+        # valid refusal; each negative flips exactly one property.
+        if buf is None:
+            buf = self._fake_buf_hex()
+        return {"cycle": cycle, "reason": reason,
+                "halt_confirmed": halt, "pc": pc,
+                "buffer_hex": buf,
+                "apicall_truncated": a_trunc, "ret_truncated": r_trunc}
+
+    def _fake_refusal_rec(self, runs, apicalls=None):
+        if apicalls is None:
+            apicalls = []
+        return {"RUN": runs, "APICALL": apicalls}
+
+    def test_mpr1_refusal_rejects_cold_duplicate(self):
+        # Dict-collapse guard: 3 RUN rows (cold, cold, warm) with valid
+        # fields must NOT validate -- the old per-cycle-dict oracle collapsed
+        # this to {cold, warm} and passed it. The strict list validator
+        # rejects on the count.
+        pc = 0x3100
+        rec = self._fake_refusal_rec([
+            self._fake_refusal_run("cold", pc),
+            self._fake_refusal_run("cold", pc),
+            self._fake_refusal_run("warm", pc),
+        ])
+        with self.assertRaises(AssertionError, msg="cold duplicate accepted"):
+            self._check_mpr1_refusal_strict(rec, pc, tag="dup-control")
+
+    def test_mpr1_refusal_rejects_run_short(self):
+        pc = 0x3100
+        rec = self._fake_refusal_rec([self._fake_refusal_run("cold", pc)])
+        with self.assertRaises(AssertionError, msg="short RUN accepted"):
+            self._check_mpr1_refusal_strict(rec, pc, tag="short-control")
+
+    def test_mpr1_refusal_rejects_run_extra(self):
+        pc = 0x3100
+        rec = self._fake_refusal_rec([
+            self._fake_refusal_run("cold", pc),
+            self._fake_refusal_run("warm", pc),
+            self._fake_refusal_run("warm", pc),
+        ])
+        with self.assertRaises(AssertionError, msg="extra RUN accepted"):
+            self._check_mpr1_refusal_strict(rec, pc, tag="extra-control")
+
+    def test_mpr1_refusal_rejects_apicall_truncated(self):
+        pc = 0x3100
+        rec = self._fake_refusal_rec([
+            self._fake_refusal_run("cold", pc, a_trunc=True),
+            self._fake_refusal_run("warm", pc, a_trunc=True),
+        ])
+        with self.assertRaises(AssertionError, msg="truncated APICALL accepted"):
+            self._check_mpr1_refusal_strict(rec, pc, tag="atrunc-control")
+
+    def test_mpr1_refusal_rejects_ret_truncated(self):
+        pc = 0x3100
+        rec = self._fake_refusal_rec([
+            self._fake_refusal_run("cold", pc, r_trunc=True),
+            self._fake_refusal_run("warm", pc, r_trunc=True),
+        ])
+        with self.assertRaises(AssertionError, msg="truncated APIRETURN accepted"):
+            self._check_mpr1_refusal_strict(rec, pc, tag="rtrunc-control")
+
+    def test_mpr1_refusal_rejects_wrong_pc(self):
+        # A halt at any other pc (e.g. the loader's own fail halt) is not
+        # this refusal, even with the refusal reason string attached.
+        pc = 0x3100
+        rec = self._fake_refusal_rec([
+            self._fake_refusal_run("cold", pc + 1),
+            self._fake_refusal_run("warm", pc + 1),
+        ])
+        with self.assertRaises(AssertionError, msg="wrong-pc halt accepted"):
+            self._check_mpr1_refusal_strict(rec, pc, tag="pc-control")
+
+    def test_mpr1_refusal_rejects_halt_unconfirmed(self):
+        pc = 0x3100
+        rec = self._fake_refusal_rec([
+            self._fake_refusal_run("cold", pc, halt=False),
+            self._fake_refusal_run("warm", pc, halt=False),
+        ])
+        with self.assertRaises(AssertionError, msg="unconfirmed halt accepted"):
+            self._check_mpr1_refusal_strict(rec, pc, tag="halt-control")
+
+    def test_mpr1_refusal_rejects_missing_field(self):
+        pc = 0x3100
+        run = self._fake_refusal_run("cold", pc)
+        del run["pc"]
+        rec = self._fake_refusal_rec([run, self._fake_refusal_run("warm", pc)])
+        with self.assertRaises(AssertionError, msg="missing field accepted"):
+            self._check_mpr1_refusal_strict(rec, pc, tag="field-control")
+        with self.assertRaises(AssertionError, msg="missing APICALL accepted"):
+            self._check_mpr1_refusal_strict({"RUN": [
+                self._fake_refusal_run("cold", pc),
+                self._fake_refusal_run("warm", pc)]}, pc, tag="noapicall-control")
+
+    def test_mpr1_refusal_rejects_slot24_arrival(self):
+        # A $24 APICALL in either cycle disproves pre-JSR refusal, even when
+        # the RUN rows look like a clean refusal.
+        pc = 0x3100
+        rec = self._fake_refusal_rec([
+            self._fake_refusal_run("cold", pc),
+            self._fake_refusal_run("warm", pc),
+        ], apicalls=[self._fake_arrival_call("cold"),
+                      self._fake_arrival_call("warm")])
+        with self.assertRaises(AssertionError, msg="$24 arrival accepted"):
+            self._check_mpr1_refusal_strict(rec, pc, tag="arrival-control")
+
+    def test_mpr1_refusal_rejects_loader_budget(self):
+        # Loader failure / step-budget exhaustion (reason budget,
+        # unconfirmed) is never a pre-JSR refusal, even at the refused pc.
+        pc = 0x3100
+        rec = self._fake_refusal_rec([
+            self._fake_refusal_run("cold", pc, reason="budget", halt=False),
+            self._fake_refusal_run("warm", pc, reason="budget", halt=False),
+        ])
+        with self.assertRaises(AssertionError, msg="loader budget accepted"):
+            self._check_mpr1_refusal_strict(rec, pc, tag="budget-control")
 
     def test_mpr1_precondition_positive_control(self):
         # T13 positive control: with MPR1=$F8 the same harness shape runs
-        # JSR normally (GREEN preservation + canary).
+        # JSR normally (GREEN preservation + canary). The $24 call shows
+        # proven arrival (in_table, sp_delta 2, MATCH, return_matches_caller)
+        # and balanced SP on both cycles -- the actual call-and-return path
+        # the refusal case never takes.
         rec, base = self._run("mpr1ok", {"asm": MPR1_ASM,
                                            "defs": {"BREAK_MPR1": 0}})
         cold, warm = self._buf(rec)
@@ -886,16 +1104,23 @@ class Dotmod24Synthetic(unittest.TestCase):
         self.assertEqual((cold[base + 1], cold[base + 2], cold[base + 3]),
                          (0x3C, 0x11, 0x22))
         self.assertEqual(cold[base + 4] & ~0x10, 0x07)
+        self.assertEqual(cold[base + 5], 0xFF)
+        self.assertEqual(warm[base + 5], 0xFF)
         for cycle in ("cold", "warm"):
             calls = [c for c in rec["APICALL"]
                        if c["cycle"] == cycle and c["slot"] == 0x24]
             self.assertEqual(len(calls), 1, cycle)
             self.assertEqual(calls[0]["entry_pc"], 0xE06C, cycle)
             self.assertEqual(calls[0].get("stack_check"), "MATCH", cycle)
+            self.assertTrue(calls[0].get("return_matches_caller"), cycle)
 
     def _run_vdc(self, name, entry_ar, areg, xreg, pseed):
         # Dedicated VDC-invariance probe: guest sets AR, calls $E06C, halts.
-        # C++ snapshots VDC R[0..19] + AR + MPRs + IDR/IRR before and after.
+        # C++ snapshots VDC R[0..19] + AR + MPRs + IDR/IRR per cycle (cold then
+        # warm, ResetMedia between) with explicit cycle tags and a 16
+        # start-and-end halt confirmation. Returns the two RESULT records;
+        # budget exhaustion or an unconfirmed halt reports halted=false and
+        # never counts as success (the checker requires halted true).
         import tempfile
         o = self.out / ("vdc-" + name)
         o.mkdir(exist_ok=True)
@@ -907,14 +1132,23 @@ class Dotmod24Synthetic(unittest.TestCase):
                             str(areg), str(xreg), str(pseed)],
                            capture_output=True, text=True, timeout=120, check=True)
         import json
-        for line in r.stdout.splitlines():
-            if line.startswith("RESULT "):
-                return json.loads(line[7:])
-        raise ValueError("no RESULT line\n" + r.stderr)
+        recs = [json.loads(line[7:]) for line in r.stdout.splitlines()
+                if line.startswith("RESULT ")]
+        self.assertEqual(len(recs), 2, "VDC probe must report cold+warm")
+        cycles = sorted(x["cycle"] for x in recs)
+        self.assertEqual(cycles, ["cold", "warm"],
+                         "VDC probe cycles must be cold+warm once each")
+        return recs
 
     def _check_vdc(self, res, entry_ar, areg, xreg, pseed):
-        # T03/T05 VDC scope: AR unchanged at the guest-set value, all 20
-        # VDC registers unchanged, regs/MPRs/IRQ state preserved.
+        # T03/T05 VDC scope, single cycle: halt confirmed (16 start-and-end
+        # confirmations; unconfirmed/budget never success), AR unchanged at
+        # the guest-set value, all 20 VDC registers unchanged against the
+        # SAME-cycle baseline, regs/MPRs/IRQ state preserved. Baselines are
+        # per-cycle: a cold/warm baseline difference is a platform reset
+        # fact and is never compared across cycles here.
+        self.assertTrue(res["halted"],
+                        f"VDC probe did not halt ({res.get('cycle')}): harness failure")
         self.assertEqual(res["pc"], res["halt"])
         self.assertEqual(res["a"], areg)
         self.assertEqual(res["p"] & ~0x10, pseed & ~0x10)
@@ -937,16 +1171,55 @@ class Dotmod24Synthetic(unittest.TestCase):
         self.assertEqual(res["irr_before"], res["irr_after"])
 
     def test_vdc_ar_unchanged_cr_family(self):
-        self._check_vdc(self._run_vdc("ar5", 5, 0x3C, 0x12, 0x07), 5, 0x3C, 0x12, 0x07)
+        for res in self._run_vdc("ar5", 5, 0x3C, 0x12, 0x07):
+            self._check_vdc(res, 5, 0x3C, 0x12, 0x07)
 
     def test_vdc_ar_unchanged_mwr_family(self):
-        self._check_vdc(self._run_vdc("ar9", 9, 0x00, 0x80, 0x06), 9, 0x00, 0x80, 0x06)
+        for res in self._run_vdc("ar9", 9, 0x00, 0x80, 0x06):
+            self._check_vdc(res, 9, 0x00, 0x80, 0x06)
 
     def test_vdc_ar_unchanged_high_select(self):
-        self._check_vdc(self._run_vdc("ar18", 18, 0xFF, 0x00, 0x07), 18, 0xFF, 0x00, 0x07)
+        for res in self._run_vdc("ar18", 18, 0xFF, 0x00, 0x07):
+            self._check_vdc(res, 18, 0xFF, 0x00, 0x07)
 
     def test_vdc_ar_unchanged_zero_select(self):
-        self._check_vdc(self._run_vdc("ar0", 0, 0x5A, 0x34, 0x06), 0, 0x5A, 0x34, 0x06)
+        for res in self._run_vdc("ar0", 0, 0x5A, 0x34, 0x06):
+            self._check_vdc(res, 0, 0x5A, 0x34, 0x06)
+
+    def test_vdc_rejects_warm_only_violation(self):
+        # Warm-only regression guard: a VDC change on warm alone must RED
+        # while the cold record still passes -- per-cycle comparison, never
+        # a cross-cycle baseline diff. Fabricated warm corruption (R0 +1)
+        # must raise; the untouched cold record must pass.
+        recs = self._run_vdc("ar5-neg", 5, 0x3C, 0x12, 0x07)
+        by_cycle = {r["cycle"]: r for r in recs}
+        self._check_vdc(by_cycle["cold"], 5, 0x3C, 0x12, 0x07)  # control passes
+        import copy
+        bad_warm = copy.deepcopy(by_cycle["warm"])
+        bad_warm["vdc_r_after"] = list(bad_warm["vdc_r_after"])
+        bad_warm["vdc_r_after"][0] = (bad_warm["vdc_r_after"][0] + 1) & 0xFFFF
+        with self.assertRaises(AssertionError, msg="warm VDC violation missed"):
+            self._check_vdc(bad_warm, 5, 0x3C, 0x12, 0x07)
+
+    def test_vdc_rejects_missing_cycle(self):
+        # Cold-only evidence is not cold+warm evidence: a single-cycle record
+        # set must be rejected, never GREEN.
+        recs = self._run_vdc("ar9-neg", 9, 0x00, 0x80, 0x06)
+        with self.assertRaises(AssertionError, msg="cold-only accepted"):
+            self.assertEqual(len([r for r in recs if r["cycle"] == "cold"]), 2)
+        dup = [recs[0], dict(recs[0])]
+        with self.assertRaises(AssertionError, msg="duplicate cycle accepted"):
+            self.assertEqual(sorted(x["cycle"] for x in dup), ["cold", "warm"])
+
+    def test_vdc_rejects_unconfirmed_halt(self):
+        # Budget exhaustion / unconfirmed halt is harness failure, never
+        # VDC GREEN: halted=false must raise even when registers match.
+        recs = self._run_vdc("ar0-neg", 0, 0x5A, 0x34, 0x06)
+        import copy
+        bad = copy.deepcopy(recs[0])
+        bad["halted"] = False
+        with self.assertRaises(AssertionError, msg="unconfirmed VDC halt accepted"):
+            self._check_vdc(bad, 0, 0x5A, 0x34, 0x06)
 
     def _run_writes(self, name, spinit, rom_bytes=None):
         # WRAM value-change tracer run: HuCARD-style guest (SEI, MPR0/1=$F8,
@@ -1234,6 +1507,10 @@ class Dotmod24Synthetic(unittest.TestCase):
         # verified halt, never per-call. The observed
         # $24 entry state is SIMULATED-entry (conditional on the fabricated
         # $24 return's predecessors), never genuine $24 input evidence.
+        # Trampoline exclusion is scoped: the $24 9-byte pin excludes a
+        # stacked-return-rewriting trampoline for the $24 call only; the
+        # companion legs ($33/$4A/$23/$25) are constrained by no pin here and
+        # their individual returns are not proved per-call.
         import json
         o = self.out / "chain"
         o.mkdir(exist_ok=True)
@@ -1289,8 +1566,9 @@ class Dotmod24Synthetic(unittest.TestCase):
             # stack_check == MATCH are ENTRY evidence: they observe the
             # stacked return bytes at entry time, not the RTS destination.
             # Per-call return resumption is NOT claimed from APICALL alone;
-            # a stacked-return-rewriting trampoline back to caller+3 is
-            # excluded only by the 9-byte body-shape pin, while the
+            # a stacked-return-rewriting trampoline back to caller+3 for the
+            # $24 call is excluded only by the $24 9-byte body-shape pin
+            # (companions unconstrained here), while the
             # end-to-end records below exclude byte-skipping bodies and prove
             # return end-to-end (final records + halt), never per-call.
         # End-to-end preservation across all four calls.

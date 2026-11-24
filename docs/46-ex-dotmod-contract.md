@@ -160,8 +160,10 @@ All fixtures are project-authored HuC6280; no commercial/game/reference bytes.
   as M7a-C1-preservation; forced-SEC mutant must RED on C=0 class;
   no fabricated flag). Nonzero A/X/Y incl A!=P vectors (clobber mutant RED).
 - VDC invariance + VCE no-write by construction (B1-analogous): dedicated
-  VDC-only probe asserts AR unchanged for several entry AR values, all 20
-  VDC regs unchanged, MPRs/IDR/IRR unchanged. VCE `$0400` is write-only on
+  VDC-only probe (cold then warm, ResetMedia between, explicit cycle tags,
+  per-cycle baselines, 16 start-and-end halt confirmation) asserts AR unchanged
+  for several entry AR values, all 20
+  VDC regs unchanged, MPRs/IDR/IRR unchanged per cycle. VCE `$0400` is write-only on
   the pinned core so no dynamic VCE-state oracle exists; VCE invariance
   holds by construction (the 9-byte body contains no store opcode, hence
   no VCE write is possible). Any VDC write mutant RED; VCE-write mutants
@@ -187,7 +189,8 @@ All fixtures are project-authored HuC6280; no commercial/game/reference bytes.
   with per-call APICALL entry evidence (stacked-return bytes at entry time,
   not RTS-landing proof; APIRETURN is not collected; per-call return is NOT
   claimed from APICALL alone -- end-to-end preservation + halt is the return
-  evidence) (the `$02` leg is the PUBLIC boot itself).
+  evidence; the $24 9-byte pin excludes a trampoline for the $24 call only,
+  never generalized to the companion legs) (the `$02` leg is the PUBLIC boot itself).
 - Refusal-path absence: B1-analogous defines no refusal (T04/T08/T09
   NOT_APPLICABLE), routing, 9-byte structural pin, buffer negatives.
 
