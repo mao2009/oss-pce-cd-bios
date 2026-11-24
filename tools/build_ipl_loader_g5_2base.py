@@ -22,6 +22,10 @@ experimental real-processing bodies:
     -> JMP ex_scrmod_entry (EX_SCRMOD B1 preservation-only SIMULATED scaffold,
     src/ex_scrmod.s) with cd_25="experimental" (Issue #47; default keeps
     every existing test and the SIMULATED separation intact).
+  slot $36: $E0A2 table entry stays on the linked fallback stub by default, or
+    -> JMP ex_satclr_entry (EX_SATCLR B1-analogous preservation-only SIMULATED
+    scaffold, src/ex_satclr.s) with cd_36="experimental" (Issue #64; default
+    keeps every existing test and the SIMULATED separation intact).
 
 Reuses (no large new builder, no logic duplication):
   - tools/build_dev_ipl_loader_bios.py: loader source, bank0 CODE/VECT layout,
@@ -74,10 +78,15 @@ if __package__:
         _redirect_slot33_to_body,
         _redirect_slot4a_to_body,
         _redirect_slot25_to_body,
+        _redirect_slot36_to_body,
         unified_api_windows,
         unified_api_windows_4a,
         unified_api_windows_25,
         unified_api_windows_4a_25,
+        unified_api_windows_36,
+        unified_api_windows_4a_36,
+        unified_api_windows_25_36,
+        unified_api_windows_4a_25_36,
     )
     from .environment import DEPENDENCIES, executable
 else:
@@ -90,10 +99,15 @@ else:
         _redirect_slot33_to_body,
         _redirect_slot4a_to_body,
         _redirect_slot25_to_body,
+        _redirect_slot36_to_body,
         unified_api_windows,
         unified_api_windows_4a,
         unified_api_windows_25,
         unified_api_windows_4a_25,
+        unified_api_windows_36,
+        unified_api_windows_4a_36,
+        unified_api_windows_25_36,
+        unified_api_windows_4a_25_36,
     )
     from environment import DEPENDENCIES, executable
 
@@ -108,6 +122,8 @@ MEMOPEN_SOURCE = ROOT / "src" / "ex_memopen.s"
 MEMOPEN_ENTRY = "ex_memopen_entry"
 SCRMOD_SOURCE = ROOT / "src" / "ex_scrmod.s"
 SCRMOD_ENTRY = "ex_scrmod_entry"
+SATCLR_SOURCE = ROOT / "src" / "ex_satclr.s"
+SATCLR_ENTRY = "ex_satclr_entry"
 BANK0_CFG = ROOT / "src" / "bank0.cfg"
 
 ROM_STEM = "dev-ipl-loader-g5-not-compatible"
@@ -116,6 +132,7 @@ EXP_LABELS = ("api_slot_02", "api_unimplemented", "cd_base_2base_entry",
               "api_slot_33", "experimental_slot_33",
               "api_slot_4A", "ex_memopen_entry",
               "api_slot_25", "ex_scrmod_entry",
+              "api_slot_36", "ex_satclr_entry",
               "experimental_selection")
 ALL_LABELS = tuple(dict.fromkeys(list(LOADER_REQUIRED) + list(EXP_LABELS)))
 
@@ -249,7 +266,7 @@ def _g5_leaf_names(variant: str) -> list:
     names += [f"{ov[slot].stem}.o" for slot in sorted(ov)]
     names += [f"cd_base_2base_{variant}.o", f"cd_read_commercial_{variant}.o",
               f"cd_read_link_{variant}.o", f"ex_memopen_{variant}.o",
-              f"ex_scrmod_{variant}.o",
+              f"ex_scrmod_{variant}.o", f"ex_satclr_{variant}.o",
               f"ipl_loader_g5_glue_{variant}.o", f"ipl_loader_{variant}.o",
               "bank0-ipl-loader-g5.cfg",
               f"bank0-{variant}-g5.bin", f"ipl-loader-g5-{variant}.lbl",
@@ -332,7 +349,7 @@ def _normalize_defines(defines) -> tuple:
 def g5_manifest(sel: int, track: int, mode: str, variant: str, defines: list,
                 data: bytes, symbols: dict, link_labels: dict, rom_name: str,
                 private_input: bool = False, cd_read: str = "commercial",
-                cd_4a: str = "stub", cd_25: str = "stub") -> dict:
+                cd_4a: str = "stub", cd_25: str = "stub", cd_36: str = "stub") -> dict:
     # `defines` must be the canonical argv from _normalize_defines, so this
     # strict equality classifies exactly the build ca65 performed (MEDIUM-1:
     # no guessing from substrings like ["-I", "IPL_PUBLIC"]).
@@ -354,7 +371,8 @@ def g5_manifest(sel: int, track: int, mode: str, variant: str, defines: list,
                                  ["src/cd_base_2base.s", "src/cd_read_link.s",
                                   "src/ex_dspoff.s (via glue, single source)"])
                                 + (["src/ex_memopen.s"] if cd_4a == "experimental" else [])
-                                + (["src/ex_scrmod.s"] if cd_25 == "experimental" else [])),
+                                + (["src/ex_scrmod.s"] if cd_25 == "experimental" else [])
+                                + (["src/ex_satclr.s"] if cd_36 == "experimental" else [])),
         "defines": list(defines), "symbols": dict(symbols), "labels": dict(link_labels),
         "pinned_cc65": DEPENDENCIES["cc65"]["revision"],
         "pinned_geargrafx": DEPENDENCIES["geargrafx"]["revision"],
@@ -366,9 +384,11 @@ def g5_manifest(sel: int, track: int, mode: str, variant: str, defines: list,
         "release_eligible": False, "dev_callable": False,
         "experimental_slots": (["$02", "$03", "$33"]
                                 + (["$4A"] if cd_4a == "experimental" else [])
-                                + (["$25"] if cd_25 == "experimental" else [])),
+                                + (["$25"] if cd_25 == "experimental" else [])
+                                + (["$36"] if cd_36 == "experimental" else [])),
         "cd_4a": cd_4a,
         "cd_25": cd_25,
+        "cd_36": cd_36,
         "reference_jsr": "0/81", "abi_verified": "0/81",
         "private_media_used": bool(private_input),
     }
@@ -389,7 +409,8 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
                             private_input: bool = False,
                             cd_read: str = "commercial",
                             cd_4a: str = "stub",
-                            cd_25: str = "stub"):
+                            cd_25: str = "stub",
+                            cd_36: str = "stub"):
     """Return (rom_path, symbols). `sel` is the 16-bit INDEX 01 LBA.
 
     `defines` selects the loader format through an explicit whitelist
@@ -412,6 +433,11 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
     stays on the linked fallback stub, preserving every existing test and the
     SIMULATED separation) or "experimental" (Issue #47 B1 preservation-only
     SIMULATED scaffold, $E06F -> JMP ex_scrmod_entry). Anything else is refused.
+    `cd_36` selects the $36 wiring: "stub" (default; the $E0A2 table entry
+    stays on the linked fallback stub, preserving every existing test and the
+    SIMULATED separation) or "experimental" (Issue #64 B1-analogous
+    preservation-only SIMULATED scaffold, $E0A2 -> JMP ex_satclr_entry).
+    Anything else is refused.
     """
     if cd_read not in ("commercial", "link"):
         raise ValueError("cd_read must be 'commercial' or 'link'")
@@ -419,6 +445,8 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
         raise ValueError("cd_4a must be 'stub' or 'experimental'")
     if cd_25 not in ("stub", "experimental"):
         raise ValueError("cd_25 must be 'stub' or 'experimental'")
+    if cd_36 not in ("stub", "experimental"):
+        raise ValueError("cd_36 must be 'stub' or 'experimental'")
     link_source = LINK_SOURCE_COMMERCIAL if cd_read == "commercial" else LINK_SOURCE_V1
     link_entry = LINK_ENTRY_COMMERCIAL if cd_read == "commercial" else LINK_ENTRY_V1
     # MAJOR-1: experimental bodies are opt-in only. A stub default must not
@@ -435,6 +463,9 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
     exp_labels.append("api_slot_25")
     if cd_25 == "experimental":
         exp_labels.append(SCRMOD_ENTRY)
+    exp_labels.append("api_slot_36")
+    if cd_36 == "experimental":
+        exp_labels.append(SATCLR_ENTRY)
     exp_labels.append("experimental_selection")
     exp_labels = tuple(exp_labels)
     all_labels = tuple(dict.fromkeys(list(LOADER_REQUIRED) + list(exp_labels)))
@@ -452,6 +483,8 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
         required_sources.append(MEMOPEN_SOURCE)
     if cd_25 == "experimental":
         required_sources.append(SCRMOD_SOURCE)
+    if cd_36 == "experimental":
+        required_sources.append(SATCLR_SOURCE)
     required_sources = tuple(required_sources)
     for src in required_sources:
         if not src.is_file():
@@ -504,6 +537,8 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
         g5_sources.append((MEMOPEN_SOURCE, []))
     if cd_25 == "experimental":
         g5_sources.append((SCRMOD_SOURCE, []))
+    if cd_36 == "experimental":
+        g5_sources.append((SATCLR_SOURCE, []))
     g5_sources.append((GLUE_SOURCE, exp_defs))
     for src, extra in g5_sources:
         obj = output / f"{src.stem}_{variant}.o"
@@ -532,7 +567,7 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
         raise ValueError("G5 pre-patch bank changed the API table/override area")
     # Ordered fail-closed patches: slot-$02 first, then slot-$33, then slot-$03
     # (same order and checks as tools/build_experimental_bios_boot.py), plus
-    # the opt-in slot-$4A / slot-$25 redirects last (stub defaults keep prior
+    # the opt-in slot-$4A / slot-$25 / slot-$36 redirects last (stub defaults keep prior
     # images byte-identical).
     patched = _patch_slot02_to_proto(
         bank_bytes, symbols["api_slot_02"], symbols["api_unimplemented"],
@@ -547,13 +582,24 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
     if cd_25 == "experimental":
         patched = _redirect_slot25_to_body(
             patched, symbols["api_slot_25"], symbols[SCRMOD_ENTRY])
+    if cd_36 == "experimental":
+        patched = _redirect_slot36_to_body(
+            patched, symbols["api_slot_36"], symbols[SATCLR_ENTRY])
     slot02_addr = symbols["api_slot_02"]
-    if cd_4a == "experimental" and cd_25 == "experimental":
+    if cd_4a == "experimental" and cd_25 == "experimental" and cd_36 == "experimental":
+        allowed = unified_api_windows_4a_25_36(slot02_addr)
+    elif cd_4a == "experimental" and cd_25 == "experimental":
         allowed = unified_api_windows_4a_25(slot02_addr)
+    elif cd_4a == "experimental" and cd_36 == "experimental":
+        allowed = unified_api_windows_4a_36(slot02_addr)
+    elif cd_25 == "experimental" and cd_36 == "experimental":
+        allowed = unified_api_windows_25_36(slot02_addr)
     elif cd_4a == "experimental":
         allowed = unified_api_windows_4a(slot02_addr)
     elif cd_25 == "experimental":
         allowed = unified_api_windows_25(slot02_addr)
+    elif cd_36 == "experimental":
+        allowed = unified_api_windows_36(slot02_addr)
     else:
         allowed = unified_api_windows(slot02_addr)
     api_diff = [i for i in range(0x1000) if bytes(patched)[i] != original[i]]
@@ -584,6 +630,14 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
         if bytes(patched[3 * 0x25:3 * 0x25 + 3]) != \
                 bytes((0x4C, scrmod_addr & 0xFF, (scrmod_addr >> 8) & 0xFF)):
             raise ValueError("slot-$25 window is not the expected JMP body")
+    slot36_window = set(range(3 * 0x36, 3 * 0x36 + 3))
+    if cd_36 == "experimental":
+        if not (set(api_diff) & slot36_window):
+            raise ValueError("G5 image is missing the $36 patch window; refusing silent no-op")
+        satclr_addr = symbols[SATCLR_ENTRY]
+        if bytes(patched[3 * 0x36:3 * 0x36 + 3]) != \
+                bytes((0x4C, satclr_addr & 0xFF, (satclr_addr >> 8) & 0xFF)):
+            raise ValueError("slot-$36 window is not the expected JMP body")
     proto = symbols["cd_base_2base_entry"]
     if bytes(patched[slot02_addr - 0xE000:slot02_addr - 0xE000 + SLOT02_PATCH_LEN]) != \
             bytes((0x4C, proto & 0xFF, (proto >> 8) & 0xFF, 0xEA, 0xEA)):
@@ -607,6 +661,10 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
     if cd_25 == "stub":
         if bytes(patched[at_25:at_25 + 3]) != bytes(original[at_25:at_25 + 3]):
             raise ValueError("$25 table entry changed; stub default must stay separate")
+    at_36 = 3 * 0x36
+    if cd_36 == "stub":
+        if bytes(patched[at_36:at_36 + 3]) != bytes(original[at_36:at_36 + 3]):
+            raise ValueError("$36 table entry changed; stub default must stay separate")
     # MEDIUM-2: build the final image in memory and verify it BEFORE any
     # disk write. A failed verification leaves no .pce behind and never
     # touches a previous good ROM/manifest/trace. Each final file is then
@@ -647,6 +705,7 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
         "api_slot_33": symbols["api_slot_33"],
         "api_slot_4A": symbols["api_slot_4A"],
         "api_slot_25": symbols["api_slot_25"],
+        "api_slot_36": symbols["api_slot_36"],
         "api_unimplemented": symbols["api_unimplemented"],
         "cd_base_2base_entry": symbols["cd_base_2base_entry"],
         "experimental_slot_33": symbols["experimental_slot_33"],
@@ -657,15 +716,18 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
         "slot_33_table_entry": 0xE000 + 3 * 0x33,
         "slot_4a_table_entry": 0xE000 + 3 * 0x4A,
         "slot_25_table_entry": 0xE000 + 3 * 0x25,
+        "slot_36_table_entry": 0xE000 + 3 * 0x36,
     }
     # MAJOR-1: record each experimental entry only when linked.
     if cd_4a == "experimental":
         link_labels[MEMOPEN_ENTRY] = symbols[MEMOPEN_ENTRY]
     if cd_25 == "experimental":
         link_labels[SCRMOD_ENTRY] = symbols[SCRMOD_ENTRY]
+    if cd_36 == "experimental":
+        link_labels[SATCLR_ENTRY] = symbols[SATCLR_ENTRY]
     manifest = g5_manifest(sel, track, mode, variant, canon_defines, data, symbols,
                            link_labels, rom.name, private_input=private_input,
-                           cd_read=cd_read, cd_4a=cd_4a, cd_25=cd_25)
+                           cd_read=cd_read, cd_4a=cd_4a, cd_25=cd_25, cd_36=cd_36)
     _atomic_write(output / manifest_name,
                   json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8") + b"\n")
     lines = "".join(f"{name} {value:04x}\n" for name, value in symbols.items())
