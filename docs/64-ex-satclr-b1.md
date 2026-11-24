@@ -70,19 +70,19 @@ compat are strictly distinguished per the task.
 
 ## 2. Wiring (opt-in, normal ROM untouched)
 
-- `tools/build_experimental_bios_boot.py`: `_SLOT24_TABLE`,
-  `_SLOT24_BODY_LEN` (= 9, tied to the structural pin),
-  `_redirect_slot24_to_body` (fail-closed: linked-fallback check, BOOT
+- `tools/build_experimental_bios_boot.py`: `_SLOT36_TABLE`,
+  `_SLOT36_BODY_LEN` (= 9, tied to the structural pin),
+  `_redirect_slot36_to_body` (fail-closed: linked-fallback check, BOOT
   span check `entry + 9 <= $FFF6`, PHP/PHA prologue check),
   `unified_api_windows_36`, `unified_api_windows_4a_36`,
   `unified_api_windows_25_36`, `unified_api_windows_4a_25_36` (base
-  windows untouched; superset lattice base < 24 < 4a_36/25_36 <
+  windows untouched; superset lattice base < 36 < 4a_36/25_36 <
   4a_25_36, base < 4a/25 < both).
 - `tools/build_ipl_loader_g5_2base.py`: `cd_36` parameter
-  (`"stub"`/`"experimental"`, refused otherwise), `DOTMOD_SOURCE/_ENTRY`,
+  (`"stub"`/`"experimental"`, refused otherwise), `SATCLR_SOURCE/_ENTRY`,
   incremental label/source/link lists (the `(stub, stub, stub)` order is
   unchanged: proto/link/glue), patch + window checks per combination
-  (4a/25/24 lattice), manifest `cd_36` + `experimental_slots` +
+  (4a/25/36 lattice), manifest `cd_36` + `experimental_slots` +
   `experimental_sources`.
 - `spec/c3_static_contracts.json`: `src/ex_satclr.s` classified as
   experimental-only fixture (never linked into the normal/production
@@ -99,11 +99,11 @@ Real-core suite `tests/integration/test_g5_satclr_36.py` (analogous to
 `test_g5_scrmod_25.py`): host-side oracle negatives + synthetic
 return-probe runs (PUBLIC IPL 2-base boot, `cd_4a`+`cd_25`+`cd_36`
 experimental, cold+warm identical every run) + dedicated VDC-only probe
-(`tests/integration/geargrafx_satclr24_probe.cpp`: VDC R[0..19] + AR +
+(`tests/integration/geargrafx_satclr36_probe.cpp`: VDC R[0..19] + AR +
 MPRs + IDR/IRR before/after; VCE `$0400` is write-only so no dynamic VCE
 oracle exists — VCE invariance is by construction, see §1) + dedicated WRAM
 write-tracer probe
-(`tests/integration/geargrafx_satclr24_writes_probe.cpp`, per-instruction
+(`tests/integration/geargrafx_satclr36_writes_probe.cpp`, per-instruction
 write history, cold+warm).
 
 - T01 stub: `cd_36="stub"` traps at `api_unimplemented` with X=`$36`,
@@ -168,13 +168,13 @@ access for this design document).
 
 - `src/ex_satclr.s` (new, B1-analogous body, BOOT, MIT, original code)
 - `tools/build_ipl_loader_g5_2base.py` (`cd_36` opt-in)
-- `tools/build_experimental_bios_boot.py` (slot-24 redirect + windows)
+- `tools/build_experimental_bios_boot.py` (slot-36 redirect + windows)
 - `spec/c3_static_contracts.json` (fixture classification only)
 - `tests/host/test_build_g5_36_host.py` (new)
 - `tests/integration/test_g5_satclr_36.py` (new)
-- `tests/integration/geargrafx_satclr24_probe.cpp` (new, VDC-only probe:
+- `tests/integration/geargrafx_satclr36_probe.cpp` (new, VDC-only probe:
   VCE write-only so invariance is by construction, not by dynamic read-back)
-- `tests/integration/geargrafx_satclr24_writes_probe.cpp` (new, tracer)
+- `tests/integration/geargrafx_satclr36_writes_probe.cpp` (new, tracer)
 - `docs/64-ex-satclr-b1.md` (this file, renamed from B1-analogous;
   file name keeps `-b1` suffix for parallel discovery with `47-*-b1.md`)
 

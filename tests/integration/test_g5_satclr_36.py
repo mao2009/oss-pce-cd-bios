@@ -333,7 +333,7 @@ MUT_STA2200_12 = bytes((0x08, 0x48, 0xDA, 0x5A, 0x7A, 0xFA, 0x68, 0x28,
 # Balanced write-then-restore mutant (save $2200 / write $AA / restore $2200
 # inserted between B1's PLA and PLP, so the final PLP still restores the
 # entry flags exactly; final $2200 value unchanged, write history non-empty):
-MUT_RESTORE_24 = bytes((0x08, 0x48, 0xDA, 0x5A, 0x7A, 0xFA, 0x68,
+MUT_RESTORE_36 = bytes((0x08, 0x48, 0xDA, 0x5A, 0x7A, 0xFA, 0x68,
                         0x48, 0xAD, 0x00, 0x22, 0x48, 0xA9, 0xAA, 0x8D,
                         0x00, 0x22, 0x68, 0x8D, 0x00, 0x22, 0x68, 0x28,
                         0x60))
@@ -381,10 +381,10 @@ class Satclr36Synthetic(unittest.TestCase):
         trace_stub = cls.out / "ipl-loader-g5-m36-stub.lbl"
         cls.labels_stub = parse_labels(
             trace_stub, ("api_unimplemented", "cd_halt_fail", "cd_unexpected_interrupt"))
-        cls.probe = compile_probe(cls.out, "geargrafx_api_return_probe.cpp", "m25-probe")
-        cls.vdc_probe = compile_probe(cls.out, "geargrafx_satclr36_probe.cpp", "m25-vdc-probe")
+        cls.probe = compile_probe(cls.out, "geargrafx_api_return_probe.cpp", "m36-probe")
+        cls.vdc_probe = compile_probe(cls.out, "geargrafx_satclr36_probe.cpp", "m36-vdc-probe")
         cls.writes_probe = compile_probe(cls.out, "geargrafx_satclr36_writes_probe.cpp",
-                                         "m25-writes-probe")
+                                         "m36-writes-probe")
         import geargrafx_ipl_loader as L
         cls.L = L
 
@@ -1050,8 +1050,8 @@ class Satclr36Synthetic(unittest.TestCase):
         # unchanged, so snapshots/dumps/checksums stay GREEN, but the
         # per-instruction write history still records $2200 -> RED.
         orig = self.rom.read_bytes()
-        bad, cav = self._mutate_body_extended(orig, MUT_RESTORE_24)
-        self._assert_ext_mutant_applied(orig, bad, cav, MUT_RESTORE_24)
+        bad, cav = self._mutate_body_extended(orig, MUT_RESTORE_36)
+        self._assert_ext_mutant_applied(orig, bad, cav, MUT_RESTORE_36)
         rec, base = self._run_on_rom("m-restore", bad,
                                       self._defines(0x06, 0x11, 0x22, 0x06, 0x66, 0x77))
         self._assert_green(rec, base, self._check_c0,
@@ -1059,7 +1059,7 @@ class Satclr36Synthetic(unittest.TestCase):
         wrecs = self._run_writes("restore", 0xFF, rom_bytes=bad)
         self._check_writes_extra(wrecs, 0xFF, {0x200})
 
-    def test_chain_33_4a_23_25_24(self):
+    def test_chain_33_4a_23_25_36(self):
         # Synthetic G5 chain leg: the PUBLIC boot ($02 leg) loads this
         # payload, which then calls $33 -> $4A -> $23 -> $25 -> $36 through the real
         # table entries. Each APICALL (return_matches_caller + MATCH) proves per-call entry,

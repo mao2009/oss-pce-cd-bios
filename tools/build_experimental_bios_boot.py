@@ -24,6 +24,11 @@ The API-area diff vs the normal DEV ROM must be EXACTLY the union of the three d
 windows; any other delta fails. Both callees are linked into the experimental
 BOOT region (>= $F000, file offsets >= 0x1000). NOT a genuine ABI, NOT
 compatible, release_eligible=False, dev_callable=False.
+
+Opt-in $4A/$25/$36 slot redirects and their window lattices live in this
+module as fail-closed helpers for the G5 2-base builder
+(tools/build_ipl_loader_g5_2base.py); the unified image itself does not wire
+them.
 """
 import argparse
 import hashlib

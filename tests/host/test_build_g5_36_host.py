@@ -2,7 +2,7 @@
 
 Synthetic only, no ./rom probing. RED->GREEN: missing source/wiring fails
 first; implementation passes after. Real behavior is proved by
-tests/integration/test_g5_satclr_24.py; these host tests pin the builder
+tests/integration/test_g5_satclr_36.py; these host tests pin the builder
 contract (stub default preserved, experimental opt-in, fail-closed guards).
 """
 
@@ -131,8 +131,8 @@ class BuildSatclr36HostTests(unittest.TestCase):
                 cd_4a="experimental", cd_25="experimental", cd_36="stub")
             data = rom.read_bytes()
             self.assertNotIn("ex_satclr_entry", syms)
-            at_24 = 3 * 0x36
-            self.assertEqual(data[at_24:at_24 + 3], self.normal[at_24:at_24 + 3])
+            at_36 = 3 * 0x36
+            self.assertEqual(data[at_36:at_36 + 3], self.normal[at_36:at_36 + 3])
             import json
             man = json.loads((Path(td) / "manifest-host-others-g5.json").read_text())
             self.assertIn("$4A", man["experimental_slots"])
