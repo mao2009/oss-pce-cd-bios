@@ -4411,6 +4411,40 @@ class StdinProgramTests(unittest.TestCase):
                 self.assertEqual(verdict, "DENY")
                 self.assertIn("unexpanded", reason)
 
+    def test_close_after_failed_redirect_keeps_provenance(self):
+        # MAJOR follow-up (independent review): a syntactic close clears
+        # persistent stdin only when it certainly ran. Bash applies one
+        # command's redirects atomically for this purpose: any failing
+        # redirect aborts the command and leaves prior descriptors in place
+        # (verified harmless: `exec 0<&3` then `exec < /nonexistent <&-`
+        # still reads the prior stdin with node/python; closes alone or
+        # after only infallible ops (`<&-`, `>&-`, heredocs) do clear).
+        # Uncertain closes keep prior provenance (fail-closed): with prior
+        # supply the interpreter stays DENY even if the close is last.
+        for cmd in ["exec 0>&3; exec < /nonexistent-xyz <&-; node",
+                    "exec 3< /tmp/x; exec 0>&3; exec < /nonexistent-xyz <&-; node",
+                    "exec 3< /tmp/x; exec 0>&3; exec 0>&- < /nonexistent-xyz; node",
+                    "exec 3< /tmp/x; exec 0>&3; exec <&- < /nonexistent-xyz; node",
+                    "exec 3< /tmp/x; exec 0>&3; exec > output.log <&-; node",
+                    "exec 3< /tmp/x; exec 0>&3; exec <&- > output.log; node",
+                    "exec <&- <<EOF; node\nEOF",
+                    "exec 0>&- <<< 'x'; node"]:
+            with self.subTest(cmd=cmd[:80]):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertIn("stdin-program", reason)
+        # No prior stdin to preserve: uncertain closes stay ALLOW, and
+        # all-infallible closes clear as before (`<&-`, heredoc-only prefix).
+        for cmd in ["exec < /nonexistent-xyz <&-; node",
+                    "exec <&- <&-; node",
+                    "exec 0>&- 0>&-; node",
+                    "exec 3< /tmp/x; exec 3< /nonexistent-xyz 0>&-; node",
+                    "exec 5<&-; node",
+                    "exec 3>&-; node"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "ALLOW", reason)
+
     def test_output_family_other_fds_and_close_stay_safe(self):
         # Companion ALLOW side: default/`>&N` (stdout), nonzero-fd
         # duplication (`1>&2`, `2>&1`, `3>&1`, `03>&1`), output append
@@ -4607,7 +4641,7 @@ class StdinProgramMutationTests(unittest.TestCase):
             "    if last == \"supply\":\n        return \"supply\"",
             "    if False:  # mutant: persistent supply lost\n        return \"supply\""),
         "output-family scan removed": (
-            "        if c == \">\" and i + 1 < n and seg[i + 1] == \"&\":",
+            "        if c == \">\" and not (i + 1 < n and seg[i + 1] == \"(\"):",
             "        if False:  # mutant: output-family scan removed"),
         "output-family default fd treated as stdin": (
             "        if fd == \"\":\n            return None",
@@ -4615,6 +4649,12 @@ class StdinProgramMutationTests(unittest.TestCase):
         "output-family close treated as supply": (
             "        if (target or \"\") == \"-\":\n            return \"close\"",
             "        if False:  # mutant: output close as supply\n            return \"close\""),
+        "uncertain close clears provenance": (
+            "        if all(not _redirect_op_may_fail(o, t) for o, t in ops):\n            return \"close\"\n        return None",
+            "        return \"close\"  # mutant: uncertain close clears"),
+        "in-body close treated as infallible": (
+            "    if base in (\"<&\", \">&\"):\n        return (target or \"\") != \"-\"",
+            "    return True  # mutant: closes may fail"),
         "eval function-definition propagation removed": (
             "            _ev_def_text = _eval_command_text(seg_words, ps, all_funcs, definite)",
             "            _ev_def_text = None  # mutant: eval defs never propagate"),
@@ -4759,6 +4799,7 @@ class StdinProgramMutationTests(unittest.TestCase):
                  "test_function_exec_persists_stdin", "test_subshell_fd3_stays_allowed",
                  "test_output_family_fd_zero_supplies_stdin",
                  "test_output_family_other_fds_and_close_stay_safe",
+                 "test_close_after_failed_redirect_keeps_provenance",
                  "test_leading_zero_fd_zero_supplies_stdin",
                  "test_leading_zero_fd_nonzero_and_close_stay_safe",
                  "test_eval_defines_function_for_later_pipe",

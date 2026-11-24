@@ -2895,7 +2895,7 @@ def _extract_function_defs(text, ps):
 
 
 def _stdin_op_effect(op, target):
-    """Effect of one `<`- or `>&`-family redirect operator on fd 0 (Issue #637).
+    """Effect of one redirect operator on fd 0 (Issue #637).
 
     op includes an optional fd-digit prefix (e.g. '3<', '<', '<<', '<<<',
     '<&', '<>', '0>&'). Returns 'supply' (fd 0 reads a new source), 'close'
@@ -2938,6 +2938,31 @@ def _stdin_op_effect(op, target):
             return "close"
         return "supply"
     return None
+
+
+def _redirect_op_may_fail(op, target):
+    """True when a redirect operator can fail and abort its command.
+
+    Bash applies one command's redirects strictly left to right and skips
+    the command on the first failure (verified on Bash with harmless
+    fixtures). A syntactic close therefore clears persistent stdin only
+    when every redirect positioned before it in the same segment is
+    infallible; otherwise prior stdin provenance survives (fail-closed).
+    Infallible: heredocs/here-strings (`<<`, `<<<`, `<<-`, any fd) and pure
+    closes (`<&-`, `>&-`, any fd: closing never fails, even on an unopened
+    or already-closed descriptor, verified on Bash). Everything else (file
+    opens, descriptor duplications whose source may be closed, moves)
+    may fail. Unknown forms default to fallible (fail-closed).
+    """
+    m = re.match(r"^(\d*)(.*)$", op, re.S)
+    fd, base = m.group(1), m.group(2)
+    if base in ("<<", "<<<", "<<-"):
+        return False
+    if base in ("<", ">", ">>", ">|", "<>", "&>", "&>>"):
+        return True
+    if base in ("<&", ">&"):
+        return (target or "") != "-"
+    return True
 
 
 def _scan_stdin_ops(seg):
@@ -2996,20 +3021,42 @@ def _scan_stdin_ops(seg):
             ops.append((op, target))
             i = j
             continue
-        if c == ">" and i + 1 < n and seg[i + 1] == "&":
-            # Output-family duplication onto another descriptor (`0>&N`,
-            # `00>&N`, `0>&-`). Glued fd digits as above; a missing fd is
-            # `>&N` (default fd 1: stdout, never stdin). `>>`, `>|`, `&>`
-            # and `>(` do not match here (`&` must follow `>` directly).
+        if c == ">" and not (i + 1 < n and seg[i + 1] == "("):
+            # Output-family operators (`>`, `>>`, `>|`, `>&` with optional
+            # glued fd digits, e.g. `2>`, `0>&`). A missing fd is stdout
+            # (never stdin); only an explicit all-zero fd can touch fd 0.
+            # `>(` is process substitution, not a redirect.
             k = i - 1
             fd = ""
             while k >= 0 and seg[k].isdigit():
                 fd = seg[k] + fd
                 k -= 1
             j = i + 1
-            while j < n and seg[j] in ">&":
+            while j < n and seg[j] in ">&|":
                 j += 1
             op = fd + seg[i:j]
+            t = j
+            while t < n and seg[t] in " \t":
+                t += 1
+            if t < n and seg[t] in "'\"":
+                target = None
+            else:
+                u = t
+                while u < n and seg[u] not in " \t" + REDIR_MARK + "'\"":
+                    u += 1
+                target = seg[t:u]
+            ops.append((op, target))
+            i = j
+            continue
+        if c == "&" and i + 1 < n and seg[i + 1] == ">":
+            # `&>` / `&>>` (stdout+stderr to a file): never touches fd 0,
+            # but the file open can fail and abort the command, which matters
+            # for whether a later close in the same segment ran. No fd prefix
+            # exists for this form (`2&>` would be an argument, not a target).
+            j = i + 1
+            while j < n and seg[j] == ">":
+                j += 1
+            op = seg[i:j]
             t = j
             while t < n and seg[t] in " \t":
                 t += 1
@@ -3152,15 +3199,25 @@ def _exec_segment_effect(words, seg):
             continue
         break
     has_command = j < len(clean)
+    # Ordered redirect effects: a later op wins for supply. A syntactic
+    # close clears persistent stdin only when it certainly ran. Bash applies
+    # one command's redirects atomically for this purpose: any failing
+    # redirect aborts the command and leaves prior descriptors in place
+    # (verified on Bash with harmless fixtures: a close before OR after a
+    # failing redirect never takes effect). Uncertain closes keep prior
+    # provenance (return None: fail-closed).
     last = None
-    for op, target in _scan_stdin_ops(seg):
+    ops = list(_scan_stdin_ops(seg))
+    for op, target in ops:
         e = _stdin_op_effect(op, target)
         if e is not None:
             last = e
     if last == "supply":
         return "supply"
     if last == "close" and not has_command:
-        return "close"
+        if all(not _redirect_op_may_fail(o, t) for o, t in ops):
+            return "close"
+        return None
     return None
 
 
