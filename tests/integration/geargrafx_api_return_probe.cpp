@@ -18,6 +18,11 @@
 // - RUN/HIT dumps (result_hex/buffer_hex/buffer_head_hex): SYNTHETIC mode only.
 //   COMMERCIAL mode generates no RAM dumps at all (no hex() calls), so nothing
 //   can leak via stdout/logs even before Python filtering.
+// - apicalls_observed (SYNTHETIC mode only): per-cycle count of API-entry
+//   watch hits, independent of how many APICALL lines were emitted/parsed.
+//   Python cross-checks it against the parsed per-cycle APICALL count with
+//   apicall_truncated==False, so a dropped emission stream cannot masquerade
+//   as zero events. COMMERCIAL serialization is unchanged (no new field).
 #include "geargrafx_core.h"
 #include "huc6280.h"
 #include "memory.h"
@@ -139,6 +144,10 @@ int main(int argc, char** argv) {
         unsigned prev_sp = cpu->S->GetValue() & 0xFF;
         int api_calls = 0;
         bool api_truncated = false;
+        // Total entry-watch hits this cycle, independent of the 32-line
+        // emission cap (api_calls counts emitted lines only). Synthetic-only
+        // RUN field; commercial output unchanged.
+        long api_observed = 0;
         // Return watcher (32-deep; 8-limit hides the $03 loop, grounds documented).
         // Pending MATCHed JSRs: expected return PC = caller+3 (RTS lands past 3-byte JSR).
         struct Pending { unsigned caller; unsigned slot; unsigned entry; unsigned sp_before; unsigned exp_ret; };
@@ -204,6 +213,7 @@ int main(int argc, char** argv) {
             if (step > 0 &&
                 prev_pc >= kPayloadLo && prev_pc < kPayloadHi &&
                 pc >= kTableBase) {
+                api_observed++;
                 if (api_calls >= 32) { api_truncated = true; }
                 else { api_calls++;
                 unsigned slot = 0; bool in_table = false;
@@ -357,6 +367,9 @@ int main(int argc, char** argv) {
         regs("RUN", reason.c_str(), step);
         std::printf(",\"reason\":\"%s\",\"halt_confirmed\":%s,\"halted_after_step\":%ld,\"halt_confirmation_steps\":%ld,\"halt_confirmation_required\":%ld,\"apicall_truncated\":%s,\"ret_truncated\":%s",
                     reason.c_str(), halt_confirmed ? "true" : "false", arrival, confirmed_steps, kHaltConfirmSteps, api_truncated ? "true" : "false", ret_truncated ? "true" : "false");
+        if (!commercial) {
+            std::printf(",\"apicalls_observed\":%ld", api_observed);
+        }
         if (!commercial) { hex("result_hex", kResultOffset, 32); hex("buffer_hex", kBufferOffset, kBufferBytes); }
         std::printf("}\n");
     };
