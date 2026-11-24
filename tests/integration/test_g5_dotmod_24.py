@@ -530,7 +530,11 @@ class Dotmod24Synthetic(unittest.TestCase):
         # AONE/ATWO and keep A==P; A!=P vectors pass explicit values.
         # SPINIT selects the caller stack pointer ($FF normal, $06 boundary
         # minimum for the 4-push body + 2 JSR bytes; below $06 is out of
-        # contract and never run on the real core).
+        # contract and never run on the real core; the writes probe refuses
+        # SP < $06 pre-execution). Verified P domain is T=0 (bit $20 clear);
+        # T=1 entry is OUT OF CONTRACT (pinned-core T-consumption) and no
+        # test passes T=1 seeds; PHP/PLP save is distinct from T-consumption
+        # and no T-bit code is added.
         if aone is None:
             aone = popen
         if atwo is None:
@@ -772,9 +776,13 @@ class Dotmod24Synthetic(unittest.TestCase):
                 self.assertEqual(c.get("stack_check"), "MATCH", (cycle, c))
                 self.assertTrue(c.get("return_matches_caller"), (cycle, c))
         # NOTE: the probe parser only collects the APICALL tag (APIRETURN
-        # lines are not collected). return_matches_caller + stack_check ==
+        # lines are not collected; the parser retains APICALL only).
+        # return_matches_caller + stack_check ==
         # MATCH + SP balance observe the stacked return bytes at entry time,
-        # before the body runs -- they do not observe the RTS destination.
+        # before the body runs -- they are ENTRY evidence and do not observe
+        # the RTS destination. Per-call return resumption is NOT claimed from
+        # APICALL alone; return is proved end-to-end by the post-return
+        # records + verified halt below, never per-call.
         # A body that rewrites its stacked return to a trampoline landing
         # back at caller+3 would still MATCH; that class is excluded only by
         # the 9-byte structural pin (exact B1 bytes verified pre-run), not
@@ -941,10 +949,14 @@ class Dotmod24Synthetic(unittest.TestCase):
         self._check_vdc(self._run_vdc("ar0", 0, 0x5A, 0x34, 0x06), 0, 0x5A, 0x34, 0x06)
 
     def _run_writes(self, name, spinit, rom_bytes=None):
-        # WRAM write-tracer run: HuCARD-style guest (SEI, MPR0/1=$F8,
-        # SP=spinit, JSR $E06C, halt) with per-instruction WRAM write
-        # history recorded by the probe, cold then warm. Returns the two
-        # RESULT records.
+        # WRAM value-change tracer run: HuCARD-style guest (SEI, MPR0/1=$F8,
+        # SP=spinit, JSR $E06C, halt) with per-instruction WRAM changed-offset
+        # history recorded by the probe, cold then warm. In-contract SP is
+        # >= $06; SP < $06 is refused pre-execution by the probe (see
+        # test_writes_sp_refused_*). The tracer records changed offsets at
+        # instruction boundaries, NOT write events (same-value stores are
+        # invisible); dynamic results are changed offsets only, never a full
+        # write-event proof. Returns the two RESULT records.
         import tempfile
         rom = self.rom if rom_bytes is None else self._tmp_rom(name, rom_bytes)
         o = self.out / ("writes-" + name)
@@ -976,16 +988,24 @@ class Dotmod24Synthetic(unittest.TestCase):
         return out
 
     def _allowed_transient(self, spinit):
-        # T05 scope: JSR (2 bytes) + B1 body (4 pushes) below SP, i.e.
-        # WRAM offsets for $21(spinit-5)..$21(spinit). Nothing else may be
-        # written on any cycle for B1.
+        # T05 scope: caller-side JSR (2 bytes) + B1 body callee pushes
+        # (4 bytes: P/A/X/Y) below SP, i.e. WRAM offsets for
+        # $21(spinit-5)..$21(spinit) (6 transient stack bytes total). Nothing
+        # else may show a value change on any cycle for B1. SP is
+        # restored/balanced; stacked bytes are NOT scrubbed (SP restore and
+        # stack-memory restore are distinct).
         return set(range(0x100 + spinit - 5, 0x100 + spinit + 1))
 
     def _check_writes(self, recs, spinit):
-        # Strict B1 write-history proof, both cycles: halted, complete
-        # (not truncated), identical sets cold==warm, and exactly the
-        # transient stack bytes -- a bare-RTS mutant (2 JSR bytes only)
-        # or any extra write fails here.
+        # Strict B1 value-change history proof, both cycles: halted (16
+        # start-and-end confirmations; unconfirmed/budget/timeout never counts
+        # as success), complete (not truncated), identical changed-offset sets
+        # cold==warm, and exactly the transient stack bytes -- a bare-RTS
+        # mutant (2 JSR bytes only) or any extra value change fails here.
+        # Same-value stores are invisible by design (changed offsets only);
+        # full dynamic write-event detection is NOT claimed -- the static
+        # 9-byte pin (no store opcode beyond the 4 pushes) is the stronger
+        # guarantee, separated from this dynamic observation.
         allowed = self._allowed_transient(spinit)
         seen = []
         for res in recs:
@@ -999,11 +1019,14 @@ class Dotmod24Synthetic(unittest.TestCase):
                          f"B1 wrote outside transient stack: {sorted(seen[0] - allowed)}")
 
     def _check_writes_extra(self, recs, spinit, extra):
-        # Mutant RED through the tracer only: halted cleanly on both cycles
-        # (abnormal halt/timeout never counts as side-effect detection),
-        # identical write sets, and the out-of-scope surplus is exactly
-        # `extra` (non-empty). The caller additionally proves the legacy
-        # oracles stay GREEN on the same ROM where the property demands it.
+        # Mutant RED through the value-change tracer only: halted cleanly on
+        # both cycles (16 start-and-end confirmations; abnormal
+        # halt/timeout/unconfirmed never counts as side-effect detection),
+        # identical changed-offset sets, and the out-of-scope surplus is
+        # exactly `extra` (non-empty). Changed offsets only: a same-value
+        # store would NOT surplus here by design. The caller additionally
+        # proves the legacy oracles stay GREEN on the same ROM where the
+        # property demands it.
         self.assertTrue(len(extra) > 0, "empty extra set is not a mutant")
         allowed = self._allowed_transient(spinit)
         seen = []
@@ -1022,18 +1045,81 @@ class Dotmod24Synthetic(unittest.TestCase):
                          f"unexpected out-of-scope writes: {sorted(surplus)}")
 
     def test_writes_b1_sp_ff(self):
-        # T05: B1 writes exactly the 6 transient stack bytes ($21FA-$21FF)
-        # and nothing else, cold and warm.
+        # T05: B1 value-change history is exactly the 6 transient stack bytes
+        # (caller-side JSR 2 + callee 4: $21FA-$21FF) and nothing else, cold
+        # and warm. Changed offsets only (same-value invisible by design).
         self._check_writes(self._run_writes("b1ff", 0xFF), 0xFF)
 
     def test_writes_b1_sp_06(self):
-        # T05 boundary: SP=$06 minimum writes exactly $2101-$2106.
+        # T05 boundary: SP=$06 minimum shows exactly $2101-$2106 changed.
+        # $06 is the in-contract minimum (JSR 2 + 4 pushes use $2101-$2106).
         self._check_writes(self._run_writes("b106", 0x06), 0x06)
 
+    def test_writes_sp_refused_00(self):
+        # MINOR-1 negative: SP=$00 (below $06) is refused pre-execution.
+        # The probe must exit 2 with spinit refusal and NO RESULT lines --
+        # a contract refusal, never an execution failure or budget timeout.
+        import subprocess
+        import tempfile
+        o = self.out / "writes-ref00"
+        o.mkdir(exist_ok=True)
+        (o / "d.bin").write_bytes(bytes(2352 * 32))
+        cue = o / "d.cue"
+        cue.write_text('FILE "d.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n')
+        r = subprocess.run([str(self.writes_probe), str(self.rom.resolve()),
+                            str(cue.resolve()), "4096", "0"],
+                           capture_output=True, text=True, timeout=120)
+        self.assertEqual(r.returncode, 2, "SP=$00 must be refused pre-execution (exit 2)")
+        self.assertNotIn("RESULT", r.stdout, "refused SP must emit no RESULT")
+        self.assertIn("spinit", r.stderr, "refusal must name spinit")
+
+    def test_writes_sp_refused_05(self):
+        # MINOR-1 negative: SP=$05 (below $06) is refused pre-execution,
+        # same contract as $00. $06 remains the minimum GREEN boundary.
+        import subprocess
+        o = self.out / "writes-ref05"
+        o.mkdir(exist_ok=True)
+        (o / "d.bin").write_bytes(bytes(2352 * 32))
+        cue = o / "d.cue"
+        cue.write_text('FILE "d.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n')
+        r = subprocess.run([str(self.writes_probe), str(self.rom.resolve()),
+                            str(cue.resolve()), "4096", "5"],
+                           capture_output=True, text=True, timeout=120)
+        self.assertEqual(r.returncode, 2, "SP=$05 must be refused pre-execution (exit 2)")
+        self.assertNotIn("RESULT", r.stdout, "refused SP must emit no RESULT")
+        self.assertIn("spinit", r.stderr, "refusal must name spinit")
+
+    def test_writes_sp_probes_boundary_contract(self):
+        # MINOR-1 scope check: the sibling VDC probe uses a fixed SP=$FF
+        # guest (no spinit argument), so it has no SP-boundary issue. Only
+        # the writes tracer takes a caller SP and only it enforces $06.
+        import inspect
+        src = Path(__file__).with_name("geargrafx_dotmod24_probe.cpp").read_text()
+        self.assertNotIn("spinit", src, "VDC probe must not take spinit")
+        wsrc = Path(__file__).with_name("geargrafx_dotmod24_writes_probe.cpp").read_text()
+        self.assertIn("spinit < 0x06", wsrc, "writes probe must enforce $06 minimum")
+        self.assertIn("pc_before == halt", wsrc, "writes probe must count start-and-end halt")
+
+    def test_writes_unconfirmed_halt_rejected(self):
+        # MINOR-2 negative control: an unconfirmed halt (halted=false, e.g.
+        # only 15 post-arrival confirmations) must NOT count as success.
+        # _check_writes requires halted true, so a fabricated unconfirmed
+        # record raises (harness failure), never GREEN and never RED.
+        wrecs = self._run_writes("b1ff-h", 0xFF)
+        self.assertTrue(wrecs[0]["halted"], "control must halt")
+        bad = [dict(wrecs[0]), dict(wrecs[1])]
+        bad[0]["halted"] = False
+        bad[1]["halted"] = False
+        with self.assertRaises(AssertionError, msg="unconfirmed halt accepted"):
+            self._check_writes(bad, 0xFF)
+
     def test_writes_mutant_sta2200_red(self):
-        # T05 non-sampled write (outside canary $2900-$29FF and zp $10):
+        # T05 value-change write (outside canary $2900-$29FF and zp $10):
         # the legacy oracles stay GREEN (proving their blindness here)
-        # while the tracer flags $2200 on both cycles.
+        # while the value-change tracer flags changed offset $2200 on both
+        # cycles. This mutant CHANGES the value, so it is visible; a
+        # same-value STZ to an already-matching byte would stay invisible by
+        # design (changed offsets only, never a write-event proof).
         orig = self.rom.read_bytes()
         bad, cav = self._mutate_body_extended(orig, MUT_STA2200_12)
         self._assert_ext_mutant_applied(orig, bad, cav, MUT_STA2200_12)
@@ -1048,7 +1134,10 @@ class Dotmod24Synthetic(unittest.TestCase):
         # T05 history-vs-final distinction: the mutant saves $2200, writes
         # $AA, then restores the original value -- the final WRAM value is
         # unchanged, so snapshots/dumps/checksums stay GREEN, but the
-        # per-instruction write history still records $2200 -> RED.
+        # per-instruction value-change history still records changed offset
+        # $2200 -> RED. This proves history-vs-final, NOT same-value
+        # detection: a same-value store would leave no diff and stay
+        # invisible by design.
         orig = self.rom.read_bytes()
         bad, cav = self._mutate_body_extended(orig, MUT_RESTORE_24)
         self._assert_ext_mutant_applied(orig, bad, cav, MUT_RESTORE_24)
@@ -1062,8 +1151,12 @@ class Dotmod24Synthetic(unittest.TestCase):
     def test_chain_33_4a_23_25_24(self):
         # Synthetic G5 chain leg: the PUBLIC boot ($02 leg) loads this
         # payload, which then calls $33 -> $4A -> $23 -> $25 -> $24 through the real
-        # table entries. Each APICALL (return_matches_caller + MATCH) proves per-call entry,
-        # return-PC resumption (caller+3), MPR and SP integrity. The observed
+        # table entries. Each APICALL (return_matches_caller + MATCH) proves
+        # per-call ENTRY (stacked-return bytes at entry time, MPR and SP at
+        # entry); per-call RTS return resumption (caller+3) is NOT proved by
+        # APICALL alone (APIRETURN is not collected and the parser retains
+        # APICALL only) -- return is proved end-to-end by the final records +
+        # verified halt, never per-call. The observed
         # $24 entry state is SIMULATED-entry (conditional on the fabricated
         # $24 return's predecessors), never genuine $24 input evidence.
         import json
@@ -1116,12 +1209,15 @@ class Dotmod24Synthetic(unittest.TestCase):
                 self.assertEqual(c.get("stack_check"), "MATCH", (cycle, c))
                 self.assertTrue(c.get("return_matches_caller"), (cycle, c))
                 self.assertEqual(c["mpr"][1], 0xF8, (cycle, c))  # MPR1=$F8 at every entry
-            # NOTE: APIRETURN lines are not collected by the probe parser.
-            # return_matches_caller + stack_check == MATCH observe the
-            # stacked return bytes at entry time, not the RTS destination;
+            # NOTE: APIRETURN lines are not collected by the probe parser
+            # (the parser retains APICALL only). return_matches_caller +
+            # stack_check == MATCH are ENTRY evidence: they observe the
+            # stacked return bytes at entry time, not the RTS destination.
+            # Per-call return resumption is NOT claimed from APICALL alone;
             # a stacked-return-rewriting trampoline back to caller+3 is
             # excluded only by the 9-byte body-shape pin, while the
-            # end-to-end records below exclude byte-skipping bodies.
+            # end-to-end records below exclude byte-skipping bodies and prove
+            # return end-to-end (final records + halt), never per-call.
         # End-to-end preservation across all four calls.
         self.assertEqual(cold[base], 0xAA)
         self.assertEqual((cold[base + 1], cold[base + 2], cold[base + 3]),
@@ -1429,8 +1525,13 @@ class Dotmod24Synthetic(unittest.TestCase):
         # Carry-specificity: the forced clear is observed DIRECTLY at both
         # return offsets, and it is the ONLY deviation -- every other field
         # still matches the C=1 vector with Carry forced clear (P=$06 is
-        # $07 with bit0 off; B is masked by the checker).
+        # $07 with bit0 off; B is masked by the checker). SP balance is
+        # verified on both cycles via _check_sp so a stacked-SP corruption
+        # cannot be mistaken for Carry-specific detection (CodeRabbit: SP
+        # check applies to balanced RED as well as GREEN, cold+warm).
         cold, warm = self._buf(rec)
+        self._check_sp(cold, base, 0xFF)
+        self._check_sp(warm, base, 0xFF)
         for buf in (cold, warm):
             self.assertEqual(buf[base + 4] & 0x01, 0x00)
             self.assertEqual(buf[base + 20] & 0x01, 0x00)
@@ -1458,7 +1559,11 @@ class Dotmod24Synthetic(unittest.TestCase):
                                 mutant_tag="M7b-C0-preservation (balanced)")
         # Carry-specificity (mirrored): forced set observed directly at
         # both return offsets, and the only deviation from the C=0 vector.
+        # SP balance is verified on both cycles via _check_sp so a stacked-SP
+        # corruption cannot be mistaken for Carry-specific detection.
         cold, warm = self._buf(rec)
+        self._check_sp(cold, base, 0xFF)
+        self._check_sp(warm, base, 0xFF)
         for buf in (cold, warm):
             self.assertEqual(buf[base + 4] & 0x01, 0x01)
             self.assertEqual(buf[base + 20] & 0x01, 0x01)

@@ -29,10 +29,15 @@ value:
 - JSR `$E06C` (3-byte) -> RTS to caller+3; SP balanced (JSR 2 bytes +
   max 4 transient pushes; caller SP minimum `$06`; below minimum is out
   of contract and never run on the real core).
-- A/X/Y preserved exactly; P preserved exactly INCLUDING Carry
-  (`C_in == C_out` on both seeds; no CLC/SEC fabricated, no ok/reject
-  values). Latch-exact on the pinned core (HuC6280 `SetP` masks with
-  `$EF`; plain PHP/PLP round trip restores N/V/T/D/I/Z/C exactly).
+- A/X/Y preserved exactly; P preserved exactly for the verified domain
+  (T=0) INCLUDING Carry (`C_in == C_out` on both seeds; no CLC/SEC
+  fabricated, no ok/reject values). Latch-exact on the pinned core for T=0
+  (HuC6280 `SetP` masks with `$EF`; plain PHP/PLP round trip restores
+  N/V/D/I/Z/C exactly with T=0). PHP/PLP saves the stacked image, but the
+  HuC6280 consumes the transfer flag at every instruction boundary, so
+  the save contract and the T-consumption platform fact are distinct. No
+  T-bit operation is added (no SEB/CLB/TST fabrications); T=1 entry is out
+  of the verified calling contract.
 - MPR0-MPR7 unchanged (scaffold executes no TAM/TMA-write/TXS;
   MPR1=`$F8` is a caller precondition validated by the harness BEFORE JSR
   per T13-analog; MPR1!=`$F8` is OUT OF CONTRACT/BLOCKED -- the
@@ -44,17 +49,30 @@ value:
   pinned core, so VCE invariance holds by construction: the 9-byte body
   contains no store opcode of any kind, hence no VCE write is possible);
   no PSG/timer/CD access.
-- No work-RAM writes outside the transient caller-stack bytes: 256-byte
+- No work-RAM writes outside the transient caller-stack bytes (caller-side
+  JSR 2-byte return push already written before entry + callee 4 transient
+  pushes P/A/X/Y = 6 transient stack bytes total; SP is restored/balanced
+  before RTS, stacked bytes are NOT scrubbed -- SP restore and stack-memory
+  restore are distinct): 256-byte
   canary at `$2900`-`$29FF` intact plus guest-observed zp `$10` pre/post
-  invariance on the real core, plus full-buffer cold/warm equality.
+  invariance on the real core, plus full-buffer cold/warm equality, PLUS
+  per-instruction WRAM value-change history (the tracer records changed
+  offsets at instruction boundaries, not write events: a same-value store
+  is invisible; results are changed offsets, never a full dynamic write
+  proof; the static 9-byte body pin -- no store opcode beyond the 4 pushes
+  -- is the stronger guarantee, separated from the dynamic observation).
 - No IRQ side effects (IDR/IRR unchanged across the call on the real core).
-- P domain excludes T=1: the pinned core consumes the transfer flag
+- P domain excludes T=1 (verified calling contract is P with T=0): the
+  pinned core consumes the transfer flag
   every clock (`huc6280_inline.h` `Clock()`: `m_transfer_flag` snapshot
   + `ClearFlag(FLAG_TRANSFER)` when `GG_TESTING` is not defined), so an
-  entry T=1 exits T=0 on ANY implementation. This is a pinned-core
+  entry T=1 exits T=0 on ANY implementation regardless of the PHP/PLP save /
+  restore. This is a pinned-core
   platform fact, not scaffold behavior; preservation is verified for all
-  P bits except T, and T=1 entry is out of the verified domain with this
-  ground (boundary test uses T=0 seeds `0x04`/`0x85`, same as B1).
+  P bits except T (Carry and N/V/D/I/Z exactly, T=0), and T=1 entry is out
+  of the verified domain with this
+  ground (boundary test uses T=0 seeds `0x04`/`0x85`, same as B1; no T-bit
+  manipulating code is added).
 
 B1-analogous defines NO refusal path and NO VDC/VCE/shadow/mask behavior.
 Contract applicability (§6.3): T01-T03, T05-T07, T10-T14 apply (GREEN proved
@@ -109,36 +127,50 @@ write history, cold+warm).
 - T01 stub: `cd_24="stub"` traps at `api_unimplemented` with X=`$24`,
   post-JSR marker `$00` (fail-closed intact).
 - T02 mechanics: slots [`$24`,`$24`], entries `$E06C`, `in_table`,
-  `sp_delta` 2, `stack_check` MATCH, `return_matches_caller` true, SP
+  `sp_delta` 2, `stack_check` MATCH, `return_matches_caller` true (entry-time
+  stacked-return evidence, not RTS-landing proof), SP
   balanced, cold/warm identical.
 - T03 preservation: C=1 (`$07`) and C=0 (`$06`) classes GREEN with exact
   A/X/Y/P/MPRs/SP; A!=P mixed vector GREEN with independent A-vs-P
   checks; boundary values GREEN.
 - T05 RAM scope: canary intact + zp pre/post intact + full-buffer
-  cold/warm equality on every GREEN run, PLUS per-instruction WRAM write
-  history: scaffold writes exactly the 6 transient stack bytes and
+  cold/warm equality on every GREEN run, PLUS per-instruction WRAM
+  value-change history: scaffold writes exactly the 6 transient stack bytes
+  (caller-side JSR 2 + callee 4) and
   nothing else, cold and warm. A `$2200` store mutant is GREEN on
   final-value oracles yet RED on the history; a write-then-restore mutant
-  likewise RED on history. Same-value-store invisibility (tracer records
-  value diffs) applies as in B1 and is documented, not claimed otherwise.
+  likewise RED on history (history-vs-final distinction, not same-value
+  detection). Same-value-store invisibility holds: the tracer records
+  changed offsets at instruction boundaries, not write events, so a
+  same-value `STZ $2200` is invisible to the dynamic observation; the
+  dynamic result is changed offsets only, never a full write-event proof.
+  The static 9-byte body pin (no store opcode beyond the 4 pushes) is the
+  stronger guarantee, separated from the dynamic observation.
 - T06 bad table: `$E06C` reroute to fallback RED.
 - T07 Carry-preservation oracle (balanced, channel b): cavity bodies
   +CLC/+SEC before RTS; forced-CLC GREEN on C=0 / RED on C=1 as
   preservation mismatch; forced-SEC converse. Abnormal halts forbidden
-  for these mutants; arrival, clean RTS, SP balance, cold/warm identity
+  for these mutants; arrival, clean RTS, SP balance (checked via `_check_sp`
+  on cold+warm in both RED and GREEN), cold/warm identity
   required.
 - T10 stack smash (balanced zp shape): RED via guest-observed mismatch.
-- T11 boundaries: preservation probe (no reject code); T=1 excluded.
-- T12 SP depth: `$FF` and `$06` GREEN and balanced; below-minimum unrun.
+- T11 boundaries: preservation probe (no reject code); T=1 excluded (verified
+  domain is P with T=0; boundary seeds `0x04`/`0x85` carry T=0).
+- T12 SP depth: `$FF` and `$06` GREEN and balanced; below-minimum (`$00`,
+  `$05`) refused pre-execution by the writes probe (exit 2, no RESULT),
+  never run on the real core.
 - T13 MPR1 pre-JSR: `$FF` refuses at `refused_halt` with zero `$24`
   APICALL in both cycles; `$F8` positive control GREEN with proven
   arrival.
 - T14: cold==warm every run; C=0/C=1 both GREEN; VDC-only probe covers
   entry AR variants (no dynamic VCE oracle; VCE by construction).
 - Chain (synthetic G5 leg): `$33`->`$4A`->`$23`->`$25`->`$24` through the
-  real table entries, per-call APICALL evidence, MPR1=`$F8` at every
-  entry, end-to-end preservation. Entry state labeled SIMULATED-entry,
-  never genuine inputs. No commercial continuation claimed.
+  real table entries, per-call APICALL entry evidence (stacked-return bytes
+  at entry time, not RTS-landing proof; APIRETURN is not collected),
+  MPR1=`$F8` at every
+  entry, end-to-end preservation (final records + halt). Entry state labeled SIMULATED-entry,
+  never genuine inputs. No commercial continuation claimed. Per-call return
+  resumption is NOT claimed from APICALL alone.
 - Structural pins: 9-byte body pinned host + real-core; stub-default ROM
   pinned to pre-$24 baseline SHA; table routing pinned on all variant
   combinations.

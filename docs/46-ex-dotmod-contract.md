@@ -95,7 +95,7 @@ I/O is ever justified) or preservation-only with NO I/O (B1-analogous).
 | 6 | Input: BIOS work-RAM (`$20F3`, `$20F7`, `$2214/$2215`, `$2227-$2232`, `$2243`) | UNKNOWN | none | S1 lists addresses without direction/semantics for `$23/$24/$25`. Reads/writes by callers do not prove callee contract. Shadow ownership for `$24` UNKNOWN |
 | 7 | MPR precondition | UNKNOWN (genuine); OBSERVED `$F8` on the single commercial path is NOT a contract | DEV discipline (if ever): MPR1=`$F8` caller precondition (same as every DEV shadow design) | S7: every observed `$24` APICALL carries MPR1=`$F8`, but one game cannot define the ABI. The harness validates MPR1 BEFORE JSR in synthetic tests (contract T13-analog); the body defines NO in-body gate (B1-analogous has no gate by design) |
 | 8 | Stack/return | UNKNOWN (genuine) | B1-analogous (if scaffold): JSR `$E06C` tail-JMP, RTS to caller+3, SP balanced (JSR 2 + max 4 transient, caller SP minimum `$06`) | Table JSR mechanics project-verified (S8). Return semantics (RTS vs JMP, caller+2 vs +3) for genuine UNKNOWN. B1-analogous return is a scaffold choice, never genuine evidence |
-| 9 | Preserved vs clobbered (A/X/Y/P/MPR) | UNKNOWN | B1-analogous: A/X/Y/P exact incl Carry, MPRs unchanged, AR unchanged | S6: `$23` preserves A/X/Y + Carry (PHP/PLP, no CLC/SEC); `$25` B1 preserves all incl Carry. Genuine `$24` preservation UNKNOWN. Any future body must state its preservation as SCAFFOLD contract, never genuine |
+| 9 | Preserved vs clobbered (A/X/Y/P/MPR) | UNKNOWN | B1-analogous: A/X/Y exact; P exact for the verified domain (T=0) incl Carry exactly, MPRs unchanged, AR unchanged (T=1 entry is OUT OF CONTRACT per §4.2/U6; no T-bit operation added) | S6: `$23` preserves A/X/Y + Carry (PHP/PLP, no CLC/SEC); `$25` B1 preserves all incl Carry (T=0 domain). Genuine `$24` preservation UNKNOWN. Any future body must state its preservation as SCAFFOLD contract, never genuine |
 | 10 | VDC side effects | UNKNOWN | B1-analogous: NONE (no ST0/ST1/ST2, no VCE/PSG/timer/CD access) | S5a gives hardware locations; S5b gives DEV I/O discipline IF I/O is ever justified. B1-analogous performs zero I/O, so VDC/VCE/shadow/mask questions are NOT_APPLICABLE to the scaffold (requiring them would invent code paths). Genuine VDC/VCE target UNKNOWN: VCE `$0400` clock-select is a HYPOTHESIS (name suggests dot clock), never a confirmed callee target |
 | 11 | VCE side effects | UNKNOWN | B1-analogous: NONE | Same as #10. No in-tree DEV body touches VCE `$0400`; any future VCE write needs a pinned hardware citation (S5a) PLUS a public BIOS-contract source linking `$24` to VCE — neither exists today |
 | 12 | Shadow/AR/VCE-state | UNKNOWN | B1-analogous: AR unchanged, no shadow, no state | S1 `$20F3`/`$20F7` are caller-visible variables, not proven `$24` shadow. B1-analogous owns no state |
@@ -122,14 +122,14 @@ and ONLY for pathfinding (SIMULATED), never as genuine progress.
 
 ### 4.2 Preservation conditions, split by variant (B1-analogous / future VDC)
 
-- B1-analogous (D2 scaffold, this task IF implemented): entry-state preservation only (A/X/Y/P incl Carry, MPRs unchanged, SP balanced, AR unchanged, no work-RAM writes outside transient stack, no VDC/VCE/MMIO writes of any kind, no TAM/TMA-write/TXS/SEI requirement since no I/O to protect, no shadow, no mask, no refusal path, result class SIMULATED). Rationale: genuine semantics UNKNOWN, so any invented service/VDC write would be guesswork; preservation is load-bearing (mutants caught) and safe (synthetically verified). Applicable tests: T01-T03, T05-T07-preservation, T10-T14 per §6.3; T04/T08/T09 NOT_APPLICABLE (no I/O/shadow/mask).
+- B1-analogous (D2 scaffold, this task IF implemented): entry-state preservation only (A/X/Y exact; P exact for the verified domain T=0 incl Carry exactly, T=1 entry OUT OF CONTRACT per U6; PHP/PLP save contract is distinct from HuC6280 instruction-boundary T-consumption; no T-bit operation added; MPRs unchanged, SP balanced with stacked bytes NOT scrubbed -- SP restore and stack-memory restore are distinct, AR unchanged, no work-RAM writes outside the transient caller-stack bytes (caller-side JSR 2 + callee 4 transient = 6 total), no VDC/VCE/MMIO writes of any kind, no TAM/TMA-write/TXS/SEI requirement since no I/O to protect, no shadow, no mask, no refusal path, result class SIMULATED). Rationale: genuine semantics UNKNOWN, so any invented service/VDC write would be guesswork; preservation is load-bearing (mutants caught) and safe (synthetically verified). Applicable tests: T01-T03, T05-T07-preservation, T10-T14 per §6.3; T04/T08/T09 NOT_APPLICABLE (no I/O/shadow/mask).
 - Future VDC/VCE body (D1, NOT this task): would require (a) pinned hardware citation (S5a already) PLUS (b) public BIOS-contract source for `$24` inputs/outputs/flags/shadow/timing (absent), PLUS (c) independent validation model for oracles (absent), PLUS (d) provenance/legal review for any reused code (pending). Until (b)-(d) exist, D1 is BLOCKED. The `$23` DEV body (MWR low from A) MUST NOT be copied as `$24` behavior (different slot, different hypothesized target, no contract linking them).
 
 ## 5. Comparison with `$23` EX_SCRSIZ and `$23`/`$24`/`$25` relationship (`$23`との比較・三者関係)
 
 | Aspect | `$23` (DEV, Issue #45) | `$25` (B1 scaffold, Issue #47) | `$24` (this issue) |
 |--------|------------------------|--------------------------------|--------------------|
-| In-tree behavior | REAL VDC I/O: MWR (`$09`) low from A via MPR0 window, AR=9, A/X/Y preserved, Carry preserved (no CLC/SEC), no work-RAM writes | SIMULATED preservation-only: NO I/O, AR unchanged, A/X/Y/P incl Carry preserved, MPRs unchanged | UNKNOWN genuine; B1-analogous scaffold (if implemented) = NO I/O, same preservation as `$25` B1 |
+| In-tree behavior | REAL VDC I/O: MWR (`$09`) low from A via MPR0 window, AR=9, A/X/Y preserved, Carry preserved (no CLC/SEC), no work-RAM writes | SIMULATED preservation-only: NO I/O, AR unchanged, A/X/Y/P incl Carry preserved (T=0 verified domain), MPRs unchanged | UNKNOWN genuine; B1-analogous scaffold (if implemented) = NO I/O, same preservation as `$25` B1 for the verified T=0 domain (Carry exact; T=1 OUT OF CONTRACT; no work-RAM writes outside caller-side JSR 2 + callee 4 transient; SP balanced, stacked bytes not scrubbed) |
 | Observed CUE[0] ExpB entry (private, NOT contract) | A=`$00`,X=`$00`,Y=`$00` (DEV accepted and returned; genuine acceptance UNKNOWN) | A=`$00`,X=`$20`,Y=`$20` (B1 preserved and returned) | A=`$00`,X=`$20`,Y=`$20` (same context as `$25`; single-callsite coincidence, NOT ABI) |
 | Dependence | `$23` return observed BEFORE `$25`; `$25` return observed BEFORE `$24`. Order OBSERVED on one game under experimental returns. Genuine ordering UNKNOWN. `$25` B1 has NO side effects by design, so `$24` entry well-formedness (MPR1/SP/IRQ) does NOT depend on `$25` side effects — it depends on caller discipline (satisfied). `$24` halt is unimplemented stub, NOT a consequence of `$25` no-op. Conversely `$24` functional init would NOT repair `$25` no-op debt; display-init debt ACCUMULATES across B1-analogous scaffolds and must be tracked as debt, not progress |
 | Shadow | `$23` owns no shadow; `$25` B1 owns no shadow | none | UNKNOWN genuine; scaffold owns none |
@@ -167,16 +167,27 @@ All fixtures are project-authored HuC6280; no commercial/game/reference bytes.
   no VCE write is possible). Any VDC write mutant RED; VCE-write mutants
   are N/A by construction (no store to mutate toward VCE).
 - Work-RAM scope: 256-byte canary + full-buffer cold/warm equality +
-  per-instruction write-history (tracer): scaffold writes exactly the 6
-  transient stack bytes and nothing else; write-then-restore mutant RED
-  on history even when final values match.
+  per-instruction value-change history (tracer records changed offsets at
+  instruction boundaries, not write events: a same-value store is invisible;
+  dynamic result is changed offsets only, never a full write-event proof; the
+  static 9-byte pin -- no store opcode beyond the 4 pushes -- is the stronger
+  guarantee, separated from the dynamic observation): scaffold writes exactly
+  the 6 transient stack bytes (caller-side JSR 2 + callee 4) and nothing else;
+  write-then-restore mutant RED
+  on history even when final values match (history-vs-final distinction, not
+  same-value detection). SP is restored/balanced; stacked bytes are NOT
+  scrubbed.
 - MPR1 precondition validated by harness BEFORE JSR (T13-analog): a `$FF`
   candidate refuses at refused_halt without executing JSR, never reaches
   `$24`, never remaps first.
 - SP depth: SP=`$FF` and boundary `$06` GREEN and balanced;
-  below-minimum out of contract and never run.
+  below-minimum (`$00`, `$05`) refused pre-execution by the writes probe
+  (contract refusal, exit 2, no RESULT), out of contract and never run.
 - Chain: synthetic `$33->$4A->$23->$25->$24` through real table entries
-  with per-call APICALL evidence (the `$02` leg is the PUBLIC boot itself).
+  with per-call APICALL entry evidence (stacked-return bytes at entry time,
+  not RTS-landing proof; APIRETURN is not collected; per-call return is NOT
+  claimed from APICALL alone -- end-to-end preservation + halt is the return
+  evidence) (the `$02` leg is the PUBLIC boot itself).
 - Refusal-path absence: B1-analogous defines no refusal (T04/T08/T09
   NOT_APPLICABLE), routing, 9-byte structural pin, buffer negatives.
 
@@ -188,7 +199,7 @@ All fixtures are project-authored HuC6280; no commercial/game/reference bytes.
 | T02 | Mechanics (`cd_24="experimental"`) | JSR `$E06C`, in_table, sp_delta 2, MATCH, return_matches true, SP balanced, MPR1=`$F8`, cold/warm identical |
 | T03 | Preservation C=0/C=1 + A!=P + boundaries | Exact A/X/Y/P/MPR/SP; M7a/M7b RED on the mismatched Carry class only |
 | T04 | I/O window | NOT_APPLICABLE (scaffold has no I/O; requiring a window would invent a path) |
-| T05 | RAM scope (canary + full-buffer + write history) | Exactly 6 transient stack bytes, nothing else; restore-mutant RED on history |
+| T05 | RAM scope (canary + full-buffer + value-change history) | Exactly 6 transient stack bytes (JSR 2 caller-side + callee 4), nothing else; restore-mutant RED on history (history-vs-final, not same-value); same-value stores invisible (changed offsets only); static 9-byte pin is the stronger guarantee, separated from the dynamic observation |
 | T06 | Bad table reroute | RED (stub halt, arrival-proved) |
 | T07 | Carry-preservation oracle (balanced cavity, channel b) | Forced-CLC/SEC mutants RED on the mismatched class, GREEN on the matched class (proves no fabrication, not a fixed value) |
 | T08 | Shadow bypass | NOT_APPLICABLE (no shadow owned; requiring bypass would invent state) |
@@ -197,7 +208,7 @@ All fixtures are project-authored HuC6280; no commercial/game/reference bytes.
 | T11 | Buffer negatives (body/table mutants) | All RED with per-mutant failure modes |
 | T12 | Oracle strictness (cold-duplicate, count, reason, budget, halt, PC, truncation) | All negatives rejected (fail-closed validator) |
 | T13 | MPR1 precondition (`$FF` refused before JSR) | Refused_halt, never reaches `$24`, never remaps |
-| T14 | SP boundaries (`$FF`, `$06`, below-minimum unrun) | GREEN + balanced for `$FF`/`$06`; below-minimum never executed |
+| T14 | SP boundaries (`$FF`, `$06`, below-minimum refused) | GREEN + balanced for `$FF`/`$06`; below-minimum (`$00`, `$05`) refused pre-execution (exit 2, no RESULT), never executed |
 
 ### 6.3 Applicability matrix (B1-analogous)
 
@@ -211,7 +222,7 @@ T04/T08/T09 to APPLICABLE with real I/O/shadow/mask oracles.
 | Policy | What it does | Safety/cost | Verdict for `$24` |
 |--------|--------------|-------------|-------------------|
 | D1 functional (genuine or limited) | Independent HuC6280 body with real VDC/VCE ops + shadow + validation + fail-closed, grounded in public contract + pinned hardware + independent oracle | Needs (b)-(d) above; none exist. Any VCE `$0400` write today would be name-based guessing (HYPOTHESIS presented as fact) | BLOCKED. No public source defines `$24` inputs/outputs/flags/shadow/timing. Single-game entry values (A=`$00`,X=Y=`$20` locally observed, NOT published as contract) cannot define an ABI. Do NOT implement |
-| D2 B1-analogous scaffold (SIMULATED, opt-in) | Route `$E06C` to a returning body ONLY in experimental images (BOOT-region, `cd_24="experimental"`; normal DEV ROM byte-identical). Body: save/restore A/X/Y/P, RTS, NO VDC/VCE/MMIO writes, AR unchanged, MPRs unchanged, no work-RAM writes, SP balanced, Carry preserved, no success code. Result class SIMULATED_NEXT_API, never genuine, never DEV_CALLABLE | No VDC/RAM risk beyond transient stack; BOOT-region placement avoids OVERRIDES ceiling. Risk: mistaken for implementation; display-init debt accumulates. Mitigations: manifest `system_card_abi: NO_CLAIM`, `release_eligible: false`, separate flag, default `stub`, every observation labeled SIMULATED | CONDITIONAL, pathfinding only. Owner permission already granted for commercial opt-in in this task; default `stub`; normal ROM untouched; never DEV_CALLABLE; never cited as `$24` semantics. May be selected ONLY under §8/§9 acceptance (synthetic GREEN + commercial next-blocker observation) |
+| D2 B1-analogous scaffold (SIMULATED, opt-in) | Route `$E06C` to a returning body ONLY in experimental images (BOOT-region, `cd_24="experimental"`; normal DEV ROM byte-identical). Body: save/restore A/X/Y/P (verified domain T=0; T=1 OUT OF CONTRACT; no T-bit operation), RTS, NO VDC/VCE/MMIO writes, AR unchanged, MPRs unchanged, no work-RAM writes outside the transient caller-stack bytes (JSR 2 caller-side + callee 4; SP balanced, stacked bytes not scrubbed), Carry preserved, no success code. Result class SIMULATED_NEXT_API, never genuine, never DEV_CALLABLE | No VDC/RAM risk beyond transient stack; BOOT-region placement avoids OVERRIDES ceiling. Risk: mistaken for implementation; display-init debt accumulates. Mitigations: manifest `system_card_abi: NO_CLAIM`, `release_eligible: false`, separate flag, default `stub`, every observation labeled SIMULATED | CONDITIONAL, pathfinding only. Owner permission already granted for commercial opt-in in this task; default `stub`; normal ROM untouched; never DEV_CALLABLE; never cited as `$24` semantics. May be selected ONLY under §8/§9 acceptance (synthetic GREEN + commercial next-blocker observation) |
 | D3 BLOCKED (research only) | Record contract UNKNOWN, missing info, verification method, next work | Zero ROM/code risk; zero boot progress in this task | FALLBACK if D2 safety/green cannot be met, or if review/CI cannot converge. Prefer D2 ONLY if §9 acceptance is fully met; otherwise D3 with concrete next steps |
 
 The `$4A` precedent (#824) and `$25` B1 precedent (#828) do NOT transfer to

@@ -2,10 +2,25 @@
 // argv: rom cue steps spinit
 // Guest (patched at the reset vector, HuCARD-style): SEI/CLD, MPR1=$F8,
 // SP=spinit, MPR0=$F8, entry regs A=$3C/X=$11/Y=$22/P=$07, JSR $E06C, halt.
+// Contract: SP=spinit must be >= $06 (in-contract minimum for the caller-side
+// JSR 2 bytes + callee 4 transient pushes). SP < $06 is OUT OF CONTRACT and
+// is refused pre-execution (exit 2, no RESULT, no guest run) -- never an
+// execution failure or budget timeout. $00/$05 are negative examples;
+// $06/$FF are positive examples.
 // The C++ side snapshots the whole WRAM (GetWorkingRAMSize, 8 KiB on the
 // pinned core), single-steps the guest, and OR-accumulates per-instruction
-// WRAM diffs into a written[] bitmap. A write-then-restore inside the call
-// is still recorded (history, not just final values). Runs cold then warm
+// WRAM value diffs into a written[] bitmap. This records CHANGED OFFSETS at
+// instruction boundaries, NOT write events: a same-value store (e.g. STZ to
+// an already-zero byte) leaves no diff and is INVISIBLE to this tracer.
+// Results are changed offsets only, never a full dynamic write-event proof.
+// The static 9-byte body pin (no store opcode beyond the 4 pushes) is the
+// stronger guarantee, separated from this dynamic observation. A
+// write-then-restore inside the call is still recorded (history-vs-final
+// distinction, not same-value detection). Halt is confirmed only by 16
+// consecutive steps that START and END at halt (the arrival step does NOT
+// count; departure resets); 15 post-arrival steps leave halted=false, 16
+// leave halted=true; an unconfirmed tail is a harness failure, never success.
+// Runs cold then warm
 // (ResetMedia between, like the return probe) and reports one RESULT line
 // per cycle with the written ranges merged. Genuine $24 semantics stay
 // UNKNOWN/BLOCKED.
@@ -44,6 +59,11 @@ int main(int argc, char** argv) {
     }
     long spinit = 0;
     if (!parse_u8_arg(argv[4], &spinit)) { fprintf(stderr, "spinit\n"); return 2; }
+    // MINOR-1 contract refusal: SP < $06 would consume the caller's live stack
+    // bytes (JSR 2 + 4 pushes need $21(spinit-5)..$21(spinit)). Refuse BEFORE any
+    // guest execution or ROM patching: exit 2 with no RESULT is a contract
+    // refusal, never an execution failure or budget timeout.
+    if (spinit < 0x06) { fprintf(stderr, "spinit\n"); return 2; }
 
     std::ifstream input(argv[1], std::ios::binary);
     std::vector<u8> rom((std::istreambuf_iterator<char>(input)), {});
@@ -92,6 +112,11 @@ int main(int argc, char** argv) {
         long run_steps = 0;
         long confirm = 0;
         for (long i = 0; i < steps; ++i) {
+            // MINOR-2: count a confirmation only for a step that STARTS and
+            // ENDS at halt. The arrival step (pc_before != halt) does NOT
+            // count; 15 post-arrival steps leave halted=false, 16 leave
+            // halted=true. Departure resets the counter.
+            const auto pc_before = cpu->GetState()->PC->GetValue();
             cpu->RunInstruction();
             run_steps++;
             const u8* w = mem->GetWorkingRAM();
@@ -101,13 +126,14 @@ int main(int argc, char** argv) {
                     prev[k] = w[k];
                 }
             }
-            // Halt counts only after 16 consecutive confirmation steps on
-            // the halt address: reaching halt on the last permitted step
-            // must NOT report success before confirmation (a bare first
-            // sighting with zero confirmations is INCONCLUSIVE, never RED
-            // and never GREEN -- the Python checkers require halted true,
-            // so an unconfirmed tail reports harness failure instead).
-            if (cpu->GetState()->PC->GetValue() == halt) {
+            // Halt counts only after 16 consecutive confirmation steps that
+            // start and end on the halt address: reaching halt on the last
+            // permitted step must NOT report success before confirmation (a
+            // bare first sighting with zero confirmations is INCONCLUSIVE,
+            // never RED and never GREEN -- the Python checkers require
+            // halted true, so an unconfirmed tail reports harness failure
+            // instead; budget/timeout is never success).
+            if (pc_before == halt && cpu->GetState()->PC->GetValue() == halt) {
                 if (++confirm >= 16) { halted = true; break; }
             } else {
                 confirm = 0;
