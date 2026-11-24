@@ -9,8 +9,7 @@ sector contents, audio, or saves appear here. `./rom/` was not accessed
 in any form for this task (no existence check, listing, or read).
 
 Branch basis: `0a935398` (origin/main at task start, PR #828 merged).
-Contract basis: `docs/64-ex-satclr-contract.md` (§4.2, §6.2, §6.3, §7,
-§8, §9). This document records the B1-analogous design, its limits, and
+Contract basis: `docs/64-ex-satclr-contract.md` (§4.2, §7, §8). This document records the B1-analogous design, its limits, and
 the synthetic evidence; it changes no ledger and no genuine-ABI claim.
 
 ## 1. What B1-analogous is (and is not)
@@ -29,10 +28,11 @@ value:
 - JSR `$E0A2` (3-byte) -> RTS to caller+3; SP balanced (JSR 2 bytes +
   max 4 transient pushes; caller SP minimum `$06`; below minimum is out
   of contract and never run on the real core).
-- A/X/Y preserved exactly; P preserved exactly INCLUDING Carry
-  (`C_in == C_out` on both seeds; no CLC/SEC fabricated, no ok/reject
-  values). Latch-exact on the pinned core (HuC6280 `SetP` masks with
-  `$EF`; plain PHP/PLP round trip restores N/V/T/D/I/Z/C exactly).
+- A/X/Y preserved exactly; P preserved exactly INCLUDING Carry in the
+  verified domain (T=0; `C_in == C_out` on both seeds; no CLC/SEC fabricated,
+  no ok/reject values). Latch-exact for N/V/D/I/Z/C (and T=0) on the pinned
+  core (HuC6280 `SetP` masks with `$EF`; plain PHP/PLP round trip restores the
+  verified bits exactly; T=1 entry is out of the verified domain, see below).
 - MPR0-MPR7 unchanged (scaffold executes no TAM/TMA-write/TXS;
   MPR1=`$F8` is a caller precondition validated by the harness BEFORE JSR
   per T13-analog; MPR1!=`$F8` is OUT OF CONTRACT/BLOCKED -- the
@@ -57,7 +57,7 @@ value:
   ground (boundary test uses T=0 seeds `0x04`/`0x85`, same as B1).
 
 B1-analogous defines NO refusal path and NO VDC/VCE/shadow/mask behavior.
-Contract applicability (§6.3): T01-T03, T05-T07, T10-T14 apply (GREEN proved
+Contract applicability (contract §4.2; design §3): T01-T03, T05-T07, T10-T14 apply (GREEN proved
 below); T04 (I/O window), T08 (shadow bypass), T09 (mask mutants) are
 NOT_APPLICABLE with variant-grounded reason (scaffold has no I/O, no
 shadow, no mask; requiring them would invent code paths).
@@ -65,8 +65,9 @@ shadow, no mask; requiring them would invent code paths).
 Display-init debt: `$25` B1 + `$36` B1-analogous = two consecutive no-ops.
 Real screen init (whatever genuine `$25`/`$36` do) remains entirely undone.
 Debt is tracked here and in the contract doc U5, never presented as display
-correctness. Diagnostic path advance (next blocker observed) and functional
-compat are strictly distinguished per the task.
+correctness. Diagnostic path advance (next blocker UNKNOWN on main; dependency-env
+ExpD observation NOT_RUN until cited) and functional compat are strictly
+distinguished per the task.
 
 ## 2. Wiring (opt-in, normal ROM untouched)
 
@@ -87,8 +88,8 @@ compat are strictly distinguished per the task.
 - `spec/c3_static_contracts.json`: `src/ex_satclr.s` classified as
   experimental-only fixture (never linked into the normal/production
   BIOS, not firmware code). No other ledger changes:
-  `spec/api_contracts.json` slot 36 stays UNKNOWN/HYPOTHESIS,
-  `spec/dev_implementations.json` id 36 stays `NOT_READY`/`null`
+  `spec/api_contracts.json` slot 54 ($36) stays UNKNOWN/HYPOTHESIS,
+  `spec/dev_implementations.json` id 54 ($36) stays `NOT_READY`/`null`
   (scaffold is never a VDC/VCE-meaningful DEV body), reference JSR
   stays 0/81, VERIFIED stays 0/81, DEV_CALLABLE stays false,
   `release_eligible=false` stays, G5_OBSERVED stays false.
@@ -116,11 +117,12 @@ write history, cold+warm).
   checks; boundary values GREEN.
 - T05 RAM scope: canary intact + zp pre/post intact + full-buffer
   cold/warm equality on every GREEN run, PLUS per-instruction WRAM write
-  history: scaffold writes exactly the 6 transient stack bytes and
-  nothing else, cold and warm. A `$2200` store mutant is GREEN on
+  history (observed value changes only): scaffold writes exactly the 6 transient
+  stack bytes and nothing else, cold and warm. A `$2200` store mutant is GREEN on
   final-value oracles yet RED on the history; a write-then-restore mutant
-  likewise RED on history. Same-value-store invisibility (tracer records
-  value diffs) applies as in B1 and is documented, not claimed otherwise.
+  likewise RED on history. Same-value-store invisibility (tracer records value
+  diffs only) applies as in B1: the tracer result is observed value changes,
+  same-value stores remain NOT_RUN/BLOCKED (unverified), never PASS.
 - T06 bad table: `$E0A2` reroute to fallback RED.
 - T07 Carry-preservation oracle (balanced, channel b): cavity bodies
   +CLC/+SEC before RTS; forced-CLC GREEN on C=0 / RED on C=1 as
@@ -159,7 +161,7 @@ timing/error paths, generation applicability, `$23`/`$25` relation,
 `$26`/`$27`/`$28` relation, OVERRIDES ceiling, entry-reg observation
 (SIMULATED-entry conditional on fabricated predecessors), second-core
 cross-check. B1-analogous resolves none of them by design. A future
-VDC/VCE-touching body remains BLOCKED until contract §9 D1 criteria are
+VDC/VCE-touching body remains BLOCKED until contract §8 D1 criteria are
 met; the scaffold must never be cited as `$36` semantics and never grounds
 any caller branch. Commercial media: addressed in Phase G only (no `./rom`
 access for this design document).

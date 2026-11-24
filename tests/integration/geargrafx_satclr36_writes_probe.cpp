@@ -10,8 +10,10 @@
 // per cycle with the written ranges merged. Genuine $36 semantics stay
 // UNKNOWN/BLOCKED.
 // Residual limit: this tracer OR-accumulates per-instruction WRAM value
-// diffs, so same-value stores are invisible by construction and are NOT
-// claimed as verified (see docs/64-ex-satclr-b1.md §3).
+// diffs, so its RESULT is observed value changes only. Same-value stores
+// (writing back the byte already present) are invisible by construction and
+// remain NOT_RUN/BLOCKED (unverified), never PASS (see docs/64-ex-satclr-b1.md
+// §3). Only state-changing writes are claimed as detected.
 #include "geargrafx_core.h"
 #include "input.h"
 #include "media.h"
@@ -47,6 +49,10 @@ int main(int argc, char** argv) {
     }
     long spinit = 0;
     if (!parse_u8_arg(argv[4], &spinit)) { fprintf(stderr, "spinit\n"); return 2; }
+    // Contract guard: caller SP below $06 is OUT OF CONTRACT (JSR 2 bytes +
+    // 4 body pushes need $2101-$2106). Reject BEFORE any guest construction
+    // or execution: no ROM patch, no core init, no RunInstruction may run.
+    if (spinit < 0x06) { fprintf(stderr, "spinit out of contract (need >= $06)\n"); return 2; }
 
     std::ifstream input(argv[1], std::ios::binary);
     std::vector<u8> rom((std::istreambuf_iterator<char>(input)), {});
@@ -94,6 +100,7 @@ int main(int argc, char** argv) {
         bool halted = false;
         long run_steps = 0;
         long confirm = 0;
+        bool was_halt = false;
         for (long i = 0; i < steps; ++i) {
             cpu->RunInstruction();
             run_steps++;
@@ -104,15 +111,24 @@ int main(int argc, char** argv) {
                     prev[k] = w[k];
                 }
             }
-            // Halt counts only after 16 consecutive confirmation steps on
-            // the halt address: reaching halt on the last permitted step
-            // must NOT report success before confirmation (a bare first
-            // sighting with zero confirmations is INCONCLUSIVE, never RED
-            // and never GREEN -- the Python checkers require halted true,
-            // so an unconfirmed tail reports harness failure instead).
+            // Halt counts only after 16 BRA executions at the halt address.
+            // The arrival sighting itself is NOT a confirmation: the first
+            // consecutive PC==halt only arms the counter (confirm=0), each
+            // further consecutive BRA execution increments it. 15 BRA
+            // executions stay INCONCLUSIVE (halted false), 16 confirm halt.
+            // Reaching halt on the last permitted step must NOT report success
+            // before confirmation (INCONCLUSIVE, never RED/GREEN -- the Python
+            // checkers require halted true, so an unconfirmed tail reports
+            // harness failure instead).
             if (cpu->GetState()->PC->GetValue() == halt) {
-                if (++confirm >= 16) { halted = true; break; }
+                if (!was_halt) {
+                    was_halt = true;
+                    confirm = 0;
+                } else {
+                    if (++confirm >= 16) { halted = true; break; }
+                }
             } else {
+                was_halt = false;
                 confirm = 0;
             }
         }

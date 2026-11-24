@@ -13,9 +13,15 @@
 ;   Preconditions (caller obligations, not callee guarantees): MPR1=$F8
 ;     (work RAM $2000-$3FFF readable; general BIOS discipline), stack in work
 ;     RAM, IRQs masked by the caller (same assumption as the sibling
-;     experimental bodies). Entry P/A/X/Y are arbitrary (no $36 genuine entry
-;     contract exists; the single dependency-env observation in Issue #802 is
-;     one-game single-callsite data and MUST NOT be mistaken for an ABI).
+;     experimental bodies). Entry A/X/Y are arbitrary; P is arbitrary EXCEPT
+;     T=1 (no $36 genuine entry contract exists; the single dependency-env
+;     observation in Issue #802 is one-game single-callsite data and MUST NOT
+;     be mistaken for an ABI). T=1 entry is OUT OF THE VERIFIED DOMAIN
+;     (BLOCKED/NOT_RUN, never PASS): PHP saves P including T at push time,
+;     but the pinned core consumes T at every instruction boundary, so entry
+;     T=1 cannot round-trip on ANY implementation (platform fact, not body
+;     behavior). Verification covers T=0 seeds only; the Carry guarantee below
+;     holds for both tested classes (C=0/C=1) within that domain.
 ;     MPR1!=$F8 is OUT OF CONTRACT (BLOCKED): the JSR itself already wrote
 ;     the return address through the MPR1 mapping before entry. Safety for
 ;     MPR1!=$F8 is NOT proven. The harness validates MPR1 BEFORE executing
@@ -36,8 +42,10 @@
 ;     SAT clearing, NO zero-fill, NO sprite hiding, NO DMA waiting — the name
 ;     SATCLR MUST NOT be taken to authorize any store.
 ;   Success: restores Y/X/A then P via plain PLP and returns via RTS. Entry
-;     Carry preserved exactly (no CLC/SEC fabricated). Latch-exact (SetP masks
-;     $EF; plain PHP/PLP round trip restores N/V/T/D/I/Z/C exactly).
+;     Carry preserved exactly (no CLC/SEC fabricated) for the verified domain.
+;     Latch-exact for N/V/D/I/Z/C (and T=0): SetP masks $EF; plain PHP/PLP round
+;     trip restores the verified bits exactly. T=1 is excluded from the verified
+;     domain (see Preconditions); no T=1 preservation is claimed.
 ;   No refusal path exists (no ok/reject values; T04/T08/T09 NOT_APPLICABLE).
 ;   Observability: none beyond the return itself. Only stack pushes occur.
 ;     Result class SIMULATED, never genuine, never DEV_CALLABLE.

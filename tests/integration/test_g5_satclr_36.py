@@ -905,8 +905,12 @@ class Satclr36Synthetic(unittest.TestCase):
         raise ValueError("no RESULT line\n" + r.stderr)
 
     def _check_vdc(self, res, entry_ar, areg, xreg, pseed):
-        # T03/T05 VDC scope: AR unchanged at the guest-set value, all 20
-        # VDC registers unchanged, regs/MPRs/IRQ state preserved.
+        # T03/T05 VDC scope (snapshot equality, not absence of writes): AR
+        # equals the guest-set value and all 20 VDC registers equal the
+        # pre-run snapshot; regs/MPRs/IRQ state preserved. Same-value or
+        # restore-masked VDC writes are NOT excluded by this snapshot
+        # (NOT_RUN/BLOCKED); absence of VDC writes is established only by the
+        # exact 9-byte body pin (no ST0/ST1/ST2 opcode), not by this probe.
         self.assertEqual(res["pc"], res["halt"])
         self.assertEqual(res["a"], areg)
         self.assertEqual(res["p"] & ~0x10, pseed & ~0x10)
@@ -920,8 +924,9 @@ class Satclr36Synthetic(unittest.TestCase):
         self.assertEqual(res["mpr_after"][0], 0xF8)
         self.assertEqual(res["mpr_after"][1], 0xF8)
         self.assertEqual(res["mpr_after"][2:], res["mpr_before"][2:])
-        # No VDC write of any kind: AR still the guest-set value, every
-        # register identical to the pre-run snapshot.
+        # VDC state equality (snapshot): AR still the guest-set value, every
+        # register identical to the pre-run snapshot. No-write claim reserved
+        # for the exact body pin (see test_satclr_body_bytes_pinned).
         self.assertEqual(res["vdc_ar_after"], entry_ar)
         self.assertEqual(res["vdc_r_before"], res["vdc_r_after"])
         # No IRQ side effects.
@@ -982,15 +987,15 @@ class Satclr36Synthetic(unittest.TestCase):
         return set(range(0x100 + spinit - 5, 0x100 + spinit + 1))
 
     def _check_writes(self, recs, spinit):
-        # Strict B1 write-history proof, both cycles: halted, complete
-        # (not truncated), identical sets cold==warm, and exactly the
-        # transient stack bytes -- a bare-RTS mutant (2 JSR bytes only)
-        # or any extra value-changing write fails here.
-        # Residual limit (see docs/64-ex-satclr-b1.md §3): the tracer
-        # records per-instruction WRAM *value diffs*, so a same-value store
-        # (writing back the byte already present) is invisible by
-        # construction and is NOT claimed as verified (out of scope for this
-        # scaffold; bus-level write detection would need core write-path
+        # Strict B1 write-history proof, both cycles: halted (16 BRA
+        # confirmations, arrival excluded), complete (not truncated), identical
+        # sets cold==warm, and exactly the transient stack bytes -- a bare-RTS
+        # mutant (2 JSR bytes only) or any extra value-changing write fails here.
+        # Residual limit (see docs/64-ex-satclr-b1.md §3): the tracer reports
+        # observed value changes only (per-instruction WRAM *value diffs*), so a
+        # same-value store (writing back the byte already present) is invisible
+        # by construction and remains NOT_RUN/BLOCKED (unverified), never PASS
+        # (out of scope; bus-level write detection would need core write-path
         # hooks). Only state-changing writes are claimed as detected.
         allowed = self._allowed_transient(spinit)
         seen = []
@@ -1036,6 +1041,77 @@ class Satclr36Synthetic(unittest.TestCase):
         # T05 boundary: SP=$06 minimum writes exactly $2101-$2106.
         self._check_writes(self._run_writes("b106", 0x06), 0x06)
 
+    def _run_writes_raw(self, name, spinit, steps=4096, rom_bytes=None):
+        # Low-level tracer run without halted/result assertions (for
+        # contract-rejection and halt-boundary negatives). Returns
+        # (returncode, stdout, stderr). Rejection must occur before any guest
+        # execution (no RESULT line on contract refusal).
+        import tempfile
+        rom = self.rom if rom_bytes is None else self._tmp_rom(name, rom_bytes)
+        o = self.out / ("writes-" + name)
+        o.mkdir(exist_ok=True)
+        (o / "d.bin").write_bytes(bytes(2352 * 32))
+        cue = o / "d.cue"
+        cue.write_text('FILE "d.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n')
+        r = subprocess.run([str(self.writes_probe), str(rom.resolve()),
+                            str(cue.resolve()), str(steps), str(spinit)],
+                           capture_output=True, text=True, timeout=120)
+        return r.returncode, r.stdout, r.stderr
+
+    def test_writes_rejects_contract_sp(self):
+        # MINOR-1 / T12: SP below $06 is OUT OF CONTRACT. The standalone
+        # probe must reject $00 and $05 BEFORE guest execution (non-zero exit,
+        # no RESULT line, contract message on stderr). $06 and $FF remain
+        # valid (covered by test_writes_b1_sp_06 / test_writes_b1_sp_ff).
+        for bad_sp, tag in ((0x00, "sp00"), (0x05, "sp05")):
+            with self.subTest(sp=hex(bad_sp)):
+                rc, out, err = self._run_writes_raw(tag, bad_sp)
+                self.assertNotEqual(rc, 0,
+                                    f"SP {bad_sp:#04x} must be rejected (non-zero exit)")
+                self.assertNotIn("RESULT", out,
+                                 f"SP {bad_sp:#04x} must not run the guest")
+                self.assertIn("out of contract", err,
+                              f"SP {bad_sp:#04x} refusal must cite the contract")
+        # Positive controls: $06 and $FF run and halt (already proved via
+        # _check_writes, re-asserted here as rejection-boundary witnesses).
+        for good_sp, tag in ((0x06, "sp06pos"), (0xFF, "spffpos")):
+            with self.subTest(sp=hex(good_sp)):
+                rc, out, err = self._run_writes_raw(tag, good_sp)
+                self.assertEqual(rc, 0, f"SP {good_sp:#04x} must run (rc 0): {err}")
+                self.assertIn("RESULT", out,
+                              f"SP {good_sp:#04x} must produce RESULT lines")
+
+    def test_writes_halt_confirmation_boundary(self):
+        # Halt confirmation boundary (arrival excluded): with the full 4096
+        # budget the tracer halts (16 BRA confirmations after arrival). With
+        # one fewer step than the confirming run, halted must be false
+        # (15 BRA executions stay INCONCLUSIVE); with the confirming step
+        # count, halted must be true (16 confirm). This pins the off-by-one
+        # fix (arrival not counted).
+        import json
+        full = self._run_writes("bhalffull", 0xFF)
+        self.assertTrue(all(r["halted"] for r in full),
+                        "full-budget run must halt (harness failure)")
+        steps_full = full[0]["steps"]
+        self.assertGreater(steps_full, 17,
+                           "confirming run too short to test the boundary")
+        # One step short: 15 confirmations -> INCONCLUSIVE (halted false).
+        o_short = self.out / "writes-bhalfshort"
+        o_short.mkdir(exist_ok=True)
+        (o_short / "d.bin").write_bytes(bytes(2352 * 32))
+        cue_short = o_short / "d.cue"
+        cue_short.write_text('FILE "d.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n')
+        r = subprocess.run([str(self.writes_probe), str(self.rom.resolve()),
+                            str(cue_short.resolve()), str(steps_full - 1), "255"],
+                           capture_output=True, text=True, timeout=120, check=True)
+        recs = [json.loads(line[7:]) for line in r.stdout.splitlines()
+                if line.startswith("RESULT ")]
+        self.assertEqual(len(recs), 2)
+        for rec in recs:
+            self.assertFalse(rec["halted"],
+                             f"steps-1 run must stay INCONCLUSIVE ({rec['cycle']}): "
+                             "15 BRA executions are not confirmation")
+
     def test_writes_mutant_sta2200_red(self):
         # T05 non-sampled write (outside canary $2900-$29FF and zp $10):
         # the legacy oracles stay GREEN (proving their blindness here)
@@ -1068,10 +1144,13 @@ class Satclr36Synthetic(unittest.TestCase):
     def test_chain_33_4a_23_25_36(self):
         # Synthetic G5 chain leg: the PUBLIC boot ($02 leg) loads this
         # payload, which then calls $33 -> $4A -> $23 -> $25 -> $36 through the real
-        # table entries. Each APICALL (return_matches_caller + MATCH) proves per-call entry,
-        # return-PC resumption (caller+3), MPR and SP integrity. The observed
-        # $36 entry state is SIMULATED-entry (conditional on the fabricated
-        # $36 return's predecessors), never genuine $36 input evidence.
+        # table entries. Each APICALL records per-call entry evidence only
+        # (stacked return bytes via return_matches_caller + stack_check MATCH,
+        # relative SP change, MPR1 at entry); it does not observe the RTS
+        # destination or the full MPR set. End-to-end resumption and preservation
+        # are verified by the final record below. The observed $36 entry state is
+        # SIMULATED-entry (conditional on the fabricated predecessors), never
+        # genuine $36 input evidence.
         import json
         o = self.out / "chain"
         o.mkdir(exist_ok=True)
@@ -1435,13 +1514,16 @@ class Satclr36Synthetic(unittest.TestCase):
         # Carry-specificity: the forced clear is observed DIRECTLY at both
         # return offsets, and it is the ONLY deviation -- every other field
         # still matches the C=1 vector with Carry forced clear (P=$06 is
-        # $07 with bit0 off; B is masked by the checker).
+        # $07 with bit0 off; B is masked by the checker). Balanced mutant:
+        # SP stays balanced on both cycles (stack-shape integrity).
         cold, warm = self._buf(rec)
         for buf in (cold, warm):
             self.assertEqual(buf[base + 4] & 0x01, 0x00)
             self.assertEqual(buf[base + 20] & 0x01, 0x00)
             self._check_expected(buf, base, 0x06, 0x07, 0x11, 0x22,
                                  0x06, 0x07, 0x66, 0x77)
+        self._check_sp(cold, base, 0xFF)
+        self._check_sp(warm, base, 0xFF)
 
     def test_satclr_mutant_force_clc_balanced_green_c0(self):
         # T07 passing seed: the same CLC cavity body at C=0 must stay GREEN
@@ -1464,12 +1546,15 @@ class Satclr36Synthetic(unittest.TestCase):
                                 mutant_tag="M7b-C0-preservation (balanced)")
         # Carry-specificity (mirrored): forced set observed directly at
         # both return offsets, and the only deviation from the C=0 vector.
+        # Balanced mutant: SP stays balanced on both cycles.
         cold, warm = self._buf(rec)
         for buf in (cold, warm):
             self.assertEqual(buf[base + 4] & 0x01, 0x01)
             self.assertEqual(buf[base + 20] & 0x01, 0x01)
             self._check_expected(buf, base, 0x07, 0x06, 0x11, 0x22,
                                  0x07, 0x06, 0x66, 0x77)
+        self._check_sp(cold, base, 0xFF)
+        self._check_sp(warm, base, 0xFF)
 
     def test_satclr_mutant_force_sec_balanced_green_c1(self):
         # T07 passing seed: the same SEC cavity body at C=1 must stay GREEN.
