@@ -1134,11 +1134,18 @@ class Dotmod24Synthetic(unittest.TestCase):
         import json
         recs = [json.loads(line[7:]) for line in r.stdout.splitlines()
                 if line.startswith("RESULT ")]
+        self._assert_vdc_pair(recs)
+        return recs
+
+    def _assert_vdc_pair(self, recs):
+        # Cold+warm pair requirement: exactly 2 RESULT records, cold and
+        # warm once each. A single cycle -- or a duplicated one -- is never
+        # cold+warm evidence (harness failure, never GREEN).
+        self.assertIsInstance(recs, list, "VDC records not a list")
         self.assertEqual(len(recs), 2, "VDC probe must report cold+warm")
         cycles = sorted(x["cycle"] for x in recs)
         self.assertEqual(cycles, ["cold", "warm"],
                          "VDC probe cycles must be cold+warm once each")
-        return recs
 
     def _check_vdc(self, res, entry_ar, areg, xreg, pseed):
         # T03/T05 VDC scope, single cycle: halt confirmed (16 start-and-end
@@ -1203,13 +1210,13 @@ class Dotmod24Synthetic(unittest.TestCase):
 
     def test_vdc_rejects_missing_cycle(self):
         # Cold-only evidence is not cold+warm evidence: a single-cycle record
-        # set must be rejected, never GREEN.
+        # set -- or a duplicated cycle -- must be rejected by the pair
+        # validator, never GREEN.
         recs = self._run_vdc("ar9-neg", 9, 0x00, 0x80, 0x06)
         with self.assertRaises(AssertionError, msg="cold-only accepted"):
-            self.assertEqual(len([r for r in recs if r["cycle"] == "cold"]), 2)
-        dup = [recs[0], dict(recs[0])]
+            self._assert_vdc_pair([r for r in recs if r["cycle"] == "cold"])
         with self.assertRaises(AssertionError, msg="duplicate cycle accepted"):
-            self.assertEqual(sorted(x["cycle"] for x in dup), ["cold", "warm"])
+            self._assert_vdc_pair([recs[0], dict(recs[0])])
 
     def test_vdc_rejects_unconfirmed_halt(self):
         # Budget exhaustion / unconfirmed halt is harness failure, never
