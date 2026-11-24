@@ -14,6 +14,10 @@
 // (writing back the byte already present) are invisible by construction and
 // remain NOT_RUN/BLOCKED (unverified), never PASS (see docs/64-ex-satclr-b1.md
 // §3). Only state-changing writes are claimed as detected.
+// Halt arrival (first PC==halt step H) is reported as independent `arrival`
+// field via first-sighting logic separate from the 16-confirmation counter;
+// boundary budgets H-1..H+17 are tested against that independent H, never
+// against steps_full derived from the threshold under test.
 #include "geargrafx_core.h"
 #include "input.h"
 #include "media.h"
@@ -100,10 +104,12 @@ int main(int argc, char** argv) {
         bool halted = false;
         long run_steps = 0;
         long confirm = 0;
-        bool was_halt = false;
+        long arrival = 0;
         for (long i = 0; i < steps; ++i) {
+            u16 pc_before = cpu->GetState()->PC->GetValue();
             cpu->RunInstruction();
             run_steps++;
+            u16 pc_after = cpu->GetState()->PC->GetValue();
             const u8* w = mem->GetWorkingRAM();
             for (int k = 0; k < wsize; k++) {
                 if (w[k] != prev[k]) {
@@ -111,24 +117,23 @@ int main(int argc, char** argv) {
                     prev[k] = w[k];
                 }
             }
-            // Halt counts only after 16 BRA executions at the halt address.
-            // The arrival sighting itself is NOT a confirmation: the first
-            // consecutive PC==halt only arms the counter (confirm=0), each
-            // further consecutive BRA execution increments it. 15 BRA
-            // executions stay INCONCLUSIVE (halted false), 16 confirm halt.
-            // Reaching halt on the last permitted step must NOT report success
-            // before confirmation (INCONCLUSIVE, never RED/GREEN -- the Python
-            // checkers require halted true, so an unconfirmed tail reports
-            // harness failure instead).
-            if (cpu->GetState()->PC->GetValue() == halt) {
-                if (!was_halt) {
-                    was_halt = true;
-                    confirm = 0;
-                } else {
-                    if (++confirm >= 16) { halted = true; break; }
-                }
+            // Independent arrival: first step where PC lands on halt.
+            // Separate from the confirmation counter below, so boundary
+            // budgets H-1..H+17 do not derive expectations from the
+            // threshold under test.
+            if (arrival == 0 && pc_after == halt) {
+                arrival = run_steps;
+            }
+            // Halt counts only when both the executed instruction started
+            // and ended at halt (pc_before == halt && pc_after == halt),
+            // i.e. a BRA -2 self-loop execution. The arrival step has
+            // pc_before != halt and is never counted. Leaving halt resets.
+            // 15 such executions stay INCONCLUSIVE (halted false), 16
+            // confirm halt. Budget exhaustion before confirmation is
+            // INCONCLUSIVE, never RED/GREEN.
+            if (pc_before == halt && pc_after == halt) {
+                if (++confirm >= 16) { halted = true; break; }
             } else {
-                was_halt = false;
                 confirm = 0;
             }
         }
@@ -144,9 +149,9 @@ int main(int argc, char** argv) {
             } else k++;
         }
         std::printf("RESULT {\"cycle\":\"%s\",\"pc\":%u,\"halt\":%u,\"halted\":%s,"
-                    "\"steps\":%ld,\"truncated\":%s,\"written\":[",
+                    "\"steps\":%ld,\"arrival\":%ld,\"truncated\":%s,\"written\":[",
                     cycle, cpu->GetState()->PC->GetValue(), halt,
-                    halted ? "true" : "false", run_steps, truncated ? "true" : "false");
+                    halted ? "true" : "false", run_steps, arrival, truncated ? "true" : "false");
         for (size_t r = 0; r < ranges.size(); r++)
             std::printf("%s[%d,%d]", r ? "," : "", ranges[r].first, ranges[r].second);
         std::printf("]}\n");

@@ -131,7 +131,7 @@ write history, cold+warm).
   required.
 - T10 stack smash (balanced zp shape): RED via guest-observed mismatch.
 - T11 boundaries: preservation probe (no reject code); T=1 excluded.
-- T12 SP depth: `$FF` and `$06` GREEN and balanced; below-minimum unrun.
+- T12 SP depth: `$FF` and `$06` GREEN and balanced (guest-executed, SP restored); `SP=$00/$05` probe-argument refusal GREEN (execution-before-guest refusal, no guest run, no RESULT); `SP<$06` guest execution NOT_RUN/OUT_OF_CONTRACT (never run on the real core). Probe refusal is harness discipline, never EX_SATCLR body refusal (body defines no refusal; genuine error contract UNKNOWN).
 - T13 MPR1 pre-JSR: `$FF` refuses at `refused_halt` with zero `$36`
   APICALL in both cycles; `$F8` positive control GREEN with proven
   arrival.

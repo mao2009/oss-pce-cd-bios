@@ -19,8 +19,9 @@ preservation -> RTS resumption -> payload halt. Companion coverage:
   MPR1=$F8 precondition validated by the harness BEFORE JSR (T13: a $FF
   candidate refuses at refused_halt without executing JSR, never reaches
   $36, and never remaps first);
-  SP depth (SP=$FF and boundary SP=$06 GREEN and balanced; below-minimum is
-  out of contract and never run);
+  SP depth (SP=$FF and boundary SP=$06 GREEN and balanced guest-executed;
+  SP=$00/$05 probe-argument refusal GREEN with no guest execution; SP<$06
+  guest execution OUT_OF_CONTRACT/NOT_RUN and never run);
   synthetic chain $33->$4A->$23->$25->$36 through the real table entries with
   per-call APICALL evidence (the $02 leg is the PUBLIC boot itself; the
   observed $36 entry state is labeled SIMULATED-entry);
@@ -529,8 +530,9 @@ class Satclr36Synthetic(unittest.TestCase):
         # pushes POPEN, LDA #AONE sets A, PLP restores P. Legacy callers omit
         # AONE/ATWO and keep A==P; A!=P vectors pass explicit values.
         # SPINIT selects the caller stack pointer ($FF normal, $06 boundary
-        # minimum for the 4-push body + 2 JSR bytes; below $06 is out of
-        # contract and never run on the real core).
+        # minimum for the 4-push body + 2 JSR bytes; below $06 guest execution
+        # is out of contract and never run on the real core; $00/$05 probe-argument
+        # refusal is verified separately without guest execution).
         if aone is None:
             aone = popen
         if atwo is None:
@@ -840,10 +842,11 @@ class Satclr36Synthetic(unittest.TestCase):
         self._check_sp(warm, base, 0x06)
         self._check_canary(cold, base)
         self._check_canary(warm, base)
-        # Below-minimum SP is OUT OF CONTRACT (T12): the harness never runs
-        # it on the real core; the minimum is pinned here and in
+        # Below-minimum SP guest execution is OUT OF CONTRACT (T12): the harness
+        # never runs it on the real core; the minimum is pinned here and in
         # docs/64-ex-satclr-b1.md. SP<$06 would consume the caller's live
-        # stack bytes and must never be reported GREEN.
+        # stack bytes and must never be reported GREEN. $00/$05 probe refusal
+        # (no guest run) is verified in test_writes_rejects_contract_sp.
 
     def test_mpr1_precondition_refused_before_jsr(self):
         # T13: the harness validates MPR1 BEFORE JSR $E0A2. With MPR1=$FF
@@ -1081,36 +1084,247 @@ class Satclr36Synthetic(unittest.TestCase):
                 self.assertIn("RESULT", out,
                               f"SP {good_sp:#04x} must produce RESULT lines")
 
-    def test_writes_halt_confirmation_boundary(self):
-        # Halt confirmation boundary (arrival excluded): with the full 4096
-        # budget the tracer halts (16 BRA confirmations after arrival). With
-        # one fewer step than the confirming run, halted must be false
-        # (15 BRA executions stay INCONCLUSIVE); with the confirming step
-        # count, halted must be true (16 confirm). This pins the off-by-one
-        # fix (arrival not counted).
+    # Independent halt-arrival oracle (static guest accounting, never derived
+    # from the confirmation threshold under test):
+    # patched guest executes SEI, CLD, LDA, TAM, LDX, TXS, LDA, TAM, LDY, LDX,
+    # LDA, PHA, LDA, PLP, JSR $E0A2 (15 steps landing on table $E0A2), then
+    # table JMP to BOOT body (1 step), then 9-body PHP/PHA/PHX/PHY/PLY/PLX/PLA/
+    # PLP/RTS (9 steps) landing on halt BRA. 15+1+9 = 25. Hence H=25.
+    # The probe reports independent `arrival` (first run_steps with pc_after
+    # == halt) separate from the 16-confirmation counter, so budgets below
+    # use that independent H, never steps_full derived from the threshold.
+    EXPECTED_HALT_ARRIVAL = 25
+
+    def _parse_writes_stdout(self, stdout, expect_rc=0, rc=None):
+        # Strict RESULT integrity: exactly 2 records, cycles cold/warm once
+        # each, no missing/duplicate, required fields present with types.
+        # Budget exhaustion (halted false) is INCONCLUSIVE, never GREEN/RED.
         import json
-        full = self._run_writes("bhalffull", 0xFF)
-        self.assertTrue(all(r["halted"] for r in full),
-                        "full-budget run must halt (harness failure)")
-        steps_full = full[0]["steps"]
-        self.assertGreater(steps_full, 17,
-                           "confirming run too short to test the boundary")
-        # One step short: 15 confirmations -> INCONCLUSIVE (halted false).
-        o_short = self.out / "writes-bhalfshort"
-        o_short.mkdir(exist_ok=True)
-        (o_short / "d.bin").write_bytes(bytes(2352 * 32))
-        cue_short = o_short / "d.cue"
-        cue_short.write_text('FILE "d.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n')
-        r = subprocess.run([str(self.writes_probe), str(self.rom.resolve()),
-                            str(cue_short.resolve()), str(steps_full - 1), "255"],
-                           capture_output=True, text=True, timeout=120, check=True)
-        recs = [json.loads(line[7:]) for line in r.stdout.splitlines()
+        if rc is not None and expect_rc is not None:
+            self.assertEqual(rc, expect_rc, f"probe exit {rc} != {expect_rc}")
+        recs = [json.loads(line[7:]) for line in stdout.splitlines()
                 if line.startswith("RESULT ")]
-        self.assertEqual(len(recs), 2)
-        for rec in recs:
-            self.assertFalse(rec["halted"],
-                             f"steps-1 run must stay INCONCLUSIVE ({rec['cycle']}): "
-                             "15 BRA executions are not confirmation")
+        self.assertEqual(len(recs), 2,
+                         f"RESULT count {len(recs)} != 2 (missing/duplicate)")
+        cycles = sorted(x.get("cycle") for x in recs)
+        self.assertEqual(cycles, ["cold", "warm"],
+                         f"cycles {cycles} must be cold/warm once each")
+        for r in recs:
+            for f in ("cycle", "pc", "halt", "halted", "steps", "arrival",
+                      "truncated", "written"):
+                self.assertIn(f, r, f"RESULT missing {f} ({r.get('cycle')})")
+            self.assertIsInstance(r["pc"], int)
+            self.assertIsInstance(r["halt"], int)
+            self.assertIsInstance(r["halted"], bool)
+            self.assertIsInstance(r["steps"], int)
+            self.assertIsInstance(r["arrival"], int)
+            self.assertIsInstance(r["truncated"], bool)
+        return {r["cycle"]: r for r in recs}
+
+    def _run_writes_budget(self, name, spinit, budget, probe=None, rom_bytes=None):
+        # Run tracer with explicit budget against given probe (default normal).
+        # Returns per-cycle dict. Asserts clean execution (rc 0, 2 RESULTs),
+        # never treating harness failure as RED.
+        import tempfile
+        probe = self.writes_probe if probe is None else probe
+        rom = self.rom if rom_bytes is None else self._tmp_rom(name, rom_bytes)
+        o = self.out / ("writes-" + name)
+        o.mkdir(exist_ok=True)
+        (o / "d.bin").write_bytes(bytes(2352 * 32))
+        cue = o / "d.cue"
+        cue.write_text('FILE "d.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n')
+        r = subprocess.run([str(probe), str(rom.resolve()),
+                            str(cue.resolve()), str(budget), str(spinit)],
+                           capture_output=True, text=True, timeout=120)
+        self.assertEqual(r.returncode, 0,
+                         f"probe budget {budget} exit {r.returncode}: {r.stderr[:500]} (harness failure, not RED)")
+        by_cycle = self._parse_writes_stdout(r.stdout, expect_rc=0, rc=r.returncode)
+        return by_cycle
+
+    def _check_halt_budget(self, by_cycle, budget, H, expect_halted):
+        # Check single-budget expectation for both cycles with independent H.
+        for cycle in ("cold", "warm"):
+            r = by_cycle[cycle]
+            h = H[cycle] if isinstance(H, dict) else H
+            self.assertFalse(r["truncated"], f"{cycle} truncated (harness failure)")
+            if budget < h:
+                self.assertEqual(r["arrival"], 0,
+                                 f"{cycle} arrival must be 0 before H (budget {budget})")
+                self.assertNotEqual(r["pc"], r["halt"],
+                                    f"{cycle} budget {budget} < H={h} must not reach halt")
+                self.assertFalse(r["halted"],
+                                 f"{cycle} budget {budget} < H must be unconfirmed")
+                self.assertEqual(r["steps"], budget,
+                                 f"{cycle} steps must equal budget before break (budget {budget})")
+            else:
+                self.assertEqual(r["arrival"], h,
+                                 f"{cycle} independent arrival must be H={h} (budget {budget})")
+                self.assertEqual(r["pc"], r["halt"],
+                                 f"{cycle} budget {budget} >= H must be at halt")
+                self.assertEqual(r["halted"], expect_halted,
+                                 f"{cycle} budget {budget} halted must be {expect_halted}")
+                if expect_halted:
+                    self.assertEqual(r["steps"], h + 16,
+                                     f"{cycle} confirming steps must be H+16={h+16} (budget {budget})")
+                else:
+                    self.assertEqual(r["steps"], budget,
+                                     f"{cycle} unconfirmed steps must equal budget (budget {budget})")
+
+    def test_writes_halt_arrival_independent(self):
+        # Independent arrival oracle: full-budget run reports arrival via
+        # first-sighting logic separate from the confirmation counter.
+        by_cycle = self._run_writes_budget("harrival", 0xFF, 4096)
+        for cycle in ("cold", "warm"):
+            r = by_cycle[cycle]
+            self.assertEqual(r["arrival"], self.EXPECTED_HALT_ARRIVAL,
+                             f"{cycle} independent arrival {r['arrival']} != static 25")
+            self.assertTrue(r["halted"], f"{cycle} full budget must confirm")
+            self.assertEqual(r["steps"], r["arrival"] + 16,
+                             f"{cycle} full steps must be arrival+16 (arrival excluded)")
+
+    def test_writes_halt_confirmation_boundary_independent(self):
+        # Independent boundary table using static H=25 (never steps_full).
+        H = self.EXPECTED_HALT_ARRIVAL
+        cases = [
+            (H - 1, False, "H-1 halt unreached, unconfirmed"),
+            (H, False, "H arrival, unconfirmed"),
+            (H + 1, False, "H+1 1 confirm, unconfirmed"),
+            (H + 15, False, "H+15 15 confirms, unconfirmed"),
+            (H + 16, True, "H+16 16 confirms, confirmed"),
+            (H + 17, True, "H+17 confirmed (early break)"),
+        ]
+        for budget, expect_halted, tag in cases:
+            with self.subTest(budget=budget, expect_halted=expect_halted):
+                by_cycle = self._run_writes_budget(f"hbound{budget}", 0xFF, budget)
+                for cycle in ("cold", "warm"):
+                    r = by_cycle[cycle]
+                    if budget < H:
+                        self.assertEqual(r["arrival"], 0,
+                                         f"{cycle} {tag}: arrival 0 before H")
+                    else:
+                        self.assertEqual(r["arrival"], H,
+                                         f"{cycle} {tag}: arrival independent H")
+                self._check_halt_budget(by_cycle, budget, H, expect_halted)
+
+    def _compile_mutant_probe(self, name, old, new, must_contain=None):
+        # Build mutant probe in untracked out dir (never in tracked tree).
+        from pathlib import Path as _P
+        src_path = _P(__file__).with_name("geargrafx_satclr36_writes_probe.cpp")
+        text = src_path.read_text(encoding="utf-8")
+        self.assertIn(old, text, f"mutant base pattern missing for {name} (harness failure)")
+        mutated = text.replace(old, new)
+        self.assertNotEqual(mutated, text, f"mutant {name} no change (harness failure)")
+        if must_contain is not None:
+            self.assertIn(must_contain, mutated, f"mutant {name} missing marker")
+        mdir = self.out / "mutants"
+        mdir.mkdir(exist_ok=True)
+        mpath = mdir / f"{name}.cpp"
+        mpath.write_text(mutated, encoding="utf-8")
+        import sys as _sys
+        _sys.path.insert(0, str(_P(__file__).resolve().parents[2] / "tools"))
+        from environment import dependency_dir as _depdir
+        from geargrafx_api import build_command as _build
+        source = _depdir('geargrafx').with_name(_depdir('geargrafx').name + '-debugger')
+        make_dir = source / 'platforms/libretro'
+        objects = _build(['make', '-s', '--no-print-directory', '-C', str(make_dir),
+                          '--eval', 'probe-objects:;@echo $(OBJECTS)', 'probe-objects']).stdout.split()
+        objects = [(make_dir / p).resolve() for p in objects]
+        target = mdir / name
+        _build(['g++', '-std=c++11', '-O0', '-fno-rtti', '-D__LIBRETRO__',
+                '-DGG_DISABLE_VGMRECORDER', '-DGG_ENABLE_CDROM_CUEBIN_READAHEAD',
+                '-I' + str(source / 'src'), '-I' + str(make_dir),
+                '-I' + str(source / 'platforms/shared/dependencies/miniz'),
+                '-I' + str(source / 'platforms/shared/dependencies/json'), str(mpath),
+                *map(str, objects), '-pthread', '-lm', '-o', str(target)])
+        self.assertTrue(target.is_file(), f"mutant {name} build failed (harness failure)")
+        return target
+
+    def test_halt_mutant_m1_old_offbyone_red(self):
+        # M1: old off-by-one (arrival counted).
+        old = "            if (pc_before == halt && pc_after == halt) {\n                if (++confirm >= 16) { halted = true; break; }\n            } else {\n                confirm = 0;\n            }"
+        new = "            if (pc_after == halt) {\n                if (++confirm >= 16) { halted = true; break; }\n            } else {\n                confirm = 0;\n            }"
+        mprobe = self._compile_mutant_probe("m1-old-offbyone", old, new)
+        H = self.EXPECTED_HALT_ARRIVAL
+        by_cycle = self._run_writes_budget("m1b40", 0xFF, H + 15, probe=mprobe)
+        for cycle in ("cold", "warm"):
+            self.assertTrue(by_cycle[cycle]["halted"],
+                            f"M1 {cycle} must falsely halt at H+15 (mutant not applied?)")
+        with self.assertRaises(AssertionError, msg="M1 must be caught (H+15 false expected)"):
+            self._check_halt_budget(by_cycle, H + 15, H, False)
+        by_full = self._run_writes_budget("m1bfull", 0xFF, 4096, probe=mprobe)
+        for cycle in ("cold", "warm"):
+            self.assertEqual(by_full[cycle]["steps"], H + 15,
+                             f"M1 {cycle} full steps must be H+15 (off-by-one)")
+
+    def test_halt_mutant_m2_threshold15_red(self):
+        # M2: threshold 15 (insufficient confirmation).
+        old = "                if (++confirm >= 16) { halted = true; break; }"
+        new = "                if (++confirm >= 15) { halted = true; break; }"
+        mprobe = self._compile_mutant_probe("m2-thr15", old, new)
+        H = self.EXPECTED_HALT_ARRIVAL
+        by_cycle = self._run_writes_budget("m2b40", 0xFF, H + 15, probe=mprobe)
+        for cycle in ("cold", "warm"):
+            self.assertTrue(by_cycle[cycle]["halted"],
+                            f"M2 {cycle} must halt at H+15 (threshold 15)")
+        with self.assertRaises(AssertionError, msg="M2 must be caught"):
+            self._check_halt_budget(by_cycle, H + 15, H, False)
+
+    def test_halt_mutant_m3_threshold17_red(self):
+        # M3: threshold 17 (excessive confirmation).
+        old = "                if (++confirm >= 16) { halted = true; break; }"
+        new = "                if (++confirm >= 17) { halted = true; break; }"
+        mprobe = self._compile_mutant_probe("m3-thr17", old, new)
+        H = self.EXPECTED_HALT_ARRIVAL
+        by_cycle = self._run_writes_budget("m3b41", 0xFF, H + 16, probe=mprobe)
+        for cycle in ("cold", "warm"):
+            self.assertFalse(by_cycle[cycle]["halted"],
+                             f"M3 {cycle} must stay unconfirmed at H+16 (needs 17)")
+        with self.assertRaises(AssertionError, msg="M3 must be caught (H+16 true expected)"):
+            self._check_halt_budget(by_cycle, H + 16, H, True)
+
+    def test_halt_mutant_m4_noreset_unit(self):
+        # M4: missing reset on leaving halt. Existing guest never leaves halt,
+        # so real-core boundary cannot exercise the reset path; provide
+        # minimal unit simulation of the counter logic plus source check.
+        def run_correct(trace):
+            confirm = 0
+            halted_at = None
+            for idx, (before, after, halt) in enumerate(trace):
+                if before == halt and after == halt:
+                    confirm += 1
+                    if confirm >= 16 and halted_at is None:
+                        halted_at = idx
+                else:
+                    confirm = 0
+            return confirm, halted_at
+        def run_mutant_noreset(trace):
+            confirm = 0
+            halted_at = None
+            for idx, (before, after, halt) in enumerate(trace):
+                if before == halt and after == halt:
+                    confirm += 1
+                    if confirm >= 16 and halted_at is None:
+                        halted_at = idx
+            return confirm, halted_at
+        HLT = 100
+        trace = []
+        for _ in range(5):
+            trace.append((HLT, HLT, HLT))
+        trace.append((HLT, 999, HLT))
+        trace.append((999, HLT, HLT))
+        for _ in range(16):
+            trace.append((HLT, HLT, HLT))
+        c_conf, c_at = run_correct(trace)
+        m_conf, m_at = run_mutant_noreset(trace)
+        self.assertEqual(c_conf, 16)
+        self.assertEqual(c_at, len(trace) - 1)
+        self.assertEqual(m_conf, 21)
+        self.assertEqual(m_at, len(trace) - 1 - 5)
+        self.assertLess(m_at, c_at, "M4 must confirm early (reset leak)")
+        from pathlib import Path as _P
+        cur = _P(__file__).with_name("geargrafx_satclr36_writes_probe.cpp").read_text()
+        self.assertIn("pc_before == halt && pc_after == halt", cur)
+        self.assertIn("} else {\n                confirm = 0;", cur)
 
     def test_writes_mutant_sta2200_red(self):
         # T05 non-sampled write (outside canary $2900-$29FF and zp $10):
