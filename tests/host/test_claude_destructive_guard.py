@@ -4370,6 +4370,75 @@ class StdinProgramTests(unittest.TestCase):
                 verdict, reason = self._d(cmd)
                 self.assertEqual(verdict, "ALLOW", reason)
 
+    def test_output_family_fd_zero_supplies_stdin(self):
+        # MAJOR #814 review (b7883a8d): output-family duplication onto fd 0
+        # (`0>&N`, `00>&N`) supplies stdin (verified harmless: `exec 3< f;
+        # python3 0>&3` runs f, as does `exec 0>&3; python3`; `00>&`/`000>&`
+        # spellings behave identically; `0>&3-` move form dups before closing
+        # the source). A bare interpreter with such a redirect reads its
+        # program from stdin and must be refused with stdin-program
+        # (fail-closed: an unopened N fails the command in Bash, but the
+        # guard cannot know runtime fds). Covers direct, persistent-exec
+        # (`exec 0>&3; node`), compound, wrapper and nested paths through the
+        # shared `_scan_stdin_ops` -> `_stdin_op_effect` classifier, plus
+        # close-then-restore (`exec 0>&-; exec 0< f; node`).
+        for cmd in ["node 0>&3",
+                    "node 00>&3",
+                    "node 000>&3",
+                    "node 0000000000>&3",
+                    "perl 00>&2",
+                    "ruby 0>&3",
+                    "node 0>&1",
+                    "node 0>&0003",
+                    "node " + "0" * 5000 + ">&3",
+                    "exec 0>&3; node",
+                    "exec 00>&3; node",
+                    "exec 3< /tmp/x; exec 0>&3; node",
+                    "exec 0>&-; exec 0< /tmp/x; node",
+                    "(node) 0>&3",
+                    "if true; then node; fi 0>&3",
+                    "sh -c 'node' 0>&3",
+                    "node 0>&3 < /dev/null"]:
+            with self.subTest(cmd=cmd[:80]):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertIn("stdin-program", reason)
+        # Python keeps its established argv-certainty refusal for redirects
+        # (same reason as `python3 < x.py`): still DENY, no reason change.
+        for cmd in ["python3 0>&3", "python3 00>&3"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertIn("unexpanded", reason)
+
+    def test_output_family_other_fds_and_close_stay_safe(self):
+        # Companion ALLOW side: default/`>&N` (stdout), nonzero-fd
+        # duplication (`1>&2`, `2>&1`, `3>&1`, `03>&1`), output append
+        # (`0>>f`), quoted operators, named scripts (stdin as data) and data
+        # readers (`cat`) stay ALLOW; explicit fd-0 close (`0>&-`,
+        # `exec 0>&-`, supply-then-close) delivers EOF like `<&-`.
+        for cmd in ["node >&2",
+                    "echo hi >&2",
+                    "node 1>&2",
+                    "node 2>&1",
+                    "node 3>&1",
+                    "node 03>&1",
+                    "node 0>>f",
+                    "node 'a>&b'",
+                    "node script.js 0>&3",
+                    "echo data | node script.js",
+                    "exec 0>&3; node script.js",
+                    "cat 0>&3",
+                    "node 0>&-",
+                    "exec 0>&-; node",
+                    "exec 0>&3; exec 0>&-; node",
+                    "exec 0< /tmp/x; exec 0>&-; node",
+                    "(node) 1>&2",
+                    "if true; then node; fi 2>&1"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "ALLOW", reason)
+
     def test_eval_defines_function_for_later_pipe(self):
         # MAJOR CodeRabbit 5985627085 + follow-ups 5986155667: same-shell eval
         # installs definitions in the calling shell (verified harmless).
@@ -4537,6 +4606,15 @@ class StdinProgramMutationTests(unittest.TestCase):
         "persistent redirect supply lost": (
             "    if last == \"supply\":\n        return \"supply\"",
             "    if False:  # mutant: persistent supply lost\n        return \"supply\""),
+        "output-family scan removed": (
+            "        if c == \">\" and i + 1 < n and seg[i + 1] == \"&\":",
+            "        if False:  # mutant: output-family scan removed"),
+        "output-family default fd treated as stdin": (
+            "        if fd == \"\":\n            return None",
+            "        if False:  # mutant: every >& supplies stdin\n            return None"),
+        "output-family close treated as supply": (
+            "        if (target or \"\") == \"-\":\n            return \"close\"",
+            "        if False:  # mutant: output close as supply\n            return \"close\""),
         "eval function-definition propagation removed": (
             "            _ev_def_text = _eval_command_text(seg_words, ps, all_funcs, definite)",
             "            _ev_def_text = None  # mutant: eval defs never propagate"),
@@ -4679,6 +4757,8 @@ class StdinProgramMutationTests(unittest.TestCase):
                  "test_compound_redirect_safe_forms_stay_allowed",
                  "test_exec_redirect_persists_stdin", "test_exec_safe_forms_stay_allowed",
                  "test_function_exec_persists_stdin", "test_subshell_fd3_stays_allowed",
+                 "test_output_family_fd_zero_supplies_stdin",
+                 "test_output_family_other_fds_and_close_stay_safe",
                  "test_leading_zero_fd_zero_supplies_stdin",
                  "test_leading_zero_fd_nonzero_and_close_stay_safe",
                  "test_eval_defines_function_for_later_pipe",

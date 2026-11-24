@@ -2895,14 +2895,20 @@ def _extract_function_defs(text, ps):
 
 
 def _stdin_op_effect(op, target):
-    """Effect of one `<`-family redirect operator on fd 0 (Issue #637).
+    """Effect of one `<`- or `>&`-family redirect operator on fd 0 (Issue #637).
 
     op includes an optional fd-digit prefix (e.g. '3<', '<', '<<', '<<<',
-    '<&', '<>'). Returns 'supply' (fd 0 reads a new source), 'close' (fd 0
-    is closed: provably delivers no program), or None (another descriptor
-    or an unrecognised form: no stdin effect). Only fd 0/default supplies
-    stdin; `3<`, `3<&-` and friends touch another descriptor. `<&N` dups
-    onto stdin (supply); `<&-` closes it. `<>` opens fd 0 read-write.
+    '<&', '<>', '0>&'). Returns 'supply' (fd 0 reads a new source), 'close'
+    (fd 0 is closed: provably delivers no program), or None (another
+    descriptor or an unrecognised form: no stdin effect). Only fd 0/default
+    supplies stdin; `3<`, `3<&-`, `1>&2` and friends touch another
+    descriptor. `<&N` dups onto stdin (supply); `<&-` closes it; `<>` opens
+    fd 0 read-write. `0>&N` (output-family duplication onto fd 0) supplies
+    stdin when N names a readable descriptor (verified on Bash; an unopened
+    N fails the command, so fail-closed supply is safe); `0>&-` closes it.
+    A non-digit `0>&word` target is rejected by Bash itself (ambiguous
+    redirect), so only `-` (close) and anything else (supply, fail-closed:
+    digits, moves `N-`, quoted or unexpanded words) are distinguished here.
     """
     m = re.match(r"^(\d*)(.*)$", op, re.S)
     fd, base = m.group(1), m.group(2)
@@ -2920,16 +2926,29 @@ def _stdin_op_effect(op, target):
         return "supply"
     if base == "<&":
         return "close" if (target or "") == "-" else "supply"
+    if base == ">&":
+        # Output-family duplication: a missing fd is `>&N` (default fd 1,
+        # stdout: never stdin). An explicit all-zero fd (`0>&`, `00>&`,
+        # ...) duplicates onto fd 0; any other explicit fd was rejected
+        # above. `0>&-` closes fd 0; any other target supplies fd 0
+        # (digits, moves `N-`, quoted or unexpanded words: fail-closed).
+        if fd == "":
+            return None
+        if (target or "") == "-":
+            return "close"
+        return "supply"
     return None
 
 
 def _scan_stdin_ops(seg):
-    """Yield (op, target) for each unquoted `<`-family operator in a segment.
+    """Yield (op, target) for each unquoted `<`- or `>&`-family operator.
 
     Works on lexer-marked segments (operators stand off as `\x01<op>` words,
     fd digits glued inside the marker) and on raw text alike. Quoted `<`
-    is literal; `<(` is process substitution, not a redirect. The target is
-    the next unquoted word (None when quoted: fail-closed, never `-`).
+    and `>` are literal; `<(` and `>(` are process substitutions, not
+    redirects. The target is the next unquoted word (None when quoted:
+    fail-closed, never `-`). `>&` with any other shape (`>>`, `>|`, `&>`)
+    is an output redirect that never touches fd 0 and is skipped here.
     """
     ops = []
     quote, i, n = None, 0, len(seg)
@@ -2941,7 +2960,7 @@ def _scan_stdin_ops(seg):
             i += 1
             continue
         if c == "\\":
-            i += 2  # an escaped `<` is a literal argument, not a redirect
+            i += 2  # an escaped `<`/`>` is a literal argument, not a redirect
             continue
         if quote == '"':
             if c == '"':
@@ -2977,17 +2996,45 @@ def _scan_stdin_ops(seg):
             ops.append((op, target))
             i = j
             continue
+        if c == ">" and i + 1 < n and seg[i + 1] == "&":
+            # Output-family duplication onto another descriptor (`0>&N`,
+            # `00>&N`, `0>&-`). Glued fd digits as above; a missing fd is
+            # `>&N` (default fd 1: stdout, never stdin). `>>`, `>|`, `&>`
+            # and `>(` do not match here (`&` must follow `>` directly).
+            k = i - 1
+            fd = ""
+            while k >= 0 and seg[k].isdigit():
+                fd = seg[k] + fd
+                k -= 1
+            j = i + 1
+            while j < n and seg[j] in ">&":
+                j += 1
+            op = fd + seg[i:j]
+            t = j
+            while t < n and seg[t] in " \t":
+                t += 1
+            if t < n and seg[t] in "'\"":
+                target = None
+            else:
+                u = t
+                while u < n and seg[u] not in " \t" + REDIR_MARK + "'\"":
+                    u += 1
+                target = seg[t:u]
+            ops.append((op, target))
+            i = j
+            continue
         i += 1
     return ops
 
 
 def _has_input_redirect(seg):
-    """True when a segment contains an unquoted `<` supplying stdin (fd 0/default).
+    """True when a segment contains an unquoted redirect supplying stdin.
 
-    Only fd 0/default supplies stdin (`3<`, `3<&-` do not); `<&N` dups onto
-    stdin (supply) while `<&-` closes it (no program can be delivered).
-    `<(` is process substitution, not stdin redirection. Quoted `<` and
-    backslash-escaped `<` are literal arguments.
+    Only fd 0/default supplies stdin (`3<`, `3<&-`, `1>&2` do not); `<&N`
+    and `0>&N` dup onto stdin (supply) while `<&-`/`0>&-` close it (no
+    program can be delivered). `<(` and `>(` are process substitutions,
+    not stdin redirections. Quoted operators and backslash-escaped
+    `<`/`>` are literal arguments.
     """
     for op, target in _scan_stdin_ops(seg):
         if _stdin_op_effect(op, target) == "supply":
