@@ -2923,6 +2923,20 @@ def _stdin_op_effect(op, target):
     # fail-closed instead of being guessed as another descriptor.
     if fd.isdigit():
         if fd.strip("0") != "":
+            # A move from fd 0 (`1<&0-`, `2>&0-`, leading-zero sources
+            # like `1<&00-`) duplicates fd 0 elsewhere and then closes the
+            # source: fd 0 is closed, so it scopes its compound exactly
+            # like `<&-` (verified on Bash: the source is saved and
+            # restored after the group). It is not a supply (no program is
+            # delivered), and as a move it may fail, so the exec-segment
+            # close-as-proof gate still keeps provenance (fail-closed).
+            # `1<&0` (no dash) moves nothing and stays out, as does an
+            # unrecognised/uncertain source (literal digits only).
+            if base in ("<&", ">&"):
+                _t = target or ""
+                _src = _t[:-1] if _t.endswith("-") and _t != "-" else ""
+                if _src.isdigit() and _src.strip("0") == "":
+                    return "close"
             return None
     elif fd != "":
         pass  # unknown fd spelling: keep stdin classification below

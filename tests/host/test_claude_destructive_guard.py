@@ -4611,7 +4611,12 @@ class StdinProgramTests(unittest.TestCase):
                     "printf x | bash -c '{ exec 0<&-; } 0<&- < /nonexistent; node'",
                     "printf x | bash -c '{ exec 0<&-; } 0<&$u; node'",
                     "printf x | bash -c '{ exec 0<&-; } 0>&word; node'",
-                    "printf x | bash -c '{ exec 0<&-; } 0>&\"-\"; node'"]:
+                    "printf x | bash -c '{ exec 0<&-; } 0>&\"-\"; node'",
+                    "exec < /tmp/x.py; { exec <&-; } 1<&0-; node",
+                    "printf x | bash -c '{ exec 0<&-; } 1<&0-; python3'",
+                    "exec < /tmp/x.py; { exec <&-; } 2>&0-; node",
+                    "exec < /tmp/x.py; { exec <&-; } 1<&00-; node",
+                    "exec < /tmp/x.py; { exec <&-; } 10<&0-; node"]:
             with self.subTest(cmd=cmd):
                 verdict, reason = self._d(cmd)
                 self.assertEqual(verdict, "DENY")
@@ -4624,7 +4629,8 @@ class StdinProgramTests(unittest.TestCase):
                     "printf x | bash -c '{ exec 0<&-; } > /dev/null; node'",
                     "exec < /tmp/x.py; { exec <&-; } > /dev/null; node",
                     "bash -c '{ exec <&-; } 0<&-; node'",
-                    "bash -c '{ exec <&-; } 0<&- < /nonexistent; node'"]:
+                    "bash -c '{ exec <&-; } 0<&- < /nonexistent; node'",
+                    "printf x | bash -c '{ exec 0<&-; } 1<&0; node'"]:
             with self.subTest(cmd=cmd):
                 verdict, reason = self._d(cmd)
                 self.assertEqual(verdict, "ALLOW", reason)
@@ -4729,17 +4735,17 @@ class StdinProgramMutationTests(unittest.TestCase):
             "            elif effect == \"close\":",
             "            elif False:  # mutant: exec close never clears"),
         "fd number distinction removed": (
-            "        if fd.strip(\"0\") != \"\":\n            return None",
-            "        if False:  # mutant: every fd supplies stdin\n            return None"),
+            "        if fd.strip(\"0\") != \"\":\n            # A move from fd 0 (`1<&0-`, `2>&0-`, leading-zero sources\n            # like `1<&00-`) duplicates fd 0 elsewhere and then closes the\n            # source: fd 0 is closed, so it scopes its compound exactly\n            # like `<&-` (verified on Bash: the source is saved and\n            # restored after the group). It is not a supply (no program is\n            # delivered), and as a move it may fail, so the exec-segment\n            # close-as-proof gate still keeps provenance (fail-closed).\n            # `1<&0` (no dash) moves nothing and stays out, as does an\n            # unrecognised/uncertain source (literal digits only).\n            if base in (\"<&\", \">&\"):\n                _t = target or \"\"\n                _src = _t[:-1] if _t.endswith(\"-\") and _t != \"-\" else \"\"\n                if _src.isdigit() and _src.strip(\"0\") == \"\":\n                    return \"close\"\n            return None",
+            "        if False:  # mutant: every fd supplies stdin\n            # A move from fd 0 (`1<&0-`, `2>&0-`, leading-zero sources\n            # like `1<&00-`) duplicates fd 0 elsewhere and then closes the\n            # source: fd 0 is closed, so it scopes its compound exactly\n            # like `<&-` (verified on Bash: the source is saved and\n            # restored after the group). It is not a supply (no program is\n            # delivered), and as a move it may fail, so the exec-segment\n            # close-as-proof gate still keeps provenance (fail-closed).\n            # `1<&0` (no dash) moves nothing and stays out, as does an\n            # unrecognised/uncertain source (literal digits only).\n            if base in (\"<&\", \">&\"):\n                _t = target or \"\"\n                _src = _t[:-1] if _t.endswith(\"-\") and _t != \"-\" else \"\"\n                if _src.isdigit() and _src.strip(\"0\") == \"\":\n                    return \"close\"\n            return None"),
         "fd-zero leading-zero spelling reverted": (
-            "        if fd.strip(\"0\") != \"\":\n            return None",
-            "        if fd not in (\"\", \"0\"):  # mutant: leading-zero reverted\n            return None"),
+            "        if fd.strip(\"0\") != \"\":\n            # A move from fd 0 (`1<&0-`, `2>&0-`, leading-zero sources\n            # like `1<&00-`) duplicates fd 0 elsewhere and then closes the\n            # source: fd 0 is closed, so it scopes its compound exactly\n            # like `<&-` (verified on Bash: the source is saved and\n            # restored after the group). It is not a supply (no program is\n            # delivered), and as a move it may fail, so the exec-segment\n            # close-as-proof gate still keeps provenance (fail-closed).\n            # `1<&0` (no dash) moves nothing and stays out, as does an\n            # unrecognised/uncertain source (literal digits only).\n            if base in (\"<&\", \">&\"):\n                _t = target or \"\"\n                _src = _t[:-1] if _t.endswith(\"-\") and _t != \"-\" else \"\"\n                if _src.isdigit() and _src.strip(\"0\") == \"\":\n                    return \"close\"\n            return None",
+            "        if fd not in (\"\", \"0\"):  # mutant: leading-zero reverted\n            # A move from fd 0 (`1<&0-`, `2>&0-`, leading-zero sources\n            # like `1<&00-`) duplicates fd 0 elsewhere and then closes the\n            # source: fd 0 is closed, so it scopes its compound exactly\n            # like `<&-` (verified on Bash: the source is saved and\n            # restored after the group). It is not a supply (no program is\n            # delivered), and as a move it may fail, so the exec-segment\n            # close-as-proof gate still keeps provenance (fail-closed).\n            # `1<&0` (no dash) moves nothing and stays out, as does an\n            # unrecognised/uncertain source (literal digits only).\n            if base in (\"<&\", \">&\"):\n                _t = target or \"\"\n                _src = _t[:-1] if _t.endswith(\"-\") and _t != \"-\" else \"\"\n                if _src.isdigit() and _src.strip(\"0\") == \"\":\n                    return \"close\"\n            return None"),
         "multi-digit zero treated as non-stdin": (
-            "        if fd.strip(\"0\") != \"\":\n            return None",
-            "        if fd.strip(\"0\") != \"\" or len(fd) > 1:  # mutant: multi-digit zero non-stdin\n            return None"),
+            "        if fd.strip(\"0\") != \"\":\n            # A move from fd 0 (`1<&0-`, `2>&0-`, leading-zero sources\n            # like `1<&00-`) duplicates fd 0 elsewhere and then closes the\n            # source: fd 0 is closed, so it scopes its compound exactly\n            # like `<&-` (verified on Bash: the source is saved and\n            # restored after the group). It is not a supply (no program is\n            # delivered), and as a move it may fail, so the exec-segment\n            # close-as-proof gate still keeps provenance (fail-closed).\n            # `1<&0` (no dash) moves nothing and stays out, as does an\n            # unrecognised/uncertain source (literal digits only).\n            if base in (\"<&\", \">&\"):\n                _t = target or \"\"\n                _src = _t[:-1] if _t.endswith(\"-\") and _t != \"-\" else \"\"\n                if _src.isdigit() and _src.strip(\"0\") == \"\":\n                    return \"close\"\n            return None",
+            "        if fd.strip(\"0\") != \"\" or len(fd) > 1:  # mutant: multi-digit zero non-stdin\n            # A move from fd 0 (`1<&0-`, `2>&0-`, leading-zero sources\n            # like `1<&00-`) duplicates fd 0 elsewhere and then closes the\n            # source: fd 0 is closed, so it scopes its compound exactly\n            # like `<&-` (verified on Bash: the source is saved and\n            # restored after the group). It is not a supply (no program is\n            # delivered), and as a move it may fail, so the exec-segment\n            # close-as-proof gate still keeps provenance (fail-closed).\n            # `1<&0` (no dash) moves nothing and stays out, as does an\n            # unrecognised/uncertain source (literal digits only).\n            if base in (\"<&\", \">&\"):\n                _t = target or \"\"\n                _src = _t[:-1] if _t.endswith(\"-\") and _t != \"-\" else \"\"\n                if _src.isdigit() and _src.strip(\"0\") == \"\":\n                    return \"close\"\n            return None"),
         "fd 3 over-tainted as stdin": (
-            "        if fd.strip(\"0\") != \"\":\n            return None",
-            "        if fd.strip(\"0\") != \"\" and fd.strip(\"0\") != \"3\":  # mutant: fd 3 as stdin\n            return None"),
+            "        if fd.strip(\"0\") != \"\":\n            # A move from fd 0 (`1<&0-`, `2>&0-`, leading-zero sources\n            # like `1<&00-`) duplicates fd 0 elsewhere and then closes the\n            # source: fd 0 is closed, so it scopes its compound exactly\n            # like `<&-` (verified on Bash: the source is saved and\n            # restored after the group). It is not a supply (no program is\n            # delivered), and as a move it may fail, so the exec-segment\n            # close-as-proof gate still keeps provenance (fail-closed).\n            # `1<&0` (no dash) moves nothing and stays out, as does an\n            # unrecognised/uncertain source (literal digits only).\n            if base in (\"<&\", \">&\"):\n                _t = target or \"\"\n                _src = _t[:-1] if _t.endswith(\"-\") and _t != \"-\" else \"\"\n                if _src.isdigit() and _src.strip(\"0\") == \"\":\n                    return \"close\"\n            return None",
+            "        if fd.strip(\"0\") != \"\" and fd.strip(\"0\") != \"3\":  # mutant: fd 3 as stdin\n            # A move from fd 0 (`1<&0-`, `2>&0-`, leading-zero sources\n            # like `1<&00-`) duplicates fd 0 elsewhere and then closes the\n            # source: fd 0 is closed, so it scopes its compound exactly\n            # like `<&-` (verified on Bash: the source is saved and\n            # restored after the group). It is not a supply (no program is\n            # delivered), and as a move it may fail, so the exec-segment\n            # close-as-proof gate still keeps provenance (fail-closed).\n            # `1<&0` (no dash) moves nothing and stays out, as does an\n            # unrecognised/uncertain source (literal digits only).\n            if base in (\"<&\", \">&\"):\n                _t = target or \"\"\n                _src = _t[:-1] if _t.endswith(\"-\") and _t != \"-\" else \"\"\n                if _src.isdigit() and _src.strip(\"0\") == \"\":\n                    return \"close\"\n            return None"),
         "stdin close treated as supply": (
             "        return \"close\" if (target or \"\") == \"-\" else \"supply\"",
             "        return \"supply\"  # mutant: close as supply"),
@@ -4787,6 +4793,12 @@ class StdinProgramMutationTests(unittest.TestCase):
         "prepass brace save removed (scope mismatch)": (
             "                        bbrace_exec_save.append(exec_flag)\n                        bbrace_inh_save.append(inh)",
             "                        pass  # mutant: prepass brace save removed"),
+        "move-from-fd0 not scoped": (
+            "            if base in (\"<&\", \">&\"):\n                _t = target or \"\"\n                _src = _t[:-1] if _t.endswith(\"-\") and _t != \"-\" else \"\"\n                if _src.isdigit() and _src.strip(\"0\") == \"\":\n                    return \"close\"",
+            "            pass  # mutant: moves from fd 0 ignored"),
+        "move guard always true (non-move over-scoped)": (
+            "                if _src.isdigit() and _src.strip(\"0\") == \"\":",
+            "                if True:  # mutant: any dup/move closes fd 0"),
         "awk bare dash with seen program or file": (
             "            if seen_program_text or seen_file:\n                i += 1\n                continue\n            return 'stdin'",
             "            if seen_program_text:  # mutant: data dash is stdin program\n                i += 1\n                continue\n            return 'stdin'",
