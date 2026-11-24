@@ -985,7 +985,13 @@ class Satclr36Synthetic(unittest.TestCase):
         # Strict B1 write-history proof, both cycles: halted, complete
         # (not truncated), identical sets cold==warm, and exactly the
         # transient stack bytes -- a bare-RTS mutant (2 JSR bytes only)
-        # or any extra write fails here.
+        # or any extra value-changing write fails here.
+        # Residual limit (see docs/64-ex-satclr-b1.md §3): the tracer
+        # records per-instruction WRAM *value diffs*, so a same-value store
+        # (writing back the byte already present) is invisible by
+        # construction and is NOT claimed as verified (out of scope for this
+        # scaffold; bus-level write detection would need core write-path
+        # hooks). Only state-changing writes are claimed as detected.
         allowed = self._allowed_transient(spinit)
         seen = []
         for res in recs:

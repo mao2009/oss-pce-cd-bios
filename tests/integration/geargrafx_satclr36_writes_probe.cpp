@@ -9,6 +9,9 @@
 // (ResetMedia between, like the return probe) and reports one RESULT line
 // per cycle with the written ranges merged. Genuine $36 semantics stay
 // UNKNOWN/BLOCKED.
+// Residual limit: this tracer OR-accumulates per-instruction WRAM value
+// diffs, so same-value stores are invisible by construction and are NOT
+// claimed as verified (see docs/64-ex-satclr-b1.md §3).
 #include "geargrafx_core.h"
 #include "input.h"
 #include "media.h"
