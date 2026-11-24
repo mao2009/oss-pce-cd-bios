@@ -897,6 +897,66 @@ class Dotmod24Synthetic(unittest.TestCase):
         self.assertIsNotNone(m, "refused_halt symbol missing (harness failure)")
         return int(m.group(1), 16)
 
+    def _check_apicall_record_strict(self, c, tag=""):
+        # Strict per-record APICALL validation (MEDIUM-2). Every record the
+        # parser yields is checked for presence, exact type (bool excluded
+        # where ints are required) and range/consistency -- including {} or
+        # records with missing/unknown cycle, missing slot/entry_pc, or a
+        # slot/entry_pc contradiction. Filters downstream must never see an
+        # unvalidated record: a malformed record passing a .get() filter is
+        # a false negative, not an absence.
+        self.assertIsInstance(c, dict,
+                              f"refusal {tag} APICALL record not an object")
+        for field in ("cycle", "step", "caller_pc", "entry_pc",
+                      "in_table", "slot", "sp_before", "sp_after",
+                      "sp_delta", "caller_a", "caller_x", "caller_y",
+                      "caller_p", "stack_check", "return_matches_caller",
+                      "mpr", "idr", "irr"):
+            self.assertIn(field, c,
+                          f"refusal {tag} APICALL record missing {field}")
+        self.assertIn(c.get("cycle"), ("cold", "warm"),
+                      f"refusal {tag} APICALL bad cycle {c.get('cycle')!r}")
+        self.assertTrue(type(c.get("slot")) is int and 0 <= c["slot"] <= 0x51,
+                        f"refusal {tag} APICALL bad slot {c.get('slot')!r}")
+        self.assertTrue(type(c.get("entry_pc")) is int
+                        and 0xE000 <= c["entry_pc"] <= 0xE0F2,
+                        f"refusal {tag} APICALL bad entry_pc {c.get('entry_pc')!r}")
+        self.assertIsInstance(c.get("in_table"), bool,
+                              f"refusal {tag} APICALL in_table not bool")
+        if c.get("in_table"):
+            self.assertEqual((c["entry_pc"] - 0xE000) % 3, 0,
+                             f"refusal {tag} APICALL entry_pc off-table")
+            self.assertEqual(c["slot"], (c["entry_pc"] - 0xE000) // 3,
+                             f"refusal {tag} APICALL slot/entry_pc mismatch")
+        for field in ("sp_before", "sp_after", "sp_delta"):
+            self.assertTrue(type(c.get(field)) is int
+                            and 0 <= c[field] <= 0xFF,
+                            f"refusal {tag} APICALL {field} bad")
+        self.assertEqual((c["sp_before"] - c["sp_after"]) & 0xFF,
+                         c["sp_delta"],
+                         f"refusal {tag} APICALL sp_delta inconsistent")
+        self.assertIn(c.get("stack_check"),
+                      ("MATCH", "MISMATCH", "UNKNOWN"),
+                      f"refusal {tag} APICALL bad stack_check")
+        self.assertIn(c.get("return_matches_caller"), (True, False, None),
+                      f"refusal {tag} APICALL bad return_matches_caller")
+        for field in ("caller_a", "caller_x", "caller_y", "caller_p",
+                      "idr", "irr"):
+            self.assertTrue(type(c.get(field)) is int
+                            and 0 <= c[field] <= 0xFF,
+                            f"refusal {tag} APICALL {field} bad")
+        for field in ("step", "caller_pc"):
+            self.assertTrue(type(c.get(field)) is int and c[field] >= 0,
+                            f"refusal {tag} APICALL {field} bad")
+        mpr = c.get("mpr")
+        self.assertIsInstance(mpr, list,
+                              f"refusal {tag} APICALL mpr not a list")
+        self.assertEqual(len(mpr), 8,
+                         f"refusal {tag} APICALL mpr len != 8")
+        for i, v in enumerate(mpr):
+            self.assertTrue(type(v) is int and 0 <= v <= 0xFF,
+                            f"refusal {tag} APICALL mpr[{i}] bad")
+
     def _check_mpr1_refusal_strict(self, rec, refused_pc, tag=""):
         # Strict T13 pre-JSR refusal validator. A refusal counts ONLY when
         # ALL hold on the raw RUN list (never a per-cycle dict, which would
@@ -910,6 +970,12 @@ class Dotmod24Synthetic(unittest.TestCase):
         # buffers are valid hex dumps. APICALL must be a list with zero
         # slot-$24 records in each cycle and zero $E06C entries overall.
         # Anything else is harness failure/INCONCLUSIVE, never a refusal.
+        # APICALL completeness (MEDIUM-2): the probe emits an independent
+        # per-cycle observed count (apicalls_observed, synthetic RUN field;
+        # commercial serialization unchanged). The parser-derived per-cycle
+        # count must match it with apicall_truncated False, so a dropped
+        # emission stream cannot masquerade as zero events. Counts are never
+        # derived from the parsed array itself.
         self.assertIn("RUN", rec, f"refusal {tag} missing RUN (harness failure)")
         runs = rec["RUN"]
         self.assertIsInstance(runs, list, f"refusal {tag} RUN not a list")
@@ -918,9 +984,20 @@ class Dotmod24Synthetic(unittest.TestCase):
         cycles = [r.get("cycle") for r in runs]
         self.assertEqual(sorted(cycles), ["cold", "warm"],
                          f"refusal {tag} cycles must be cold+warm once each, got {cycles}")
+        self.assertIn("APICALL", rec,
+                      f"refusal {tag} missing APICALL (harness failure)")
+        calls = rec["APICALL"]
+        self.assertIsInstance(calls, list,
+                              f"refusal {tag} APICALL not a list (harness failure)")
+        # Strict per-record validation BEFORE any filter: malformed records
+        # ({} / missing keys / contradictions) must raise here, never pass
+        # a .get() filter silently.
+        for c in calls:
+            self._check_apicall_record_strict(c, tag=tag)
         for r in runs:
             for field in ("cycle", "reason", "pc", "halt_confirmed",
-                          "buffer_hex", "apicall_truncated", "ret_truncated"):
+                          "buffer_hex", "apicall_truncated", "ret_truncated",
+                          "apicalls_observed"):
                 self.assertIn(field, r,
                               f"refusal {tag} run missing {field} (harness failure)")
             self.assertEqual(r.get("reason"), "cd_halt_fail",
@@ -942,11 +1019,19 @@ class Dotmod24Synthetic(unittest.TestCase):
                 self.fail(f"refusal {tag} buffer_hex invalid hex (harness failure)")
             self.assertGreaterEqual(len(buf), 2048,
                                      f"refusal {tag} buffer short (harness failure)")
-        self.assertIn("APICALL", rec,
-                      f"refusal {tag} missing APICALL (harness failure)")
-        calls = rec["APICALL"]
-        self.assertIsInstance(calls, list,
-                              f"refusal {tag} APICALL not a list (harness failure)")
+            # Observed-vs-parsed independence: the count comes from the probe
+            # (entry-watch hits), not from len(parsed). Both cycles observed
+            # zero here -- genuine zero, not a missing stream.
+            self.assertTrue(type(r["apicalls_observed"]) is int,
+                            f"refusal {tag} apicalls_observed bad type")
+            parsed_here = [c for c in calls
+                           if c.get("cycle") == r.get("cycle")]
+            self.assertEqual(len(parsed_here), r["apicalls_observed"],
+                             f"refusal {tag} parsed/observed APICALL mismatch "
+                             f"({r.get('cycle')}: parsed {len(parsed_here)} vs "
+                             f"observed {r['apicalls_observed']})")
+            self.assertEqual(r["apicalls_observed"], 0,
+                             f"refusal {tag} observed APICALL (must be zero)")
         for cycle in ("cold", "warm"):
             bad = [c for c in calls
                    if c.get("cycle") == cycle and c.get("slot") == 0x24]
@@ -972,15 +1057,31 @@ class Dotmod24Synthetic(unittest.TestCase):
         self._check_mpr1_refusal_strict(rec, refused_pc, tag="mpr1ref")
 
     def _fake_refusal_run(self, cycle, pc, reason="cd_halt_fail", halt=True,
-                          a_trunc=False, r_trunc=False, buf=None):
+                          a_trunc=False, r_trunc=False, buf=None, observed=0):
         # Fabricated T13 refusal RUN record (no probe run). Defaults form a
-        # valid refusal; each negative flips exactly one property.
+        # valid refusal (zero observed APICALL, matching empty trace); each
+        # negative flips exactly one property.
         if buf is None:
             buf = self._fake_buf_hex()
         return {"cycle": cycle, "reason": reason,
                 "halt_confirmed": halt, "pc": pc,
                 "buffer_hex": buf,
-                "apicall_truncated": a_trunc, "ret_truncated": r_trunc}
+                "apicall_truncated": a_trunc, "ret_truncated": r_trunc,
+                "apicalls_observed": observed}
+
+    def _fake_strict_arrival(self, cycle, slot=0x24, entry_pc=0xE06C,
+                             in_table=True):
+        # Complete APICALL record as the real probe emits it (all structural
+        # fields present). Negatives below mutate exactly one property.
+        return {"cycle": cycle, "step": 100,
+                "caller_pc": 0x3100, "entry_pc": entry_pc,
+                "in_table": in_table, "slot": slot,
+                "sp_before": 0xFF, "sp_after": 0xFD, "sp_delta": 2,
+                "caller_a": 0x06, "caller_x": 0x11, "caller_y": 0x22,
+                "caller_p": 0x06, "stack_check": "MATCH",
+                "return_matches_caller": True,
+                "mpr": [0xF8, 0xF8, 0x80, 0x81, 0x82, 0x83, 0x84, 0x00],
+                "idr": 0, "irr": 0}
 
     def _fake_refusal_rec(self, runs, apicalls=None):
         if apicalls is None:
@@ -1069,15 +1170,226 @@ class Dotmod24Synthetic(unittest.TestCase):
 
     def test_mpr1_refusal_rejects_slot24_arrival(self):
         # A $24 APICALL in either cycle disproves pre-JSR refusal, even when
-        # the RUN rows look like a clean refusal.
+        # the RUN rows look like a clean refusal. Full records here so the
+        # schema passes and the arrival filter itself must fire.
+        pc = 0x3100
+        rec = self._fake_refusal_rec([
+            self._fake_refusal_run("cold", pc, observed=1),
+            self._fake_refusal_run("warm", pc, observed=1),
+        ], apicalls=[self._fake_strict_arrival("cold"),
+                      self._fake_strict_arrival("warm")])
+        with self.assertRaises(AssertionError, msg="$24 arrival accepted"):
+            self._check_mpr1_refusal_strict(rec, pc, tag="arrival-control")
+
+    def test_mpr1_refusal_rejects_empty_record(self):
+        # {} passes every .get() filter silently -- the strict per-record
+        # schema must reject it instead.
         pc = 0x3100
         rec = self._fake_refusal_rec([
             self._fake_refusal_run("cold", pc),
             self._fake_refusal_run("warm", pc),
-        ], apicalls=[self._fake_arrival_call("cold"),
-                      self._fake_arrival_call("warm")])
-        with self.assertRaises(AssertionError, msg="$24 arrival accepted"):
-            self._check_mpr1_refusal_strict(rec, pc, tag="arrival-control")
+        ], apicalls=[{}])
+        with self.assertRaises(AssertionError, msg="empty record accepted"):
+            self._check_mpr1_refusal_strict(rec, pc, tag="empty-control")
+
+    def test_mpr1_refusal_rejects_bad_cycle(self):
+        # Missing cycle and unknown cycle records must not validate.
+        pc = 0x3100
+        for mutate, label in ((lambda r: r.pop("cycle"), "missing-cycle"),
+                              (lambda r: r.update(cycle="hot"), "unknown-cycle")):
+            bad = self._fake_strict_arrival("cold")
+            mutate(bad)
+            rec = self._fake_refusal_rec([
+                self._fake_refusal_run("cold", pc),
+                self._fake_refusal_run("warm", pc),
+            ], apicalls=[bad])
+            with self.assertRaises(AssertionError, msg=f"{label} accepted"):
+                self._check_mpr1_refusal_strict(rec, pc, tag=f"{label}-control")
+
+    def test_mpr1_refusal_rejects_missing_slot_entry(self):
+        pc = 0x3100
+        for field in ("slot", "entry_pc"):
+            bad = self._fake_strict_arrival("cold")
+            del bad[field]
+            rec = self._fake_refusal_rec([
+                self._fake_refusal_run("cold", pc),
+                self._fake_refusal_run("warm", pc),
+            ], apicalls=[bad])
+            with self.assertRaises(AssertionError, msg=f"missing {field} accepted"):
+                self._check_mpr1_refusal_strict(rec, pc, tag=f"{field}-control")
+
+    def test_mpr1_refusal_rejects_slot_entry_mismatch(self):
+        # Slot says $24 but the entry address belongs to $02: contradictory
+        # evidence must raise, never validate.
+        pc = 0x3100
+        rec = self._fake_refusal_rec([
+            self._fake_refusal_run("cold", pc),
+            self._fake_refusal_run("warm", pc),
+        ], apicalls=[self._fake_strict_arrival("cold", slot=0x24,
+                                                entry_pc=0xE00C)])
+        with self.assertRaises(AssertionError, msg="slot/entry mismatch accepted"):
+            self._check_mpr1_refusal_strict(rec, pc, tag="mismatch-control")
+
+    def test_mpr1_refusal_rejects_missing_count(self):
+        # The observed-count field itself missing: parsed-vs-observed
+        # independence is broken, so the refusal cannot validate.
+        pc = 0x3100
+        runs = [self._fake_refusal_run("cold", pc),
+                self._fake_refusal_run("warm", pc)]
+        for r in runs:
+            del r["apicalls_observed"]
+        rec = self._fake_refusal_rec(runs)
+        with self.assertRaises(AssertionError, msg="missing count accepted"):
+            self._check_mpr1_refusal_strict(rec, pc, tag="count-missing-control")
+
+    def test_mpr1_refusal_rejects_count_mismatch(self):
+        # Probe observed one event but the trace carries none: dropped
+        # emission stream, not zero events.
+        pc = 0x3100
+        rec = self._fake_refusal_rec([
+            self._fake_refusal_run("cold", pc, observed=1),
+            self._fake_refusal_run("warm", pc, observed=1),
+        ])
+        with self.assertRaises(AssertionError, msg="count mismatch accepted"):
+            self._check_mpr1_refusal_strict(rec, pc, tag="mismatch-count-control")
+
+    def test_mpr1_refusal_rejects_bad_count_type(self):
+        # Non-integer count (string/bool/float) is not a measurement.
+        pc = 0x3100
+        for bad_count in ("0", True, 0.0):
+            runs = [self._fake_refusal_run("cold", pc),
+                    self._fake_refusal_run("warm", pc)]
+            for r in runs:
+                r["apicalls_observed"] = bad_count
+            rec = self._fake_refusal_rec(runs)
+            with self.assertRaises(AssertionError,
+                                   msg=f"bad count type accepted ({bad_count!r})"):
+                self._check_mpr1_refusal_strict(rec, pc, tag="count-type-control")
+
+    def _run_fake_probe(self, name, records):
+        # Canned probe stdout through the REAL Eentry.run_probe parser
+        # (tag partition, JSON decode, 2-RUN gate). The fake probe ignores
+        # its argv and exits 0 after printing the given record dicts as
+        # "TAG {json}" lines. `records` is a list of (tag, dict) pairs.
+        import json
+        lines = [f"{tag} {json.dumps(body, separators=(',', ':'))}\n"
+                 for tag, body in records]
+        script = self.out / (name + ".py")
+        script.write_text("#!/usr/bin/env python3\nimport sys\n"
+                          f"sys.stdout.write({''.join(lines)!r})\n",
+                         encoding="ascii")
+        script.chmod(0o755)
+        import geargrafx_api_entry as Eentry
+        return Eentry.run_probe(script, self.out / "dummy.rom",
+                                self.out / "dummy.cue",
+                                self.out / "dummy.labels", BUDGET,
+                                "synthetic")
+
+    def _fake_probe_run(self, cycle, pc, observed, reason="cd_halt_fail",
+                        halt=True, a_trunc=False, r_trunc=False):
+        return {"cycle": cycle, "reason": reason,
+                "halt_confirmed": halt, "pc": pc,
+                "buffer_hex": "ab" * 2048,
+                "apicall_truncated": a_trunc, "ret_truncated": r_trunc,
+                "apicalls_observed": observed}
+
+    def test_mpr1_parser_zero_events_genuine(self):
+        # Genuine zero through the real parser: 2 RUNs observed=0 and no
+        # APICALL lines validate as a refusal (a missing stream could not
+        # produce the observed==0 + parsed==0 agreement).
+        pc = 0x3100
+        rec = self._run_fake_probe("fp-zero", [
+            ("RUN", self._fake_probe_run("cold", pc, 0)),
+            ("RUN", self._fake_probe_run("warm", pc, 0)),
+        ])
+        self._check_mpr1_refusal_strict(rec, pc, tag="parser-zero")
+
+    def test_mpr1_parser_dropped_event(self):
+        # Warm emission line dropped: RUN says observed=1/1 but only the
+        # cold line parses. The per-cycle count cross-check must fire.
+        pc = 0x3100
+        rec = self._run_fake_probe("fp-drop", [
+            ("RUN", self._fake_probe_run("cold", pc, 1)),
+            ("RUN", self._fake_probe_run("warm", pc, 1)),
+            ("APICALL", self._fake_strict_arrival("cold")),
+        ])
+        with self.assertRaises(AssertionError, msg="dropped event accepted"):
+            self._check_mpr1_refusal_strict(rec, pc, tag="parser-drop")
+
+    def test_mpr1_parser_cold_line_missing(self):
+        # Cold line missing while cold observed=1: same asymmetry, cold side.
+        pc = 0x3100
+        rec = self._run_fake_probe("fp-coldmiss", [
+            ("RUN", self._fake_probe_run("cold", pc, 1)),
+            ("RUN", self._fake_probe_run("warm", pc, 0)),
+            ("APICALL", self._fake_strict_arrival("warm", slot=0x02,
+                                                    entry_pc=0xE006)),
+        ])
+        with self.assertRaises(AssertionError, msg="cold line gap accepted"):
+            self._check_mpr1_refusal_strict(rec, pc, tag="parser-coldmiss")
+
+    def test_mpr1_parser_missing_count(self):
+        # RUN rows without the observed-count field: independence broken.
+        pc = 0x3100
+        cold = self._fake_probe_run("cold", pc, 0)
+        warm = self._fake_probe_run("warm", pc, 0)
+        del cold["apicalls_observed"]
+        del warm["apicalls_observed"]
+        rec = self._run_fake_probe("fp-nocount", [("RUN", cold),
+                                                     ("RUN", warm)])
+        with self.assertRaises(AssertionError, msg="parser missing count accepted"):
+            self._check_mpr1_refusal_strict(rec, pc, tag="parser-nocount")
+
+    def test_mpr1_parser_count_mismatch(self):
+        # Observed=2 but a single line emitted: truncated/gapped stream.
+        pc = 0x3100
+        rec = self._run_fake_probe("fp-mismatch", [
+            ("RUN", self._fake_probe_run("cold", pc, 2)),
+            ("RUN", self._fake_probe_run("warm", pc, 2)),
+            ("APICALL", self._fake_strict_arrival("cold")),
+            ("APICALL", self._fake_strict_arrival("warm")),
+        ])
+        with self.assertRaises(AssertionError, msg="parser count mismatch accepted"):
+            self._check_mpr1_refusal_strict(rec, pc, tag="parser-mismatch")
+
+    def test_mpr1_parser_bad_count_type(self):
+        # String count straight from the parser: not a measurement.
+        pc = 0x3100
+        cold = self._fake_probe_run("cold", pc, 0)
+        warm = self._fake_probe_run("warm", pc, 0)
+        cold["apicalls_observed"] = "0"
+        rec = self._run_fake_probe("fp-badcount", [("RUN", cold),
+                                                      ("RUN", warm)])
+        with self.assertRaises(AssertionError, msg="parser bad count accepted"):
+            self._check_mpr1_refusal_strict(rec, pc, tag="parser-badcount")
+
+    def test_mpr1_parser_bad_json(self):
+        # Malformed APICALL line: the parser itself must refuse the output.
+        pc = 0x3100
+        script = self.out / "fp-badjson.py"
+        script.write_text("#!/usr/bin/env python3\nimport sys\n"
+                          "sys.stdout.write('RUN {\"cycle\":\"cold\"}\\n')\n"
+                          "sys.stdout.write('APICALL {oops\\n')\n",
+                          encoding="ascii")
+        script.chmod(0o755)
+        import geargrafx_api_entry as Eentry
+        with self.assertRaises(ValueError, msg="malformed JSON accepted"):
+            Eentry.run_probe(script, self.out / "dummy.rom",
+                             self.out / "dummy.cue",
+                             self.out / "dummy.labels", BUDGET,
+                             "synthetic")
+
+    def test_mpr1_parser_empty_record(self):
+        # "APICALL {}" through the real parser: the strict per-record
+        # schema must reject it (missing cycle/slot/entry_pc).
+        pc = 0x3100
+        rec = self._run_fake_probe("fp-empty", [
+            ("RUN", self._fake_probe_run("cold", pc, 1)),
+            ("RUN", self._fake_probe_run("warm", pc, 0)),
+            ("APICALL", {}),
+        ])
+        with self.assertRaises(AssertionError, msg="parser empty record accepted"):
+            self._check_mpr1_refusal_strict(rec, pc, tag="parser-empty")
 
     def test_mpr1_refusal_rejects_loader_budget(self):
         # Loader failure / step-budget exhaustion (reason budget,
@@ -1106,6 +1418,11 @@ class Dotmod24Synthetic(unittest.TestCase):
         self.assertEqual(cold[base + 4] & ~0x10, 0x07)
         self.assertEqual(cold[base + 5], 0xFF)
         self.assertEqual(warm[base + 5], 0xFF)
+        # Observed-vs-parsed independence on the positive path too: the RUN
+        # rows carry the probe's own per-cycle entry count; it must equal
+        # the parsed APICALL count for that cycle.
+        runs_by_cycle = {r["cycle"]: r for r in rec["RUN"]}
+        self.assertEqual(sorted(runs_by_cycle), ["cold", "warm"])
         for cycle in ("cold", "warm"):
             calls = [c for c in rec["APICALL"]
                        if c["cycle"] == cycle and c["slot"] == 0x24]
@@ -1113,6 +1430,15 @@ class Dotmod24Synthetic(unittest.TestCase):
             self.assertEqual(calls[0]["entry_pc"], 0xE06C, cycle)
             self.assertEqual(calls[0].get("stack_check"), "MATCH", cycle)
             self.assertTrue(calls[0].get("return_matches_caller"), cycle)
+            run = runs_by_cycle[cycle]
+            self.assertIn("apicalls_observed", run, cycle)
+            self.assertTrue(type(run["apicalls_observed"]) is int, cycle)
+            parsed_cycle = [c for c in rec["APICALL"]
+                            if c.get("cycle") == cycle]
+            self.assertEqual(len(parsed_cycle), run["apicalls_observed"],
+                             f"{cycle}: parsed/observed APICALL mismatch")
+            for c in calls:
+                self._check_apicall_record_strict(c, tag="mpr1ok")
 
     def _run_vdc(self, name, entry_ar, areg, xreg, pseed):
         # Dedicated VDC-invariance probe: guest sets AR, calls $E06C, halts.
@@ -1140,22 +1466,98 @@ class Dotmod24Synthetic(unittest.TestCase):
     def _assert_vdc_pair(self, recs):
         # Cold+warm pair requirement: exactly 2 RESULT records, cold and
         # warm once each. A single cycle -- or a duplicated one -- is never
-        # cold+warm evidence (harness failure, never GREEN).
+        # cold+warm evidence (harness failure, never GREEN). The halt address
+        # must agree across the two independent executions: a self-consistent
+        # but fabricated halt pc in one record cannot match the other.
         self.assertIsInstance(recs, list, "VDC records not a list")
         self.assertEqual(len(recs), 2, "VDC probe must report cold+warm")
         cycles = sorted(x["cycle"] for x in recs)
         self.assertEqual(cycles, ["cold", "warm"],
                          "VDC probe cycles must be cold+warm once each")
+        by_cycle = {r["cycle"]: r for r in recs}
+        self.assertEqual(by_cycle["cold"].get("halt"),
+                         by_cycle["warm"].get("halt"),
+                         "VDC cold/warm halt disagree (harness failure)")
+
+    @staticmethod
+    def _strict_int(v, lo, hi):
+        # Strict integer: exact int type (bool excluded) within [lo, hi].
+        # JSON truthiness or float coercion must never smuggle values in.
+        return type(v) is int and lo <= v <= hi
+
+    def _assert_vdc_schema(self, res, tag=""):
+        # Fail-closed VDC record schema (MEDIUM-1). Every field the checker
+        # reads is validated for presence, exact type (bool excluded) and
+        # range BEFORE any value comparison: truthy impostors ("false", 1),
+        # empty/truncated arrays ([] == [] would compare equal), short/long
+        # arrays, mistyped elements and out-of-range registers must all
+        # raise here instead of flowing into a vacuous GREEN.
+        for field in ("cycle", "pc", "halt", "halted", "steps",
+                      "a", "p", "x", "y", "sp",
+                      "mpr_store", "mpr_before", "mpr_after",
+                      "vdc_ar_before", "vdc_ar_after",
+                      "vdc_r_before", "vdc_r_after",
+                      "idr_before", "idr_after", "irr_before", "irr_after"):
+            self.assertIn(field, res,
+                          f"VDC record missing {field} ({tag}): harness failure")
+        self.assertIn(res.get("cycle"), ("cold", "warm"),
+                      f"VDC record bad cycle ({tag}): harness failure")
+        # Exact boolean True: "false"/1/1.0 must not count as confirmed.
+        self.assertIs(res.get("halted"), True,
+                      f"VDC probe did not halt ({res.get('cycle')}): harness failure")
+        # VDC register files: exactly 20 strict u16 each. [] == [] or two
+        # equally truncated arrays must not compare equal here.
+        for field in ("vdc_r_before", "vdc_r_after"):
+            arr = res[field]
+            self.assertIsInstance(arr, list,
+                                  f"VDC {field} not a list ({tag})")
+            self.assertEqual(len(arr), 20,
+                             f"VDC {field} len {len(arr)} != 20 ({tag})")
+            for i, v in enumerate(arr):
+                self.assertTrue(self._strict_int(v, 0, 0xFFFF),
+                                f"VDC {field}[{i}] bad type/range ({tag})")
+        # MPR files: exactly 8 strict u8 each (store/before/after).
+        for field in ("mpr_store", "mpr_before", "mpr_after"):
+            arr = res[field]
+            self.assertIsInstance(arr, list,
+                                  f"MPR {field} not a list ({tag})")
+            self.assertEqual(len(arr), 8,
+                             f"MPR {field} len {len(arr)} != 8 ({tag})")
+            for i, v in enumerate(arr):
+                self.assertTrue(self._strict_int(v, 0, 0xFF),
+                                f"MPR {field}[{i}] bad type/range ({tag})")
+        # Scalars: strict u8 regs, AR 5-bit, IRQ bytes, int PC/halt/steps.
+        # AR is the 5-bit VDC address register (0-31).
+        for field, lo, hi in (("a", 0, 0xFF), ("p", 0, 0xFF),
+                              ("x", 0, 0xFF), ("y", 0, 0xFF),
+                              ("sp", 0, 0xFF),
+                              ("vdc_ar_before", 0, 31),
+                              ("vdc_ar_after", 0, 31),
+                              ("idr_before", 0, 0xFF),
+                              ("idr_after", 0, 0xFF),
+                              ("irr_before", 0, 0xFF),
+                              ("irr_after", 0, 0xFF)):
+            self.assertTrue(self._strict_int(res[field], lo, hi),
+                            f"VDC {field} bad type/range ({tag})")
+        for field in ("pc", "halt"):
+            self.assertTrue(self._strict_int(res[field], 0xE000, 0xFFFF),
+                            f"VDC {field} outside HuCARD patch range ({tag})")
+        # Step bounds: halted requires 16 start-and-end confirmations after
+        # the arrival step, so a confirmed run is never shorter than 16.
+        self.assertTrue(self._strict_int(res["steps"], 16, 65536),
+                        f"VDC steps inconsistent with 16-confirmation ({tag})")
 
     def _check_vdc(self, res, entry_ar, areg, xreg, pseed):
-        # T03/T05 VDC scope, single cycle: halt confirmed (16 start-and-end
-        # confirmations; unconfirmed/budget never success), AR unchanged at
-        # the guest-set value, all 20 VDC registers unchanged against the
+        # T03/T05 VDC scope, single cycle: schema first (fail-closed types,
+        # lengths, ranges, exact halted True), then halt/PC consistency
+        # (pc == halt within the HuCARD patch range; halt agreement
+        # cold-vs-warm is enforced by the pair validator), then AR unchanged
+        # at the guest-set value, all 20 VDC registers unchanged against the
         # SAME-cycle baseline, regs/MPRs/IRQ state preserved. Baselines are
         # per-cycle: a cold/warm baseline difference is a platform reset
         # fact and is never compared across cycles here.
-        self.assertTrue(res["halted"],
-                        f"VDC probe did not halt ({res.get('cycle')}): harness failure")
+        tag = res.get("cycle")
+        self._assert_vdc_schema(res, tag=tag)
         self.assertEqual(res["pc"], res["halt"])
         self.assertEqual(res["a"], areg)
         self.assertEqual(res["p"] & ~0x10, pseed & ~0x10)
@@ -1227,6 +1629,127 @@ class Dotmod24Synthetic(unittest.TestCase):
         bad["halted"] = False
         with self.assertRaises(AssertionError, msg="unconfirmed VDC halt accepted"):
             self._check_vdc(bad, 0, 0x5A, 0x34, 0x06)
+
+    def _vdc_mutant(self, name, entry_ar, areg, xreg, pseed, mutate):
+        # Real VDC record pair with one fabricated field mutation applied to
+        # the cold record (warm stays genuine). Returns (good_cold, bad).
+        # Every MEDIUM-1 negative below exercises the actual _check_vdc.
+        import copy
+        recs = self._run_vdc(name, entry_ar, areg, xreg, pseed)
+        by_cycle = {r["cycle"]: r for r in recs}
+        self._check_vdc(by_cycle["cold"], entry_ar, areg, xreg, pseed)
+        self._check_vdc(by_cycle["warm"], entry_ar, areg, xreg, pseed)
+        bad = copy.deepcopy(by_cycle["cold"])
+        mutate(bad)
+        return by_cycle["cold"], bad
+
+    def test_vdc_rejects_halted_string(self):
+        # Truthy impostor: JSON string "false" must not count as confirmed.
+        _, bad = self._vdc_mutant("ar5-negstr", 5, 0x3C, 0x12, 0x07,
+                                   lambda r: r.update(halted="false"))
+        with self.assertRaises(AssertionError, msg="halted string accepted"):
+            self._check_vdc(bad, 5, 0x3C, 0x12, 0x07)
+
+    def test_vdc_rejects_halted_int(self):
+        # Integer 1 is not the boolean True.
+        _, bad = self._vdc_mutant("ar5-negint", 5, 0x3C, 0x12, 0x07,
+                                   lambda r: r.update(halted=1))
+        with self.assertRaises(AssertionError, msg="halted int accepted"):
+            self._check_vdc(bad, 5, 0x3C, 0x12, 0x07)
+
+    def test_vdc_rejects_missing_field(self):
+        _, bad = self._vdc_mutant("ar5-negmiss", 5, 0x3C, 0x12, 0x07,
+                                   lambda r: r.pop("vdc_r_after"))
+        with self.assertRaises(AssertionError, msg="missing field accepted"):
+            self._check_vdc(bad, 5, 0x3C, 0x12, 0x07)
+
+    def test_vdc_rejects_empty_arrays(self):
+        # [] == [] would compare equal without the exact-length gate.
+        def wipe(r):
+            r["vdc_r_before"] = []
+            r["vdc_r_after"] = []
+        _, bad = self._vdc_mutant("ar5-negempty", 5, 0x3C, 0x12, 0x07, wipe)
+        with self.assertRaises(AssertionError, msg="empty VDC arrays accepted"):
+            self._check_vdc(bad, 5, 0x3C, 0x12, 0x07)
+
+    def test_vdc_rejects_short_long_arrays(self):
+        # Equally truncated (19) or over-long (21) arrays must not compare.
+        _, bad_short = self._vdc_mutant(
+            "ar5-negshort", 5, 0x3C, 0x12, 0x07,
+            lambda r: (r.__setitem__("vdc_r_before", r["vdc_r_before"][:19]),
+                        r.__setitem__("vdc_r_after", r["vdc_r_after"][:19])))
+        with self.assertRaises(AssertionError, msg="short VDC arrays accepted"):
+            self._check_vdc(bad_short, 5, 0x3C, 0x12, 0x07)
+        _, bad_long = self._vdc_mutant(
+            "ar5-neglong", 5, 0x3C, 0x12, 0x07,
+            lambda r: (r.__setitem__("vdc_r_before", r["vdc_r_before"] + [0]),
+                        r.__setitem__("vdc_r_after", r["vdc_r_after"] + [0])))
+        with self.assertRaises(AssertionError, msg="long VDC arrays accepted"):
+            self._check_vdc(bad_long, 5, 0x3C, 0x12, 0x07)
+
+    def test_vdc_rejects_mpr_empty_short_long(self):
+        # Matching short MPR arrays (e.g. 2-element) must not compare equal.
+        def empty(r):
+            r["mpr_before"] = []
+            r["mpr_after"] = []
+            r["mpr_store"] = []
+        _, bad = self._vdc_mutant("ar5-negmpre", 5, 0x3C, 0x12, 0x07, empty)
+        with self.assertRaises(AssertionError, msg="empty MPR arrays accepted"):
+            self._check_vdc(bad, 5, 0x3C, 0x12, 0x07)
+
+        def short(r):
+            r["mpr_before"] = r["mpr_before"][:7]
+            r["mpr_after"] = r["mpr_after"][:7]
+            r["mpr_store"] = r["mpr_store"][:7]
+        _, bad = self._vdc_mutant("ar5-negmprs", 5, 0x3C, 0x12, 0x07, short)
+        with self.assertRaises(AssertionError, msg="short MPR arrays accepted"):
+            self._check_vdc(bad, 5, 0x3C, 0x12, 0x07)
+
+        def long(r):
+            r["mpr_before"] = r["mpr_before"] + [0xF8]
+            r["mpr_after"] = r["mpr_after"] + [0xF8]
+            r["mpr_store"] = r["mpr_store"] + [0xF8]
+        _, bad = self._vdc_mutant("ar5-negmprl", 5, 0x3C, 0x12, 0x07, long)
+        with self.assertRaises(AssertionError, msg="long MPR arrays accepted"):
+            self._check_vdc(bad, 5, 0x3C, 0x12, 0x07)
+
+    def test_vdc_rejects_bad_element_type_range(self):
+        # String element, None element, bool element (bool is an int
+        # subclass, must be excluded), and out-of-range values.
+        _, bad_str = self._vdc_mutant(
+            "ar5-negtype", 5, 0x3C, 0x12, 0x07,
+            lambda r: r["vdc_r_after"].__setitem__(0, "0"))
+        with self.assertRaises(AssertionError, msg="string element accepted"):
+            self._check_vdc(bad_str, 5, 0x3C, 0x12, 0x07)
+        _, bad_bool = self._vdc_mutant(
+            "ar5-negbool", 5, 0x3C, 0x12, 0x07,
+            lambda r: r["mpr_after"].__setitem__(0, True))
+        with self.assertRaises(AssertionError, msg="bool element accepted"):
+            self._check_vdc(bad_bool, 5, 0x3C, 0x12, 0x07)
+        _, bad_range = self._vdc_mutant(
+            "ar5-negrange", 5, 0x3C, 0x12, 0x07,
+            lambda r: r["vdc_r_after"].__setitem__(0, 0x10000))
+        with self.assertRaises(AssertionError, msg="out-of-range VDC accepted"):
+            self._check_vdc(bad_range, 5, 0x3C, 0x12, 0x07)
+        _, bad_mrange = self._vdc_mutant(
+            "ar5-negmrange", 5, 0x3C, 0x12, 0x07,
+            lambda r: r["mpr_after"].__setitem__(0, 0x100))
+        with self.assertRaises(AssertionError, msg="out-of-range MPR accepted"):
+            self._check_vdc(bad_mrange, 5, 0x3C, 0x12, 0x07)
+
+    def test_vdc_rejects_pc_mismatch(self):
+        # pc != halt with halted True fabricated: inconsistent halt record.
+        _, bad = self._vdc_mutant("ar5-negpc", 5, 0x3C, 0x12, 0x07,
+                                   lambda r: r.update(pc=r["halt"] + 1))
+        with self.assertRaises(AssertionError, msg="pc mismatch accepted"):
+            self._check_vdc(bad, 5, 0x3C, 0x12, 0x07)
+
+    def test_vdc_rejects_short_steps(self):
+        # Fewer than 16 steps cannot hold 16 start-and-end confirmations.
+        _, bad = self._vdc_mutant("ar5-negsteps", 5, 0x3C, 0x12, 0x07,
+                                   lambda r: r.update(steps=5))
+        with self.assertRaises(AssertionError, msg="short steps accepted"):
+            self._check_vdc(bad, 5, 0x3C, 0x12, 0x07)
 
     def _run_writes(self, name, spinit, rom_bytes=None):
         # WRAM value-change tracer run: HuCARD-style guest (SEI, MPR0/1=$F8,

@@ -162,11 +162,15 @@ write history, cold+warm).
   `$05`) refused pre-execution by the writes probe (exit 2, no RESULT),
   never run on the real core.
 - T13 MPR1 pre-JSR: `$FF` refuses at `refused_halt` with zero `$24`
-  APICALL in both cycles; `$F8` positive control GREEN with proven
+  APICALL in both cycles (strict validator: raw RUN list, truncations
+  rejected, pc == refused_halt symbol, probe-emitted per-cycle observed
+  count matched against parsed count, every record schema-checked);
+  `$F8` positive control GREEN with proven
   arrival.
 - T14: cold==warm every run; C=0/C=1 both GREEN; VDC-only probe covers
   entry AR variants cold+warm (per-cycle baselines, explicit cycle tags,
-  16 start-and-end halt confirmation; no dynamic VCE oracle; VCE by construction).
+  16 start-and-end halt confirmation, fail-closed record schema with exact
+  20/8 lengths and strict types/ranges; no dynamic VCE oracle; VCE by construction).
 - Chain (synthetic G5 leg): `$33`->`$4A`->`$23`->`$25`->`$24` through the
   real table entries, per-call APICALL entry evidence (stacked-return bytes
   at entry time, not RTS-landing proof; APIRETURN is not collected),
@@ -182,7 +186,9 @@ write history, cold+warm).
   combinations.
 - Oracle strictness: same strict-validator matrix as B1 (cold-duplicate,
   counts, reasons, budget, halt, PC, truncation, buffers, mutants,
-  arrivals) — all rejected/accepted fail-closed. Halt-confirmation boundary
+  arrivals) — all rejected/accepted fail-closed, with exact-type schemas
+  (bool-excluded ints, exact 20/8 array lengths, ranges) on VDC/APICALL
+  records. Halt-confirmation boundary
   is proved dynamically on the real core
   (`test_writes_halt_boundary_15_vs_16_dynamic`: arrival established via pc,
   arrival+15 unconfirmed, arrival+16 confirmed, both cycles).

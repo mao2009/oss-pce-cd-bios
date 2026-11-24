@@ -161,7 +161,8 @@ All fixtures are project-authored HuC6280; no commercial/game/reference bytes.
   no fabricated flag). Nonzero A/X/Y incl A!=P vectors (clobber mutant RED).
 - VDC invariance + VCE no-write by construction (B1-analogous): dedicated
   VDC-only probe (cold then warm, ResetMedia between, explicit cycle tags,
-  per-cycle baselines, 16 start-and-end halt confirmation) asserts AR unchanged
+  per-cycle baselines, 16 start-and-end halt confirmation, fail-closed
+  record schema) asserts AR unchanged
   for several entry AR values, all 20
   VDC regs unchanged, MPRs/IDR/IRR unchanged per cycle. VCE `$0400` is write-only on
   the pinned core so no dynamic VCE-state oracle exists; VCE invariance
@@ -181,7 +182,9 @@ All fixtures are project-authored HuC6280; no commercial/game/reference bytes.
   scrubbed.
 - MPR1 precondition validated by harness BEFORE JSR (T13-analog): a `$FF`
   candidate refuses at refused_halt without executing JSR, never reaches
-  `$24`, never remaps first.
+  `$24`, never remaps first (strict validator: raw RUN list, truncations
+  rejected, pc == refused_halt symbol, probe-emitted per-cycle observed
+  count matched against parsed count, every APICALL record schema-checked).
 - SP depth: SP=`$FF` and boundary `$06` GREEN and balanced;
   below-minimum (`$00`, `$05`) refused pre-execution by the writes probe
   (contract refusal, exit 2, no RESULT), out of contract and never run.
