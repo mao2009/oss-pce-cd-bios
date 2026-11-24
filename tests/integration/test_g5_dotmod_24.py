@@ -1113,6 +1113,81 @@ class Dotmod24Synthetic(unittest.TestCase):
         with self.assertRaises(AssertionError, msg="unconfirmed halt accepted"):
             self._check_writes(bad, 0xFF)
 
+    def _run_writes_steps(self, name, spinit, steps, rom_bytes=None):
+        # Probe run with an explicit step budget and NO halted assertion:
+        # returns the two RESULT records for dynamic boundary calibration.
+        # Used only to establish arrival via pc (not via halted) and to prove
+        # the 15-vs-16 confirmation boundary on the real core.
+        rom = self.rom if rom_bytes is None else self._tmp_rom(name, rom_bytes)
+        o = self.out / ("writes-" + name)
+        o.mkdir(exist_ok=True)
+        (o / "d.bin").write_bytes(bytes(2352 * 32))
+        cue = o / "d.cue"
+        cue.write_text('FILE "d.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n')
+        r = subprocess.run([str(self.writes_probe), str(rom.resolve()),
+                            str(cue.resolve()), str(steps), str(spinit)],
+                           capture_output=True, text=True, timeout=120, check=True)
+        import json
+        recs = [json.loads(line[7:]) for line in r.stdout.splitlines()
+                if line.startswith("RESULT ")]
+        self.assertEqual(len(recs), 2, "write tracer must report cold+warm")
+        cycles = sorted(x["cycle"] for x in recs)
+        self.assertEqual(cycles, ["cold", "warm"])
+        return recs
+
+    def test_writes_halt_boundary_15_vs_16_dynamic(self):
+        # MINOR-2 dynamic boundary on the real core: independently establish
+        # the arrival step A via pc (first steps budget with final pc==halt,
+        # never via the halted flag), then prove A+15 leaves halted=false
+        # and A+16 leaves halted=true on BOTH cycles. Budget/timeout is never
+        # success: halted=false always fails _check_writes as harness failure.
+        import json
+        ctrl = self._run_writes("b1ff-dyn", 0xFF)
+        self.assertTrue(ctrl[0]["halted"], "control must halt")
+        halt = ctrl[0]["halt"]
+        self.assertEqual(ctrl[1]["halt"], halt, "cold/warm halt differ")
+        run_steps = ctrl[0]["steps"]
+        self.assertGreaterEqual(run_steps, 17, "control run too short")
+        # Binary-search the arrival step A: first steps budget with final
+        # pc==halt (monotonic: the halt is a BRA -2 self-loop, so pc sticks).
+        lo, hi = 1, run_steps
+        # hi must already end at halt (control proves it for 4096; verify for
+        # run_steps too via the same probe shape before searching).
+        hi_recs = self._run_writes_steps("dyn-hi", 0xFF, hi)
+        self.assertEqual(hi_recs[0]["pc"], halt, "hi must end at halt")
+        self.assertEqual(hi_recs[1]["pc"], halt, "hi must end at halt (warm)")
+        while lo < hi:
+            mid = (lo + hi) // 2
+            recs = self._run_writes_steps(f"dyn-bs{mid}", 0xFF, mid)
+            # Arrival is identical cold+warm (deterministic guest); require both.
+            if recs[0]["pc"] == halt and recs[1]["pc"] == halt:
+                hi = mid
+            else:
+                # Before arrival neither cycle may report halt pc.
+                self.assertNotEqual(recs[0]["pc"], halt, "cold/warm arrival split")
+                self.assertNotEqual(recs[1]["pc"], halt, "cold/warm arrival split")
+                lo = mid + 1
+        arrival = lo
+        # Cross-check: arrival+16 must equal the control run_steps (arrival
+        # step itself never counts; 16 start-and-end confirmations follow).
+        self.assertEqual(arrival + 16, run_steps,
+                         "arrival+16 must match control run_steps")
+        # A+15: at halt but UNCONFIRMED on both cycles (never success).
+        pre = self._run_writes_steps("dyn-pre15", 0xFF, arrival + 15)
+        for res in pre:
+            self.assertEqual(res["pc"], halt, "pre must end at halt")
+            self.assertFalse(res["halted"],
+                             f"arrival+15 must be unconfirmed ({res['cycle']})")
+        with self.assertRaises(AssertionError, msg="15-post-arrival accepted"):
+            self._check_writes(pre, 0xFF)
+        # A+16: CONFIRMED on both cycles.
+        post = self._run_writes_steps("dyn-post16", 0xFF, arrival + 16)
+        for res in post:
+            self.assertEqual(res["pc"], halt, "post must end at halt")
+            self.assertTrue(res["halted"],
+                            f"arrival+16 must be confirmed ({res['cycle']})")
+        self._check_writes(post, 0xFF)
+
     def test_writes_mutant_sta2200_red(self):
         # T05 value-change write (outside canary $2900-$29FF and zp $10):
         # the legacy oracles stay GREEN (proving their blindness here)

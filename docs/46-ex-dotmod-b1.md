@@ -176,7 +176,10 @@ write history, cold+warm).
   combinations.
 - Oracle strictness: same strict-validator matrix as B1 (cold-duplicate,
   counts, reasons, budget, halt, PC, truncation, buffers, mutants,
-  arrivals) — all rejected/accepted fail-closed.
+  arrivals) — all rejected/accepted fail-closed. Halt-confirmation boundary
+  is proved dynamically on the real core
+  (`test_writes_halt_boundary_15_vs_16_dynamic`: arrival established via pc,
+  arrival+15 unconfirmed, arrival+16 confirmed, both cycles).
 
 Host suite `tests/host/test_build_g5_24_host.py`: source presence,
 stub-default table/manifest/body-absence, pre-$24 baseline byte-identity,
