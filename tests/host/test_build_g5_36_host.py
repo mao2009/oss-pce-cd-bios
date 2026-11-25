@@ -71,7 +71,7 @@ class BuildSatclr36HostTests(unittest.TestCase):
 
     def test_stub_default_matches_pre_36_baseline(self):
         # Stub-default G5 ROM must be byte-for-byte identical to the pre-$36
-        # baseline (same bytes as the pre-$25 baseline: the (stub, stub, stub)
+        # baseline (same bytes as the pre-$25 baseline: the (stub, stub, stub, stub)
         # default links proto/link/glue in the same order, so adding the
         # opt-in $36 path must not move a single byte).
         import sys
@@ -249,6 +249,112 @@ class BuildSatclr36HostTests(unittest.TestCase):
         # Default entry point unchanged (three windows only).
         import build_ipl_loader_g5_2base as b2
         self.assertEqual(b2.api_windows_for(0xE10A), base)
+
+    def test_all_16_variants_persistent_regression(self):
+        # Permanent 4-opt-in (cd_4a/cd_25/cd_24/cd_36) x stub/experimental
+        # matrix: replaces one-off local runs with automated regression.
+        # Bodies $25/$24/$36 share the B1 opcode row, so an unselected body
+        # is NEVER proven absent by scanning ROM bytes: symbol presence,
+        # routing, link set, and manifest distinguish presence from
+        # coincidental opcode matches.
+        import sys
+        import tempfile
+        import hashlib
+        import itertools
+        import json
+        import struct
+        sys.path[:0] = [str(ROOT / "tools")]
+        import build_ipl_loader_g5_2base as b2
+        normal = bytes(self.normal)
+        slots = ((0x4A, "cd_4a", "$4A", "ex_memopen_entry", "src/ex_memopen.s", None),
+                 (0x25, "cd_25", "$25", "ex_scrmod_entry", "src/ex_scrmod.s", B1_BODY),
+                 (0x24, "cd_24", "$24", "ex_dotmod_entry", "src/ex_dotmod.s", B1_BODY),
+                 (0x36, "cd_36", "$36", "ex_satclr_entry", "src/ex_satclr.s", B1_BODY))
+        names, shas, base_sources, default_sha = set(), set(), None, None
+        for combo in itertools.product(["stub", "experimental"], repeat=4):
+            cfg = dict(zip(("cd_4a", "cd_25", "cd_24", "cd_36"), combo))
+            variant = "m-" + "".join("e" if v == "experimental" else "s" for v in combo)
+            with tempfile.TemporaryDirectory(prefix="pce-36-matrix-") as td:
+                td = Path(td)
+                rom, syms = b2.build_ipl_loader_g5_rom(
+                    self.orig, td, 0x109, "debug", variant,
+                    ["-D", "IPL_PUBLIC"], track=2, **cfg)
+                data = rom.read_bytes()
+                names.add(rom.name)
+                shas.add(hashlib.sha256(data).hexdigest())
+                with self.subTest(combo=combo):
+                    self.assertEqual(len(data), 262144)
+                    self.assertEqual(self.orig.read_bytes(), normal)
+                    man = json.loads((td / f"manifest-{variant}-g5.json").read_text())
+                    if base_sources is None:
+                        base_sources = list(man["experimental_sources"])
+                    for _, opt, _, _, _, _ in slots:
+                        self.assertEqual(man[opt], cfg[opt])
+                    self.assertEqual(man["experimental_slots"],
+                                     ["$02", "$03", "$33"] + [tag for (_, _, tag, _, _, _), v in zip(slots, combo) if v == "experimental"])
+                    self.assertEqual(set(man["experimental_sources"]),
+                                     set(base_sources) | {src for (_, _, _, _, src, _), v in zip(slots, combo) if v == "experimental"})
+                    self.assertFalse(man["release_eligible"])
+                    self.assertFalse(man["dev_callable"])
+                    for (slot, _, _, entry, src, pin), val in zip(slots, combo):
+                        at = 3 * slot
+                        if val == "experimental":
+                            body = syms[entry]
+                            self.assertEqual(tuple(data[at:at + 3]), (0x4C, body & 0xFF, (body >> 8) & 0xFF))
+                            self.assertGreaterEqual(body, 0xF000)
+                            self.assertLessEqual(body, 0xFFF6 - 9)
+                            if pin is not None:
+                                self.assertEqual(data[body - 0xE000:body - 0xE000 + 9], pin)
+                        else:
+                            self.assertNotIn(entry, syms)
+                            self.assertEqual(data[at:at + 3], normal[at:at + 3])
+                            self.assertNotIn(src, man["experimental_sources"])
+                    # API-area discipline: the $02 fallback sequence becomes
+                    # JMP proto+NOPs; $33/$03 tables become JMP to the linked
+                    # bodies; selected tables become JMP to their bodies;
+                    # unselected tables stay byte-identical to normal.
+                    # Shared-opcode fact: every table entry is JMP (0x4C)
+                    # before and after, so byte-level diffs never contain a
+                    # table base offset itself. Windows are therefore pinned
+                    # as exact entry values, with the byte diff pinned as
+                    # subset plus per-entry target-byte presence.
+                    slot02 = syms["api_slot_02"]
+                    self.assertEqual(bytes(data[slot02 - 0xE000:slot02 - 0xE000 + 5]),
+                                     bytes((0x4C, syms["cd_base_2base_entry"] & 0xFF,
+                                            (syms["cd_base_2base_entry"] >> 8) & 0xFF, 0xEA, 0xEA)))
+                    for slot, link in ((0x33, "experimental_slot_33"),
+                                       (0x03, "cd_read_commercial_entry")):
+                        self.assertEqual(tuple(data[3 * slot:3 * slot + 3]),
+                                         (0x4C, syms[link] & 0xFF, (syms[link] >> 8) & 0xFF))
+                    windows = {slot02 - 0xE000 + i for i in range(5)}
+                    windows |= set(range(3 * 0x33, 3 * 0x33 + 3))
+                    windows |= set(range(3 * 0x03, 3 * 0x03 + 3))
+                    for (slot, _, _, _, _, _), val in zip(slots, combo):
+                        if val == "experimental":
+                            windows |= set(range(3 * slot, 3 * slot + 3))
+                    self.assertEqual(len(windows), 11 + 3 * sum(v == "experimental" for v in combo))
+                    diff = {i for i in range(0x1000) if data[i] != normal[i]}
+                    self.assertLessEqual(diff, windows)
+                    must_change = [slot02 - 0xE000 + i for i in range(5)]
+                    must_change += [3 * s + 1 for s in (0x33, 0x03)]
+                    must_change += [3 * s + 2 for s in (0x33, 0x03)]
+                    for (slot, _, _, _, _, _), val in zip(slots, combo):
+                        if val == "experimental":
+                            must_change += [3 * slot + 1, 3 * slot + 2]
+                    for at in must_change:
+                        self.assertIn(at, diff)
+                    # Vector area: this build's irq_stub x4 + reset (SEI entry).
+                    vec = [struct.unpack("<H", data[o:o + 2])[0] for o in range(0x1FF6, 0x2000, 2)]
+                    self.assertEqual(vec[:4], [syms["irq_stub"]] * 4)
+                    self.assertEqual(vec[4], syms["reset"])
+                    self.assertEqual(data[(syms["reset"] & 0xFFFF) - 0xE000], 0x78)
+                    if all(v == "stub" for v in combo):
+                        default_sha = hashlib.sha256(data).hexdigest()
+        self.assertEqual(len(names), 16)
+        self.assertEqual(len(shas), 16)
+        self.assertEqual(default_sha,
+                         "9a7a2c00bed665a9d90030b824ad3c8e7d7a81c2eec71f824d6e8fb59ce00bc6",
+                         "all-stub default differs from pinned baseline")
 
 
 if __name__ == "__main__":
