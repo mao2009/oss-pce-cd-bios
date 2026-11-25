@@ -116,14 +116,20 @@ write history, cold+warm).
   balanced, cold/warm identical.
 - T03 preservation: C=1 (`$07`) and C=0 (`$06`) classes GREEN with exact
   A/X/Y/P/MPRs/SP; A!=P mixed vector GREEN with independent A-vs-P
-  checks; boundary values GREEN.
+  checks; boundary values GREEN. Supplied return vectors enter with D=0/V=0
+  only; D=1/V=1 entry states are NOT dynamically verified (NOT_RUN) — D/V
+  preservation beyond the tested states rests on the assembly guarantee
+  (plain PHP/PLP round-trip on the pinned core), never on a passing vector.
 - T05 RAM scope: canary intact + zp pre/post intact + full-buffer
   cold/warm equality on every GREEN run, PLUS per-instruction WRAM write
   history (observed value changes only): scaffold writes exactly the 6 transient
   stack bytes and nothing else, cold and warm. A `$2200` store mutant is GREEN on
   final-value oracles yet RED on the history; a write-then-restore mutant
-  likewise RED on history; a `$2214` store mutant (the one-liner address)
-  likewise RED on history. Same-value-store invisibility (tracer records value
+  likewise RED on history. `$2214`/`$2215` non-touch holds by construction
+  (the 9-byte body contains no store opcode outside transient stack pushes,
+  so no `$2214` write is encodable); no dynamic `$2214` mutant fixture exists,
+  so this address is NOT dynamically verified (NOT_RUN), never PASS.
+  Same-value-store invisibility (tracer records value
   diffs only) applies as in B1: the tracer result is observed value changes,
   same-value stores remain NOT_RUN/BLOCKED (unverified), never PASS.
 - T06 bad table: `$E09F` reroute to fallback RED.

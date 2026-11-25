@@ -22,7 +22,7 @@ preservation -> RTS resumption -> payload halt. Companion coverage:
   SP depth (SP=$FF and boundary SP=$06 GREEN and balanced guest-executed;
   SP=$00/$05 probe-argument refusal GREEN with no guest execution; SP<$06
   guest execution OUT_OF_CONTRACT/NOT_RUN and never run);
-  synthetic chain $33->$4A->$23->$25->$35 through the real table entries with
+  synthetic chain $33->$4A->$23->$25->$24->$36->$35 through the real table entries with
   per-call APICALL evidence (the $02 leg is the PUBLIC boot itself; the
   observed $35 entry state is labeled SIMULATED-entry);
   refusal-path absence (B1 defines no refusal: T04/T08/T09 NOT_APPLICABLE),
@@ -243,7 +243,7 @@ res_base:
     .res 16
 """
 
-# Synthetic G5 chain leg: $33 -> $4A -> $23 -> $25 -> $35 through the real table
+# Synthetic G5 chain leg: $33 -> $4A -> $23 -> $25 -> $24 -> $36 -> $35 through the real table
 # entries (the $02 leg is the PUBLIC boot that loads this payload). Entry
 # regs are set once; every body preserves them, so the final record equals
 # the entry state. Each APICALL's return_matches_caller + MATCH + SP balance
@@ -282,6 +282,8 @@ canfill:
     jsr $E0DE
     jsr $E069
     jsr $E06F
+    jsr $E06C
+    jsr $E0A2
     jsr $E09F
     sta res_base+1
     stx res_base+2
@@ -365,6 +367,7 @@ class Sprdma35Synthetic(unittest.TestCase):
             orig, cls.out, cls.sel, "debug", "m35", ["-D", "IPL_PUBLIC"],
             track=cls.track_sel, private_input=False,
             cd_4a="experimental", cd_25="experimental",
+            cd_24="experimental", cd_36="experimental",
             cd_35="experimental")
         cls.rom_stub, cls.syms_stub = build_ipl_loader_g5_rom(
             orig, cls.out, cls.sel, "debug", "m35-stub", ["-D", "IPL_PUBLIC"],
@@ -646,6 +649,10 @@ class Sprdma35Synthetic(unittest.TestCase):
         # with P); P is compared modulo B (PHP readback forces B, the latch
         # masks $EF). SP balanced at SPINIT, MPRs exact (MPR0=$F8 set by the
         # payload so any I/O touch is detectable), marker set.
+        # Harness failure (not mutant RED) if the 32-byte result record is
+        # truncated: a short slice/index error must never count as detection.
+        self.assertGreaterEqual(len(cold), base + 32,
+                                f"result record truncated (len {len(cold)} < base+32)")
         r = cold
         self.assertEqual(r[base], 0xAA)
         self.assertEqual((r[base + 1], r[base + 2], r[base + 3]), (a1, x1, y1))
@@ -862,8 +869,17 @@ class Sprdma35Synthetic(unittest.TestCase):
             with self.subTest(cycle=cycle):
                 # Refusal halt observed through the documented cd_halt_fail
                 # alias (see _run_probe_on_rom); halt confirmed.
+                # PC must be the payload refusal halt (RAM $3000+), never the
+                # loader BIOS fail halt nor the api_unimplemented stub: a
+                # confirmed loader failure would otherwise satisfy the reason
+                # check without reaching the refusal path.
                 self.assertEqual(run["reason"], "cd_halt_fail")
                 self.assertTrue(run["halt_confirmed"])
+                self.assertIsInstance(run.get("pc"), int)
+                self.assertNotEqual(run.get("pc"), self.labels["api_unimplemented"])
+                self.assertNotEqual(run.get("pc"), self.labels["cd_halt_fail"])
+                self.assertGreaterEqual(run.get("pc"), 0x3000)
+                self.assertLess(run.get("pc"), 0x4000)
         for cycle in ("cold", "warm"):
             calls = [c for c in rec["APICALL"]
                        if c["cycle"] == cycle and c["slot"] == 0x35]
@@ -1406,9 +1422,9 @@ class Sprdma35Synthetic(unittest.TestCase):
         # Per-call entry evidence, in order.
         for cycle in ("cold", "warm"):
             calls = [c for c in rec["APICALL"] if c["cycle"] == cycle]
-            self.assertEqual([c["slot"] for c in calls], [0x33, 0x4A, 0x23, 0x25, 0x35], cycle)
+            self.assertEqual([c["slot"] for c in calls], [0x33, 0x4A, 0x23, 0x25, 0x24, 0x36, 0x35], cycle)
             self.assertEqual([c["entry_pc"] for c in calls],
-                             [0xE099, 0xE0DE, 0xE069, 0xE06F, 0xE09F], cycle)
+                             [0xE099, 0xE0DE, 0xE069, 0xE06F, 0xE06C, 0xE0A2, 0xE09F], cycle)
             for c in calls:
                 self.assertTrue(c["in_table"], (cycle, c))
                 self.assertEqual(c["sp_delta"], 2, (cycle, c))
@@ -1421,7 +1437,7 @@ class Sprdma35Synthetic(unittest.TestCase):
             # a stacked-return-rewriting trampoline back to caller+3 is
             # excluded only by the 9-byte body-shape pin, while the
             # end-to-end records below exclude byte-skipping bodies.
-        # End-to-end preservation across all four calls.
+        # End-to-end preservation across all seven calls.
         self.assertEqual(cold[base], 0xAA)
         self.assertEqual((cold[base + 1], cold[base + 2], cold[base + 3]),
                          (0x31, 0x12, 0x34))
@@ -1436,7 +1452,7 @@ class Sprdma35Synthetic(unittest.TestCase):
         self._check_canary(cold, base)
         self._check_canary(warm, base)
         # SIMULATED-entry observation: the $35 call was reached with the
-        # payload-set state intact through $33/$4A/$23 (MPRs/SP/regs). This
+        # payload-set state intact through $33/$4A/$23/$25/$24/$36 (MPRs/SP/regs). This
         # records the scaffold's entry conditions, not genuine $35 inputs.
         for cycle in ("cold", "warm"):
             call25 = [c for c in rec["APICALL"]
