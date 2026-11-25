@@ -4673,6 +4673,34 @@ class StdinProgramTests(unittest.TestCase):
             with self.subTest(cmd=cmd):
                 verdict, reason = self._d(cmd)
                 self.assertEqual(verdict, "ALLOW", reason)
+    def test_brace_group_uncertain_trailer_merges_provenance(self):
+        # MAJOR (independent review 6057987484): an uncertain trailer
+        # (destination/source openness unknown, or a dynamic word) must not
+        # silently restore pre-group stdin and lose an inner supply, nor
+        # silently keep inner state and lose pre-group stdin. Merge keeps
+        # both (fail-closed union). Verified on Bash with harmless fixtures:
+        # an uncertain dup keeps a supplied stdin, an uncertain skip keeps
+        # the pre-group one.
+        for cmd in ["bash -c '{ exec < /tmp/x.py; } 1<&$u; node'",
+                    "bash -c '{ exec < /tmp/x.py; } 1<&3-; node'",
+                    "bash -c '{ exec < /tmp/x.py; } 4<&0-; node'",
+                    "bash -c '{ exec < /tmp/x.py; } 0<&$u; node'",
+                    "exec < /tmp/x.py; { exec <&-; } 1<&$u; node",
+                    "exec < /tmp/x.py; { exec <&-; } 1<&10-; node"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertIn("stdin-program", reason)
+        # Controls: certain restore (move to known-open fd 0/1/2, pure
+        # close) keeps pre-group stdin; provably untouched trailers keep
+        # the inner change. Neither merges.
+        for cmd in ["bash -c '{ exec < /tmp/x.py; } 1<&0-; node'",
+                    "bash -c '{ exec < /tmp/x.py; } 0<&-; node'",
+                    "bash -c '{ exec 0<&-; } 1<&0; node'"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "ALLOW", reason)
+
 
 class StdinProgramMutationTests(unittest.TestCase):
     """Mutants of the Issue #637 layers. Each must make a named StdinProgramTests method fail (an assertion
@@ -4814,50 +4842,59 @@ class StdinProgramMutationTests(unittest.TestCase):
             "    if base in (\"<&\", \">&\"):\n        return (target or \"\") != \"-\"",
             "    return True  # mutant: closes may fail"),
         "close-only trailer not restored (supply-only regression)": (
-            "    for op, target, raw in _scan_stdin_ops(seg):\n        if _stdin_op_effect(op, target) is not None:\n            return True\n        if _move_scope_close(op, raw):\n            return True\n    return False",
-            "    for op, target, raw in _scan_stdin_ops(seg):\n        if _stdin_op_effect(op, target) == \"supply\":\n            return True\n    return False"),
+            "    found_merge = False\n    for op, target, raw in _scan_stdin_ops(seg):\n        eff = _stdin_op_effect(op, target)\n        if eff is not None:\n            if raw is not None and _raw_is_dynamic(raw):\n                found_merge = True  # uncertain supply/close: union\n                continue\n            return \"restore\"\n        m = _move_scope_kind(op, raw)\n        if m == \"restore\":\n            return \"restore\"\n        if m == \"merge\":\n            found_merge = True\n    return \"merge\" if found_merge else None",
+            "    for op, target, raw in _scan_stdin_ops(seg):\n        if _stdin_op_effect(op, target) == \"supply\":\n            return \"restore\"\n    return None"),
         "prepass brace restore removed": (
-            "                        if _trailing_fd0_redirect(segs, i, ps):",
-            "                        if False:  # mutant: prepass brace not restored"),
+            "                        _b_kind = _trailing_fd0_redirect(segs, i, ps)\n                        if _b_kind == \"restore\":",
+            "                        _b_kind = _trailing_fd0_redirect(segs, i, ps)\n                        if False:  # mutant: prepass brace not restored"),
         "dynamic brace restore removed": (
-            "            if bbrace_dyn_save:\n                _b_dyn = bbrace_dyn_save.pop()\n                if _trailing_fd0_redirect(segs, idx, ps):\n                    dyn_exec = _b_dyn",
-            "            if bbrace_dyn_save:\n                _b_dyn = bbrace_dyn_save.pop()\n                if False:  # mutant: dynamic brace not restored\n                    dyn_exec = _b_dyn"),
+            "            if bbrace_dyn_save:\n                _b_dyn = bbrace_dyn_save.pop()\n                _b_kind = _trailing_fd0_redirect(segs, idx, ps)\n                if _b_kind == \"restore\":",
+            "            if bbrace_dyn_save:\n                _b_dyn = bbrace_dyn_save.pop()\n                _b_kind = _trailing_fd0_redirect(segs, idx, ps)\n                if False:  # mutant: dynamic brace not restored"),
         "live brace restore removed": (
-            "            if bbrace_live_save:\n                _b_live = bbrace_live_save.pop()\n                if _trailing_fd0_redirect(segs, idx, ps):\n                    live_exec = _b_live",
-            "            if bbrace_live_save:\n                _b_live = bbrace_live_save.pop()\n                if False:  # mutant: live brace not restored\n                    live_exec = _b_live"),
+            "            if bbrace_live_save:\n                _b_live = bbrace_live_save.pop()\n                _b_kind = _trailing_fd0_redirect(segs, idx, ps)\n                if _b_kind == \"restore\":",
+            "            if bbrace_live_save:\n                _b_live = bbrace_live_save.pop()\n                _b_kind = _trailing_fd0_redirect(segs, idx, ps)\n                if False:  # mutant: live brace not restored"),
         "non-stdin fd trailer wrongly restores": (
-            "    for op, target, raw in _scan_stdin_ops(seg):\n        if _stdin_op_effect(op, target) is not None:\n            return True\n        if _move_scope_close(op, raw):\n            return True\n    return False",
-            "    for op, target, raw in _scan_stdin_ops(seg):\n        if True:\n            return True\n    return False"),
+            "    found_merge = False\n    for op, target, raw in _scan_stdin_ops(seg):\n        eff = _stdin_op_effect(op, target)\n        if eff is not None:\n            if raw is not None and _raw_is_dynamic(raw):\n                found_merge = True  # uncertain supply/close: union\n                continue\n            return \"restore\"\n        m = _move_scope_kind(op, raw)\n        if m == \"restore\":\n            return \"restore\"\n        if m == \"merge\":\n            found_merge = True\n    return \"merge\" if found_merge else None",
+            "    for op, target, raw in _scan_stdin_ops(seg):\n        if True:\n            return \"restore\"\n    return None"),
         "prepass brace save removed (scope mismatch)": (
             "                        bbrace_exec_save.append(exec_flag)\n                        bbrace_inh_save.append(inh)",
             "                        pass  # mutant: prepass brace save removed"),
         "move-from-fd0 not scoped": (
-            "        if stripped != \"\" and stripped.strip(\"0\") == \"\" and all(c.isdigit() for c in stripped):\n            return True  # certain move from fd 0 (leading zeros ok)",
-            "        if stripped != \"\" and stripped.strip(\"0\") == \"\" and all(c.isdigit() for c in stripped):\n            return False  # mutant: moves from fd 0 ignored"),
+            "        if stripped != \"\" and all(c.isdigit() for c in stripped):\n            if stripped.strip(\"0\") == \"\":\n                # Certain move from fd 0: restore iff the destination is\n                # known-open, else merge (openness statically unknown).\n                return \"restore\" if _dest_small else \"merge\"",
+            "        if stripped != \"\" and all(c.isdigit() for c in stripped):\n            if stripped.strip(\"0\") == \"\":\n                return \"merge\"  # mutant: certain moves never restore"),
         "move guard always true (non-move over-scoped)": (
-            "    if stripped != \"\" and all(c.isdigit() for c in stripped):\n        return False  # plain dup (`0`, `\"0\"`): fd 0 passes through",
-            "    if stripped != \"\" and all(c.isdigit() for c in stripped):\n        return True  # mutant: plain dups scope"),
+            "    if stripped != \"\" and all(c.isdigit() for c in stripped):\n        return None  # plain dup (`0`, `\"0\"`): fd 0 passes through",
+            "    if stripped != \"\" and all(c.isdigit() for c in stripped):\n        return \"restore\"  # mutant: plain dups restore"),
         "uncertain move treated as determined": (
-            "    if any(k == \"lit\" and c in \"$`\" for k, c in toks):\n        return base == \"<&\"",
-            "    if any(k == \"lit\" and c in \"$`\" for k, c in toks):\n        return False  # mutant: uncertain words never restore"),
+            "    if _raw_is_dynamic(raw):\n        # Bare dynamic word: `<&` may dup (inner persists) or skip\n        # (pre-group) -> merge; `>&` is a filename (parse-time).\n        return \"merge\" if base == \"<&\" else None",
+            "    if _raw_is_dynamic(raw):\n        return None  # mutant: uncertain words never restore"),
+        "uncertain merge treated as restore": (
+            "    if _raw_is_dynamic(raw):\n        # Bare dynamic word: `<&` may dup (inner persists) or skip\n        # (pre-group) -> merge; `>&` is a filename (parse-time).\n        return \"merge\" if base == \"<&\" else None",
+            "    if _raw_is_dynamic(raw):\n        return \"restore\"  # mutant: uncertain merge treated as restore"),
+        "dest-openness ignored (merge treated as restore)": (
+            "            if stripped.strip(\"0\") == \"\":\n                # Certain move from fd 0: restore iff the destination is\n                # known-open, else merge (openness statically unknown).\n                return \"restore\" if _dest_small else \"merge\"",
+            "            if stripped.strip(\"0\") == \"\":\n                return \"restore\"  # mutant: dest openness ignored"),
+        "moveN treated as restore": (
+            "            # Move from another fd: source openness unknown (verified both\n            # directions on Bash) -> merge, never fail-open on a skip.\n            return \"merge\"",
+            "            return \"restore\"  # mutant: moveN treated as restore"),
         "quoted dash treated as literal move": (
             "        if kind == \"q\":",
             "        if False:  # mutant: quoted dash is literal"),
         "lone escaped dash treated as close": (
-            "            return kind == \"e\"",
-            "            return False  # mutant: lone escaped dash closes"),
+            "        if not prefix:\n            # Bare `-` closes the op's own fd (no fd-0 change); a lone\n            # escaped dash is rejected by Bash (skip -> restore).\n            return \"restore\" if kind == \"e\" else None",
+            "        if not prefix:\n            return None  # mutant: lone escaped dash closes"),
         "move treated as infallible close proof": (
             "    if base in (\"<&\", \">&\"):\n        return (target or \"\") != \"-\"",
             "    if base in (\"<&\", \">&\"):\n        return False  # mutant: moves/duplications never fail"),
         "default-fd move ignored": (
-            "    if fd == \"\" and base == \"<&\":\n        return False  # default-fd `<&` is fd 0: classified already",
-            "    if fd == \"\":\n        return False  # mutant: default fd never moves"),
+            "    if fd == \"\" and base == \"<&\":\n        return None  # default-fd `<&` is fd 0: classified already",
+            "    if fd == \"\":\n        return None  # mutant: default fd never moves"),
         "backslash escape not resolved": (
             "        if c == \"\\\\\" and i + 1 < n:\n            toks.append((\"e\", raw[i + 1]))\n            i += 2\n            continue",
             "        if c == \"\\\\\" and i + 1 < n:\n            i += 2  # mutant: escaped char dropped\n            continue"),
         "dangling redirect treated as determined": (
-            "    if raw is None:\n        # No word at all: a dangling `1<&`/`2>&` (including an empty quoted\n        # word dropped by the lexer, e.g. `1<&\"\"`) never runs its command in\n        # Bash (syntax error / skipped group), so the pre-group stdin\n        # persists (fail-closed restore). Anything else keeps prior handling.\n        _m2 = re.match(r\"^(\\d*)(.*)$\", op, re.S)\n        _fd2, _base2 = _m2.group(1), _m2.group(2)\n        if _base2 in (\"<&\", \">&\") and _fd2 != \"\" and _fd2.strip(\"0\") != \"\":\n            return True\n        return False",
-            "    if raw is None:\n        return False  # mutant: dangling words never restore"),
+            "    if raw is None:\n        # No word at all: a dangling `1<&`/`2>&` (including an empty quoted\n        # word dropped by the lexer, e.g. `1<&\"\"`) never runs its command in\n        # Bash (syntax error / skipped group), so the pre-group stdin\n        # persists (fail-closed restore). Anything else keeps prior handling.\n        _m2 = re.match(r\"^(\\d*)(.*)$\", op, re.S)\n        _fd2, _base2 = _m2.group(1), _m2.group(2)\n        if _base2 in (\"<&\", \">&\") and _fd2 != \"\" and _fd2.strip(\"0\") != \"\":\n            return \"restore\"\n        return None",
+            "    if raw is None:\n        return None  # mutant: dangling words never restore"),
         "awk bare dash with seen program or file": (
             "            if seen_program_text or seen_file:\n                i += 1\n                continue\n            return 'stdin'",
             "            if seen_program_text:  # mutant: data dash is stdin program\n                i += 1\n                continue\n            return 'stdin'",
@@ -5021,6 +5058,7 @@ class StdinProgramMutationTests(unittest.TestCase):
                  "test_forked_exec_never_taints_parent", "test_shadowed_exec_close_keeps_taint",
                  "test_list_conditional_close_keeps_taint", "test_awk_later_dash_selects_stdin_program", "test_awk_named_program_with_dash_data_operand",
                  "test_brace_group_trailing_redirect_restores_stdin", "test_brace_group_close_only_trailer_restores_stdin",
+                 "test_brace_group_uncertain_trailer_merges_provenance",
                  "test_brace_group_move_trailer_restores_stdin"]
 
     def _run(self, hook_text):

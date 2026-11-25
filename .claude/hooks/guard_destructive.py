@@ -4085,14 +4085,20 @@ def _stdin_prepass(segs, ps, inherited_fed, all_funcs=None):
                     if seg == BBRACE_CLOSE and not ps and _kind == "bbrace" and bbrace_exec_save:
                         _b_exec = bbrace_exec_save.pop()
                         _b_inh = bbrace_inh_save.pop()
-                        if _trailing_fd0_redirect(segs, i, ps):
-                            # Trailing fd-0 redirect (supply or close): the group ran with
+                        _b_kind = _trailing_fd0_redirect(segs, i, ps)
+                        if _b_kind == "restore":
+                            # Certain scope change: the group ran with
                             # redirected stdin, so the pre-group state is
                             # restored on exit (verified on Bash). Without
                             # one the group shares the calling shell and
                             # inner changes persist (verified on Bash).
                             exec_flag = _b_exec
                             inh = _b_inh
+                        elif _b_kind == "merge":
+                            # Uncertain scope: keep pre-group OR inner state
+                            # (fail-closed union; never lose either side).
+                            exec_flag = _b_exec or exec_flag
+                            inh = _b_inh or inh
                     if stack and stack[-1][0] == "function":
                         # The `{...}` body of a `function` definition ends
                         # here (a `{` brace group is always a real body).
@@ -4359,30 +4365,65 @@ def _followed_by_fork_boundary(segs, idx, ps):
         j += 1
     return False
 
-def _move_scope_close(op, raw):
-    """True when a nonzero-fd `(... )<&`/`>&` trailer closes fd 0 (scope change).
+def _raw_is_dynamic(raw):
+    """True when a redirect word needs runtime expansion (unquoted $/backquote).
 
-    A move from fd 0 (`1<&0-`, `2>&0-`, default-fd `>&0-`, leading-zero
-    sources) duplicates fd 0 elsewhere and then closes the source: Bash
-    saves fd 0 and restores it after the compound, so the pre-group stdin
-    survives (verified on Bash with harmless fixtures). This is not a
-    supply (no program is delivered), and `_has_input_redirect` keeps its
-    supply-only meaning. Only the shared `_fd0_scope_change` predicate
-    consults this (single decision point for all three passes).
+    Single-quoted spans and backslash escapes are literal; double-quoted or
+    bare `$`/backquote expands. A dynamic word cannot be classified
+    statically (it may name an open fd, a closed one, or garbage).
+    """
+    i, n, in_s, in_d = 0, len(raw), False, False
+    while i < n:
+        c = raw[i]
+        if in_s:
+            if c == "'":
+                in_s = False
+        elif in_d:
+            if c == '"':
+                in_d = False
+            elif c == "\\":
+                i += 1
+            elif c in "$`":
+                return True
+        elif c == "\\":
+            i += 1
+        elif c == "'":
+            in_s = True
+        elif c == '"':
+            in_d = True
+        elif c in "$`":
+            return True
+        i += 1
+    return False
 
-    Dash rule (verified): the trailing `-` must be source-literal (bare or
-    backslash-escaped; `0\\-` moves). A quoted dash (`"0-"`, `0"-"`) moves
-    nothing: `<&` rejects it (group skipped -> pre-group, so restore) while
-    `>&` treats it as a filename (no fd-0 change). A lone escaped dash
-    (`\\-`) is rejected by Bash (skip -> restore). Digits may be literal,
-    quoted or leading-zero; backslash-escaped digits (`\\0-`) and dynamic
-    digits with a literal dash (`$u-`) both restore (skip-masked move).
-    A dynamic word (`$u`, backquote) restores for `<&` (possible move,
-    fail-closed) but is a filename for `>&` (parse-time, never a move).
-    Plain dups (`1<&0`, incl. quoted) and closes of other fds (`1<&-`)
-    touch no fd 0 and stay out, as do absent words (existing behaviour).
-    Moves from other fds (`1<&3-`) restore: a closed source skips the
-    group (verified), and source openness is statically unknown.
+
+def _move_scope_kind(op, raw):
+    """'restore' | 'merge' | None: scoped-fd0 effect of one trailer op.
+
+    - 'restore': the group surely ends with pre-group fd 0 (scoped supply /
+      close / certain move whose destination is open, or a rejected trailer
+      that skips the group).
+    - 'merge': the outcome is execution-dependent (destination or source
+      openness unknown, or a dynamic word): keep pre-group OR inner state
+      (fail-closed union; never lose either side).
+    - None: provably fd-0-untouched (plain dups, closes of other fds,
+      filenames), or absent words handled elsewhere.
+
+    Dash rule (verified on Bash with harmless fixtures): the trailing `-`
+    must be source-literal (bare or backslash-escaped; `0\\-` moves). A
+    quoted dash (`"0-"`, `0"-"`) moves nothing: `<&` rejects it (group
+    skipped -> pre-group, so restore) while `>&` treats it as a filename
+    (no fd-0 change). A lone escaped dash (`\\-`) is rejected (skip ->
+    restore). Digits may be literal, quoted or leading-zero; backslash-
+    escaped digits (`\\0-`) are rejected (skip -> restore). A dynamic word
+    with a literal dash and an open-known destination restores (every
+    non-degenerate outcome leaves pre-group stdin); a bare dynamic word
+    merges for `<&` (possible dup vs skip) but stays a filename for `>&`
+    (parse-time, never a move). Plain dups (`1<&0`, incl. quoted) and
+    closes of other fds (`1<&-`) touch no fd 0 and stay out. Moves from
+    another fd (`1<&3-`) merge: a closed source skips the group (verified).
+    Moves to descriptor 0/1/2 restore (conventionally open); moves to
+    descriptor 3+ merge (openness statically unknown).
     """
     if raw is None:
         # No word at all: a dangling `1<&`/`2>&` (including an empty quoted
@@ -4392,16 +4433,21 @@ def _move_scope_close(op, raw):
         _m2 = re.match(r"^(\d*)(.*)$", op, re.S)
         _fd2, _base2 = _m2.group(1), _m2.group(2)
         if _base2 in ("<&", ">&") and _fd2 != "" and _fd2.strip("0") != "":
-            return True
-        return False
+            return "restore"
+        return None
     m = re.match(r"^(\d*)(.*)$", op, re.S)
     fd, base = m.group(1), m.group(2)
     if base not in ("<&", ">&"):
-        return False
+        return None
     if fd != "" and fd.strip("0") == "":
-        return False  # fd-0 ops are classified by _stdin_op_effect already
+        return None  # fd-0 ops are classified by _stdin_op_effect already
     if fd == "" and base == "<&":
-        return False  # default-fd `<&` is fd 0: classified already
+        return None  # default-fd `<&` is fd 0: classified already
+    # Destination openness decides restore-vs-merge for moves: descriptors
+    # 0/1/2 are conventionally open (a closed one is pathological and
+    # recorded as residual), 3+ is statically unknown.
+    _dest = fd if fd != "" else "1"
+    _dest_small = _dest.lstrip("0") in ("1", "2")
     # Tokenise quote-intact: quotes/backslashes decide literalness.
     toks = []  # ('lit'|'q'|'e', char); e = backslash-escaped
     i, n, in_s, in_d = 0, len(raw), False, False
@@ -4436,9 +4482,6 @@ def _move_scope_close(op, raw):
         else:
             toks.append(("lit", c))
         i += 1
-    # Unescaped runtime expansion: not statically fixed.
-    if any(k == "lit" and c in "$`" for k, c in toks):
-        return base == "<&"
     # Trailing dash?
     if toks and toks[-1][1] == "-":
         kind = toks[-1][0]  # 'lit' (bare), 'e' (escaped), 'q' (quoted)
@@ -4449,71 +4492,87 @@ def _move_scope_close(op, raw):
             # a prefix is rejected by `<&` (skip -> restore) and reads a
             # filename for `>&` (no fd-0 change).
             if not prefix:
-                return False
-            return base == "<&"
+                return None
+            return "restore" if base == "<&" else None
         if not prefix:
             # Bare `-` closes the op's own fd (no fd-0 change); a lone
             # escaped dash is rejected by Bash (skip -> restore).
-            return kind == "e"
+            return "restore" if kind == "e" else None
         if any(k == "e" for k, _ in prefix):
-            return True  # escaped digits etc.: rejected -> skip -> restore
+            return "restore"  # escaped digits etc.: rejected -> skip -> restore
         stripped = "".join(c for k, c in prefix if k in ("lit", "q"))
         if any(k == "lit" and not c.isdigit() for k, c in prefix):
-            # Non-digit prefix (`foo-`): `<&` rejects (skip -> restore),
-            # `>&` opens a file (no fd-0 change).
-            return base == "<&"
-        if stripped != "" and stripped.strip("0") == "" and all(c.isdigit() for c in stripped):
-            return True  # certain move from fd 0 (leading zeros ok)
+            # Non-digit prefix (`foo-`, literal `$` already handled below):
+            # `<&` rejects (skip -> restore), `>&` opens a file.
+            return "restore" if base == "<&" else None
         if stripped != "" and all(c.isdigit() for c in stripped):
-            # A move from another fd (`1<&3-`): valid runs leave fd 0
-            # untouched, but a closed source aborts the trailer and skips
-            # the group (verified on Bash), leaving pre-group stdin.
-            # Source openness is statically unknown, so restore
-            # (fail-closed: never fail-open on a skipped group).
-            return True
-        return base == "<&"  # non-digit remainder: reject-vs-file as above
+            if stripped.strip("0") == "":
+                # Certain move from fd 0: restore iff the destination is
+                # known-open, else merge (openness statically unknown).
+                return "restore" if _dest_small else "merge"
+            # Move from another fd: source openness unknown (verified both
+            # directions on Bash) -> merge, never fail-open on a skip.
+            return "merge"
+        if any(k == "lit" and c in "$`" for k, c in prefix):
+            # Dynamic prefix with a literal dash (`$u-`): every
+            # non-degenerate outcome leaves pre-group stdin (move-scoped or
+            # skip); merge only when the destination openness is unknown.
+            return "restore" if _dest_small else "merge"
+        # Non-digit remainder: reject-vs-file as above.
+        return "restore" if base == "<&" else None
+    if _raw_is_dynamic(raw):
+        # Bare dynamic word: `<&` may dup (inner persists) or skip
+        # (pre-group) -> merge; `>&` is a filename (parse-time).
+        return "merge" if base == "<&" else None
     # No trailing dash: strip quotes for the shape test.
     stripped = "".join(c for k, c in toks if k in ("lit", "q"))
     if any(k == "e" for k, _ in toks):
         # Backslash words: `<&` rejects them (skip -> restore); `>&` reads
-        # them as filenames (`\\foo`, `\\0` verified) except move-shaped
-        # `\\M-`, which is rejected (handled in the dash branch above).
-        return base == "<&"
+        # them as filenames (`\foo`, `\0` verified) except move-shaped
+        # `\M-`, which is rejected (handled in the dash branch above).
+        return "restore" if base == "<&" else None
     if stripped != "" and all(c.isdigit() for c in stripped):
-        return False  # plain dup (`0`, `"0"`): fd 0 passes through
+        return None  # plain dup (`0`, `"0"`): fd 0 passes through
     if stripped == "-":
-        return False  # close of the op's own fd (`-`, `"-"`): fd 0 untouched
+        return None  # close of the op's own fd (`-`, `"-"`): fd 0 untouched
     if stripped == "":
-        return True  # empty word (`""`): rejected -> skip -> restore
+        return "restore"  # empty word (`""`): rejected -> skip -> restore
     # Plain words: `<&` rejects them (skip -> restore), `>&` opens a file.
-    return base == "<&"
-
+    return "restore" if base == "<&" else None
 
 def _fd0_scope_change(seg):
-    """True when a segment transiently modifies fd 0 (supply or close).
+    """'restore' | 'merge' | None: scoped-fd0 effect of one trailer segment.
 
-    Any fd-0 redirect — a supply (`< f`, `0>&3`) or a close (`<&-`,
-    `0>&-`, leading-zero spellings like `00<&-`) — scopes its compound:
-    Bash saves fd 0, applies the redirect for the group, and restores the
-    pre-group fd 0 on exit; a failed redirect skips the group, which also
-    leaves the pre-group state (all verified on Bash with harmless
-    fixtures). Non-fd-0 redirects (`3<&-`, `>&2`) and unrecognised forms
-    (None effect) touch another descriptor or nothing. Built on the same
-    `_scan_stdin_ops`/`_stdin_op_effect` classification as
-    `_has_input_redirect`, so supply-vs-scope semantics stay unified at a
-    single decision point. Supply-only stdin taint stays with
-    `_has_input_redirect` (unchanged): a close delivers no program.
+    'restore' when a redirect certainly leaves pre-group fd 0 behind
+    (supply, close, certain moves, rejected words that skip the group).
+    'merge' when the outcome is execution-dependent (destination/source
+    openness unknown, or a dynamic word): keep pre-group OR inner state
+    (fail-closed union; never lose either side). None when provably
+    fd-0-untouched. Built on the same `_scan_stdin_ops`/`_stdin_op_effect`
+    classification as `_has_input_redirect`, so supply-vs-scope semantics
+    stay unified at a single decision point. Supply-only stdin taint stays
+    with `_has_input_redirect` (unchanged): a close delivers no program.
+    A certain restore dominates: with a certain fd-0 touch present, every
+    outcome (scoped run or skipped group) leaves pre-group stdin.
     """
+    found_merge = False
     for op, target, raw in _scan_stdin_ops(seg):
-        if _stdin_op_effect(op, target) is not None:
-            return True
-        if _move_scope_close(op, raw):
-            return True
-    return False
+        eff = _stdin_op_effect(op, target)
+        if eff is not None:
+            if raw is not None and _raw_is_dynamic(raw):
+                found_merge = True  # uncertain supply/close: union
+                continue
+            return "restore"
+        m = _move_scope_kind(op, raw)
+        if m == "restore":
+            return "restore"
+        if m == "merge":
+            found_merge = True
+    return "merge" if found_merge else None
 
 
 def _trailing_fd0_redirect(segs, idx, ps):
-    """True when a group-closing segment has a trailing fd-0 redirect.
+    """'restore' | 'merge' | None: trailing fd-0 redirect scope effect.
 
     A trailing fd-0 redirect applies to the whole compound (`(node) < file`,
     `{ node; } < file`, `{ node; } 0<&-`) and, for brace groups, restores
@@ -4530,11 +4589,15 @@ def _trailing_fd0_redirect(segs, idx, ps):
     """
     n = len(segs)
     j = idx + 1
+    found_merge = False
     while j < n and segs[j] not in _STDIN_SENTINELS and _seg_is_transparent(segs[j], ps):
-        if _fd0_scope_change(segs[j]):
-            return True
+        k = _fd0_scope_change(segs[j])
+        if k == "restore":
+            return "restore"
+        if k == "merge":
+            found_merge = True
         j += 1
-    return False
+    return "merge" if found_merge else None
 
 
 def _seg_is_transparent(seg, ps):
@@ -4810,8 +4873,11 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None, de
         if seg == BBRACE_CLOSE and not ps:
             if bbrace_dyn_save:
                 _b_dyn = bbrace_dyn_save.pop()
-                if _trailing_fd0_redirect(segs, idx, ps):
+                _b_kind = _trailing_fd0_redirect(segs, idx, ps)
+                if _b_kind == "restore":
                     dyn_exec = _b_dyn
+                elif _b_kind == "merge":
+                    dyn_exec = _b_dyn or dyn_exec
                 # else: discard (inner changes persist in the calling shell)
             continue
         if seg == BBRACE_OPEN or seg == BBRACE_CLOSE:
@@ -5083,8 +5149,11 @@ def analyze_text(text, ctx, ps, depth, inherited_fed=False, outer_funcs=None, de
         elif seg == BBRACE_CLOSE and not ps:
             if bbrace_live_save:
                 _b_live = bbrace_live_save.pop()
-                if _trailing_fd0_redirect(segs, idx, ps):
+                _b_kind = _trailing_fd0_redirect(segs, idx, ps)
+                if _b_kind == "restore":
                     live_exec = _b_live
+                elif _b_kind == "merge":
+                    live_exec = _b_live or live_exec
                 # else: discard (inner changes persist in the calling shell)
         if seg == SUBSHELL_OPEN:
             if not ps:
