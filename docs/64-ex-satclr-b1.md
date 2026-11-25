@@ -62,7 +62,8 @@ below); T04 (I/O window), T08 (shadow bypass), T09 (mask mutants) are
 NOT_APPLICABLE with variant-grounded reason (scaffold has no I/O, no
 shadow, no mask; requiring them would invent code paths).
 
-Display-init debt: `$25` B1 + `$36` B1-analogous = two consecutive no-ops.
+Display-init debt: `$25` B1 + `$24` B1-analogous + `$36` B1-analogous =
+three consecutive no-ops (integrated main).
 Real screen init (whatever genuine `$25`/`$36` do) remains entirely undone.
 Debt is tracked here and in the contract doc U5, never presented as display
 correctness. Diagnostic path advance (next blocker UNKNOWN on main; dependency-env
@@ -77,13 +78,13 @@ distinguished per the task.
   span check `entry + 9 <= $FFF6`, PHP/PHA prologue check),
   `unified_api_windows_36`, `unified_api_windows_4a_36`,
   `unified_api_windows_25_36`, `unified_api_windows_4a_25_36` (base
-  windows untouched; superset lattice base < 36 < 4a_36/25_36 <
-  4a_25_36, base < 4a/25 < both).
+  windows untouched; the integrated 16-variant lattice adds
+  `_24`-containing supersets up to maximum `_4a_25_24_36`).
 - `tools/build_ipl_loader_g5_2base.py`: `cd_36` parameter
   (`"stub"`/`"experimental"`, refused otherwise), `SATCLR_SOURCE/_ENTRY`,
-  incremental label/source/link lists (the `(stub, stub, stub)` order is
+  incremental label/source/link lists (the `(stub, stub, stub, stub)` order is
   unchanged: proto/link/glue), patch + window checks per combination
-  (4a/25/36 lattice), manifest `cd_36` + `experimental_slots` +
+  (4a/25/24/36 lattice), manifest `cd_36` + `experimental_slots` +
   `experimental_sources`.
 - `spec/c3_static_contracts.json`: `src/ex_satclr.s` classified as
   experimental-only fixture (never linked into the normal/production

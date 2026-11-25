@@ -33,13 +33,12 @@ sanitized observation in a separated dependency environment (main + #829
 CUE[0] ExpC: `$02 -> $33 -> $4A -> $23 -> $25 -> $24 -> $36 (unimplemented halt)`
 (Issue #802 comment `7121732277`, PR #829 ExpC runs).
 
-On integrated latest main `0a935398` (without #829), CUE[0] ExpB halts at
+On pre-merge main `0a935398` (without #829), CUE[0] ExpB halts at
 `$24` and `$36` is NOT reached; CUE[1] stays at
 `$1E -> $4A -> $02 -> $02 -> $21 -> $1C` (Issue #38, BLOCKED_ABI, out of
 scope). `$4A`/`$25` semantics stay UNKNOWN/BLOCKED; their experimental
-returns are never genuine. `$24` experimental (PR #829) is also SIMULATED,
-pending Owner approval, and MUST NOT be mistaken for integrated-main
-capability.
+returns are never genuine. `$24` experimental (PR #829, MERGED into main `66ff2e64`) is also SIMULATED,
+and MUST NOT be mistaken for genuine capability.
 
 This document investigates the `$36` (EX_SATCLR candidate) contract so that
 an independent implementation can be scoped with evidence, and so that
@@ -51,7 +50,7 @@ VDC-internal SATB (if any) is the target — or whether several are operated —
 is UNKNOWN until grounded.
 
 Related: #64 (EX_SATCLR), #802 (G5 path), #635 (blocker measurement),
-#829 (`$24` scaffold, OPEN dependency), #46 (`$24`), #45 (`$23`),
+#829 (`$24` scaffold, MERGED into main `66ff2e64`), #46 (`$24`), #45 (`$23`),
 #47 (`$25`), #84 (`$4A`), #38 (`$1C` BLOCKED). Tracker #3,
 prerequisites #1, #2, #6, #8.
 
