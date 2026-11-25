@@ -4481,7 +4481,7 @@ def _move_scope_close(op, raw):
         return base == "<&"
     if stripped != "" and all(c.isdigit() for c in stripped):
         return False  # plain dup (`0`, `"0"`): fd 0 passes through
-    if stripped == "-" :
+    if stripped == "-":
         return False  # close of the op's own fd (`-`, `"-"`): fd 0 untouched
     if stripped == "":
         return True  # empty word (`""`): rejected -> skip -> restore
