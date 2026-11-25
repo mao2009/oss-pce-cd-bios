@@ -88,6 +88,7 @@
       "src/ex_memopen.s",
       "src/ex_scrmod.s",
       "src/ex_dotmod.s",
+      "src/ex_satclr.s",
       "src/ipl_loader_g5_glue.s",
       "src/startup_probe.s"
     ],
@@ -107,7 +108,8 @@
       "src/cd_read_commercial.s": "experimental-only CD_READ commercial first-mode helper for synthetic + opt-in commercial (Agent-B G5 P1, LOCAL _dh=0/size 2048/dest $2800 only); never linked into the normal/production BIOS, not firmware code",
       "src/ex_memopen.s": "experimental-only KEY_BIOS/EX_MEMOPEN preservation-only body for slot $4A (Issue #84, G5 P0: full register/flag/MPR preservation with MPR1=$F8 as caller precondition; JSR plus PHP/PHA/PHX/PHY already write 6 stack bytes before the gate, so MPR1!=$F8 is BLOCKED, never a safe refusal); never linked into the normal/production BIOS, not firmware code",
       "src/ex_scrmod.s": "experimental-only EX_SCRMOD B1 preservation-only SIMULATED scaffold for slot $25 (Issue #47, G5 P0: entry-state preservation with Carry preserved, MPRs unchanged, SP balanced, no VDC/MMIO/work-RAM writes; MPR1=$F8 is a caller precondition validated by the harness BEFORE JSR, MPR1!=$F8 is BLOCKED/out of contract); never linked into the normal/production BIOS, not firmware code",
-      "src/ex_dotmod.s": "experimental-only EX_DOTMOD B1-analogous preservation-only SIMULATED scaffold for slot $24 (Issue #46, G5 P0: entry-state preservation for the verified T=0 domain with Carry preserved exactly (T=1 entry OUT OF CONTRACT per pinned-core instruction-boundary T-consumption; PHP/PLP save is distinct from T-consumption; no T-bit operation), MPRs unchanged, SP balanced with stacked bytes not scrubbed, no VDC/VCE/MMIO writes and no work-RAM writes outside the transient caller-stack bytes (caller-side JSR 2 plus callee 4 transient equals 6 total; value-diff tracer observes changed offsets only with same-value stores invisible and the static 9-byte pin as the stronger guarantee); MPR1=$F8 is a caller precondition validated by the harness BEFORE JSR, MPR1!=$F8 is BLOCKED/out of contract); never linked into the normal/production BIOS, not firmware code"
+      "src/ex_dotmod.s": "experimental-only EX_DOTMOD B1-analogous preservation-only SIMULATED scaffold for slot $24 (Issue #46, G5 P0: entry-state preservation for the verified T=0 domain with Carry preserved exactly (T=1 entry OUT OF CONTRACT per pinned-core instruction-boundary T-consumption; PHP/PLP save is distinct from T-consumption; no T-bit operation), MPRs unchanged, SP balanced with stacked bytes not scrubbed, no VDC/VCE/MMIO writes and no work-RAM writes outside the transient caller-stack bytes (caller-side JSR 2 plus callee 4 transient equals 6 total; value-diff tracer observes changed offsets only with same-value stores invisible and the static 9-byte pin as the stronger guarantee); MPR1=$F8 is a caller precondition validated by the harness BEFORE JSR, MPR1!=$F8 is BLOCKED/out of contract); never linked into the normal/production BIOS, not firmware code",
+      "src/ex_satclr.s": "experimental-only EX_SATCLR B1-analogous preservation-only SIMULATED scaffold for slot $36 (Issue #64, G5 P0: entry-state preservation with Carry preserved (verified T=0 domain; T=1 excluded), MPRs unchanged, SP balanced, no WRAM writes outside the transient caller-stack bytes and no VRAM/VDC/VCE/MMIO writes; MPR1=$F8 is a caller precondition validated by the harness BEFORE JSR, MPR1!=$F8 is BLOCKED/out of contract); never linked into the normal/production BIOS, not firmware code"
     }
   },
   "files": {
