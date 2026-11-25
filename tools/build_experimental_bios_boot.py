@@ -136,6 +136,22 @@ _SLOT36_PATCH_LABELS = ("api_slot_36", "ex_satclr_entry")
 # tests/host/test_build_g5_36_host.py and
 # tests/integration/test_g5_satclr_36.py (change together).
 _SLOT36_BODY_LEN = 9
+# Experimental slot-$35 wiring (Issue #63 B1-analogous; this image only when
+# selected; normal ROM keeps its nonreturning $35 fallback stub, and the
+# 2-base builder default keeps the table on the stub). The $E09F table entry
+# (file offset 3*$35, table starts at $E000) is redirected from the linked
+# $35 fallback stub to the BOOT-region ex_sprdma_entry body
+# (src/ex_sprdma.s, preservation-only SIMULATED scaffold). NOT the genuine
+# EX_SPRDMA ABI (genuine slot/entry/return semantics stay UNKNOWN/BLOCKED,
+# release_eligible stays False).
+_SLOT35_TABLE = 3 * 0x35
+_SLOT35_PATCH_LABELS = ("api_slot_35", "ex_sprdma_entry")
+# B1-analogous body length in bytes (src/ex_sprdma.s:
+# PHP/PHA/PHX/PHY/PLY/PLX/PLA/PLP/RTS). Same BOOT-span discipline as $25.
+# Pinned against the 9-byte structural pin in
+# tests/host/test_build_g5_35_host.py and
+# tests/integration/test_g5_sprdma_35.py (change together).
+_SLOT35_BODY_LEN = 9
 # Merged input branches whose heads are recorded (never hardcoded) in the manifest.
 _MERGED_REFS = ("origin/agent-a/cd-base-proto-g5", "origin/agent-b/ex-dspoff-real-cpu-g5",
                 "origin/agent-b/cd-read-link-g5")
@@ -358,6 +374,37 @@ def _redirect_slot36_to_body(bank: bytes, slot36_stub: int, satclr_entry: int) -
     return bytes(out)
 
 
+def _redirect_slot35_to_body(bank: bytes, slot35_stub: int, sprdma_entry: int) -> bytes:
+    """Return bank with the $E09F table entry redirected from stub to body. Fail-closed.
+
+    The table must still hold the linked fallback stub (nothing else may be
+    redirected), and the body must sit in BOOT and start with the body's
+    PHP/PHA prologue (guards against silent body drift). The wired entry keeps
+    the EXPERIMENTAL B1-analogous preservation contract only (SIMULATED
+    scaffold); it never claims the genuine $35 ABI (genuine EX_SPRDMA
+    semantics stay UNKNOWN/BLOCKED, T04/T08/T09 NOT_APPLICABLE: no I/O window,
+    no shadow, no mask).
+    """
+    for name, addr in (("api_slot_35", slot35_stub), ("ex_sprdma_entry", sprdma_entry)):
+        if type(addr) is not int or not 0xE000 <= addr <= 0xFFFF:
+            raise ValueError(f"{name} address {addr!r} outside BIOS window $E000-$FFFF")
+    if not 0xE100 <= slot35_stub < 0xFFF6:
+        raise ValueError(f"slot $35 fallback stub ${slot35_stub:04X} outside bank0 body")
+    if not 0xF000 <= sprdma_entry <= 0xFFF6 - _SLOT35_BODY_LEN:
+        raise ValueError(f"experimental slot $35 body ${sprdma_entry:04X} outside the BOOT region "
+                         f"(9-byte span must end at or before $FFF6)")
+    out = bytearray(bank)
+    want_stub = bytes((0x4C, slot35_stub & 0xFF, slot35_stub >> 8))
+    if bytes(out[_SLOT35_TABLE:_SLOT35_TABLE + 3]) != want_stub:
+        raise ValueError("slot $35 table entry is not the linked fallback stub; "
+                         "refusing to redirect an unexpected table")
+    out[_SLOT35_TABLE:_SLOT35_TABLE + 3] = bytes((0x4C, sprdma_entry & 0xFF, sprdma_entry >> 8))
+    body_off = sprdma_entry - 0xE000
+    if bytes(out[body_off:body_off + 2]) != bytes((0x08, 0x48)):  # PHP, PHA
+        raise ValueError("experimental slot $35 body does not start with the body prologue")
+    return bytes(out)
+
+
 def unified_api_windows(slot02_addr: int) -> set:
     """File offsets in the first 4 KiB allowed to differ from the normal DEV ROM.
 
@@ -525,6 +572,150 @@ def unified_api_windows_4a_25_24_36(slot02_addr: int) -> set:
     windows |= set(range(_SLOT36_TABLE, _SLOT36_TABLE + 3))
     if len(windows) != SLOT02_PATCH_LEN + 3 + 3 + 3 + 3 + 3 + 3:
         raise ValueError("slot-$02/slot-$33/slot-$03/slot-$4A/slot-$25/slot-$24/slot-$36 patch windows overlap; refusing ambiguous wiring")
+    return windows
+
+
+def unified_api_windows_35(slot02_addr: int) -> set:
+    """File offsets allowed to differ when the experimental $35 body is wired."""
+    windows = set(unified_api_windows(slot02_addr))
+    windows |= set(range(_SLOT35_TABLE, _SLOT35_TABLE + 3))
+    if len(windows) != SLOT02_PATCH_LEN + 3 + 3 + 3:
+        raise ValueError("slot-$02/slot-$33/slot-$03/slot-$35 patch windows overlap; refusing ambiguous wiring")
+    return windows
+
+
+def unified_api_windows_4a_35(slot02_addr: int) -> set:
+    """File offsets allowed to differ when $4A and $35 bodies are wired."""
+    windows = set(unified_api_windows_4a(slot02_addr))
+    windows |= set(range(_SLOT35_TABLE, _SLOT35_TABLE + 3))
+    if len(windows) != SLOT02_PATCH_LEN + 3 + 3 + 3 + 3:
+        raise ValueError("slot-$02/slot-$33/slot-$03/slot-$4A/slot-$35 patch windows overlap; refusing ambiguous wiring")
+    return windows
+
+
+def unified_api_windows_25_35(slot02_addr: int) -> set:
+    """File offsets allowed to differ when $25 and $35 bodies are wired."""
+    windows = set(unified_api_windows_25(slot02_addr))
+    windows |= set(range(_SLOT35_TABLE, _SLOT35_TABLE + 3))
+    if len(windows) != SLOT02_PATCH_LEN + 3 + 3 + 3 + 3:
+        raise ValueError("slot-$02/slot-$33/slot-$03/slot-$25/slot-$35 patch windows overlap; refusing ambiguous wiring")
+    return windows
+
+
+def unified_api_windows_4a_25_35(slot02_addr: int) -> set:
+    """File offsets allowed to differ when $4A, $25 and $35 are wired."""
+    windows = set(unified_api_windows_4a_25(slot02_addr))
+    windows |= set(range(_SLOT35_TABLE, _SLOT35_TABLE + 3))
+    if len(windows) != SLOT02_PATCH_LEN + 3 + 3 + 3 + 3 + 3:
+        raise ValueError("slot-$02/slot-$33/slot-$03/slot-$4A/slot-$25/slot-$35 patch windows overlap; refusing ambiguous wiring")
+    return windows
+
+
+def unified_api_windows_24_35(slot02_addr: int) -> set:
+    """File offsets allowed to differ when $24 and $35 bodies are wired."""
+    windows = set(unified_api_windows_24(slot02_addr))
+    windows |= set(range(_SLOT35_TABLE, _SLOT35_TABLE + 3))
+    if len(windows) != SLOT02_PATCH_LEN + 3 + 3 + 3 + 3:
+        raise ValueError("slot-$02/slot-$33/slot-$03/slot-$24/slot-$35 patch windows overlap; refusing ambiguous wiring")
+    return windows
+
+
+def unified_api_windows_4a_24_35(slot02_addr: int) -> set:
+    """File offsets allowed to differ when $4A, $24 and $35 bodies are wired."""
+    windows = set(unified_api_windows_4a_24(slot02_addr))
+    windows |= set(range(_SLOT35_TABLE, _SLOT35_TABLE + 3))
+    if len(windows) != SLOT02_PATCH_LEN + 3 + 3 + 3 + 3 + 3:
+        raise ValueError("slot-$02/slot-$33/slot-$03/slot-$4A/slot-$24/slot-$35 patch windows overlap; refusing ambiguous wiring")
+    return windows
+
+
+def unified_api_windows_25_24_35(slot02_addr: int) -> set:
+    """File offsets allowed to differ when $25, $24 and $35 bodies are wired."""
+    windows = set(unified_api_windows_25_24(slot02_addr))
+    windows |= set(range(_SLOT35_TABLE, _SLOT35_TABLE + 3))
+    if len(windows) != SLOT02_PATCH_LEN + 3 + 3 + 3 + 3 + 3:
+        raise ValueError("slot-$02/slot-$33/slot-$03/slot-$25/slot-$24/slot-$35 patch windows overlap; refusing ambiguous wiring")
+    return windows
+
+
+def unified_api_windows_4a_25_24_35(slot02_addr: int) -> set:
+    """File offsets allowed to differ when $4A, $25, $24 and $35 are wired."""
+    windows = set(unified_api_windows_4a_25_24(slot02_addr))
+    windows |= set(range(_SLOT35_TABLE, _SLOT35_TABLE + 3))
+    if len(windows) != SLOT02_PATCH_LEN + 3 + 3 + 3 + 3 + 3 + 3:
+        raise ValueError("slot-$02/slot-$33/slot-$03/slot-$4A/slot-$25/slot-$24/slot-$35 patch windows overlap; refusing ambiguous wiring")
+    return windows
+
+
+def unified_api_windows_36_35(slot02_addr: int) -> set:
+    """File offsets allowed to differ when $36 and $35 bodies are wired."""
+    windows = set(unified_api_windows_36(slot02_addr))
+    windows |= set(range(_SLOT35_TABLE, _SLOT35_TABLE + 3))
+    if len(windows) != SLOT02_PATCH_LEN + 3 + 3 + 3 + 3:
+        raise ValueError("slot-$02/slot-$33/slot-$03/slot-$36/slot-$35 patch windows overlap; refusing ambiguous wiring")
+    return windows
+
+
+def unified_api_windows_4a_36_35(slot02_addr: int) -> set:
+    """File offsets allowed to differ when $4A, $36 and $35 bodies are wired."""
+    windows = set(unified_api_windows_4a_36(slot02_addr))
+    windows |= set(range(_SLOT35_TABLE, _SLOT35_TABLE + 3))
+    if len(windows) != SLOT02_PATCH_LEN + 3 + 3 + 3 + 3 + 3:
+        raise ValueError("slot-$02/slot-$33/slot-$03/slot-$4A/slot-$36/slot-$35 patch windows overlap; refusing ambiguous wiring")
+    return windows
+
+
+def unified_api_windows_25_36_35(slot02_addr: int) -> set:
+    """File offsets allowed to differ when $25, $36 and $35 bodies are wired."""
+    windows = set(unified_api_windows_25_36(slot02_addr))
+    windows |= set(range(_SLOT35_TABLE, _SLOT35_TABLE + 3))
+    if len(windows) != SLOT02_PATCH_LEN + 3 + 3 + 3 + 3 + 3:
+        raise ValueError("slot-$02/slot-$33/slot-$03/slot-$25/slot-$36/slot-$35 patch windows overlap; refusing ambiguous wiring")
+    return windows
+
+
+def unified_api_windows_4a_25_36_35(slot02_addr: int) -> set:
+    """File offsets allowed to differ when $4A, $25, $36 and $35 are wired."""
+    windows = set(unified_api_windows_4a_25_36(slot02_addr))
+    windows |= set(range(_SLOT35_TABLE, _SLOT35_TABLE + 3))
+    if len(windows) != SLOT02_PATCH_LEN + 3 + 3 + 3 + 3 + 3 + 3:
+        raise ValueError("slot-$02/slot-$33/slot-$03/slot-$4A/slot-$25/slot-$36/slot-$35 patch windows overlap; refusing ambiguous wiring")
+    return windows
+
+
+def unified_api_windows_24_36_35(slot02_addr: int) -> set:
+    """File offsets allowed to differ when $24, $36 and $35 bodies are wired."""
+    windows = set(unified_api_windows_24_36(slot02_addr))
+    windows |= set(range(_SLOT35_TABLE, _SLOT35_TABLE + 3))
+    if len(windows) != SLOT02_PATCH_LEN + 3 + 3 + 3 + 3 + 3:
+        raise ValueError("slot-$02/slot-$33/slot-$03/slot-$24/slot-$36/slot-$35 patch windows overlap; refusing ambiguous wiring")
+    return windows
+
+
+def unified_api_windows_4a_24_36_35(slot02_addr: int) -> set:
+    """File offsets allowed to differ when $4A, $24, $36 and $35 bodies are wired."""
+    windows = set(unified_api_windows_4a_24_36(slot02_addr))
+    windows |= set(range(_SLOT35_TABLE, _SLOT35_TABLE + 3))
+    if len(windows) != SLOT02_PATCH_LEN + 3 + 3 + 3 + 3 + 3 + 3:
+        raise ValueError("slot-$02/slot-$33/slot-$03/slot-$4A/slot-$24/slot-$36/slot-$35 patch windows overlap; refusing ambiguous wiring")
+    return windows
+
+
+def unified_api_windows_25_24_36_35(slot02_addr: int) -> set:
+    """File offsets allowed to differ when $25, $24, $36 and $35 bodies are wired."""
+    windows = set(unified_api_windows_25_24_36(slot02_addr))
+    windows |= set(range(_SLOT35_TABLE, _SLOT35_TABLE + 3))
+    if len(windows) != SLOT02_PATCH_LEN + 3 + 3 + 3 + 3 + 3 + 3:
+        raise ValueError("slot-$02/slot-$33/slot-$03/slot-$25/slot-$24/slot-$36/slot-$35 patch windows overlap; refusing ambiguous wiring")
+    return windows
+
+
+def unified_api_windows_4a_25_24_36_35(slot02_addr: int) -> set:
+    """File offsets allowed to differ when $4A, $25, $24, $36 and $35 are wired."""
+    windows = set(unified_api_windows_4a_25_24_36(slot02_addr))
+    windows |= set(range(_SLOT35_TABLE, _SLOT35_TABLE + 3))
+    if len(windows) != SLOT02_PATCH_LEN + 3 + 3 + 3 + 3 + 3 + 3 + 3:
+        raise ValueError("slot-$02/slot-$33/slot-$03/slot-$4A/slot-$25/slot-$24/slot-$36/slot-$35 patch windows overlap; refusing ambiguous wiring")
     return windows
 
 
