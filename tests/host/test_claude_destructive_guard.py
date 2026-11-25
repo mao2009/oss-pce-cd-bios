@@ -4454,6 +4454,14 @@ class StdinProgramTests(unittest.TestCase):
                 verdict, reason = self._d(cmd)
                 self.assertEqual(verdict, "DENY")
                 self.assertIn("stdin-program", reason)
+        # A move whose source may be closed never proves a close: the
+        # failed move aborts the segment, so prior provenance survives.
+        for cmd in ["exec < /tmp/x.py; exec 1<&5- <&-; node",
+            "exec < /tmp/x.py; exec 2>&9- 0>&-; node"]:
+            with self.subTest(cmd=cmd[:80]):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertIn("stdin-program", reason)
         # No prior stdin to preserve: uncertain closes stay ALLOW, and
         # all-infallible closes clear as before (`<&-`, heredoc-only prefix).
         for cmd in ["exec < /nonexistent-xyz <&-; node",
@@ -4635,6 +4643,36 @@ class StdinProgramTests(unittest.TestCase):
                 verdict, reason = self._d(cmd)
                 self.assertEqual(verdict, "ALLOW", reason)
 
+    def test_brace_group_move_trailer_restores_stdin(self):
+        # MAJOR (independent review 6038675948): move-from-fd0 trailers scope the brace group.
+        for cmd in ["exec < /tmp/x.py; { exec <&-; } >&0-; node",
+            "exec < /tmp/x.py; { exec <&-; } 2>&\"0\"-; node",
+            "exec < /tmp/x.py; { exec <&-; } 1<&00-; node",
+            "exec < /tmp/x.py; { exec <&-; } 1<&10-; node",
+            "printf x | bash -c '{ exec 0<&-; } 1<&0\\-; python3'",
+            "printf x | bash -c '{ exec 0<&-; } 1<&\"0\"-; python3'",
+            "exec < /tmp/x.py; { exec <&-; } 1<&\"0-\"; node",
+            "exec < /tmp/x.py; { exec <&-; } 1<&$u; node",
+            "exec < /tmp/x.py; { exec <&-; } 1<&foo; node",
+            "exec < /tmp/x.py; { exec <&-; } 1<&\\-; node",
+            "exec < /tmp/x.py; { exec <&-; } 1<&\\0-; node",
+            "printf x | bash -c '{ exec 0<&-; } 1<&\"\"; node'",
+            "printf x | bash -c '{ exec 0<&-; } 1<&0- < /nonexistent; node'"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "DENY")
+                self.assertIn("stdin-program", reason)
+        # Controls: dups/quoted dups/closes/filenames stay out.
+        for cmd in ["printf x | bash -c '{ exec 0<&-; }; node'",
+            "printf x | bash -c '{ exec 0<&-; } 3<&-; node'",
+            "printf x | bash -c '{ exec 0<&-; } 1<&0; node'",
+            "printf x | bash -c '{ exec 0<&-; } 1<&\"0\"; node'",
+            "printf x | bash -c '{ exec 0<&-; } 1<&-; node'",
+            "printf x | bash -c '{ exec 0<&-; } 2>&foo; node'",
+            "printf x | bash -c '{ exec 0<&-; } >&\"0-\"; node'"]:
+            with self.subTest(cmd=cmd):
+                verdict, reason = self._d(cmd)
+                self.assertEqual(verdict, "ALLOW", reason)
 
 class StdinProgramMutationTests(unittest.TestCase):
     """Mutants of the Issue #637 layers. Each must make a named StdinProgramTests method fail (an assertion
@@ -4735,17 +4773,17 @@ class StdinProgramMutationTests(unittest.TestCase):
             "            elif effect == \"close\":",
             "            elif False:  # mutant: exec close never clears"),
         "fd number distinction removed": (
-            "        if fd.strip(\"0\") != \"\":\n            # A move from fd 0 (`1<&0-`, `2>&0-`, leading-zero sources\n            # like `1<&00-`) duplicates fd 0 elsewhere and then closes the\n            # source: fd 0 is closed, so it scopes its compound exactly\n            # like `<&-` (verified on Bash: the source is saved and\n            # restored after the group). It is not a supply (no program is\n            # delivered), and as a move it may fail, so the exec-segment\n            # close-as-proof gate still keeps provenance (fail-closed).\n            # `1<&0` (no dash) moves nothing and stays out, as does an\n            # unrecognised/uncertain source (literal digits only).\n            if base in (\"<&\", \">&\"):\n                _t = target or \"\"\n                _src = _t[:-1] if _t.endswith(\"-\") and _t != \"-\" else \"\"\n                if _src.isdigit() and _src.strip(\"0\") == \"\":\n                    return \"close\"\n            return None",
-            "        if False:  # mutant: every fd supplies stdin\n            # A move from fd 0 (`1<&0-`, `2>&0-`, leading-zero sources\n            # like `1<&00-`) duplicates fd 0 elsewhere and then closes the\n            # source: fd 0 is closed, so it scopes its compound exactly\n            # like `<&-` (verified on Bash: the source is saved and\n            # restored after the group). It is not a supply (no program is\n            # delivered), and as a move it may fail, so the exec-segment\n            # close-as-proof gate still keeps provenance (fail-closed).\n            # `1<&0` (no dash) moves nothing and stays out, as does an\n            # unrecognised/uncertain source (literal digits only).\n            if base in (\"<&\", \">&\"):\n                _t = target or \"\"\n                _src = _t[:-1] if _t.endswith(\"-\") and _t != \"-\" else \"\"\n                if _src.isdigit() and _src.strip(\"0\") == \"\":\n                    return \"close\"\n            return None"),
+            "        if fd.strip(\"0\") != \"\":\n            return None",
+            "        if False:  # mutant: every fd supplies stdin\n            return None"),
         "fd-zero leading-zero spelling reverted": (
-            "        if fd.strip(\"0\") != \"\":\n            # A move from fd 0 (`1<&0-`, `2>&0-`, leading-zero sources\n            # like `1<&00-`) duplicates fd 0 elsewhere and then closes the\n            # source: fd 0 is closed, so it scopes its compound exactly\n            # like `<&-` (verified on Bash: the source is saved and\n            # restored after the group). It is not a supply (no program is\n            # delivered), and as a move it may fail, so the exec-segment\n            # close-as-proof gate still keeps provenance (fail-closed).\n            # `1<&0` (no dash) moves nothing and stays out, as does an\n            # unrecognised/uncertain source (literal digits only).\n            if base in (\"<&\", \">&\"):\n                _t = target or \"\"\n                _src = _t[:-1] if _t.endswith(\"-\") and _t != \"-\" else \"\"\n                if _src.isdigit() and _src.strip(\"0\") == \"\":\n                    return \"close\"\n            return None",
-            "        if fd not in (\"\", \"0\"):  # mutant: leading-zero reverted\n            # A move from fd 0 (`1<&0-`, `2>&0-`, leading-zero sources\n            # like `1<&00-`) duplicates fd 0 elsewhere and then closes the\n            # source: fd 0 is closed, so it scopes its compound exactly\n            # like `<&-` (verified on Bash: the source is saved and\n            # restored after the group). It is not a supply (no program is\n            # delivered), and as a move it may fail, so the exec-segment\n            # close-as-proof gate still keeps provenance (fail-closed).\n            # `1<&0` (no dash) moves nothing and stays out, as does an\n            # unrecognised/uncertain source (literal digits only).\n            if base in (\"<&\", \">&\"):\n                _t = target or \"\"\n                _src = _t[:-1] if _t.endswith(\"-\") and _t != \"-\" else \"\"\n                if _src.isdigit() and _src.strip(\"0\") == \"\":\n                    return \"close\"\n            return None"),
+            "        if fd.strip(\"0\") != \"\":\n            return None",
+            "        if fd not in (\"\", \"0\"):  # mutant: leading-zero reverted\n            return None"),
         "multi-digit zero treated as non-stdin": (
-            "        if fd.strip(\"0\") != \"\":\n            # A move from fd 0 (`1<&0-`, `2>&0-`, leading-zero sources\n            # like `1<&00-`) duplicates fd 0 elsewhere and then closes the\n            # source: fd 0 is closed, so it scopes its compound exactly\n            # like `<&-` (verified on Bash: the source is saved and\n            # restored after the group). It is not a supply (no program is\n            # delivered), and as a move it may fail, so the exec-segment\n            # close-as-proof gate still keeps provenance (fail-closed).\n            # `1<&0` (no dash) moves nothing and stays out, as does an\n            # unrecognised/uncertain source (literal digits only).\n            if base in (\"<&\", \">&\"):\n                _t = target or \"\"\n                _src = _t[:-1] if _t.endswith(\"-\") and _t != \"-\" else \"\"\n                if _src.isdigit() and _src.strip(\"0\") == \"\":\n                    return \"close\"\n            return None",
-            "        if fd.strip(\"0\") != \"\" or len(fd) > 1:  # mutant: multi-digit zero non-stdin\n            # A move from fd 0 (`1<&0-`, `2>&0-`, leading-zero sources\n            # like `1<&00-`) duplicates fd 0 elsewhere and then closes the\n            # source: fd 0 is closed, so it scopes its compound exactly\n            # like `<&-` (verified on Bash: the source is saved and\n            # restored after the group). It is not a supply (no program is\n            # delivered), and as a move it may fail, so the exec-segment\n            # close-as-proof gate still keeps provenance (fail-closed).\n            # `1<&0` (no dash) moves nothing and stays out, as does an\n            # unrecognised/uncertain source (literal digits only).\n            if base in (\"<&\", \">&\"):\n                _t = target or \"\"\n                _src = _t[:-1] if _t.endswith(\"-\") and _t != \"-\" else \"\"\n                if _src.isdigit() and _src.strip(\"0\") == \"\":\n                    return \"close\"\n            return None"),
+            "        if fd.strip(\"0\") != \"\":\n            return None",
+            "        if fd.strip(\"0\") != \"\" or len(fd) > 1:  # mutant: multi-digit zero non-stdin\n            return None"),
         "fd 3 over-tainted as stdin": (
-            "        if fd.strip(\"0\") != \"\":\n            # A move from fd 0 (`1<&0-`, `2>&0-`, leading-zero sources\n            # like `1<&00-`) duplicates fd 0 elsewhere and then closes the\n            # source: fd 0 is closed, so it scopes its compound exactly\n            # like `<&-` (verified on Bash: the source is saved and\n            # restored after the group). It is not a supply (no program is\n            # delivered), and as a move it may fail, so the exec-segment\n            # close-as-proof gate still keeps provenance (fail-closed).\n            # `1<&0` (no dash) moves nothing and stays out, as does an\n            # unrecognised/uncertain source (literal digits only).\n            if base in (\"<&\", \">&\"):\n                _t = target or \"\"\n                _src = _t[:-1] if _t.endswith(\"-\") and _t != \"-\" else \"\"\n                if _src.isdigit() and _src.strip(\"0\") == \"\":\n                    return \"close\"\n            return None",
-            "        if fd.strip(\"0\") != \"\" and fd.strip(\"0\") != \"3\":  # mutant: fd 3 as stdin\n            # A move from fd 0 (`1<&0-`, `2>&0-`, leading-zero sources\n            # like `1<&00-`) duplicates fd 0 elsewhere and then closes the\n            # source: fd 0 is closed, so it scopes its compound exactly\n            # like `<&-` (verified on Bash: the source is saved and\n            # restored after the group). It is not a supply (no program is\n            # delivered), and as a move it may fail, so the exec-segment\n            # close-as-proof gate still keeps provenance (fail-closed).\n            # `1<&0` (no dash) moves nothing and stays out, as does an\n            # unrecognised/uncertain source (literal digits only).\n            if base in (\"<&\", \">&\"):\n                _t = target or \"\"\n                _src = _t[:-1] if _t.endswith(\"-\") and _t != \"-\" else \"\"\n                if _src.isdigit() and _src.strip(\"0\") == \"\":\n                    return \"close\"\n            return None"),
+            "        if fd.strip(\"0\") != \"\":\n            return None",
+            "        if fd.strip(\"0\") != \"\" and fd.strip(\"0\") != \"3\":  # mutant: fd 3 as stdin\n            return None"),
         "stdin close treated as supply": (
             "        return \"close\" if (target or \"\") == \"-\" else \"supply\"",
             "        return \"supply\"  # mutant: close as supply"),
@@ -4770,14 +4808,14 @@ class StdinProgramMutationTests(unittest.TestCase):
             "    else:\n        # Optional empty signature parens: `function f ()`.\n        if segs[j] == SUBSHELL_OPEN:\n            j = _match(SUBSHELL_OPEN, SUBSHELL_CLOSE, j, empty_only=True)\n            if j is None or j < 0:\n                return None\n            j = _skip(j + 1)\n            if j < 0 or j >= n:\n                return None  # mutant: paren body missed"
         ),
         "uncertain close clears provenance": (
-            "        if all(not _redirect_op_may_fail(o, t) for o, t in ops):\n            return \"close\"\n        return None",
+            "        if all(not _redirect_op_may_fail(o, t) for o, t, _r in ops):\n            return \"close\"\n        return None",
             "        return \"close\"  # mutant: uncertain close clears"),
         "in-body close treated as infallible": (
             "    if base in (\"<&\", \">&\"):\n        return (target or \"\") != \"-\"",
             "    return True  # mutant: closes may fail"),
         "close-only trailer not restored (supply-only regression)": (
-            "    for op, target in _scan_stdin_ops(seg):\n        if _stdin_op_effect(op, target) is not None:\n            return True\n    return False",
-            "    for op, target in _scan_stdin_ops(seg):\n        if _stdin_op_effect(op, target) == \"supply\":  # mutant: supply-only restore\n            return True\n    return False"),
+            "    for op, target, raw in _scan_stdin_ops(seg):\n        if _stdin_op_effect(op, target) is not None:\n            return True\n        if _move_scope_close(op, raw):\n            return True\n    return False",
+            "    for op, target, raw in _scan_stdin_ops(seg):\n        if _stdin_op_effect(op, target) == \"supply\":\n            return True\n    return False"),
         "prepass brace restore removed": (
             "                        if _trailing_fd0_redirect(segs, i, ps):",
             "                        if False:  # mutant: prepass brace not restored"),
@@ -4788,17 +4826,38 @@ class StdinProgramMutationTests(unittest.TestCase):
             "            if bbrace_live_save:\n                _b_live = bbrace_live_save.pop()\n                if _trailing_fd0_redirect(segs, idx, ps):\n                    live_exec = _b_live",
             "            if bbrace_live_save:\n                _b_live = bbrace_live_save.pop()\n                if False:  # mutant: live brace not restored\n                    live_exec = _b_live"),
         "non-stdin fd trailer wrongly restores": (
-            "    for op, target in _scan_stdin_ops(seg):\n        if _stdin_op_effect(op, target) is not None:\n            return True\n    return False",
-            "    for op, target in _scan_stdin_ops(seg):\n        if True:  # mutant: any trailer restores\n            return True\n    return False"),
+            "    for op, target, raw in _scan_stdin_ops(seg):\n        if _stdin_op_effect(op, target) is not None:\n            return True\n        if _move_scope_close(op, raw):\n            return True\n    return False",
+            "    for op, target, raw in _scan_stdin_ops(seg):\n        if True:\n            return True\n    return False"),
         "prepass brace save removed (scope mismatch)": (
             "                        bbrace_exec_save.append(exec_flag)\n                        bbrace_inh_save.append(inh)",
             "                        pass  # mutant: prepass brace save removed"),
         "move-from-fd0 not scoped": (
-            "            if base in (\"<&\", \">&\"):\n                _t = target or \"\"\n                _src = _t[:-1] if _t.endswith(\"-\") and _t != \"-\" else \"\"\n                if _src.isdigit() and _src.strip(\"0\") == \"\":\n                    return \"close\"",
-            "            pass  # mutant: moves from fd 0 ignored"),
+            "        if stripped != \"\" and stripped.strip(\"0\") == \"\" and all(c.isdigit() for c in stripped):\n            return True  # certain move from fd 0 (leading zeros ok)",
+            "        if stripped != \"\" and stripped.strip(\"0\") == \"\" and all(c.isdigit() for c in stripped):\n            return False  # mutant: moves from fd 0 ignored"),
         "move guard always true (non-move over-scoped)": (
-            "                if _src.isdigit() and _src.strip(\"0\") == \"\":",
-            "                if True:  # mutant: any dup/move closes fd 0"),
+            "    if stripped != \"\" and all(c.isdigit() for c in stripped):\n        return False  # plain dup (`0`, `\"0\"`): fd 0 passes through",
+            "    if stripped != \"\" and all(c.isdigit() for c in stripped):\n        return True  # mutant: plain dups scope"),
+        "uncertain move treated as determined": (
+            "    if any(k == \"lit\" and c in \"$`\" for k, c in toks):\n        return base == \"<&\"",
+            "    if any(k == \"lit\" and c in \"$`\" for k, c in toks):\n        return False  # mutant: uncertain words never restore"),
+        "quoted dash treated as literal move": (
+            "        if kind == \"q\":",
+            "        if False:  # mutant: quoted dash is literal"),
+        "lone escaped dash treated as close": (
+            "            return kind == \"e\"",
+            "            return False  # mutant: lone escaped dash closes"),
+        "move treated as infallible close proof": (
+            "    if base in (\"<&\", \">&\"):\n        return (target or \"\") != \"-\"",
+            "    if base in (\"<&\", \">&\"):\n        return False  # mutant: moves/duplications never fail"),
+        "default-fd move ignored": (
+            "    if fd == \"\" and base == \"<&\":\n        return False  # default-fd `<&` is fd 0: classified already",
+            "    if fd == \"\":\n        return False  # mutant: default fd never moves"),
+        "backslash escape not resolved": (
+            "        if c == \"\\\\\" and i + 1 < n:\n            toks.append((\"e\", raw[i + 1]))\n            i += 2\n            continue",
+            "        if c == \"\\\\\" and i + 1 < n:\n            i += 2  # mutant: escaped char dropped\n            continue"),
+        "dangling redirect treated as determined": (
+            "    if raw is None:\n        # No word at all: a dangling `1<&`/`2>&` (including an empty quoted\n        # word dropped by the lexer, e.g. `1<&\"\"`) never runs its command in\n        # Bash (syntax error / skipped group), so the pre-group stdin\n        # persists (fail-closed restore). Anything else keeps prior handling.\n        _m2 = re.match(r\"^(\\d*)(.*)$\", op, re.S)\n        _fd2, _base2 = _m2.group(1), _m2.group(2)\n        if _base2 in (\"<&\", \">&\") and _fd2 != \"\" and _fd2.strip(\"0\") != \"\":\n            return True\n        return False",
+            "    if raw is None:\n        return False  # mutant: dangling words never restore"),
         "awk bare dash with seen program or file": (
             "            if seen_program_text or seen_file:\n                i += 1\n                continue\n            return 'stdin'",
             "            if seen_program_text:  # mutant: data dash is stdin program\n                i += 1\n                continue\n            return 'stdin'",
@@ -4961,7 +5020,8 @@ class StdinProgramMutationTests(unittest.TestCase):
                  "test_eval_shadowed_by_function", "test_fork_child_close_keeps_parent_taint",
                  "test_forked_exec_never_taints_parent", "test_shadowed_exec_close_keeps_taint",
                  "test_list_conditional_close_keeps_taint", "test_awk_later_dash_selects_stdin_program", "test_awk_named_program_with_dash_data_operand",
-                 "test_brace_group_trailing_redirect_restores_stdin", "test_brace_group_close_only_trailer_restores_stdin"]
+                 "test_brace_group_trailing_redirect_restores_stdin", "test_brace_group_close_only_trailer_restores_stdin",
+                 "test_brace_group_move_trailer_restores_stdin"]
 
     def _run(self, hook_text):
         with tempfile.TemporaryDirectory() as td:

@@ -2923,20 +2923,6 @@ def _stdin_op_effect(op, target):
     # fail-closed instead of being guessed as another descriptor.
     if fd.isdigit():
         if fd.strip("0") != "":
-            # A move from fd 0 (`1<&0-`, `2>&0-`, leading-zero sources
-            # like `1<&00-`) duplicates fd 0 elsewhere and then closes the
-            # source: fd 0 is closed, so it scopes its compound exactly
-            # like `<&-` (verified on Bash: the source is saved and
-            # restored after the group). It is not a supply (no program is
-            # delivered), and as a move it may fail, so the exec-segment
-            # close-as-proof gate still keeps provenance (fail-closed).
-            # `1<&0` (no dash) moves nothing and stays out, as does an
-            # unrecognised/uncertain source (literal digits only).
-            if base in ("<&", ">&"):
-                _t = target or ""
-                _src = _t[:-1] if _t.endswith("-") and _t != "-" else ""
-                if _src.isdigit() and _src.strip("0") == "":
-                    return "close"
             return None
     elif fd != "":
         pass  # unknown fd spelling: keep stdin classification below
@@ -2983,18 +2969,21 @@ def _redirect_op_may_fail(op, target):
     return True
 
 
-def _scan_redirect_target(seg, j, n):
-# Unquoted target word starting at op end j; None when uncertain.
-# A quote anywhere inside the word (not just a leading one) makes the
-# target unresolved: only a complete literal word counts as a close.
-# Verified on Bash: only the complete expanded word closes fd 0.
+def _scan_redirect_word(seg, j, n):
+    """(raw, quoted, end): raw target word with quotes/backslashes intact.
+
+    Shared scanner for redirect targets. raw is None when no word follows.
+    quoted is True when an unescaped quote opens or occurs inside the word
+    (leading, embedded or trailing); backslash-escaped quotes do not count.
+    The end index lets callers continue scanning after the word.
+    """
     t = j
     while t < n and seg[t] in " \t":
         t += 1
-    if t >= n or seg[t] in "'\"":
-        return None
+    if t >= n:
+        return None, False, j
     u = t
-    quoted_target = False
+    quoted_target = seg[t] in "'\""
     while u < n and seg[u] not in " \t" + REDIR_MARK:
         if seg[u] in "'\"":
             quoted_target = True
@@ -3008,13 +2997,22 @@ def _scan_redirect_target(seg, j, n):
             u += 2
             continue
         u += 1
-    if quoted_target:
+    return seg[t:u], quoted_target, u
+
+
+def _scan_redirect_target(seg, j, n):
+# Unquoted target word starting at op end j; None when uncertain.
+# A quote anywhere inside the word (not just a leading one) makes the
+# target unresolved: only a complete literal word counts as a close.
+# Verified on Bash: only the complete expanded word closes fd 0.
+    word, quoted_target, _ = _scan_redirect_word(seg, j, n)
+    if word is None or quoted_target:
         return None
-    return seg[t:u]
+    return word
 
 
 def _scan_stdin_ops(seg):
-    """Yield (op, target) for each unquoted `<`- or `>&`-family operator.
+    """Yield (op, target, raw) for each unquoted `<`- or `>&`-family operator.
 
     Works on lexer-marked segments (operators stand off as `\x01<op>` words,
     fd digits glued inside the marker) and on raw text alike. Quoted `<`
@@ -3057,7 +3055,8 @@ def _scan_stdin_ops(seg):
                 j += 1
             op = fd + seg[i:j]
             target = _scan_redirect_target(seg, j, n)
-            ops.append((op, target))
+            raw, _, _ = _scan_redirect_word(seg, j, n)
+            ops.append((op, target, raw))
             i = j
             continue
         if c == ">" and not (i + 1 < n and seg[i + 1] == "("):
@@ -3075,7 +3074,8 @@ def _scan_stdin_ops(seg):
                 j += 1
             op = fd + seg[i:j]
             target = _scan_redirect_target(seg, j, n)
-            ops.append((op, target))
+            raw, _, _ = _scan_redirect_word(seg, j, n)
+            ops.append((op, target, raw))
             i = j
             continue
         if c == "&" and i + 1 < n and seg[i + 1] == ">":
@@ -3088,7 +3088,8 @@ def _scan_stdin_ops(seg):
                 j += 1
             op = seg[i:j]
             target = _scan_redirect_target(seg, j, n)
-            ops.append((op, target))
+            raw, _, _ = _scan_redirect_word(seg, j, n)
+            ops.append((op, target, raw))
             i = j
             continue
         i += 1
@@ -3104,7 +3105,7 @@ def _has_input_redirect(seg):
     not stdin redirections. Quoted operators and backslash-escaped
     `<`/`>` are literal arguments.
     """
-    for op, target in _scan_stdin_ops(seg):
+    for op, target, _raw in _scan_stdin_ops(seg):
         if _stdin_op_effect(op, target) == "supply":
             return True
     return False
@@ -3229,14 +3230,14 @@ def _exec_segment_effect(words, seg):
     # provenance (return None: fail-closed).
     last = None
     ops = list(_scan_stdin_ops(seg))
-    for op, target in ops:
+    for op, target, _raw in ops:
         e = _stdin_op_effect(op, target)
         if e is not None:
             last = e
     if last == "supply":
         return "supply"
     if last == "close" and not has_command:
-        if all(not _redirect_op_may_fail(o, t) for o, t in ops):
+        if all(not _redirect_op_may_fail(o, t) for o, t, _r in ops):
             return "close"
         return None
     return None
@@ -4358,6 +4359,136 @@ def _followed_by_fork_boundary(segs, idx, ps):
         j += 1
     return False
 
+def _move_scope_close(op, raw):
+    """True when a nonzero-fd `(... )<&`/`>&` trailer closes fd 0 (scope change).
+
+    A move from fd 0 (`1<&0-`, `2>&0-`, default-fd `>&0-`, leading-zero
+    sources) duplicates fd 0 elsewhere and then closes the source: Bash
+    saves fd 0 and restores it after the compound, so the pre-group stdin
+    survives (verified on Bash with harmless fixtures). This is not a
+    supply (no program is delivered), and `_has_input_redirect` keeps its
+    supply-only meaning. Only the shared `_fd0_scope_change` predicate
+    consults this (single decision point for all three passes).
+
+    Dash rule (verified): the trailing `-` must be source-literal (bare or
+    backslash-escaped; `0\\-` moves). A quoted dash (`"0-"`, `0"-"`) moves
+    nothing: `<&` rejects it (group skipped -> pre-group, so restore) while
+    `>&` treats it as a filename (no fd-0 change). A lone escaped dash
+    (`\\-`) is rejected by Bash (skip -> restore). Digits may be literal,
+    quoted or leading-zero; backslash-escaped digits (`\\0-`) and dynamic
+    digits with a literal dash (`$u-`) both restore (skip-masked move).
+    A dynamic word (`$u`, backquote) restores for `<&` (possible move,
+    fail-closed) but is a filename for `>&` (parse-time, never a move).
+    Plain dups (`1<&0`, incl. quoted) and closes of other fds (`1<&-`)
+    touch no fd 0 and stay out, as do absent words (existing behaviour).
+    Moves from other fds (`1<&3-`) restore: a closed source skips the
+    group (verified), and source openness is statically unknown.
+    """
+    if raw is None:
+        # No word at all: a dangling `1<&`/`2>&` (including an empty quoted
+        # word dropped by the lexer, e.g. `1<&""`) never runs its command in
+        # Bash (syntax error / skipped group), so the pre-group stdin
+        # persists (fail-closed restore). Anything else keeps prior handling.
+        _m2 = re.match(r"^(\d*)(.*)$", op, re.S)
+        _fd2, _base2 = _m2.group(1), _m2.group(2)
+        if _base2 in ("<&", ">&") and _fd2 != "" and _fd2.strip("0") != "":
+            return True
+        return False
+    m = re.match(r"^(\d*)(.*)$", op, re.S)
+    fd, base = m.group(1), m.group(2)
+    if base not in ("<&", ">&"):
+        return False
+    if fd != "" and fd.strip("0") == "":
+        return False  # fd-0 ops are classified by _stdin_op_effect already
+    if fd == "" and base == "<&":
+        return False  # default-fd `<&` is fd 0: classified already
+    # Tokenise quote-intact: quotes/backslashes decide literalness.
+    toks = []  # ('lit'|'q'|'e', char); e = backslash-escaped
+    i, n, in_s, in_d = 0, len(raw), False, False
+    while i < n:
+        c = raw[i]
+        if in_s:
+            if c == "'":
+                in_s = False
+            else:
+                toks.append(("q", c))
+            i += 1
+            continue
+        if in_d:
+            if c == '"':
+                in_d = False
+            elif c == "\\" and i + 1 < n:
+                toks.append(("q", raw[i + 1]))
+                i += 2
+                continue
+            else:
+                toks.append(("q", c))
+            i += 1
+            continue
+        if c == "\\" and i + 1 < n:
+            toks.append(("e", raw[i + 1]))
+            i += 2
+            continue
+        if c == "'":
+            in_s = True
+        elif c == '"':
+            in_d = True
+        else:
+            toks.append(("lit", c))
+        i += 1
+    # Unescaped runtime expansion: not statically fixed.
+    if any(k == "lit" and c in "$`" for k, c in toks):
+        return base == "<&"
+    # Trailing dash?
+    if toks and toks[-1][1] == "-":
+        kind = toks[-1][0]  # 'lit' (bare), 'e' (escaped), 'q' (quoted)
+        prefix = toks[:-1]
+        if kind == "q":
+            # A quoted dash moves nothing. A lone quoted dash still closes
+            # the op's own fd (`"-"` verified on Bash); a quoted dash with
+            # a prefix is rejected by `<&` (skip -> restore) and reads a
+            # filename for `>&` (no fd-0 change).
+            if not prefix:
+                return False
+            return base == "<&"
+        if not prefix:
+            # Bare `-` closes the op's own fd (no fd-0 change); a lone
+            # escaped dash is rejected by Bash (skip -> restore).
+            return kind == "e"
+        if any(k == "e" for k, _ in prefix):
+            return True  # escaped digits etc.: rejected -> skip -> restore
+        stripped = "".join(c for k, c in prefix if k in ("lit", "q"))
+        if any(k == "lit" and not c.isdigit() for k, c in prefix):
+            # Non-digit prefix (`foo-`): `<&` rejects (skip -> restore),
+            # `>&` opens a file (no fd-0 change).
+            return base == "<&"
+        if stripped != "" and stripped.strip("0") == "" and all(c.isdigit() for c in stripped):
+            return True  # certain move from fd 0 (leading zeros ok)
+        if stripped != "" and all(c.isdigit() for c in stripped):
+            # A move from another fd (`1<&3-`): valid runs leave fd 0
+            # untouched, but a closed source aborts the trailer and skips
+            # the group (verified on Bash), leaving pre-group stdin.
+            # Source openness is statically unknown, so restore
+            # (fail-closed: never fail-open on a skipped group).
+            return True
+        return base == "<&"  # non-digit remainder: reject-vs-file as above
+    # No trailing dash: strip quotes for the shape test.
+    stripped = "".join(c for k, c in toks if k in ("lit", "q"))
+    if any(k == "e" for k, _ in toks):
+        # Backslash words: `<&` rejects them (skip -> restore); `>&` reads
+        # them as filenames (`\\foo`, `\\0` verified) except move-shaped
+        # `\\M-`, which is rejected (handled in the dash branch above).
+        return base == "<&"
+    if stripped != "" and all(c.isdigit() for c in stripped):
+        return False  # plain dup (`0`, `"0"`): fd 0 passes through
+    if stripped == "-" :
+        return False  # close of the op's own fd (`-`, `"-"`): fd 0 untouched
+    if stripped == "":
+        return True  # empty word (`""`): rejected -> skip -> restore
+    # Plain words: `<&` rejects them (skip -> restore), `>&` opens a file.
+    return base == "<&"
+
+
 def _fd0_scope_change(seg):
     """True when a segment transiently modifies fd 0 (supply or close).
 
@@ -4373,8 +4504,10 @@ def _fd0_scope_change(seg):
     single decision point. Supply-only stdin taint stays with
     `_has_input_redirect` (unchanged): a close delivers no program.
     """
-    for op, target in _scan_stdin_ops(seg):
+    for op, target, raw in _scan_stdin_ops(seg):
         if _stdin_op_effect(op, target) is not None:
+            return True
+        if _move_scope_close(op, raw):
             return True
     return False
 
