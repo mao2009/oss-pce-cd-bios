@@ -177,6 +177,46 @@ class BuildSprdma35HostTests(unittest.TestCase):
                     self.orig, Path(td), 0x109, "debug", "host-bad",
                     ["-D", "IPL_PUBLIC"], track=2, cd_35="sometimes")
 
+    def test_symlinked_sprdma_leaf_refused(self):
+        # PR #834 MAJOR: a pre-planted symlink at ex_sprdma_{variant}.o
+        # must be refused by the R2 preflight BEFORE any output write and
+        # BEFORE any assembler execution (same discipline as $4A/$25/$24/$36).
+        # Both plain (existing target) and dangling targets refuse.
+        import sys
+        import tempfile
+        import hashlib
+        sys.path[:0] = [str(ROOT / "tools")]
+        import build_ipl_loader_g5_2base as b2
+        self.assertIn("ex_sprdma_victim.o", b2._g5_leaf_names("victim"))
+        for tag, target in (("plain", Path("/etc/hostname")),
+                            ("dangling", Path("/tmp/definitely-missing-834-target.bin"))):
+            with self.subTest(target=tag):
+                with tempfile.TemporaryDirectory(prefix="pce-35-symlink-") as td:
+                    out = Path(td)
+                    if tag == "plain":
+                        sentinel = out / "sentinel.bin"
+                        sentinel.write_bytes(b"SENTINEL-834")
+                        sha_before = hashlib.sha256(sentinel.read_bytes()).hexdigest()
+                        (out / "ex_sprdma_victim.o").symlink_to(sentinel)
+                    else:
+                        (out / "ex_sprdma_victim.o").symlink_to(target)
+                    with self.assertRaises(ValueError):
+                        b2.build_ipl_loader_g5_rom(
+                            self.orig, out, 0x109, "debug", "victim",
+                            ["-D", "IPL_PUBLIC"], track=2,
+                            cd_35="experimental")
+                    # No outputs created through the symlink; sentinel intact.
+                    if tag == "plain":
+                        self.assertEqual(sorted(p.name for p in out.iterdir()),
+                                         ["ex_sprdma_victim.o", "sentinel.bin"])
+                        self.assertEqual(sentinel.read_bytes(), b"SENTINEL-834")
+                        self.assertEqual(hashlib.sha256(sentinel.read_bytes()).hexdigest(),
+                                         sha_before)
+                    else:
+                        self.assertEqual(sorted(p.name for p in out.iterdir()),
+                                         ["ex_sprdma_victim.o"])
+                    self.assertTrue((out / "ex_sprdma_victim.o").is_symlink())
+
     def test_redirect_helper_guards(self):
         import sys
         sys.path[:0] = [str(ROOT / "tools")]

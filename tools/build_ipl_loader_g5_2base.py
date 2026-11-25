@@ -335,6 +335,7 @@ def _g5_leaf_names(variant: str) -> list:
     names += [f"cd_base_2base_{variant}.o", f"cd_read_commercial_{variant}.o",
               f"cd_read_link_{variant}.o", f"ex_memopen_{variant}.o",
               f"ex_scrmod_{variant}.o", f"ex_dotmod_{variant}.o", f"ex_satclr_{variant}.o",
+              f"ex_sprdma_{variant}.o",
               f"ipl_loader_g5_glue_{variant}.o", f"ipl_loader_{variant}.o",
               "bank0-ipl-loader-g5.cfg",
               f"bank0-{variant}-g5.bin", f"ipl-loader-g5-{variant}.lbl",
