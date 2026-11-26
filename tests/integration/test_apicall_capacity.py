@@ -210,12 +210,10 @@ class ApicallCapacitySynthetic(unittest.TestCase):
         self._check_full(self._run("cap20x64", 20, max_apicalls=64), 20)
 
     def test_invalid_caps_refused(self):
-        import geargrafx_api_entry as E
-        for bad in (0, -1, 65, 100, True, "16", 7.5, None.__class__):
-            if bad is None.__class__:
-                continue
+        # None means "default 8" and is valid, so it is not listed here.
+        for bad in (0, -1, 65, 100, True, False, "16", 7.5, (8,)):
             with self.subTest(cap=bad):
-                with self.assertRaises(ValueError):
+                with self.assertRaises((ValueError, TypeError)):
                     self._run("capbad", 7, max_apicalls=bad)
 
     def test_direct_probe_rejects_bad_cap(self):

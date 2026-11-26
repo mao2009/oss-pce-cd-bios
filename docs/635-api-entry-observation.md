@@ -28,7 +28,7 @@
 
 - ゲストRAM書込・レジスタ書込・割り込み投入・MMIO読取なし。状態はpinnedコアのstate pointer読取のみ（`memory->Read(first_pc)` は既存probeと同一のROM `SEI`先頭確認。副作用なし）。スタック2バイトは `GetWorkingRAM()` の読取（書込なし、MPR1前提）
 - 入口観測はwatch比較のみで実行順序を変更しない。観測あり/なしの自動対照は本ハーネスには含まれない。二観測一致（本debugger vs Frame Tracer normal-frame）は手動で外部比較する（自動証明ではない）
-- APICALLは上限8件（cycle毎）。超過時は `apicall_truncated=true` をRUNに記録する。先頭8件を超える呼出しは未観測として扱う
+- APICALLは上限8件が既定（cycle毎、引数 `max_apicalls` で1..64に拡張可、上限なしは禁止）。超過時は `apicall_truncated=true` と超過件数 `apicall_dropped` をRUNに記録する。上限内の先頭呼出しは順序どおり記録し、超過分は未観測として扱う。既定8の動作は変更なし（#54 観測機構改善）
 
 ## 商用再測定（opt-in、手動・ローカル限定）
 
