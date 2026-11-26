@@ -6,15 +6,18 @@ carries `vdc_ar/vdc_cr/vdc_rcr/vdc_sr` read via
 `HuC6270::GetState()` pointers only (no MMIO, no SR-clear side effect,
 no extra steps). Default 6/7-arg behavior is unchanged.
 
-Proves:
+Proves (only named-test kills are RED):
 - off vs on: same slots/order/halt/regs/MPR/IDR/IRR (steps excluded for
   natural jitter), VDC keys present only when enabled, ints in range.
 - invalid vdc values refused fail-closed (Python ValueError, C++ exit 2).
 - commercial mode stays RAM-clean with VDC keys.
 - cold/warm identical order every run.
-- source uses GetState, never ReadRegister/WriteRegister for VDC.
-- mutation RED: fixed value, CR/SR swap, mask error, I-flag error,
-  timing shift, state-change, extra-step, gate bypass, out-of-scope.
+- source uses GetState, never the destructive status path for VDC.
+- mutation RED only for non-int/out-of-range constants, missing keys,
+  invalid flags, and commercial-gate bypass. In-range constants,
+  CR/SR transposition, mask/I-flag helpers, timing shift, extra step,
+  and out-of-scope injection are NOT demonstrated as kills (see
+  test_mutation_* and docs/55 §6.3).
 
 NOT a compatible System Card BIOS. Synthetic media only, pinned core only
 (Geargrafx b49ae82a, cc65 71746c8). No commercial media access here

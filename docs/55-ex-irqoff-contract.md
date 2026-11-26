@@ -189,10 +189,10 @@ observed boundary (within the probe’s sampling, not a continuous guarantee).
   `$33`/`$4A`/`$23`/`$25`/`$24`; A=2 at `$02`; CUE[1] shows A=176/1/2/127/255
   across its path). A=7 correlates with the tail of the CUE[0] chain, not
   with `$2C` alone.
-- Caller-side (S3b): HuC’s own `jsr ex_irqon` / `jsr ex_irqoff` have **no
-  register setup**; the calls inherit whatever A the prior `ex_*` left.
-  This refutes “A=7 is a required input” as a general contract: HuC does not
-  set it.
+- Caller-side (S3b): HuC’s own `jsr ex_irqon` / `jsr ex_irqoff` perform **no
+explicit register setup** in the listing; the calls inherit whatever A the
+prior `ex_*` left (whose output contracts are UNKNOWN). Absence of setup
+does NOT prove A=7 is unrequired; the requirement stays unresolved.
 - Zeograd (S1): IN `(N/A)` for both `$2C` and `$2D`. No input domain, no
   bitmask, no enum is given. Absence is recorded, never promoted.
 - Hugo (S4): no body, no input handling to inspect.
@@ -201,9 +201,11 @@ observed boundary (within the probe’s sampling, not a continuous guarantee).
   does not exist.
 - Classification: **residual** (leftover from the commercial game’s own
   chain, possibly threaded through `$36`/`$35` scaffolds which preserve A)
-  is the only grounded reading; **bitmask** and **enum** are UNGROUNDED
-  hypotheses. No implementation may branch on A=7, mask with A, or require
-  A=7 without independent caller-side + genuine-contract evidence.
+  is a hypothesis consistent with the observations; **bitmask** and **enum**
+  are UNGROUNDED hypotheses; “A=7 required” vs “A irrelevant” both remain
+  UNKNOWN (no explicit-setup proof either way). No implementation may branch
+  on A=7, mask with A, or require A=7 without independent caller-side +
+  genuine-contract evidence.
 - The same reasoning applies to X=0/Y=0/P=`$06`: OBSERVED once, never a
   contract.
 
@@ -320,32 +322,47 @@ emulator steps, no event-time change, halt unchanged, commercial gate kept.
   proves off/on对照, invalid-arg refusal (Python + direct C++), commercial-clean
   with VDC keys, cold/warm order, and mutation RED (see §6.3).
 
-### 6.3 Mutation (what was actually killed)
+### 6.3 Mutation (only named-test kills are RED; the rest are NOT demonstrated)
 
-- Fixed-value: a record with constant `vdc_cr` is rejected by a range/behavior
-  check (CR must be observed, not assumed; synthetic ROMs with different VDC
-  setups produce different CR).
-- CR/SR swap: a record with `vdc_cr`/`vdc_sr` transposed is rejected (CR is
-  enables/display, SR is pending status; Zeograd + S5a bit assignments +
-  read-clear semantics distinguish them).
-- IE mask error (e.g. bit 2 vs bit 3): a classifier that accepts RCR-bit for
-  IRQ is rejected (S1 pair + S5a `CONTROL_SCANLINE 0x04` vs
-  `CONTROL_VBLANK 0x08`).
-- I-flag error: P=`$06` (I=1) vs P=`$04` confusion is rejected (P bit 2 is I;
-  OBSERVED I=1 is not a postcondition).
-- Snapshot-timing shift (mid-callee vs boundary): a record taken after the
-  callee runs is rejected (API-boundary discipline: WRAM→BIOS transition,
-  before entry execution).
-- Observation-changes-state / extra-step mutants: any probe containing
-  `ReadRegister`/`WriteRegister`/extra `RunInstruction` is rejected by source
-  audit + off/on对照 (no systematic step/halt change).
+Demonstrated (named tests in `tests/integration/test_apicall_vdc_snapshot.py`):
+
+- Non-integer / out-of-range VDC constants: rejected by `check_vdc_record`
+  (`test_mutation_fixed_value_rejected` rejects string `"0"` and `99999`;
+  `test_on_has_valid_vdc_keys` + `test_commercial_mode_stays_clean_with_vdc`
+  require ints in `AR 0..31 / CR 0..0x1FFF / RCR 0..0x3FF / SR 0..0x7F`).
+  In-range constants (e.g. an all-zero record) are NOT distinguished by range
+  alone and are NOT reported as killed.
+- Missing VDC keys: rejected (`test_mutation_cr_sr_swap_rejected` deletes each
+  of `vdc_ar/vdc_cr/vdc_rcr/vdc_sr` and requires `ValueError`; `test_off_has_no_vdc_keys`
+  requires absence only when disabled).
+- Invalid `vdc_snapshot` values: rejected fail-closed (Python `ValueError` +
+  direct-C++ exit 2, `test_invalid_vdc_refused` +
+  `test_direct_probe_rejects_bad_vdc`).
 - Commercial-gate bypass (`*_hex`/stack words with VDC on): rejected by
-  `assert_commercial_clean`.
-- Out-of-scope混入 (VRAM/SATB/WRAM content, absolute CUE paths/hashes):
-  rejected (VDC record is 4 ints only; harness never logs media identifiers).
+  `assert_commercial_clean` (`test_commercial_mode_stays_clean_with_vdc`).
 
-Only actually-killed mutants are reported as RED; side-effect mutants live in
-synthetic isolation only, never in the commercial probe.
+NOT demonstrated as probe-level kills (recorded as gaps, never as RED):
+
+- CR/SR transposition of in-range values: `test_mutation_cr_sr_swap_rejected`
+  asserts the swapped in-range record **passes** `check_vdc_record` (keys stay
+  distinct, values stay in range). Transposition is NOT rejected by range
+  alone; callers must assert CR-enables vs SR-pending separately.
+- IE mask (bit 2 vs bit 3) and I-flag bit position: `test_mutation_mask_and_iflag_helpers`
+  asserts literal bit expressions only (`0x08` vs `0x04`, P bit 2). It does not
+  exercise the probe or its output.
+- Snapshot-timing shift (post-callee vs boundary): no test produces or rejects
+  a post-callee snapshot; only the API-boundary discipline (WRAM→BIOS
+  transition, before entry execution) is documented.
+- Extra emulator step: the source audit forbids destructive status-path calls
+  and guest writes, but does not forbid an extra `RunInstruction`/`RunToVBlank`;
+  the off/on对照 removes `step` before comparing (natural ±2k jitter), so an
+  extra step is NOT demonstrated as rejected.
+- Out-of-scope VRAM/SATB/WRAM/framebuffer or media identifiers: the VDC record
+  is by construction 4 ints only and the harness never logs media identifiers,
+  but no mutant injects such content, so NOT reported as a killed mutant.
+
+Side-effect mutants live in synthetic isolation only, never in the commercial
+probe.
 
 ### 6.4 E1/E2/E3 selection
 
@@ -424,7 +441,8 @@ so genuine ordering remains UNKNOWN.
 - U6. Timing (sync/async, wait vs fire-and-continue, VBlank alignment): UNKNOWN.
 - U7. Relation to `$2A`/`$2B` RCR pair and `$2E`–`$33` display pair: names adjacent, contracts unlinked (bit-2 vs bit-3 vs `$20F3`-only is a hint pattern, not a contract).
 - U8. NEXT after `$2C`: UNKNOWN (stub halt; no execution past `$2C` observed).
-- U9. A=7 domain: RESIDUAL (see §4); bitmask/enum UNGROUNDED.
+- U9. A=7 domain: UNKNOWN (no explicit setup observed; residual is a
+hypothesis, not proof; bitmask/enum UNGROUNDED; requirement unresolved per §4).
 - U10. Second-core cross-check: NOT_RUN (Geargrafx-only).
 - U11. `$20F3`/`$20F7` mirror values: UNKNOWN (no WRAM reads in commercial probe by design).
 - U12. Manuals pinning: NOT_RUN (S5c HYPOTHESIS).
