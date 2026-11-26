@@ -52,10 +52,19 @@ def build_payload(out: Path, name: str, defines: list, origin: int = 0x3000) -> 
     return code
 
 
-def run_probe(probe, rom, cue, labels, budget, mode="synthetic"):
+def run_probe(probe, rom, cue, labels, budget, mode="synthetic", max_apicalls=None):
     # Paths stay local-only: errors are sanitized to fixed codes below (no paths logged).
+    # max_apicalls is an optional bounded APICALL capacity (default 8, allowed
+    # 1..64); None keeps the historical 6-argument probe invocation unchanged.
+    if max_apicalls is not None:
+        if (isinstance(max_apicalls, bool) or not isinstance(max_apicalls, int)
+                or not 1 <= max_apicalls <= 64):
+            raise ValueError("max_apicalls must be an int in 1..64")
     try:
-        result = subprocess.run([str(probe), str(rom), str(cue), str(labels), str(budget), mode],
+        cmd = [str(probe), str(rom), str(cue), str(labels), str(budget), mode]
+        if max_apicalls is not None:
+            cmd.append(str(max_apicalls))
+        result = subprocess.run(cmd,
                                 check=True, capture_output=True, text=True, timeout=900)
     except subprocess.CalledProcessError:
         raise ValueError(f"probe execution failed (mode {mode})")
