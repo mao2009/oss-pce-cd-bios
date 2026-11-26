@@ -326,37 +326,49 @@ emulator steps, no event-time change, halt unchanged, commercial gate kept.
 
 Demonstrated (named tests in `tests/integration/test_apicall_vdc_snapshot.py`):
 
+- Known-state exact match: synthetic guests preset distinct nonzero AR/CR/RCR
+  (P1: AR=2/CR=0x10/RCR=0xAA; P2: AR=7/CR=0x20/RCR=0x155, different entry
+  regs) and VBLANK-pending SR (P3: AR=3/CR=0x08/RCR=0x00/SR=0x20 after a WRAM
+  spin). The probe emits exactly those values at API entry
+  (`test_exact_known_state_p1`, `test_exact_known_state_p2_distinct`,
+  `test_pending_sr_exact_and_persists_p3`; 2 calls each, cold/warm identical,
+  clean `cd_halt_ok`). One fixed value cannot satisfy two patterns.
+- Pending-SR persistence (non-destructive): P3 asserts SR=0x20 on BOTH
+  consecutive calls in the same run, both cycles
+  (`test_pending_sr_exact_and_persists_p3`). A destructive (SR-clearing)
+  observation would show 0x00 on the 2nd call and fail.
+- All-zero / wrong-register / swapped falsified records: fabricated all-zero
+  and CR/SR-transposed records fail the exact-match assertions against P1/P3
+  (`test_allzero_falsified_rejected_against_known`,
+  `test_swapped_falsified_rejected_against_known`). This is what catches an
+  all-zero-emitting or wrong-register probe.
 - Non-integer / out-of-range VDC constants: rejected by `check_vdc_record`
-  (`test_mutation_fixed_value_rejected` rejects string `"0"` and `99999`;
-  `test_on_has_valid_vdc_keys` + `test_commercial_mode_stays_clean_with_vdc`
-  require ints in `AR 0..31 / CR 0..0x1FFF / RCR 0..0x3FF / SR 0..0x7F`).
-  In-range constants (e.g. an all-zero record) are NOT distinguished by range
-  alone and are NOT reported as killed.
-- Missing VDC keys: rejected (`test_mutation_cr_sr_swap_rejected` deletes each
-  of `vdc_ar/vdc_cr/vdc_rcr/vdc_sr` and requires `ValueError`; `test_off_has_no_vdc_keys`
-  requires absence only when disabled).
-- Invalid `vdc_snapshot` values: rejected fail-closed (Python `ValueError` +
-  direct-C++ exit 2, `test_invalid_vdc_refused` +
-  `test_direct_probe_rejects_bad_vdc`).
-- Commercial-gate bypass (`*_hex`/stack words with VDC on): rejected by
-  `assert_commercial_clean` (`test_commercial_mode_stays_clean_with_vdc`).
+  (`test_mutation_fixed_value_rejected` rejects string `"0"` and `99999`).
+- Missing VDC keys: rejected (`test_missing_vdc_key_rejected`).
+- Invalid `vdc_snapshot` values: rejected fail-closed with exact C++ exit 2
+  plus valid 0/1 controls completing the run on real files (Python
+  `ValueError`, `test_invalid_vdc_refused` + `test_direct_probe_rejects_bad_vdc`).
+- Commercial gate: positive clean audit passes
+  (`test_commercial_mode_stays_clean_with_vdc`) and injected `*_hex`/stack
+  fields are rejected (`test_commercial_gate_rejects_forbidden_fields`).
+  Positive-only passage and injected-negative rejection are not the same
+  claim; both are tested separately.
 
 NOT demonstrated as probe-level kills (recorded as gaps, never as RED):
 
-- CR/SR transposition of in-range values: `test_mutation_cr_sr_swap_rejected`
-  asserts the swapped in-range record **passes** `check_vdc_record` (keys stay
-  distinct, values stay in range). Transposition is NOT rejected by range
-  alone; callers must assert CR-enables vs SR-pending separately.
-- IE mask (bit 2 vs bit 3) and I-flag bit position: `test_mutation_mask_and_iflag_helpers`
-  asserts literal bit expressions only (`0x08` vs `0x04`, P bit 2). It does not
-  exercise the probe or its output.
+- In-range constants by range check alone: `check_vdc_record` accepts them by
+  design (`test_range_check_limitation_inrange_swap` documents an in-range
+  CR/SR transposition passing); exact-match tests cover this instead.
+- IE mask (bit 2 vs bit 3) and I-flag bit position:
+  `test_bit_expression_helpers_not_probe_level` asserts literal bit
+  expressions only. It does not exercise the probe or its output.
 - Snapshot-timing shift (post-callee vs boundary): no test produces or rejects
   a post-callee snapshot; only the API-boundary discipline (WRAM→BIOS
   transition, before entry execution) is documented.
 - Extra emulator step: the source audit forbids destructive status-path calls
   and guest writes, but does not forbid an extra `RunInstruction`/`RunToVBlank`;
-  the off/on对照 removes `step` before comparing (natural ±2k jitter), so an
-  extra step is NOT demonstrated as rejected.
+  the off/on对照 excludes `step` (natural ±2k jitter documented in the
+  strict off/on test), so an extra step is NOT demonstrated as rejected.
 - Out-of-scope VRAM/SATB/WRAM/framebuffer or media identifiers: the VDC record
   is by construction 4 ints only and the harness never logs media identifiers,
   but no mutant injects such content, so NOT reported as a killed mutant.
@@ -461,11 +473,18 @@ hypothesis, not proof; bitmask/enum UNGROUNDED; requirement unresolved per §4).
   commercial output stays RAM-clean + structural-only, existing
   source-property tests GREEN.
 - (c) Regression suite `tests/integration/test_apicall_vdc_snapshot.py` ALL
-  GREEN on pinned core (off/on对照, exact/over caps, boundary 0/1, invalid
-  refusals incl. direct-C++ invocation, commercial-clean with VDC keys,
-  cold/warm identical order every run), RED→GREEN recorded, mutants RED
-  (fixed-value, CR/SR swap, mask, I-flag, timing, state-change, extra-step,
-  gate-bypass, out-of-scope).
+  GREEN on pinned core: strict off/on对照 (expected 2-call normal halt,
+  slots/entries/reason/pc/RAM/dropped, steps excluded as natural jitter),
+  known-state exact match (P1/P2 distinct AR/CR/RCR + P3 VBLANK-pending SR
+  persisting across consecutive calls, cold/warm identical), invalid refusals
+  (Python ValueError + direct-C++ exit 2 exactly with valid 0/1 controls),
+  commercial-clean positive plus injected-forbidden-field negative,
+  truncation invariant, cold/warm order. RED→GREEN recorded. Mutants RED only
+  for non-int/out-of-range constants, missing keys, invalid flags,
+  all-zero/wrong-register/swapped falsified records against known
+  expectations, and gate bypass. NOT RED (documented limits): in-range
+  constants by range alone, mask/I-flag literal helpers (not probe-level),
+  timing shift, extra step, out-of-scope injection.
 - (d) Re-observation on the same HEAD: synthetic off/on对照 + ExpE cap-32
   VDC (9 calls through `$2C`, X=`$2C` halt, trunc False, dropped 0,
   cold/warm identical, VDC table §4) + CUE[1] ExpE `$1C` regression (6 calls,
