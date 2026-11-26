@@ -43,8 +43,23 @@ static const unsigned kPayloadLo = 0x3000;
 static const unsigned kPayloadHi = 0xE000;     // exclusive
 
 int main(int argc, char** argv) {
-    // argv: probe rom cue labels max_steps mode (synthetic|commercial)
-    if (argc != 6) return 2;
+    // argv: probe rom cue labels max_steps mode [max_apicalls]
+    // (synthetic|commercial). max_apicalls is an optional bounded APICALL
+    // capacity (default 8, allowed 1..64). It only widens how many
+    // payload->BIOS transfers are recorded; the watch location, halt logic,
+    // commercial output gating, and every other default are unchanged.
+    // Unbounded capture stays prohibited: over-capacity transfers are dropped
+    // and counted (apicall_dropped), never buffered.
+    if (argc != 6 && argc != 7) return 2;
+    unsigned max_apicalls = 8;
+    if (argc == 7) {
+        const char* caparg = argv[6];
+        if (caparg == nullptr || *caparg == '\0') return 2;
+        char* capend = nullptr;
+        long capval = std::strtol(caparg, &capend, 10);
+        if (capend == caparg || *capend != '\0' || capval < 1 || capval > 64) return 2;
+        max_apicalls = (unsigned)capval;
+    }
     std::string mode = argv[5];
     bool commercial = false;
     if (mode == "synthetic") commercial = false;
@@ -135,6 +150,7 @@ int main(int argc, char** argv) {
         unsigned prev_sp = cpu->S->GetValue() & 0xFF;
         int api_calls = 0;
         bool api_truncated = false;
+        long api_dropped = 0;
         auto halt_name = [&](unsigned pc) -> const char* {
             for (const auto& name : halts)
                 if (pc == labels[name]) return name.c_str();
@@ -147,7 +163,7 @@ int main(int argc, char** argv) {
             if (step > 0 &&
                 prev_pc >= kPayloadLo && prev_pc < kPayloadHi &&
                 pc >= kTableBase) {
-                if (api_calls >= 8) { api_truncated = true; }
+                if ((unsigned)api_calls >= max_apicalls) { api_truncated = true; api_dropped++; }
                 else { api_calls++;
                 unsigned slot = 0; bool in_table = false;
                 if (pc >= kTableBase && pc < kTableEnd && (pc - kTableBase) % 3 == 0) {
@@ -212,8 +228,8 @@ int main(int argc, char** argv) {
             }
         }
         regs("RUN", reason.c_str(), step);
-        std::printf(",\"reason\":\"%s\",\"halt_confirmed\":%s,\"halted_after_step\":%ld,\"halt_confirmation_steps\":%ld,\"halt_confirmation_required\":%ld,\"apicall_truncated\":%s",
-                    reason.c_str(), halt_confirmed ? "true" : "false", arrival, confirmed_steps, kHaltConfirmSteps, api_truncated ? "true" : "false");
+        std::printf(",\"reason\":\"%s\",\"halt_confirmed\":%s,\"halted_after_step\":%ld,\"halt_confirmation_steps\":%ld,\"halt_confirmation_required\":%ld,\"apicall_truncated\":%s,\"apicall_dropped\":%ld",
+                    reason.c_str(), halt_confirmed ? "true" : "false", arrival, confirmed_steps, kHaltConfirmSteps, api_truncated ? "true" : "false", api_dropped);
         if (!commercial) { hex("result_hex", kResultOffset, 32); hex("buffer_hex", kBufferOffset, kBufferBytes); }
         std::printf("}\n");
     };
