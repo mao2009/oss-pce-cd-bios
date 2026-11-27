@@ -71,6 +71,19 @@ def _full_green_set():
 
 
 class AggregateNegativeTests(unittest.TestCase):
+    def _run_env(self):
+        # Deterministic run binding: the aggregator compares evidence run IDs
+        # against its own GITHUB_RUN_ID (fail-closed against cross-run mixing).
+        # Pin both sides to the fixture values so the unit tests do not depend
+        # on the ambient CI environment.
+        return {"GITHUB_RUN_ID": "run-1", "GITHUB_RUN_ATTEMPT": "1"}
+
+    def _aggregate(self, evs, **kw):
+        import os
+        from unittest import mock
+        with mock.patch.dict(os.environ, self._run_env(), clear=False):
+            return shard.aggregate(evs, **kw)
+
     def _green(self):
         evs = [_evidence("rc-0", n=2), _evidence("rc-1", n=1),
                  _evidence("rc-2", n=1), _evidence("rc-3", n=1)]
@@ -88,9 +101,13 @@ class AggregateNegativeTests(unittest.TestCase):
                 return list(e["planned_ids"])
         return []
 
-    def _problems(self, evs):
-        problems = shard.aggregate(evs, live_integration_modules=[],
-                                   live_host_ids=self._host_live(evs))
+    def _problems(self, evs, **kw):
+        import os
+        from unittest import mock
+        kw.setdefault("live_integration_modules", [])
+        kw.setdefault("live_host_ids", self._host_live(evs))
+        with mock.patch.dict(os.environ, self._run_env(), clear=False):
+            problems = shard.aggregate(evs, **kw)
         return [p for p in problems if "unclassified" not in p
                 and "unknown test module" not in p]
 
@@ -152,7 +169,7 @@ class AggregateNegativeTests(unittest.TestCase):
                         problems)
 
     def test_09_artifact_missing_red(self):
-        problems = shard.aggregate([], live_integration_modules=[])
+        problems = self._problems([])
         self.assertTrue(any("no shard evidence" in p for p in problems), problems)
 
     def test_10_import_failure_red(self):
@@ -187,8 +204,12 @@ class AggregateNegativeTests(unittest.TestCase):
                         problems)
 
     def test_14_unclassified_newcomer_red(self):
+        import os
+        from unittest import mock
         evs = self._green()
-        problems = shard.aggregate(evs, live_integration_modules=["test_brand_new_mod"])
+        with mock.patch.dict(os.environ, self._run_env(), clear=False):
+            problems = shard.aggregate(evs, live_integration_modules=["test_brand_new_mod"],
+                                       live_host_ids=self._host_live(evs))
         self.assertTrue(any("unclassified test module" in p for p in problems), problems)
 
     def test_15_direct_unit_missing_red(self):
@@ -325,20 +346,26 @@ class RunIdentityNegativeTests(unittest.TestCase):
         static = _static_evidence()
         return evs + [host, direct, static]
 
+    def _aggregate_here(self, evs, **kw):
+        import os
+        from unittest import mock
+        kw.setdefault("live_integration_modules", [])
+        kw.setdefault("live_host_ids", [r["id"] for e in evs
+                                        if e.get("shard_id") == "host"
+                                        for r in e.get("executed", [])])
+        with mock.patch.dict(os.environ,
+                             {"GITHUB_RUN_ID": "run-1", "GITHUB_RUN_ATTEMPT": "1"},
+                             clear=False):
+            return shard.aggregate(evs, **kw)
+
     def test_mixed_run_ids_red(self):
         evs = self._base()
         evs[0]["run_id"] = "run-other"
-        problems = shard.aggregate(evs, live_integration_modules=[],
-                                   live_host_ids=[r["id"] for e in evs
-                                                  if e["shard_id"] == "host"
-                                                  for r in e["executed"]])
+        problems = self._aggregate_here(evs)
         self.assertTrue(any("run ID" in p for p in problems), problems)
 
     def test_mixed_attempts_red(self):
         evs = self._base()
         evs[1]["run_attempt"] = "2"
-        problems = shard.aggregate(evs, live_integration_modules=[],
-                                   live_host_ids=[r["id"] for e in evs
-                                                  if e["shard_id"] == "host"
-                                                  for r in e["executed"]])
+        problems = self._aggregate_here(evs)
         self.assertTrue(any("attempt" in p for p in problems), problems)
