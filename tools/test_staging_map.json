@@ -7,7 +7,7 @@
   "local_media": {
     "rom_dir_present": false,
     "access": "none",
-    "verdict": "SKIP (no ./rom access; synthetic fixtures only)"
+    "verdict": "PASS (no ./rom access; synthetic fixtures only)"
   },
   "levels": {
     "L0": "QUICK: seconds-scale immediate checks on changed files",

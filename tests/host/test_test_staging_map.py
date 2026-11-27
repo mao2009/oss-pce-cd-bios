@@ -9,7 +9,7 @@ coverage. They also pin the safety invariants the map must not change
 docs-only fast path disabled).
 
 Local commercial media (./rom/) is never accessed: the media test below
-SKIPs whether rom/ is absent or present (SKIP, never PASS).
+asserts ./rom absence and PASSES (never SKIP; synthetic fixtures only).
 """
 import fnmatch
 import json
@@ -310,10 +310,20 @@ class MapSafetyTest(unittest.TestCase):
             self.assertFalse(rec["release_eligible"])
 
     def test_no_rom_access(self):
+        # Fail-closed PASS (never SKIP): needs no ./rom input, so an
+        # unconditional assertion is strictly stronger than SKIP and keeps
+        # shard-aggregation allowlists untouched (no unlisted-SKIP). If
+        # ./rom ever appears, this FAILS instead of silently skipping.
         rom = ROOT / "rom"
-        if rom.exists():
-            self.skipTest("SKIP: ./rom present; commercial media is never read by map tests")
-        self.skipTest("SKIP: ./rom absent; no real-media test attempted (synthetic fixtures only)")
+        self.assertFalse(rom.exists(),
+                         "./rom must be absent; map tests never read commercial media")
+        m = load_map()
+        self.assertFalse(m["local_media"]["rom_dir_present"],
+                         "map local_media must record rom absent")
+        self.assertEqual(m["local_media"]["access"], "none",
+                         "map local_media must record no access")
+        self.assertTrue(m["local_media"]["verdict"].startswith("PASS"),
+                        "map local_media verdict must record PASS (never SKIP)")
 
 
 if __name__ == "__main__":

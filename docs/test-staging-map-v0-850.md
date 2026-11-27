@@ -140,11 +140,11 @@ only; docs-only fast path disabled; no `./rom` access.
 ## 7. Validation evidence
 
 - RED: with the map absent, `python3 -m unittest
-  tests.host.test_test_staging_map` → 14 failures + 1 SKIP (0 errors;
+  tests.host.test_test_staging_map` → 15 failures (0 errors, 0 skipped;
   only the 2 map-independent invariant tests pass).
-- GREEN: with the map present → `Ran 17 tests ... OK (skipped=1)` in
-  ~0.1–0.2 s local; the single SKIP is the `./rom` media test (absent →
-  SKIP, never PASS).
+- GREEN: with the map present → `Ran 17 tests ... OK` in
+  ~0.1–0.2 s local; the `./rom` media test asserts absence and PASSES
+  (never SKIP; no real-media test attempted, synthetic fixtures only).
 - `git diff --check`: clean (new files only, no whitespace errors).
 - `make check`: PASS (unchanged static gate; see run log for timing).
 - `git status --short`: only the 3 added files (plus the branch itself).
