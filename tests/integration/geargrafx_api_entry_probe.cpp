@@ -7,14 +7,22 @@
 // return validation is done internally: the probe emits only a boolean match
 // (return_matches_caller) plus a status (MATCH/MISMATCH/UNKNOWN), never stack
 // bytes or the return address value.
+// Optional non-invasive VDC snapshot (vdc=1, default 0): at each APICALL entry
+// the probe also records VDC AR/CR(R05)/RCR(R06)/SR via
+// HuC6270::GetState() pointers only. This performs no MMIO status reads
+// (unlike the destructive status path, which clears SR and deasserts IRQ1),
+// no guest writes, no
+// register edits, no IRQ inject, no extra steps and no event-time change.
+// Commercial output stays structural (integer fields only, no RAM dumps).
 //
 // Output contract (commercial fail-closed at the C++ boundary):
 // - APICALL: structural values only (addresses, slot, SP delta, entry regs,
-//   MPR, IDR/IRR, return booleans). No guest RAM bytes in either mode.
+//   MPR, IDR/IRR, return booleans, optional VDC ints). No guest RAM bytes in either mode.
 // - RUN/HIT dumps (result_hex/buffer_hex/buffer_head_hex): SYNTHETIC mode only.
 //   COMMERCIAL mode generates no RAM dumps at all (no hex() calls), so nothing
 //   can leak via stdout/logs even before Python filtering.
 #include "geargrafx_core.h"
+#include "huc6270.h"
 #include "huc6280.h"
 #include "memory.h"
 #include "media.h"
@@ -43,22 +51,36 @@ static const unsigned kPayloadLo = 0x3000;
 static const unsigned kPayloadHi = 0xE000;     // exclusive
 
 int main(int argc, char** argv) {
-    // argv: probe rom cue labels max_steps mode [max_apicalls]
+    // argv: probe rom cue labels max_steps mode [max_apicalls] [vdc_snapshot]
     // (synthetic|commercial). max_apicalls is an optional bounded APICALL
     // capacity (default 8, allowed 1..64). It only widens how many
     // payload->BIOS transfers are recorded; the watch location, halt logic,
     // commercial output gating, and every other default are unchanged.
     // Unbounded capture stays prohibited: over-capacity transfers are dropped
     // and counted (apicall_dropped), never buffered.
-    if (argc != 6 && argc != 7) return 2;
+    // vdc_snapshot is an optional non-invasive VDC observation flag (default 0,
+    // allowed 0..1). When 1, each APICALL record additionally carries
+    // vdc_ar/vdc_cr/vdc_rcr/vdc_sr read via GetState() pointers only (no MMIO,
+    // no SR-clear side effect, no extra steps). Default 0 preserves the
+    // historical 6/7-argument behavior byte-for-byte.
+    if (argc != 6 && argc != 7 && argc != 8) return 2;
     unsigned max_apicalls = 8;
-    if (argc == 7) {
+    bool vdc_snapshot = false;
+    if (argc >= 7) {
         const char* caparg = argv[6];
         if (caparg == nullptr || *caparg == '\0') return 2;
         char* capend = nullptr;
         long capval = std::strtol(caparg, &capend, 10);
         if (capend == caparg || *capend != '\0' || capval < 1 || capval > 64) return 2;
         max_apicalls = (unsigned)capval;
+    }
+    if (argc == 8) {
+        const char* vdcarg = argv[7];
+        if (vdcarg == nullptr || *vdcarg == '\0') return 2;
+        char* vdcend = nullptr;
+        long vdcval = std::strtol(vdcarg, &vdcend, 10);
+        if (vdcend == vdcarg || *vdcend != '\0' || (vdcval != 0 && vdcval != 1)) return 2;
+        vdc_snapshot = (vdcval == 1);
     }
     std::string mode = argv[5];
     bool commercial = false;
@@ -193,7 +215,19 @@ int main(int argc, char** argv) {
                             cpu->A->GetValue(), cpu->X->GetValue(), cpu->Y->GetValue(), cpu->P->GetValue(),
                             stack_check, ret_json, (unsigned)*cpu->IDR, (unsigned)*cpu->IRR);
                 for (int i = 0; i < 8; i++) std::printf("%s%u", i ? "," : "", memory->GetMpr(i));
-                std::printf("]}\n"); }
+                std::printf("]");
+                if (vdc_snapshot) {
+                    // Non-invasive read only: GetState() pointers, never MMIO.
+                    // The destructive status path would clear SR; this path never does.
+                    auto vs = core.GetHuC6270_1()->GetState();
+                    unsigned vdc_ar = (unsigned)*vs->AR;
+                    unsigned vdc_cr = (unsigned)vs->R[5];
+                    unsigned vdc_rcr = (unsigned)vs->R[6];
+                    unsigned vdc_sr = (unsigned)*vs->SR;
+                    std::printf(",\"vdc_ar\":%u,\"vdc_cr\":%u,\"vdc_rcr\":%u,\"vdc_sr\":%u",
+                                vdc_ar, vdc_cr, vdc_rcr, vdc_sr);
+                }
+                std::printf("}\n"); }
             }
             for (const auto& item : labels)
                 if (pc == item.second && !seen.count(item.first)) {
