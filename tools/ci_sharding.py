@@ -598,6 +598,7 @@ def _mirror_smoke_evidence(evidence_out):
     src = os.path.join(ROOT, SMOKE_EVIDENCE_SRC)
     if os.path.isfile(src):
         import shutil
+        os.makedirs(dest_dir, exist_ok=True)
         shutil.copyfile(src, os.path.join(dest_dir, SMOKE_EVIDENCE_NAME))
         return True
     return False

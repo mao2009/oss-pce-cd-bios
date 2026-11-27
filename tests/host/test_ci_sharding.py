@@ -812,6 +812,26 @@ class SmokeHandoffTests(unittest.TestCase):
                 smoke_rom_path=rom)
             self.assertTrue(any("core mismatch" in p for p in problems), problems)
 
+    def test_mirror_creates_dest_dir(self):
+        # Regression: the mirror runs before evidence.json is written, so the
+        # destination directory may not exist yet (direct-job FileNotFoundError).
+        import tempfile, json as _json
+        with tempfile.TemporaryDirectory() as td:
+            fake_root = os.path.join(td, "root")
+            src_dir = os.path.join(fake_root, "build", "debug")
+            os.makedirs(src_dir)
+            with open(os.path.join(src_dir, "geargrafx-evidence.json"), "w") as fh:
+                _json.dump({"schema_version": 1}, fh)
+            old_root = shard.ROOT
+            shard.ROOT = fake_root
+            try:
+                dest = os.path.join(td, "newdir", "sub", "evidence.json")
+                self.assertTrue(shard._mirror_smoke_evidence(dest))
+                self.assertTrue(os.path.isfile(
+                    os.path.join(td, "newdir", "sub", "geargrafx-evidence.json")))
+            finally:
+                shard.ROOT = old_root
+
     def test_smoke_bad_schema_red(self):
         import tempfile, hashlib
         with tempfile.TemporaryDirectory() as td:
