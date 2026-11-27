@@ -434,6 +434,81 @@ class AggregateNegativeTests(unittest.TestCase):
             target_shard="host")
         self.assertTrue(any("unlisted SKIP" in p for p in problems), problems)
 
+    def test_gate_flips_midrun_red(self):
+        # Phase F: a gated skip whose gate changed between run start and end
+        # is unverifiable (skip timing unknown) and must be RED even though
+        # the start gate alone would allow it.
+        shards = {"rc-0": ["test_m_a"], "rc-1": ["test_m_b"],
+                  "rc-2": ["test_m_c"], "rc-3": ["test_m_d", "test_gated_mod"]}
+        test_id = "test_gated_mod.GameCueTests.test_00"
+        live = {m: [f"{m}.Class.test_{i:02d}" for i in range(2)]
+                for mods in shards.values() for m in mods}
+        live["test_gated_mod"] = ["test_gated_mod.GameCueTests.test_00",
+                                  "test_gated_mod.GameCueTests.test_01"]
+        live = {m: sorted(set(v)) for m, v in live.items()}
+        evs = []
+        for sid, mods in shards.items():
+            planned = sorted({i for m in mods for i in live[m]})
+            recs = []
+            for pid in planned:
+                if pid == test_id:
+                    recs.append({"id": pid, "result": "skipped",
+                                 "reason": "set OSS_PCE_GAME_CUE to the local game CUE path",
+                                 "duration_s": 0.1})
+                else:
+                    recs.append({"id": pid, "result": "ok", "reason": "",
+                                 "duration_s": 0.1})
+            evs.append({"schema": 1, "manifest_version": 1, "sha": "abc123",
+                        "kind": "integration-unittest", "shard_id": sid,
+                        "run_id": "run-1", "run_attempt": "1",
+                        "toolchain": {"cc65": "x", "geargrafx": "y"},
+                        "gate_states": {"dev_rom_present": True,
+                                        "env_oss_pce_game_cue_set": False},
+                        "gate_states_end": {"dev_rom_present": True,
+                                            "env_oss_pce_game_cue_set": False},
+                        "started": "2026-11-27T00:00:00Z",
+                        "planned_ids": list(planned),
+                        "executed": list(recs),
+                        "failures": 0, "errors": 0, "duration_s": 1.0})
+        host = _evidence("host", kind="host-unittest", n=2)
+        host.update({"run_id": "run-1", "run_attempt": "1",
+                     "gate_states": {"dev_rom_present": True,
+                                     "env_oss_pce_game_cue_set": False},
+                     "gate_states_end": {"dev_rom_present": True,
+                                         "env_oss_pce_game_cue_set": False}})
+        direct = _direct_evidence(units=tuple(shard.DIRECT_UNITS))
+        direct.update({"run_id": "run-1", "run_attempt": "1",
+                       "gate_states": {"dev_rom_present": True,
+                                       "env_oss_pce_game_cue_set": False},
+                       "gate_states_end": {"dev_rom_present": True,
+                                           "env_oss_pce_game_cue_set": False}})
+        static = _static_evidence()
+        static.update({"run_id": "run-1", "run_attempt": "1",
+                       "gate_states": {"dev_rom_present": True,
+                                       "env_oss_pce_game_cue_set": False},
+                       "gate_states_end": {"dev_rom_present": True,
+                                           "env_oss_pce_game_cue_set": False}})
+        evs = evs + [host, direct, static]
+        # add an allowlisted gate rule consumer: temporarily extend the
+        # GameCue allowlist to the synthetic module
+        import copy
+        gate_mod = [r for r in shard.ALLOWED_SKIPS if "GameCue" in r["id"]][0]
+        saved = dict(gate_mod)
+        gate_mod["id"] = "test_gated_mod.GameCueTests."
+        try:
+            # flip one shard's END gate state: start allowed the skip, end doesn't
+            for e in evs:
+                if e["shard_id"] == "rc-3":
+                    e["gate_states_end"] = {"dev_rom_present": True,
+                                            "env_oss_pce_game_cue_set": True}
+            problems = shard.aggregate(evs, shards=shards, live_integration_ids=live,
+                                       live_host_ids=[r["id"] for r in host["executed"]],
+                                       identity=self._identity())
+            self.assertTrue(any("gate changed during run" in p for p in problems), problems)
+        finally:
+            gate_mod.clear()
+            gate_mod.update(saved)
+
     def test_gate_gamecue_wrong_reason_red(self):
         problems = self._gated_skip_case(
             "test_cd_boot_loader_layout.GameCueTests.test_x",
