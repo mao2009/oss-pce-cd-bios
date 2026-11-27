@@ -267,8 +267,106 @@ def manifest_modules():
     return mods
 
 
+def parse_makefile_direct_units(makefile_text, mode="debug"):
+    """Parse the `integration` target into ordered unit descriptors.
+
+    Returns [("script", argv...), ("make", target), ...] with $(PYTHON)
+    unchanged and $(MODE) substituted by `mode`. Only the `integration`
+    target and the sub-make targets it invokes are read; anything else in
+    the Makefile is out of scope.
+    """
+    lines = makefile_text.splitlines()
+    start = next(i for i, l in enumerate(lines) if re.match(r"^integration\s*:", l))
+    body = []
+    for l in lines[start + 1:]:
+        if not l.startswith("\t"):
+            break
+        body.append(l.strip())
+    units = []
+    targets = {}
+    current = None
+    for l in lines:
+        m = re.match(r"^([A-Za-z0-9_.-]+)\s*:[^=]*$", l)
+        if m:
+            current = m.group(1)
+            targets[current] = []
+        elif current is not None and l.startswith("\t"):
+            targets[current].append(l.strip())
+    for entry in body:
+        m = re.match(r"^\$\(MAKE\)\s+([A-Za-z0-9_.-]+)\s*$", entry)
+        if m:
+            units.append(("make", m.group(1)))
+            continue
+        m = re.match(r"^\$\(PYTHON\)\s+(\S+)(.*)$", entry)
+        if m:
+            script, rest = m.group(1), m.group(2).strip()
+            token_re = re.compile(r'"([^"]*)"|(\S+)')
+            args = [a or b for a, b in token_re.findall(rest)]
+            argv = [sys.executable,
+                    script.replace("$(MODE)", mode).replace("$(ROOT)", ROOT)]
+            argv.extend(a.replace("$(MODE)", mode).replace("$(ROOT)", ROOT) for a in args)
+            units.append(("script", argv))
+            continue
+        units.append(("unknown", entry))
+    return units, targets
+
+
+def expected_direct_units(mode="debug"):
+    """Canonical unit list derived from DIRECT_UNITS + the runner mapping
+    (single source of truth for WHAT must run; the Makefile stays the source
+    of truth for HOW each unit runs, verified equal below)."""
+    out = []
+    for u in DIRECT_UNITS:
+        if u == "direct:smoke":
+            out.append(("script",
+                        [sys.executable, "tests/integration/geargrafx_smoke.py",
+                         "--rom", f"build/{mode}/smoke-test-not-bios.pce",
+                         "--output", f"build/{mode}/geargrafx-evidence.json"]))
+            continue
+        entry = DIRECT_MAKE_TARGETS.get(u)
+        if entry is None or len(entry) != 1:
+            raise ValueError(f"runner mapping must map {u} to exactly one command")
+        target = entry[0]
+        if target.endswith(".py"):
+            out.append(("script", [sys.executable, "tests/integration/" + target]))
+        else:
+            out.append(("make", target))
+    return out
+
+
+def check_makefile_parity(makefile_text=None, mode="debug"):
+    """The Makefile `integration` recipe and DIRECT_UNITS must describe the
+    same ordered unit set (MEDIUM: single source of truth by verification).
+    A Makefile-only addition/removal/reorder/arg-change, or a manifest-only
+    entry, is RED. Sub-make bodies are executed verbatim via `make <target>`,
+    so only their names are pinned here; direct scripts are pinned with full
+    argv (script + args + MODE)."""
+    if makefile_text is None:
+        with open(os.path.join(ROOT, "Makefile"), encoding="utf-8") as fh:
+            makefile_text = fh.read()
+    problems = []
+    try:
+        units, targets = parse_makefile_direct_units(makefile_text, mode=mode)
+    except (StopIteration, ValueError) as error:
+        return [f"integration target unparsable: {error}"]
+    try:
+        expected = expected_direct_units(mode=mode)
+    except Exception as error:
+        return [f"manifest unit mapping broken: {error}"]
+    if units != expected:
+        problems.append("Makefile integration recipe != manifest DIRECT_UNITS mapping "
+                        f"(makefile={units!r} manifest={expected!r})")
+    for kind, name in units:
+        if kind == "unknown":
+            problems.append(f"unrecognized integration recipe line: {name!r}")
+        elif kind == "make" and name not in targets:
+            problems.append(f"integration sub-make target missing from Makefile: {name}")
+    return problems
+
+
 def check_manifest(live_modules=None):
-    """Manifest self-consistency vs live discover. Returns a list of problems."""
+    """Manifest self-consistency vs live discover AND vs the Makefile
+    integration recipe (MEDIUM: single source of truth by verification)."""
     problems = []
     if live_modules is None:
         live_modules = sorted({i.split(".")[0] for i in discover_ids("tests/integration", "test_*.py")})
@@ -306,6 +404,7 @@ def check_manifest(live_modules=None):
     for unit in STATIC_MAKE_TARGETS:
         if unit not in STATIC_UNITS:
             problems.append(f"runner mapping without manifest unit: {unit}")
+    problems.extend(check_makefile_parity())
     return problems
 
 
@@ -375,7 +474,7 @@ def _base_evidence(kind, shard_id):
         "kind": kind,
         "shard_id": shard_id,
         "toolchain": _tool_pins(),
-        "gate_states": _gate_states(),
+        "gate_states": {},
         "started": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
 
@@ -388,6 +487,10 @@ def _require_cc65():
 
 def run_shard(shard_id, evidence_out):
     _require_cc65()
+    # Gate snapshot at START (closest feasible proxy for skip time; see Phase F).
+    # A second snapshot at the end must match on every gate an allowlisted
+    # skip relies on, or the run is rejected (no silent mid-run changes).
+    gates_start = _gate_states()
     if shard_id not in INTEGRATION_SHARDS:
         raise ValueError(f"unknown shard: {shard_id} (expected one of {sorted(INTEGRATION_SHARDS)})")
     modules = INTEGRATION_SHARDS[shard_id]
@@ -425,6 +528,8 @@ def run_shard(shard_id, evidence_out):
         "failures": len(collector.failures),
         "errors": len(collector.errors),
         "duration_s": round(duration, 3),
+        "gate_states": gates_start,
+        "gate_states_end": _gate_states(),
     })
     _write_evidence(evidence_out, evidence)
     return collector
@@ -432,6 +537,7 @@ def run_shard(shard_id, evidence_out):
 
 def run_host(evidence_out):
     _require_cc65()
+    gates_start = _gate_states()
     loader = unittest.TestLoader()
     suite = loader.discover("tests/host")
     planned = []
@@ -454,6 +560,8 @@ def run_host(evidence_out):
         "failures": len(collector.failures),
         "errors": len(collector.errors),
         "duration_s": round(duration, 3),
+        "gate_states": gates_start,
+        "gate_states_end": _gate_states(),
     })
     _write_evidence(evidence_out, evidence)
     return collector
@@ -871,6 +979,9 @@ def aggregate(evidence_list, live_integration_ids=None, live_host_ids=None,
         if mod not in live_by_module:
             problems.append(f"manifest lists unknown test module: {mod}")
     # Per-shard planned-vs-EXPECTED with allowlisted skips only.
+    # Gated skips used below are collected so the gate-stability check can
+    # verify their gate did not change mid-run (Phase F).
+    gated_shards = set()
     by_id = {e.get("shard_id"): e for e in evidence_list}
     expected_by_shard = {sid: _expected_ids_for_shard(sid, shards, live_by_module, live_host_ids)
                          for sid in expected_shards}
@@ -927,6 +1038,8 @@ def aggregate(evidence_list, live_integration_ids=None, live_host_ids=None,
                 problems.append(f"shard {sid}: unlisted class-level SKIP {class_name}: {reason!r}")
             else:
                 pseudo_by_class[class_name] = rule
+                if rule.get("gate"):
+                    gated_shards.add(sid)
         for pid in sorted(set(expected) - seen_ids):
             pid_class = ".".join(pid.split(".")[:2])
             if pid_class in pseudo_by_class:
@@ -940,7 +1053,10 @@ def aggregate(evidence_list, live_integration_ids=None, live_host_ids=None,
             if r["result"] in ("fail", "error", "unexpected-success"):
                 problems.append(f"shard {sid}: {rid} result={r['result']}")
             elif r["result"] == "skipped":
-                if _match_allowed_skip(rid, r.get("reason", ""), e.get("gate_states", {})):
+                rule = _match_allowed_skip(rid, r.get("reason", ""), e.get("gate_states", {}))
+                if rule is not None:
+                    if rule.get("gate"):
+                        gated_shards.add(sid)
                     continue
                 problems.append(f"shard {sid}: unlisted SKIP {rid}: {r.get('reason', '')!r}")
             elif r["result"] not in ("ok", "expected-failure"):
@@ -956,6 +1072,15 @@ def aggregate(evidence_list, live_integration_ids=None, live_host_ids=None,
             for pid in e.get("planned_ids", []):
                 if pid not in live_host_ids:
                     problems.append(f"host shard plans unknown test ID: {pid}")
+    # Gate-stability gate (Phase F): a gated skip is only valid if its gate
+    # did not change between run start and run end. Otherwise the skip-time
+    # state is unprovable and the evidence is rejected (fail-closed; re-run
+    # with a pinned environment instead of silently accepting).
+    for sid in sorted(gated_shards):
+        e = by_id.get(sid, {})
+        if e.get("gate_states", {}) != e.get("gate_states_end", {}):
+            problems.append(f"shard {sid}: gate changed during run; gated skip "
+                            "timing unverifiable (record start/end gate states and re-run)")
     # Union gate: every live ID executed-or-allowlisted-skipped somewhere,
     # nothing else. Cross-shard executed duplicates are RED (misrouting or
     # double-run); unexecuted leftovers without an allowlisted gate are RED.

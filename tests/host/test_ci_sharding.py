@@ -36,6 +36,8 @@ def _evidence(shard_id="rc-0", kind="integration-unittest", n=3, sha="abc123",
         "toolchain": {"cc65": "x", "geargrafx": "y"},
         "gate_states": {"dev_rom_present": True,
                          "env_oss_pce_game_cue_set": False},
+        "gate_states_end": {"dev_rom_present": True,
+                            "env_oss_pce_game_cue_set": False},
         "started": "2026-11-27T00:00:00Z",
         "planned_ids": list(planned),
         "executed": [_ok_record(i, mod) for i in range(n)],
@@ -103,6 +105,9 @@ class AggregateNegativeTests(unittest.TestCase):
         for e in evs + [host]:
             e.setdefault("run_id", "run-1")
             e.setdefault("run_attempt", "1")
+            e.setdefault("gate_states", {"dev_rom_present": True,
+                                         "env_oss_pce_game_cue_set": False})
+            e.setdefault("gate_states_end", dict(e["gate_states"]))
         direct = _direct_evidence(units=tuple(shard.DIRECT_UNITS))
         static = _static_evidence()
         return evs + [host, direct, static]
@@ -360,19 +365,23 @@ class AggregateNegativeTests(unittest.TestCase):
                         "run_id": "run-1", "run_attempt": "1",
                         "toolchain": {"cc65": "x", "geargrafx": "y"},
                         "gate_states": dict(gates),
+                        "gate_states_end": dict(gates),
                         "started": "2026-11-27T00:00:00Z",
                         "planned_ids": list(planned),
                         "executed": list(recs),
                         "failures": 0, "errors": 0, "duration_s": 1.0})
         host = _evidence("host", kind="host-unittest", n=2)
         host.update({"run_id": "run-1", "run_attempt": "1",
-                     "gate_states": dict(gates)})
+                     "gate_states": dict(gates),
+                     "gate_states_end": dict(gates)})
         direct = _direct_evidence(units=tuple(shard.DIRECT_UNITS))
         direct.update({"run_id": "run-1", "run_attempt": "1",
-                       "gate_states": dict(gates)})
+                       "gate_states": dict(gates),
+                       "gate_states_end": dict(gates)})
         static = _static_evidence()
         static.update({"run_id": "run-1", "run_attempt": "1",
-                       "gate_states": dict(gates)})
+                       "gate_states": dict(gates),
+                       "gate_states_end": dict(gates)})
         evs = evs + [host, direct, static]
         # Mark one planned ID in the target shard (or host) as the gated
         # skip under test. Planned stays the FULL expected set (MAJOR 1: a
@@ -466,12 +475,14 @@ class ClassSkipEndToEndTests(unittest.TestCase):
              "duration_s": 0.1},
         ]
         host["gate_states"] = dict(gate_states)
+        host["gate_states_end"] = dict(gate_states)
         host.update({"run_id": "run-1", "run_attempt": "1"})
         evs = [_evidence("rc-0", n=2, mod="test_m_a"), _evidence("rc-1", n=2, mod="test_m_b"),
                _evidence("rc-2", n=2, mod="test_m_c"), _evidence("rc-3", n=2, mod="test_m_d")]
         for e in evs:
             e.update({"run_id": "run-1", "run_attempt": "1",
-                      "gate_states": dict(gate_states)})
+                      "gate_states": dict(gate_states),
+                      "gate_states_end": dict(gate_states)})
         direct = _direct_evidence(units=tuple(shard.DIRECT_UNITS))
         direct.update({"run_id": "run-1", "run_attempt": "1",
                        "gate_states": dict(gate_states)})
@@ -528,6 +539,58 @@ class ClassSkipEndToEndTests(unittest.TestCase):
         self.assertEqual([("mod.ClassName", "r")], shard._pseudo_class_skip_record(recs))
         self.assertEqual([], shard._pseudo_class_skip_record(
             [{"id": "mod.Class.test_x", "result": "ok", "reason": ""}]))
+
+
+class MakefileParityTests(unittest.TestCase):
+    def _real_makefile(self):
+        return (ROOT / "Makefile").read_text(encoding="utf-8")
+
+    def test_real_makefile_matches_manifest(self):
+        self.assertEqual([], shard.check_makefile_parity(self._real_makefile()))
+
+    def _mutate(self, old, new, count=1):
+        text = self._real_makefile()
+        self.assertEqual(text.count(old), count, old)
+        return text.replace(old, new)
+
+    def test_added_direct_unit_red(self):
+        text = self._mutate("\t$(MAKE) block-preblock",
+                            "\t$(MAKE) block-preblock\n"
+                            "\t$(PYTHON) tests/integration/geargrafx_extra_probe.py")
+        problems = shard.check_makefile_parity(text)
+        self.assertTrue(any("DIRECT_UNITS" in p for p in problems), problems)
+
+    def test_removed_direct_unit_red(self):
+        text = self._mutate("\t$(MAKE) block-preblock\n", "")
+        problems = shard.check_makefile_parity(text)
+        self.assertTrue(any("DIRECT_UNITS" in p for p in problems), problems)
+
+    def test_reordered_direct_units_red(self):
+        a = "\t$(MAKE) block-write-guard"
+        b = "\t$(MAKE) block-transfer-matrix"
+        text = self._real_makefile()
+        self.assertLess(text.index(a), text.index(b))
+        text = text.replace(a, "\t$(MAKE) __TMP__").replace(b, a).replace("\t$(MAKE) __TMP__", b)
+        problems = shard.check_makefile_parity(text)
+        self.assertTrue(any("DIRECT_UNITS" in p for p in problems), problems)
+
+    def test_changed_argv_red(self):
+        text = self._mutate('--output "build/$(MODE)/geargrafx-evidence.json"',
+                            '--output "build/$(MODE)/other.json"')
+        problems = shard.check_makefile_parity(text)
+        self.assertTrue(any("DIRECT_UNITS" in p for p in problems), problems)
+
+    def test_changed_target_red(self):
+        text = self._mutate("\t$(MAKE) block-preblock", "\t$(MAKE) block-preblock2")
+        problems = shard.check_makefile_parity(text)
+        self.assertTrue(any("target missing" in p or "DIRECT_UNITS" in p for p in problems),
+                        problems)
+
+    def test_unknown_recipe_line_red(self):
+        text = self._mutate("\t$(MAKE) block-preblock",
+                            "\t$(MAKE) block-preblock\n\t@echo hello")
+        problems = shard.check_makefile_parity(text)
+        self.assertTrue(any("unrecognized" in p for p in problems), problems)
 
 
 class ManifestSelfCheckTests(unittest.TestCase):
@@ -615,6 +678,9 @@ class RunIdentityNegativeTests(unittest.TestCase):
         for e in evs + [host]:
             e.setdefault("run_id", "run-1")
             e.setdefault("run_attempt", "1")
+            e.setdefault("gate_states", {"dev_rom_present": True,
+                                         "env_oss_pce_game_cue_set": False})
+            e.setdefault("gate_states_end", dict(e["gate_states"]))
         direct = _direct_evidence(units=tuple(shard.DIRECT_UNITS))
         static = _static_evidence()
         return evs + [host, direct, static]
