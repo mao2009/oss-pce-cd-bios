@@ -46,7 +46,8 @@ def _evidence(shard_id="rc-0", kind="integration-unittest", n=3, sha="abc123",
     }
 
 
-def _static_evidence(sha="abc123", run_id="run-1", attempt="1"):
+def _static_evidence(sha="abc123", run_id="run-1", attempt="1",
+                     digest="0" * 64):
     return {
         "schema": 1, "manifest_version": 1, "sha": sha, "kind": "static",
         "shard_id": "static", "run_id": run_id, "run_attempt": attempt,
@@ -57,6 +58,7 @@ def _static_evidence(sha="abc123", run_id="run-1", attempt="1"):
         "executed": [{"unit": u, "exit_code": 0, "duration_s": 0.1, "note": ""}
                      for u in shard.STATIC_UNITS],
         "failures": 0, "errors": 0,
+        "verified_rom_sha256": digest,
     }
 
 
@@ -844,6 +846,138 @@ class SmokeHandoffTests(unittest.TestCase):
                 smoke_evidence_path=os.path.join(td, "direct", "evidence.json"),
                 smoke_rom_path=rom)
             self.assertTrue(any("schema_version" in p for p in problems), problems)
+
+
+class StaticHandoffBindingTests(unittest.TestCase):
+    """MAJOR 1: the published handoff tree must be the static-verified tree.
+
+    The static shard verifies one exact tree; verify-full publishes another.
+    The static evidence carries the verified digest and the aggregator binds
+    it to the handoff ROM bytes. CI additionally runs build --verify and
+    rom_provenance --rom/--manifest on the handoff pair (pinned by the
+    workflow contract test); these unit tests pin the digest binding."""
+
+    def _set(self, static_digest, rom_bytes, gate=None):
+        import tempfile
+        gate = dict(gate or {})
+        td = tempfile.mkdtemp()
+        rom_path = os.path.join(td, "handoff.pce")
+        with open(rom_path, "wb") as fh:
+            fh.write(rom_bytes)
+        mods = {"rc-0": ["test_st_m0"]}
+        live = {"test_st_m0": ["test_st_m0.Class.test_00"]}
+        rc = {"schema": 1, "manifest_version": 1, "sha": "abc123",
+              "kind": "integration-unittest", "shard_id": "rc-0",
+              "run_id": "run-1", "run_attempt": "1",
+              "toolchain": {"cc65": "x", "geargrafx": "rev-pin"},
+              "gate_states": dict(gate), "gate_states_end": dict(gate),
+              "started": "t", "planned_ids": list(live["test_st_m0"]),
+              "executed": [{"id": live["test_st_m0"][0], "result": "ok",
+                            "reason": "", "duration_s": 0.1}],
+              "failures": 0, "errors": 0, "duration_s": 1.0}
+        host = _evidence("host", kind="host-unittest", n=0)
+        host["planned_ids"] = ["test_m_host.Class.test_00"]
+        host["executed"] = [{"id": host["planned_ids"][0], "result": "ok",
+                             "reason": "", "duration_s": 0.1}]
+        host["failures"] = 0
+        host["errors"] = 0
+        host["toolchain"] = {"cc65": "x", "geargrafx": "rev-pin"}
+        static = _static_evidence(digest=static_digest)
+        static["toolchain"] = {"cc65": "x", "geargrafx": "rev-pin"}
+        direct = _direct_evidence(units=tuple(shard.DIRECT_UNITS))
+        direct["toolchain"] = {"cc65": "x", "geargrafx": "rev-pin"}
+        evs = [dict(e, run_id="run-1", run_attempt="1",
+                    gate_states=dict(gate), gate_states_end=dict(gate))
+               for e in (rc, host, static, direct)]
+        kw = dict(shards=mods, live_integration_ids=live,
+                  live_host_ids=list(host["planned_ids"]),
+                  identity={"sha": "abc123", "run_id": "run-1",
+                            "run_attempt": "1",
+                            "toolchain": {"cc65": "x", "geargrafx": "rev-pin"}},
+                  static_rom_path=rom_path)
+        return evs, kw
+
+    def test_static_handoff_match_green(self):
+        import hashlib
+        rom = b"VERIFIED-HANDOFF-ROM"
+        evs, kw = self._set(hashlib.sha256(rom).hexdigest(), rom)
+        self.assertEqual([], shard.aggregate(evs, **kw), kw)
+
+    def test_static_handoff_mismatch_red(self):
+        # Static-verified ROM differs from the handoff ROM, while the direct
+        # smoke binding still passes: the two bindings are independent, and
+        # the static divergence alone must RED.
+        import hashlib, json
+        static_rom, handoff_rom = b"STATIC-BYTES", b"HANDOFF-BYTES"
+        evs, kw = self._set(hashlib.sha256(static_rom).hexdigest(), handoff_rom)
+        smoke = {"schema_version": 1, "status": "PASS",
+                 "scope": "hucard-smoke-only",
+                 "rom_sha256": hashlib.sha256(handoff_rom).hexdigest(),
+                 "geargrafx_revision": "rev-pin", "core_sha256": "x" * 64,
+                 "observations": []}
+        direct_dir = os.path.join(os.path.dirname(kw["static_rom_path"]), "direct")
+        os.makedirs(direct_dir)
+        direct_path = os.path.join(direct_dir, "evidence.json")
+        with open(direct_path, "w", encoding="utf-8") as fh:
+            json.dump({}, fh)
+        with open(os.path.join(direct_dir, "geargrafx-evidence.json"), "w",
+                  encoding="utf-8") as fh:
+            json.dump(smoke, fh)
+        kw = dict(kw, smoke_evidence_path=direct_path,
+                  smoke_rom_path=kw["static_rom_path"])
+        problems = shard.aggregate(evs, **kw)
+        self.assertTrue(any("does not match the handoff ROM" in p for p in problems),
+                        problems)
+        self.assertFalse(any("smoke" in p.lower() and "missing" in p.lower()
+                             for p in problems), problems)
+
+    def test_static_digest_missing_red(self):
+        evs, kw = self._set("0" * 64, b"ROM")
+        del evs[2]["verified_rom_sha256"]
+        problems = shard.aggregate(evs, **kw)
+        self.assertTrue(any("verified_rom_sha256" in p for p in problems), problems)
+
+    def test_static_digest_malformed_red(self):
+        for bad in ("", "xyz", "0" * 63, "0" * 65, "G" * 64, None):
+            evs, kw = self._set(bad, b"ROM")
+            problems = shard.aggregate(evs, **kw)
+            self.assertTrue(any("verified_rom_sha256" in p for p in problems),
+                            (bad, problems))
+
+    def test_static_handoff_rom_missing_red(self):
+        import hashlib
+        evs, kw = self._set(hashlib.sha256(b"ROM").hexdigest(), b"ROM")
+        kw = dict(kw, static_rom_path=kw["static_rom_path"] + ".absent")
+        problems = shard.aggregate(evs, **kw)
+        self.assertTrue(any("handoff ROM missing" in p for p in problems), problems)
+
+    def test_static_binding_needs_static_evidence_red(self):
+        import hashlib
+        evs, kw = self._set(hashlib.sha256(b"ROM").hexdigest(), b"ROM")
+        evs = [e for e in evs if e.get("kind") != "static"]
+        problems = shard.aggregate(evs, **kw)
+        self.assertTrue(any("exactly one static evidence" in p for p in problems),
+                        problems)
+
+    def test_verified_rom_digest_helper(self):
+        # Absent verified ROM -> empty digest (aggregator REDs it); present
+        # file -> its SHA-256. ROOT is monkeypatched so the repo tree is
+        # never touched.
+        import hashlib, tempfile
+        old = shard.ROOT
+        fake = tempfile.mkdtemp()
+        shard.ROOT = fake
+        try:
+            self.assertEqual("", shard._verified_rom_digest())
+            rom_dir = os.path.join(fake, "build", "debug")
+            os.makedirs(rom_dir)
+            with open(os.path.join(rom_dir, "smoke-test-not-bios.pce"),
+                      "wb") as fh:
+                fh.write(b"DIGEST-ME")
+            self.assertEqual(hashlib.sha256(b"DIGEST-ME").hexdigest(),
+                             shard._verified_rom_digest())
+        finally:
+            shard.ROOT = old
 
 
 class ManifestSelfCheckTests(unittest.TestCase):

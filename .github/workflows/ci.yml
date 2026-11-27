@@ -30,6 +30,27 @@ jobs:
           # the full CI, so every required check is produced by the full jobs. Re-enabling needs that proof.
           echo "docs_only=false" >> "$GITHUB_OUTPUT"
           echo "docs-only fast path is disabled; full CI runs"
+  provenance:
+    # Changed-content provenance guard runs BEFORE any worker builds, tests,
+    # or uploads (pre-execution boundary parity with the former serial
+    # verify-full). All seven workers require this job to succeed; a
+    # failure, cancellation, or skip never permits worker execution.
+    needs: scope
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Provenance guard on changed content (list edits need a verified maintainer approval)
+        run: |
+          GH_TOKEN="${{ github.token }}" python3 tools/provenance_guard.py
+          python3 -m unittest discover -s tests/host -p 'test_provenance_guard.py' -v
   # Sharded verification (Issue #846): the same tests as the former serial
   # verify-full, distributed over parallel jobs and re-aggregated fail-closed
   # below. Every new job runs pinned setup/build, records evidence to
@@ -37,7 +58,7 @@ jobs:
   # The `verify` / `guard-verify` Required Check names and the intermediate
   # handoff shape are unchanged.
   host-tests:
-    needs: scope
+    needs: [scope, provenance]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -63,7 +84,7 @@ jobs:
           if-no-files-found: error
           retention-days: 1
   integration-direct:
-    needs: scope
+    needs: [scope, provenance]
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     permissions:
@@ -87,7 +108,7 @@ jobs:
           if-no-files-found: error
           retention-days: 1
   real-core-shard-0:
-    needs: scope
+    needs: [scope, provenance]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -111,7 +132,7 @@ jobs:
           if-no-files-found: error
           retention-days: 1
   real-core-shard-1:
-    needs: scope
+    needs: [scope, provenance]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -135,7 +156,7 @@ jobs:
           if-no-files-found: error
           retention-days: 1
   real-core-shard-2:
-    needs: scope
+    needs: [scope, provenance]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -159,7 +180,7 @@ jobs:
           if-no-files-found: error
           retention-days: 1
   real-core-shard-3:
-    needs: scope
+    needs: [scope, provenance]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -183,7 +204,7 @@ jobs:
           if-no-files-found: error
           retention-days: 1
   static-release:
-    needs: scope
+    needs: [scope, provenance]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -207,7 +228,7 @@ jobs:
           if-no-files-found: error
           retention-days: 1
   verify-full:
-    needs: [scope, host-tests, integration-direct, static-release, real-core-shard-0, real-core-shard-1, real-core-shard-2, real-core-shard-3]
+    needs: [scope, provenance, host-tests, integration-direct, static-release, real-core-shard-0, real-core-shard-1, real-core-shard-2, real-core-shard-3]
     if: always() && needs.scope.outputs.docs_only != 'true'
     runs-on: ubuntu-24.04
     # 60 min: aggregate gate over the sharded matrix (Issue #846). Shards carry
@@ -234,6 +255,7 @@ jobs:
       - name: Require all sharded gates to succeed (fail-closed aggregation)
         run: |
           test "${{ needs.scope.result }}" = "success"
+          test "${{ needs.provenance.result }}" = "success"
           test "${{ needs.host-tests.result }}" = "success"
           test "${{ needs.integration-direct.result }}" = "success"
           test "${{ needs.static-release.result }}" = "success"
@@ -277,7 +299,11 @@ jobs:
           name: intermediate-shard-rc-3-${{ github.sha }}
           path: .intake-shard-rc-3
       - name: Aggregate shard evidence (manifest match, fail-closed)
-        run: python3 tools/ci_sharding.py aggregate --evidence .intake-shard-host/evidence.json .intake-shard-direct/evidence.json .intake-shard-static/evidence.json .intake-shard-rc-0/evidence.json .intake-shard-rc-1/evidence.json .intake-shard-rc-2/evidence.json .intake-shard-rc-3/evidence.json --smoke-evidence .intake-shard-direct/geargrafx-evidence.json --smoke-rom build/debug/smoke-test-not-bios.pce
+        run: python3 tools/ci_sharding.py aggregate --evidence .intake-shard-host/evidence.json .intake-shard-direct/evidence.json .intake-shard-static/evidence.json .intake-shard-rc-0/evidence.json .intake-shard-rc-1/evidence.json .intake-shard-rc-2/evidence.json .intake-shard-rc-3/evidence.json --smoke-evidence .intake-shard-direct/geargrafx-evidence.json --smoke-rom build/debug/smoke-test-not-bios.pce --static-rom build/debug/smoke-test-not-bios.pce
+      - name: Verify the exact handoff ROM and manifest (release/provenance parity)
+        run: |
+          python3 tools/build.py --verify build/debug/smoke-test-not-bios.pce
+          python3 tools/rom_provenance.py --rom build/debug/smoke-test-not-bios.pce --manifest build/debug/manifest.json
       - name: Restore transferred smoke evidence into the handoff tree (verified above, byte-identical copy)
         run: |
           test -f .intake-shard-direct/geargrafx-evidence.json

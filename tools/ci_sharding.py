@@ -145,6 +145,13 @@ DIRECT_UNITS = [
 SMOKE_EVIDENCE_SRC = os.path.join("build", "debug", "geargrafx-evidence.json")
 SMOKE_EVIDENCE_NAME = "geargrafx-evidence.json"
 
+# The ROM the static shard verifies (release-compare, build --verify,
+# same-input reproduce, rom_provenance --rom/--manifest all run against this
+# file). The static evidence records its digest (MAJOR 1: handoff parity) so
+# the aggregator can bind the verified tree to the published handoff tree.
+STATIC_VERIFIED_ROM = os.path.join("build", "debug", "smoke-test-not-bios.pce")
+STATIC_HANDOFF_MANIFEST = os.path.join("build", "debug", "manifest.json")
+
 DIRECT_MAKE_TARGETS = {
     "direct:smoke": None,  # custom argv, handled below
     "direct:reference-guard": ["geargrafx_reference_guard.py"],
@@ -604,6 +611,18 @@ def _mirror_smoke_evidence(evidence_out):
     return False
 
 
+def _verified_rom_digest():
+    """SHA-256 of the exact ROM the static units verify (MAJOR 1).
+
+    Returns the hex digest, or "" when the file is absent (the aggregator
+    REDs a missing digest; absence is never silently accepted)."""
+    path = os.path.join(ROOT, STATIC_VERIFIED_ROM)
+    if not os.path.isfile(path):
+        return ""
+    with open(path, "rb") as fh:
+        return hashlib.sha256(fh.read()).hexdigest()
+
+
 def _run_unit_list(units, planned, runner, kind, shard_id, evidence_out):
     unknown = [u for u in units if u not in planned]
     if unknown:
@@ -624,6 +643,14 @@ def _run_unit_list(units, planned, runner, kind, shard_id, evidence_out):
         # Mirror the smoke evidence only for full direct runs; partial
         # (--only) runs cannot claim the handoff file.
         evidence["smoke_evidence_mirrored"] = _mirror_smoke_evidence(evidence_out)
+    if kind == "static" and set(units) == set(planned):
+        # Record the digest of the exact ROM the static units verified, but
+        # only for full runs where every unit passed; partial or failed runs
+        # cannot claim a verified ROM (the aggregator REDs them anyway).
+        if all(r["exit_code"] == 0 for r in records):
+            evidence["verified_rom_sha256"] = _verified_rom_digest()
+        else:
+            evidence["verified_rom_sha256"] = ""
     _write_evidence(evidence_out, evidence)
     return records
 
@@ -766,6 +793,14 @@ def _shape_problems(e):
             problems.append(f"shard {sid}: planned_units must be a non-empty list of units")
         if not isinstance(e.get("executed"), list):
             problems.append(f"shard {sid}: executed must be a list")
+    if kind == "static":
+        # MAJOR 1: static evidence must name the digest of the exact ROM its
+        # units verified. A missing or malformed digest cannot be bound to
+        # the handoff ROM, so it is RED here before any cross-file check.
+        digest = e.get("verified_rom_sha256")
+        if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+            problems.append(f"shard {sid}: missing or malformed verified_rom_sha256 "
+                            "(want 64 lowercase hex of the static-verified ROM)")
     if not isinstance(e.get("failures"), int) or not isinstance(e.get("errors"), int):
         problems.append(f"shard {sid}: failures/errors must be ints")
     return problems
@@ -893,8 +928,39 @@ def _expected_ids_for_shard(shard_id, shards, live_by_module, live_host_ids):
     return sorted(i for mod in shards.get(shard_id, []) for i in live_by_module.get(mod, []))
 
 
+def _check_static_handoff(evidence_list, static_rom_path):
+    """Bind the static-verified ROM to the handoff ROM (MAJOR 1).
+
+    The static shard verifies one exact tree (release-compare, build
+    --verify, same-input reproduce, rom_provenance --rom/--manifest); the
+    handoff publishes another. The static evidence carries the verified
+    digest; it must equal the digest of the handoff ROM file. A divergence
+    (stale/partial rebuild, runner-specific bytes, substituted file) is RED.
+    The aggregator never re-verifies ROM bytes itself; CI additionally runs
+    build --verify and rom_provenance --rom/--manifest on the handoff pair."""
+    problems = []
+    static = [e for e in evidence_list if e.get("kind") == "static"]
+    if len(static) != 1:
+        return [f"static handoff binding needs exactly one static evidence "
+                f"(found {len(static)})" ]
+    want = static[0].get("verified_rom_sha256")
+    if not isinstance(want, str) or not re.fullmatch(r"[0-9a-f]{64}", want):
+        return ["static handoff binding needs a well-formed verified_rom_sha256 "
+                "in the static evidence"]
+    if not os.path.isfile(static_rom_path):
+        return [f"static handoff ROM missing: {static_rom_path}"]
+    with open(static_rom_path, "rb") as fh:
+        got = hashlib.sha256(fh.read()).hexdigest()
+    if got != want:
+        problems.append("static-verified ROM digest does not match the handoff ROM "
+                        f"(static {want[:16]}... vs handoff {got[:16]}...); the published "
+                        "tree is not the verified tree")
+    return problems
+
+
 def aggregate(evidence_list, live_integration_ids=None, live_host_ids=None,
-              shards=None, identity=None, smoke_evidence_path=None, smoke_rom_path=None):
+              shards=None, identity=None, smoke_evidence_path=None, smoke_rom_path=None,
+              static_rom_path=None):
     """Fail-closed aggregation. Returns a list of problems (empty == GREEN).
 
     - `live_integration_ids`: authoritative live ID set as {module: [ids]} (or
@@ -909,7 +975,9 @@ def aggregate(evidence_list, live_integration_ids=None, live_host_ids=None,
       Missing/empty expected values are RED.
     - `smoke_*`: transferred smoke evidence + handoff ROM (MAJOR 3); when
       given, both are validated (presence, schema, PASS, scope, pinned core,
-      ROM digest identity)."""
+      ROM digest identity).
+    - `static_rom_path`: handoff ROM file (MAJOR 1); when given, its digest
+      must equal the static evidence's verified_rom_sha256."""
     problems = []
     if not evidence_list:
         problems.append("no shard evidence provided")
@@ -1110,6 +1178,11 @@ def aggregate(evidence_list, live_integration_ids=None, live_host_ids=None,
         else:
             problems.extend(_check_smoke_evidence(smoke_evidence_path, smoke_rom_path,
                                                   expected_pins))
+    # Static handoff binding (MAJOR 1): the published tree must be the
+    # verified tree. Enforced only when the handoff ROM path is given; CI
+    # always gives it (pinned by the workflow contract test).
+    if static_rom_path is not None:
+        problems.extend(_check_static_handoff(evidence_list, static_rom_path))
     return problems
 
 
@@ -1133,6 +1206,7 @@ def main(argv=None):
     p.add_argument("--evidence", nargs="+", required=True)
     p.add_argument("--smoke-evidence", default=None)
     p.add_argument("--smoke-rom", default=None)
+    p.add_argument("--static-rom", default=None)
     args = parser.parse_args(argv)
     if args.command == "list-suites":
         print(json.dumps({
@@ -1173,7 +1247,8 @@ def main(argv=None):
             with open(path, encoding="utf-8") as fh:
                 evidences.append(json.load(fh))
         problems = aggregate(evidences, smoke_evidence_path=args.smoke_evidence,
-                             smoke_rom_path=args.smoke_rom)
+                             smoke_rom_path=args.smoke_rom,
+                             static_rom_path=args.static_rom)
         for problem in problems:
             print(f"AGGREGATE-REJECTED {problem}")
         print("AGGREGATE-GREEN all shards reconciled" if not problems else

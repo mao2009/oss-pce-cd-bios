@@ -57,6 +57,50 @@ def real_core_jobs(workflow_text):
     return [block for block in blocks if re.search(r"(?m)^\s*run: make test-real-core\s*$", block)]
 
 
+WORKER_JOBS = ["host-tests", "integration-direct", "static-release",
+               "real-core-shard-0", "real-core-shard-1",
+               "real-core-shard-2", "real-core-shard-3"]
+
+
+def dag_problems(workflow_text):
+    """Provenance-before-workers DAG contract (MAJOR 2) as data.
+
+    Returns [] when the changed-content provenance guard precedes every
+    build/test/upload worker and verify-full requires it; otherwise a list
+    of human-readable problems. The positive CI test asserts [] on the real
+    workflow file; negative tests mutate the text and assert the matching
+    problem appears (proving the contract test would catch the omission)."""
+    problems = []
+    text = workflow_text
+    prov = re.search(r"(?m)^  provenance:\n((?:    [^\n]*\n)+)", text)
+    if prov is None:
+        return ["provenance prerequisite job is missing"]
+    header = prov.group(1)
+    if "needs: scope" not in header:
+        problems.append("provenance job must need exactly scope")
+    for perm in ("contents: read", "issues: read", "pull-requests: read"):
+        if perm not in header:
+            problems.append(f"provenance job is missing permission {perm}")
+    body = text[prov.start():]
+    next_job = re.search(r"(?m)^  [A-Za-z0-9_-]+:[ \t]*$", body[len(prov.group(0)):])
+    prov_block = body[:len(prov.group(0)) + (next_job.start() if next_job else len(body))]
+    for needle in ("tools/provenance_guard.py", "test_provenance_guard.py"):
+        if needle not in prov_block:
+            problems.append(f"provenance job is missing {needle}")
+    for banned in ("make build", "make test", "make check", "upload-artifact",
+                   "run-shard", "run-direct", "run-static", "run-host"):
+        if banned in prov_block:
+            problems.append(f"provenance job must not run worker work ({banned})")
+    for job in WORKER_JOBS:
+        if f"  {job}:\n    needs: [scope, provenance]\n" not in text:
+            problems.append(f"worker {job} must need [scope, provenance]")
+    if "provenance, host-tests" not in text:
+        problems.append("verify-full must need provenance")
+    if 'test "${{ needs.provenance.result }}" = "success"' not in text:
+        problems.append("verify-full must require provenance success (not skip/cancel)")
+    return problems
+
+
 # Job-level keys sit at exactly 4 spaces under a job id; step keys are indented deeper.
 JOB_LEVEL_CONTINUE_ON_ERROR = re.compile(r"(?m)^    continue-on-error:")
 JOB_LEVEL_IF = re.compile(r"(?m)^    if:[ \t]*(.*?)[ \t]*$")
@@ -112,6 +156,9 @@ def _assert_sharded_real_core_gate(testcase, text, workflow):
                       "real-core-shard-0", "real-core-shard-1",
                       "real-core-shard-2", "real-core-shard-3"]:
             testcase.assertIn(f'test "${{{{ needs.{gated}.result }}}}" = "success"', text)
+        # The provenance gate precedes every worker and is required by the
+        # aggregate (MAJOR 2); failure/cancel/skip never permits execution.
+        testcase.assertIn('test "${{ needs.provenance.result }}" = "success"', text)
 
 ALLOWED_JOB_IF = {
     ".github/workflows/nightly.yml": {"needs.plan.outputs.build == 'true'"},
@@ -229,17 +276,8 @@ class HostIsolationTests(unittest.TestCase):
         # ci.yml runs the sharded gate (Issue #846): verify-full aggregates the
         # shard jobs, and `verify` still enforces scope + verify-full.
         text = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-        for job in ["host-tests", "integration-direct", "static-release",
-                    "real-core-shard-0", "real-core-shard-1",
-                    "real-core-shard-2", "real-core-shard-3"]:
-            # Shard jobs run unconditionally once scoped (no silent skip path):
-            # the disabled docs_only fast path is enforced only by verify-full.
-            self.assertIn(f"  {job}:\n    needs: scope\n", text)
-            block = re.search(rf"(?m)^  {re.escape(job)}:\n((?:    [^\n]*\n)+)", text)
-            self.assertIsNotNone(block, job)
-            self.assertNotIn("if:", block.group(1).split("steps:")[0],
-                             f"{job} must not carry a job-level if")
-        self.assertIn("    needs: [scope, host-tests, integration-direct, static-release, "
+        self.assertEqual([], dag_problems(text), dag_problems(text))
+        self.assertIn("    needs: [scope, provenance, host-tests, integration-direct, static-release, "
                       "real-core-shard-0, real-core-shard-1, real-core-shard-2, real-core-shard-3]\n"
                       "    if: always() && needs.scope.outputs.docs_only != 'true'", text)
         self.assertIn("  verify:\n", text)
@@ -252,6 +290,62 @@ class HostIsolationTests(unittest.TestCase):
             self.assertIn(f'test "${{{{ needs.{gated}.result }}}}" = "success"', text)
         self.assertIn('echo "docs_only=false" >> "$GITHUB_OUTPUT"', text)
         self.assertNotIn("docs_only=true", text)
+
+
+class ProvenanceDagTests(unittest.TestCase):
+    """MAJOR 2: provenance guard precedes every build/test/upload worker.
+
+    The positive test asserts the real workflow satisfies dag_problems();
+    each negative test mutates a copy and asserts the matching problem
+    appears, proving the contract catches the omission (a rejected change
+    must never be processed before the guard rejects it)."""
+
+    def _text(self):
+        return (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+
+    def test_dag_green(self):
+        self.assertEqual([], dag_problems(self._text()))
+
+    def test_worker_missing_provenance_red(self):
+        text = self._text().replace(
+            "  static-release:\n    needs: [scope, provenance]\n",
+            "  static-release:\n    needs: scope\n", 1)
+        problems = dag_problems(text)
+        self.assertTrue(any("static-release" in p and "provenance" in p
+                            for p in problems), problems)
+
+    def test_some_workers_bypass_red(self):
+        text = self._text().replace("needs: [scope, provenance]",
+                                      "needs: scope")
+        problems = dag_problems(text)
+        self.assertEqual(len(WORKER_JOBS),
+                         sum(1 for p in problems if "must need" in p), problems)
+
+    def test_verify_full_missing_provenance_need_red(self):
+        text = self._text().replace("[scope, provenance, host-tests",
+                                      "[scope, host-tests", 1)
+        self.assertIn("verify-full must need provenance",
+                      dag_problems(text))
+
+    def test_verify_full_allows_provenance_skip_red(self):
+        text = self._text().replace(
+            'test "${{ needs.provenance.result }}" = "success"',
+            'test "${{ needs.provenance.result }}" != "failure"', 1)
+        self.assertIn("verify-full must require provenance success "
+                      "(not skip/cancel)", dag_problems(text))
+
+    def test_provenance_job_does_worker_work_red(self):
+        text = self._text().replace(
+            "python3 -m unittest discover -s tests/host -p 'test_provenance_guard.py' -v",
+            "python3 -m unittest discover -s tests/host -p 'test_provenance_guard.py' -v\n          make build", 1)
+        self.assertTrue(any("must not run worker work" in p
+                            for p in dag_problems(text)))
+
+    def test_provenance_job_missing_red(self):
+        text = re.sub(r"(?m)^  provenance:\n(?:    [^\n]*\n)+", "", self._text(),
+                        count=1)
+        self.assertIn("provenance prerequisite job is missing",
+                      dag_problems(text))
 
 
 if __name__ == "__main__":

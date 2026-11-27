@@ -250,6 +250,25 @@ class CliTests(unittest.TestCase):
             rom.write_bytes(ROM[:-1] + b"\x00")
             self.assertEqual(rp.EXIT_FAIL, rp.main(["--rom", str(rom), "--manifest", str(manifest), "--commit", COMMIT]))
 
+    def test_manifest_wrong_source_sha_exit_one(self):
+        # The aggregate-manifest threat (wrong source SHA on the handoff pair)
+        # is caught by the exact CI handoff command.
+        with tempfile.TemporaryDirectory() as directory:
+            rom, manifest = self.write_pair(directory, manifest=record(source_sha=OTHER))
+            self.assertEqual(rp.EXIT_FAIL, rp.main(["--rom", str(rom), "--manifest", str(manifest), "--commit", COMMIT]))
+
+    def test_manifest_wrong_rom_digest_exit_one(self):
+        forged = record(rom=bytes(ROM))
+        forged["rom_sha256"] = "0" * 64
+        with tempfile.TemporaryDirectory() as directory:
+            rom, manifest = self.write_pair(directory, manifest=forged)
+            self.assertEqual(rp.EXIT_FAIL, rp.main(["--rom", str(rom), "--manifest", str(manifest), "--commit", COMMIT]))
+
+    def test_manifest_dirty_exit_one(self):
+        with tempfile.TemporaryDirectory() as directory:
+            rom, manifest = self.write_pair(directory, manifest=record(working_tree_dirty=True))
+            self.assertEqual(rp.EXIT_FAIL, rp.main(["--rom", str(rom), "--manifest", str(manifest), "--commit", COMMIT]))
+
     def test_missing_manifest_is_error_not_pass(self):
         with tempfile.TemporaryDirectory() as directory:
             rom, _ = self.write_pair(directory)
@@ -347,10 +366,22 @@ class WiringTests(unittest.TestCase):
         handoff = text.index("Hand off the test fixture")
         static_job = text.index("  static-release:")
         aggregate = text.index("Aggregate shard evidence")
+        handoff_verify = text.index("Verify the exact handoff ROM and manifest")
         self.assertLess(static_job, handoff)
         self.assertLess(aggregate, handoff)
         self.assertIn("run-static", text[static_job:handoff])
         self.assertNotIn("continue-on-error", text[static_job:handoff])
+        # MAJOR 1: the aggregate binds the static-verified digest to the
+        # handoff ROM, and the exact handoff pair passes build --verify +
+        # rom_provenance --rom/--manifest after aggregation, before staging.
+        self.assertIn("--static-rom build/debug/smoke-test-not-bios.pce", text)
+        self.assertLess(aggregate, handoff_verify)
+        self.assertLess(handoff_verify, handoff)
+        verify_block = text[handoff_verify:handoff]
+        self.assertIn("tools/build.py --verify build/debug/smoke-test-not-bios.pce",
+                      verify_block)
+        self.assertIn("tools/rom_provenance.py --rom build/debug/smoke-test-not-bios.pce "
+                      "--manifest build/debug/manifest.json", verify_block)
 
 
 if __name__ == "__main__":
