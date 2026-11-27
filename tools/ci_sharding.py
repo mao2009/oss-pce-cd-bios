@@ -567,13 +567,13 @@ def run_host(evidence_out):
     return collector
 
 
-def _run_make_unit(unit):
+def _run_make_unit(unit, mode="debug"):
     """Run one direct-integration unit. Returns (exit_code, duration_s, note)."""
     started = time.monotonic()
     if unit == "direct:smoke":
         cmd = [sys.executable, "tests/integration/geargrafx_smoke.py",
-               "--rom", "build/debug/smoke-test-not-bios.pce",
-               "--output", "build/debug/geargrafx-evidence.json"]
+               "--rom", f"build/{mode}/smoke-test-not-bios.pce",
+               "--output", os.path.join("build", mode, SMOKE_EVIDENCE_NAME)]
     else:
         target = DIRECT_MAKE_TARGETS[unit]
         if target is None:
