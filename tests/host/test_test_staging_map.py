@@ -237,12 +237,30 @@ class MapCoverageTest(unittest.TestCase):
         self.assertEqual(len(slots), 81)
         ids = [s["slot"] for s in slots]
         self.assertEqual(sorted(ids), list(range(81)))
+        # Candidate names live only in the ledger (spec/api_slots.json,
+        # the single source). The map identifies slots by number and
+        # never duplicates a ledger name into its own strings, so the
+        # pre-existing not-wired negative tests never trip on this file.
+        # (tests/dev_source entries below are pinned tracked-path
+        # references, not name duplications.)
         spec = json.loads((ROOT / "spec" / "api_slots.json").read_text(encoding="utf-8"))
         names = {s["id"]: s["candidate_name"] for s in spec["slots"]}
+        self.assertEqual(sorted(names), list(range(81)),
+                         "ledger must resolve every slot 0..80")
         dev = set()
         for s in slots:
-            self.assertEqual(s["name"], names[s["slot"]],
-                             f"slot {s['slot']}: name mismatch vs spec/api_slots.json")
+            ledger_name = names[s["slot"]]
+            self.assertTrue(isinstance(ledger_name, str) and ledger_name.strip(),
+                            f"slot {s['slot']}: ledger has no candidate name to resolve")
+            self.assertNotIn("name", s,
+                             f"slot {s['slot']}: candidate name must resolve via "
+                             f"spec/api_slots.json ({ledger_name}), not duplicated here")
+            for part in [p.strip() for p in ledger_name.split("/")]:
+                self.assertNotIn(part, s["reason"],
+                                 f"slot {s['slot']}: ledger name part {part!r} "
+                                 f"duplicated in map reason")
+            self.assertIn(f"${s['slot']:02X}", s["reason"],
+                          f"slot {s['slot']}: reason must carry the slot-number identifier")
             self.assertIn(s["level"], LEVELS)
             if s["dev_implemented"]:
                 dev.add(s["slot"])

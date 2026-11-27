@@ -43,17 +43,21 @@ slash-form `tests/host/*.py` patterns, `integration_scripts`,
 `ci_class` (`required-ci`|`ci-nonrequired`|`ci-outside-optin`|
 `push-only`). Selected rows carry `shards` (module→rc-N) or `units`.
 
-Each `api_slots[]` row: `slot` (0–80), `name` (must equal
-`spec/api_slots.json`), `dev_implemented` (exactly the 18 override
-slots), `dev_source`, `level`, `tests`, `reason`.
+Each `api_slots[]` row: `slot` (0–80, the identifier — candidate
+names are NOT duplicated here but resolve via `spec/api_slots.json`,
+the single source, so not-wired negative tests never trip on the
+map), `dev_implemented` (exactly the 18 override slots),
+`dev_source`, `level`, `tests`, `reason` (slot-number form, e.g.
+`$07`).
 
 ## 3. Classification summary
 
-- **L1 (18 rows):** `src/overrides/slot_{1E,21,22,23,2E,3A,3C,3D,3E,3F,
-  40,41,42,43,44,45,46,4F}.s`, `src/math/ma_{mul8u,mul8s,mul16u,
-  div16s,div16u}.s`, host patterns `tests/host/test_api*.py` and
-  `tests/host/test_ma*.py` (identical to the `dev-test` selection run by
-  required `bios-dev-full`).
+- **L1 (25 rows):** 18 override slots
+  (`src/overrides/slot_{1E,21,22,23,2E,3A,3C,3D,3E,3F,
+  40,41,42,43,44,45,46,4F}.s`) + 5 math sources
+  (`src/math/ma_{mul8u,mul8s,mul16u,div16s,div16u}.s`) + 2 host patterns
+  (`tests/host/test_api*.py`, `tests/host/test_ma*.py`; identical to the
+  `dev-test` selection run by required `bios-dev-full`).
 - **L2 (8 rows):** host halves of the `bios-dev-full` diagnostic pairs
   (`test_startup`, `test_reset_entry`, `test_cd_media_state`,
   `test_cdimage`, `test_cdread`, `test_cdload_exec`, `test_cdreset_bus`,
@@ -62,6 +66,10 @@ slots), `dev_source`, `level`, `tests`, `reason`.
   future `slot_*.s`, spec ledgers, tools, `Makefile`, workflows, docs,
   host/integration support files, the 63 unimplemented API slots
   (contract-table coverage only), and all CI-executed scripts.
+- **Fixtures row:** `tests-fixtures` covers `tests/fixtures/*.s`
+  (assembled/probe sources, L3); data fixtures (`*.json`/`*.cfg`/`*.tsv`)
+  fall through to the fail-closed fallback (also L3), so the map never
+  names a guarded fixture and never trips not-wired negative tests.
 - **L4 (1 row):** 16 scripts with no workflow coverage
   (`api-unimplemented`, `api-entry`, `slot02-return`, `public-dev-gap`,
   `irq-postaccept-boundary`, `routine-real-core` set, `cdra-compare`,
@@ -132,7 +140,8 @@ only; docs-only fast path disabled; no `./rom` access.
 ## 7. Validation evidence
 
 - RED: with the map absent, `python3 -m unittest
-  tests.host.test_test_staging_map` → 14 failures + 1 error + 1 SKIP.
+  tests.host.test_test_staging_map` → 14 failures + 1 SKIP (0 errors;
+  only the 2 map-independent invariant tests pass).
 - GREEN: with the map present → `Ran 17 tests ... OK (skipped=1)` in
   ~0.1–0.2 s local; the single SKIP is the `./rom` media test (absent →
   SKIP, never PASS).
