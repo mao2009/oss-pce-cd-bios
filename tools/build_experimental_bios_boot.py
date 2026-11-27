@@ -11,7 +11,7 @@ Unified REAL processing (experimental image only; normal DEV ROM untouched):
     replaced by JMP cd_base_proto_entry + NOP pad (src/cd_base_proto.s, Agent A).
   slot $33: the $E099 table entry is redirected from the linked nonreturning $33
     fallback stub to the BOOT-region experimental_slot_33 body
-    (src/experimental_bios_boot.s includes src/ex_dspoff.s, Agent B).
+    (the NEED_CR33 head of src/ex_cr_family.s, linked by this builder).
   slot $03: the $E009 table entry is redirected from the linked $03 fallback
     stub to the BOOT-region cd_read_link_entry body (src/cd_read_link.s,
     Agent B link V1). The $03 entry uses the link's own EXPERIMENTAL input
@@ -49,10 +49,15 @@ else:
 MS_RES = 0x3F40
 EXPERIMENTAL_BOOT_FLAG = "EXPERIMENTAL_BIOS_BOOT"
 ROM_NAME = "experimental-dev-only-not-compatible-syscard-sized.pce"
+# CR-family single source (Issue #843). Defined before REQUIRED (used there).
+CR_FAMILY_SOURCE = ROOT / "src" / "ex_cr_family.s"
+CR_TAIL_ENTRY = "cr_tail_publish"
+CR_REJECT_ENTRY = "cr_reject"
 REQUIRED = ("experimental_bios_reset", "experimental_bios_init", "experimental_bios_selection_halt", "experimental_selection", "cd_entry",
             "cd_buffer_ready", "cd_data_done", "cd_halt_ok", "cd_halt_fail", "cd_unexpected_interrupt", "cd_cdb",
              "cd_payload_return", "cd_set_read_lba", "cd_entry_selected",
-             "cd_base_proto_entry", "experimental_slot_33", "cd_read_link_entry")
+             "cd_base_proto_entry", "experimental_slot_33", "cd_read_link_entry",
+             CR_TAIL_ENTRY, CR_REJECT_ENTRY)
 # Experimental slot-$02 wiring (Agent A, this image only; normal ROM untouched).
 # api_slot_02 fallback (5 bytes: LDX #$02; JMP api_unimplemented) is replaced by
 # JMP cd_base_proto_entry + NOP pad. NOT a genuine ABI, NOT compatible,
@@ -152,41 +157,47 @@ _SLOT35_PATCH_LABELS = ("api_slot_35", "ex_sprdma_entry")
 # tests/host/test_build_g5_35_host.py and
 # tests/integration/test_g5_sprdma_35.py (change together).
 _SLOT35_BODY_LEN = 9
+# CR-family single source (Issue #843): the $33/$2C/$2B D2 heads share one
+# BOOT unit (src/ex_cr_family.s, NEED_CR33/NEED_CR2C/NEED_CR2B selected per
+# image). Each head is a 29-byte branch sequence; the shared 4-byte reject
+# (PLA/PLP/SEC/RTS) and 13-byte publish-and-restore tail live once in the
+# same unit (local branches only: ca65 cannot branch to an imported symbol).
+# CR-family wiring constants shared by the 2-base builder and the host +
+# integration pins (change together):
+#   tests/host/test_build_g5_2c_host.py + tests/integration/test_g5_irqon_2c.py ($2C),
+#   tests/host/test_build_g5_2b_host.py + tests/integration/test_g5_rcroff_2b.py ($2B),
+#   tests/integration/test_g5_expg_843.py (full ExpG chain).
+# D2 head length in bytes (PHP/PHA/LDA/CMP/BNE-reject/SEI/TMA/PHA/LDA/TAM/
+# LDA/STA/LDA/mask/BRA-tail = 29 bytes). The head span (entry + len) must
+# end at or before $FFF6; the shared tail/reject is checked separately in
+# BOOT (see _check_cr_common_in_boot).
+_SLOT2C_HEAD_LEN = 29
+_SLOT2B_HEAD_LEN = 29
+_SLOT33_HEAD_LEN = 29
+# Shared reject length (PLA/PLP/SEC/RTS) and tail length (STA/STA/PLA/TAM/
+# PLA/PLP/CLC/RTS) in bytes; both live in BOOT and must end at/before $FFF6.
+_CR_REJECT_LEN = 4
+_CR_TAIL_LEN = 13
 # Experimental slot-$2C wiring (Issue #54 D2 limited-functional; this image
 # only when selected; normal ROM keeps its nonreturning $2C fallback stub, and
 # the 2-base builder default keeps the table on the stub). The $E084 table entry
 # (file offset 3*$2C, table starts at $E000) is redirected from the linked
-# $2C fallback stub to the BOOT-region ex_irqon_entry body (src/ex_irqon.s,
-# CR R05 bit3 set via the shared $2502 shadow). NOT the genuine EX_IRQON ABI
-# (genuine slot/entry/return semantics stay UNKNOWN/BLOCKED, $20F3/$20F7
-# mirrors + CPU I + IDR stay untouched, release_eligible stays False).
+# $2C fallback stub to the BOOT-region NEED_CR2C head (CR R05 bit3 set via
+# the shared $2502 shadow). NOT the genuine EX_IRQON ABI (genuine
+# slot/entry/return semantics stay UNKNOWN/BLOCKED, $20F3/$20F7 mirrors +
+# CPU I + IDR stay untouched, release_eligible stays False).
 _SLOT2C_TABLE = 3 * 0x2C
 _SLOT2C_PATCH_LABELS = ("api_slot_2C", "ex_irqon_entry")
-# D2-functional body length in bytes (src/ex_irqon.s: PHP/PHA/LDA/CMP/BEQ/
-# PLA/PLP/SEC/RTS reject path + SEI/TMA/PHA/LDA/TAM/LDA/STA/LDA/ORA/STA/STA/
-# PLA/TAM/PLA/PLP/CLC/RTS ok path = 44 bytes). Same BOOT-span discipline as
-# $25 (entry + len must end at or before $FFF6). Pinned against the 44-byte
-# structural pin in tests/host/test_build_g5_2c_host.py and
-# tests/integration/test_g5_irqon_2c.py (change together).
-_SLOT2C_BODY_LEN = 44
 # Experimental slot-$2B wiring (Issue #53 D2 limited-functional; this image
 # only when selected; normal ROM keeps its nonreturning $2B fallback stub, and
 # the 2-base builder default keeps the table on the stub). The $E081 table entry
 # (file offset 3*$2B, table starts at $E000) is redirected from the linked
-# $2B fallback stub to the BOOT-region ex_rcroff_entry body (src/ex_rcroff.s,
-# CR R05 bit2 clear via the shared $2502 shadow, bit3 preserved). NOT the
-# genuine EX_RCROFF ABI (genuine slot/entry/return semantics stay
-# UNKNOWN/BLOCKED, $20F3/$20F7 mirrors + CPU I + IDR stay untouched,
-# release_eligible stays False).
+# $2B fallback stub to the BOOT-region NEED_CR2B head (CR R05 bit2 clear via
+# the shared $2502 shadow, bit3 preserved). NOT the genuine EX_RCROFF ABI
+# (genuine slot/entry/return semantics stay UNKNOWN/BLOCKED, $20F3/$20F7
+# mirrors + CPU I + IDR stay untouched, release_eligible stays False).
 _SLOT2B_TABLE = 3 * 0x2B
 _SLOT2B_PATCH_LABELS = ("api_slot_2B", "ex_rcroff_entry")
-# D2-functional body length in bytes (src/ex_rcroff.s: PHP/PHA/LDA/CMP/BEQ/
-# PLA/PLP/SEC/RTS reject path + SEI/TMA/PHA/LDA/TAM/LDA/STA/LDA/AND/STA/STA/
-# PLA/TAM/PLA/PLP/CLC/RTS ok path = 44 bytes). Same BOOT-span discipline as
-# $2C (entry + len must end at or before $FFF6). Pinned against the 44-byte
-# structural pin in tests/host/test_build_g5_2b_host.py and
-# tests/integration/test_g5_rcroff_2b.py (change together).
-_SLOT2B_BODY_LEN = 44
 # Merged input branches whose heads are recorded (never hardcoded) in the manifest.
 _MERGED_REFS = ("origin/agent-a/cd-base-proto-g5", "origin/agent-b/ex-dspoff-real-cpu-g5",
                 "origin/agent-b/cd-read-link-g5")
@@ -210,6 +221,8 @@ def _experimental_boot_units(selected):
         (ROOT / "src/cd_load_exec_probe.s", ["-D", EXPERIMENTAL_BOOT_FLAG]),
         (ROOT / "src/cd_base_proto.s", []),
         (ROOT / "src/cd_read_link.s", []),
+        # CR-family $33 head + shared reject/tail (Issue #843 single source).
+        (CR_FAMILY_SOURCE, ["-D", "NEED_CR33"]),
     ]
 
 
@@ -239,16 +252,18 @@ def _redirect_slot33_to_body(bank: bytes, slot33_stub: int, slot33_body: int) ->
     """Return bank with the $E099 table entry redirected from stub to body. Fail-closed.
 
     The table must still hold the linked fallback stub (nothing else may be
-    redirected), and the body must sit in BOOT and start with the fragment's
-    PHP/PHA prologue (guards against silent body drift).
+    redirected), and the head must sit in BOOT and start with the head's
+    PHP/PHA prologue (guards against silent head drift). The shared
+    reject/tail placement is checked separately by _check_cr_common_in_boot.
     """
     for name, addr in (("api_slot_33", slot33_stub), ("experimental_slot_33", slot33_body)):
         if type(addr) is not int or not 0xE000 <= addr <= 0xFFFF:
             raise ValueError(f"{name} address {addr!r} outside BIOS window $E000-$FFFF")
     if not 0xE100 <= slot33_stub < 0xFFF6:
         raise ValueError(f"slot $33 fallback stub ${slot33_stub:04X} outside bank0 body")
-    if not 0xF000 <= slot33_body < 0xFFF6:
-        raise ValueError(f"experimental slot $33 body ${slot33_body:04X} outside the BOOT region")
+    if not 0xF000 <= slot33_body <= 0xFFF6 - _SLOT33_HEAD_LEN:
+        raise ValueError(f"experimental slot $33 head ${slot33_body:04X} outside the BOOT region "
+                         f"(29-byte head span must end at or before $FFF6)")
     out = bytearray(bank)
     want_stub = bytes((0x4C, slot33_stub & 0xFF, slot33_stub >> 8))
     if bytes(out[_SLOT33_TABLE:_SLOT33_TABLE + 3]) != want_stub:
@@ -444,8 +459,8 @@ def _redirect_slot2c_to_body(bank: bytes, slot2c_stub: int, irqon_entry: int) ->
     """Return bank with the $E084 table entry redirected from stub to body. Fail-closed.
 
     The table must still hold the linked fallback stub (nothing else may be
-    redirected), and the body must sit in BOOT and start with the body's
-    PHP/PHA prologue (guards against silent body drift). The wired entry keeps
+    redirected), and the head must sit in BOOT and start with the head's
+    PHP/PHA prologue (guards against silent head drift). The wired entry keeps
     the EXPERIMENTAL D2 limited-functional contract only (CR bit3 set via the
     shared $2502 shadow, $20F3/$20F7 + CPU I + IDR untouched); it never claims
     the genuine $2C ABI (genuine EX_IRQON semantics stay UNKNOWN/BLOCKED).
@@ -455,9 +470,9 @@ def _redirect_slot2c_to_body(bank: bytes, slot2c_stub: int, irqon_entry: int) ->
             raise ValueError(f"{name} address {addr!r} outside BIOS window $E000-$FFFF")
     if not 0xE100 <= slot2c_stub < 0xFFF6:
         raise ValueError(f"slot $2C fallback stub ${slot2c_stub:04X} outside bank0 body")
-    if not 0xF000 <= irqon_entry <= 0xFFF6 - _SLOT2C_BODY_LEN:
-        raise ValueError(f"experimental slot $2C body ${irqon_entry:04X} outside the BOOT region "
-                         f"(44-byte span must end at or before $FFF6)")
+    if not 0xF000 <= irqon_entry <= 0xFFF6 - _SLOT2C_HEAD_LEN:
+        raise ValueError(f"experimental slot $2C head ${irqon_entry:04X} outside the BOOT region "
+                         f"(29-byte head span must end at or before $FFF6)")
     out = bytearray(bank)
     want_stub = bytes((0x4C, slot2c_stub & 0xFF, slot2c_stub >> 8))
     if bytes(out[_SLOT2C_TABLE:_SLOT2C_TABLE + 3]) != want_stub:
@@ -466,16 +481,41 @@ def _redirect_slot2c_to_body(bank: bytes, slot2c_stub: int, irqon_entry: int) ->
     out[_SLOT2C_TABLE:_SLOT2C_TABLE + 3] = bytes((0x4C, irqon_entry & 0xFF, irqon_entry >> 8))
     body_off = irqon_entry - 0xE000
     if bytes(out[body_off:body_off + 2]) != bytes((0x08, 0x48)):  # PHP, PHA
-        raise ValueError("experimental slot $2C body does not start with the body prologue")
+        raise ValueError("experimental slot $2C head does not start with the head prologue")
     return bytes(out)
+
+
+def _check_cr_common_in_boot(bank: bytes, tail_addr: int, reject_addr: int) -> None:
+    """Fail-closed placement + content check for the shared CR-family tail. Pure.
+
+    Both the 4-byte reject (PLA/PLP/SEC/RTS) and the 13-byte
+    publish-and-restore tail (STA $2502 / STA $0002 / PLA / TAM / PLA / PLP /
+    CLC / RTS) must sit in BOOT and end at or before $FFF6, with exact
+    expected bytes (guards against silent tail drift that every $33/$2C/$2B
+    head branches to). Called by every builder that links the CR family.
+    """
+    for name, addr in ((CR_TAIL_ENTRY, tail_addr), (CR_REJECT_ENTRY, reject_addr)):
+        if type(addr) is not int or not 0xE000 <= addr <= 0xFFFF:
+            raise ValueError(f"{name} address {addr!r} outside BIOS window $E000-$FFFF")
+    if not 0xF000 <= reject_addr <= 0xFFF6 - _CR_REJECT_LEN:
+        raise ValueError(f"shared CR reject ${reject_addr:04X} outside the BOOT region "
+                         f"(4-byte span must end at or before $FFF6)")
+    if not 0xF000 <= tail_addr <= 0xFFF6 - _CR_TAIL_LEN:
+        raise ValueError(f"shared CR tail ${tail_addr:04X} outside the BOOT region "
+                         f"(13-byte span must end at or before $FFF6)")
+    if bytes(bank[reject_addr - 0xE000:reject_addr - 0xE000 + _CR_REJECT_LEN]) != bytes((0x68, 0x28, 0x38, 0x60)):
+        raise ValueError("shared CR reject is not PLA/PLP/SEC/RTS; refusing drifted tail")
+    if bytes(bank[tail_addr - 0xE000:tail_addr - 0xE000 + _CR_TAIL_LEN]) != bytes((
+            0x8D, 0x02, 0x25, 0x8D, 0x02, 0x00, 0x68, 0x53, 0x01, 0x68, 0x28, 0x18, 0x60)):
+        raise ValueError("shared CR tail is not the publish-and-restore sequence; refusing drifted tail")
 
 
 def _redirect_slot2b_to_body(bank: bytes, slot2b_stub: int, rcroff_entry: int) -> bytes:
     """Return bank with the $E081 table entry redirected from stub to body. Fail-closed.
 
     The table must still hold the linked fallback stub (nothing else may be
-    redirected), and the body must sit in BOOT and start with the body's
-    PHP/PHA prologue (guards against silent body drift). The wired entry keeps
+    redirected), and the head must sit in BOOT and start with the head's
+    PHP/PHA prologue (guards against silent head drift). The wired entry keeps
     the EXPERIMENTAL D2 limited-functional contract only (CR bit2 clear via
     the shared $2502 shadow, bit3 preserved, $20F3/$20F7 + CPU I + IDR
     untouched, RCR R06 untouched); it never claims the genuine $2B ABI
@@ -486,9 +526,9 @@ def _redirect_slot2b_to_body(bank: bytes, slot2b_stub: int, rcroff_entry: int) -
             raise ValueError(f"{name} address {addr!r} outside BIOS window $E000-$FFFF")
     if not 0xE100 <= slot2b_stub < 0xFFF6:
         raise ValueError(f"slot $2B fallback stub ${slot2b_stub:04X} outside bank0 body")
-    if not 0xF000 <= rcroff_entry <= 0xFFF6 - _SLOT2B_BODY_LEN:
-        raise ValueError(f"experimental slot $2B body ${rcroff_entry:04X} outside the BOOT region "
-                         f"(44-byte span must end at or before $FFF6)")
+    if not 0xF000 <= rcroff_entry <= 0xFFF6 - _SLOT2B_HEAD_LEN:
+        raise ValueError(f"experimental slot $2B head ${rcroff_entry:04X} outside the BOOT region "
+                         f"(29-byte head span must end at or before $FFF6)")
     out = bytearray(bank)
     want_stub = bytes((0x4C, slot2b_stub & 0xFF, slot2b_stub >> 8))
     if bytes(out[_SLOT2B_TABLE:_SLOT2B_TABLE + 3]) != want_stub:
@@ -497,7 +537,7 @@ def _redirect_slot2b_to_body(bank: bytes, slot2b_stub: int, rcroff_entry: int) -
     out[_SLOT2B_TABLE:_SLOT2B_TABLE + 3] = bytes((0x4C, rcroff_entry & 0xFF, rcroff_entry >> 8))
     body_off = rcroff_entry - 0xE000
     if bytes(out[body_off:body_off + 2]) != bytes((0x08, 0x48)):  # PHP, PHA
-        raise ValueError("experimental slot $2B body does not start with the body prologue")
+        raise ValueError("experimental slot $2B head does not start with the head prologue")
     return bytes(out)
 
 
@@ -1112,6 +1152,10 @@ def build_experimental_bios_boot(original_path: Path, output: Path, mode="debug"
     slot33_addrs = parse_needed_labels(labels, _SLOT33_PATCH_LABELS)
     if any(n not in slot33_addrs for n in _SLOT33_PATCH_LABELS):
         raise ValueError(f"experimental slot-33 patch symbols missing: {_SLOT33_PATCH_LABELS}")
+    cr_common = parse_needed_labels(labels, (CR_TAIL_ENTRY, CR_REJECT_ENTRY))
+    if any(n not in cr_common for n in (CR_TAIL_ENTRY, CR_REJECT_ENTRY)):
+        raise ValueError(f"experimental CR-family tail symbols missing: {(CR_TAIL_ENTRY, CR_REJECT_ENTRY)}")
+    _check_cr_common_in_boot(bank_bytes, cr_common[CR_TAIL_ENTRY], cr_common[CR_REJECT_ENTRY])
     slot03_addrs = parse_needed_labels(labels, _SLOT03_PATCH_LABELS)
     if any(n not in slot03_addrs for n in _SLOT03_PATCH_LABELS):
         raise ValueError(f"experimental slot-03 patch symbols missing: {_SLOT03_PATCH_LABELS}")

@@ -3,9 +3,10 @@
 The normal DEV ROM keeps its nonreturning $33 stub: OVERRIDES ends at $E7FB with
 5 bytes of slack below the $E800 probe-overlay window, so no
 src/overrides/slot_33.s exists (see docs/61-dspoff-contract.md). The experimental
-System-Card-sized DEV image instead links the project-own DEV EX_DSPOFF fragment
-(src/ex_dspoff.s, single source via .include) into its BOOT region and redirects
-its own $E099 table entry to that body (tools/build_experimental_bios_boot.py).
+System-Card-sized DEV image instead links the NEED_CR33 head of the project-own
+DEV CR-family unit (src/ex_cr_family.s, Issue #843 single source) into its BOOT
+region and redirects its own $E099 table entry to that head
+(tools/build_experimental_bios_boot.py).
 
 No emulator and no real-core run here; the pinned real-core execution lives in
 tests/integration/test_ex_dspoff_real_core.py. NOT the reference System Card ABI:
@@ -26,7 +27,7 @@ sys.path.insert(0, str(ROOT / "tests" / "integration"))
 from tools.environment import requires_cc65  # noqa: E402
 
 EXP_BOOT = ROOT / "src" / "experimental_bios_boot.s"
-FRAGMENT = ROOT / "src" / "ex_dspoff.s"
+FAMILY = ROOT / "src" / "ex_cr_family.s"
 SLOT = 0x33
 TABLE_AT = 3 * SLOT  # file offset of the $E099 table entry (table starts at $E000)
 OVERLAY_START, OVERLAY_END = 0x0800, 0x1000  # file offsets of CPU $E800-$EFFF
@@ -45,20 +46,25 @@ def _parse_labels(text):
 class ExperimentalSlot33SourceTests(unittest.TestCase):
     """cc65-independent source contracts: the wiring is experimental-only."""
 
-    def test_entry_lives_in_experimental_boot_and_reuses_the_fragment(self):
+    def test_entry_lives_in_the_family_unit_and_is_referenced_by_boot(self):
         source = EXP_BOOT.read_text(encoding="utf-8")
-        self.assertIn(".export experimental_slot_33", source)
-        self.assertIn("experimental_slot_33:", source)
-        self.assertIn('.include "ex_dspoff.s"', source)
-        # Single source of truth: the processing logic is not duplicated here.
+        # Single source of truth: the processing logic lives in the family
+        # unit (NEED_CR33 head), not duplicated in the boot source.
+        self.assertNotIn('.include "ex_dspoff.s"', source)
         self.assertNotIn("and #$3F", source)
         self.assertNotIn("ora #$80", source)
+        self.assertIn("src/ex_cr_family.s", source)
         for phrase in ("NOT a compatible System Card BIOS", "release_eligible=false",
                        "outside the builder's first-4KiB identity window"):
             self.assertIn(phrase, source)
+        family = FAMILY.read_text(encoding="utf-8")
+        self.assertIn(".ifdef NEED_CR33", family)
+        self.assertIn("experimental_slot_33:", family)
+        self.assertIn("and #$3F", family)
 
-    def test_fragment_export_survives_for_the_include(self):
-        self.assertIn(".export ex_dspoff", FRAGMENT.read_text(encoding="utf-8"))
+    def test_family_export_survives_for_the_link(self):
+        self.assertIn(".export ex_dspoff, experimental_slot_33",
+                      FAMILY.read_text(encoding="utf-8"))
 
     def test_no_normal_rom_override_for_slot_33(self):
         from build_rom import overrides
@@ -146,7 +152,8 @@ class ExperimentalSlot33BuildTests(unittest.TestCase):
         # else. Agent B's source and PR are untouched; only this branch's
         # expectation follows the triple image.
         body = self.labels["experimental_slot_33"]
-        self.assertTrue(0xF000 <= body < 0xFFF6, f"body ${body:04X} outside BOOT")
+        # 29-byte head span must end at or before $FFF6 (Issue #843 boundary).
+        self.assertTrue(0xF000 <= body <= 0xFFF6 - 29, f"head ${body:04X} outside BOOT")
         table = bytes(self.exp[TABLE_AT:TABLE_AT + 3])
         self.assertEqual(table, bytes((0x4C, body & 0xFF, body >> 8)))
         slot02 = self.labels["api_slot_02"]
@@ -166,11 +173,22 @@ class ExperimentalSlot33BuildTests(unittest.TestCase):
         self.assertEqual(bytes(self.exp[3 * 0x03:3 * 0x03 + 3]),
                          bytes((0x4C, link & 0xFF, (link >> 8) & 0xFF)))
 
-    def test_experimental_body_matches_the_fragment_prologue(self):
+    def test_experimental_body_matches_the_family_head_prologue(self):
         body = self.labels["experimental_slot_33"]
         off = body - 0xE000
         self.assertEqual(bytes(self.exp[off:off + 2]), bytes((0x08, 0x48)))  # PHP, PHA
         self.assertEqual(self.labels.get("ex_dspoff"), body)
+        # The shared reject/tail the head branches to: BOOT placement with
+        # exact expected bytes (Issue #843 protection boundary).
+        tail = self.labels["cr_tail_publish"]
+        reject = self.labels["cr_reject"]
+        self.assertTrue(0xF000 <= reject <= 0xFFF6 - 4, f"reject ${reject:04X}")
+        self.assertTrue(0xF000 <= tail <= 0xFFF6 - 13, f"tail ${tail:04X}")
+        self.assertEqual(bytes(self.exp[reject - 0xE000:reject - 0xE000 + 4]),
+                         bytes((0x68, 0x28, 0x38, 0x60)))
+        self.assertEqual(bytes(self.exp[tail - 0xE000:tail - 0xE000 + 13]),
+                         bytes((0x8D, 0x02, 0x25, 0x8D, 0x02, 0x00, 0x68, 0x53,
+                                0x01, 0x68, 0x28, 0x18, 0x60)))
 
     def test_experimental_manifest_records_the_wiring_and_gates(self):
         slot33 = self.manifest["experimental_slot_33"]

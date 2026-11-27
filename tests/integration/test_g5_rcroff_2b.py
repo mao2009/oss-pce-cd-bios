@@ -29,7 +29,8 @@ Companion coverage:
   reads only); single guest execution per case, so no cold/warm pair
   here -- cold/warm equality is covered by the return-probe and
   writes-tracer paths. SR evidence split: (1) source audit -- neither the
-  body (pinned 44-byte construction has no VDC read opcode) nor the probe
+  head (pinned 29-byte head has no VDC read opcode; the shared 13-byte
+  tail only writes) nor the probe
   (GetState only) takes the destructive ReadRegister path; (2) frozen-clock
   SR before==after in every VDC case; (3) pending-SR survival NOT_RUN here
   (needs a real clock + VBLANK event); (4) IRQ timing/handler transitions
@@ -53,7 +54,7 @@ Companion coverage:
   boot itself; the observed $2B entry state is SIMULATED-entry);
   $20F3/$20F7 mirror invariance (explicitly unimplemented: asserted
   UNCHANGED, never guessed);
-  routing, 44-byte structural pin, single-byte mutants (wrong bit, destroy
+  routing, 29-byte head + shared tail/reject structural pins, single-byte mutants (wrong bit, destroy
   bits, no-op mask, missing VDC write, missing shadow publish, shadow
   bypass, CLC/SEC drops, MPR restore drop, stack smash via cavity), and
   buffer negatives.
@@ -291,9 +292,11 @@ res_base:
 # prove routing, resumption, and register/stack preservation (OBSERVED
 # synthetic); APICALL entries prove order. Bit-3 preservation on the chain is
 # unproven (NOT_RUN); individual synchronized VDC tests prove bit2/bit3
-# handling synthetically. Synchronized intermediate CR/shadow chain proof is
-# deferred to #843. Full ExpG ($4A+$25+$24+$36+$35+$2C+$2B) overflows BOOT
-# and is refused; this minimal chain fits and proves routing/resumption.
+# handling synthetically. Synchronized intermediate CR/shadow chain proof
+# lands with #843: the full-ExpG chain is proved by
+# tests/integration/test_g5_expg_843.py (the CR-family commonization freed
+# the BOOT budget, so full ExpG links with 9 bytes of slack); this minimal
+# chain still fits and proves routing/resumption.
 CHAIN_ASM = r"""
 .setcpu "huc6280"
 .segment "CODE"
@@ -363,28 +366,61 @@ res_base:
     .res 16
 """
 
-# D2-functional body bytes (src/ex_rcroff.s, 44 bytes). Pinned here: any
-# opcode/operand drift changes the mask, the shadow discipline, or the
-# window, so the shape itself is load-bearing (a bare-RTS substitution would
-# be behavior-GREEN on preservation oracles by construction).
-D2F_BODY = bytes((
-    0x08, 0x48, 0xAD, 0x03, 0x25, 0xC9, 0xA5, 0xF0, 0x04, 0x68, 0x28, 0x38,
-    0x60, 0x78, 0x43, 0x01, 0x48, 0xA9, 0xFF, 0x53, 0x01, 0xA9, 0x05, 0x8D,
-    0x00, 0x00, 0xAD, 0x02, 0x25, 0x29, 0xFB, 0x8D, 0x02, 0x25, 0x8D, 0x02,
-    0x00, 0x68, 0x53, 0x01, 0x68, 0x28, 0x18, 0x60,
+# D2 head bytes (NEED_CR2B head of src/ex_cr_family.s, 29 bytes). Pinned
+# here: any opcode/operand drift changes the mask, the shadow discipline,
+# or the window, so the shape itself is load-bearing (a bare-RTS
+# substitution would be behavior-GREEN on preservation oracles by
+# construction).
+# PHP PHA | LDA $2503 CMP #$A5 BNE->reject | SEI TMA#$01 PHA |
+# LDA #$FF TAM#$01 | LDA #$05 STA $0000 | LDA $2502 AND #$FB BRA->tail.
+# The two branch operands are link-order dependent (they reach the shared
+# reject/tail in the same unit); the pin below checks the fixed bytes and
+# verifies each operand against the linked shared symbols instead.
+D2F_HEAD_PREFIX = bytes((
+    0x08, 0x48, 0xAD, 0x03, 0x25, 0xC9, 0xA5, 0xD0,
+))
+D2F_HEAD_MID = bytes((
+    0x78, 0x43, 0x01, 0x48, 0xA9, 0xFF, 0x53, 0x01, 0xA9, 0x05, 0x8D,
+    0x00, 0x00, 0xAD, 0x02, 0x25, 0x29, 0xFB, 0x80,
+))
+D2F_HEAD_LEN = 29
+# Shared CR-family reject (PLA PLP SEC RTS, 4 bytes) and
+# publish-and-restore tail (STA $2502 STA $0002 PLA TAM PLA PLP CLC RTS,
+# 13 bytes): exact pins, position-independent (Issue #843 single unit,
+# no copy). The tail/reject are linked once per image and shared by the
+# $33/$2C/$2B heads.
+CR_REJECT = bytes((0x68, 0x28, 0x38, 0x60))
+CR_TAIL = bytes((
+    0x8D, 0x02, 0x25, 0x8D, 0x02, 0x00, 0x68, 0x53, 0x01, 0x68, 0x28,
+    0x18, 0x60,
 ))
 
-# Single-byte body mutants (stack-balanced, clean RTS; each must RED exactly
-# the oracle named in its test, never by hang or crash):
-MUT_WRONGBIT = (30, bytes((0xF7,)))    # AND #$FB -> AND #$F7 (wrong bit: clears bit3 not bit2)
-MUT_DESTROY = (29, bytes((0x09,)))     # AND -> ORA #$FB (destroys clear, sets bits)
-MUT_NOOP = (29, bytes((0xEA, 0xEA)))   # AND #$FB -> NOP NOP (no clear)
-MUT_NOVDC = (34, bytes((0xEA, 0xEA, 0xEA)))     # STA $0002 -> NOPs (no VDC write)
-MUT_NOPUBLISH = (31, bytes((0xEA, 0xEA, 0xEA)))  # STA $2502 -> NOPs (no publish)
-MUT_BYPASS = (7, bytes((0x80,)))        # BEQ -> BRA (unseeded takes ok path)
-MUT_CLC_DROP = (42, bytes((0xEA,)))    # CLC -> NOP (ok exits C=entry)
-MUT_SEC_DROP = (11, bytes((0xEA,)))    # SEC -> NOP (reject exits C=entry)
-MUT_MPR = (38, bytes((0xEA, 0xEA)))    # TAM #$01 -> NOPs (MPR0 stays $FF)
+
+def assert_d2f_head(testcase, data, base, reject_addr, tail_addr):
+    """Pin the 29-byte $2B head at file offset `off` (base = CPU addr)."""
+    off = base - 0xE000
+    testcase.assertEqual(data[off:off + 8], D2F_HEAD_PREFIX)
+    testcase.assertEqual(data[off + 9:off + 28], D2F_HEAD_MID)
+    bne_disp = reject_addr - (base + 9)
+    bra_disp = tail_addr - (base + 29)
+    testcase.assertTrue(-128 <= bne_disp <= 127, f"BNE out of range: {bne_disp}")
+    testcase.assertTrue(-128 <= bra_disp <= 127, f"BRA out of range: {bra_disp}")
+    testcase.assertEqual(data[off + 8], bne_disp & 0xFF)
+    testcase.assertEqual(data[off + 28], bra_disp & 0xFF)
+
+# Single-byte mutants (stack-balanced, clean RTS; each must RED exactly
+# the oracle named in its test, never by hang or crash). Head-relative
+# mutants patch the 29-byte $2B head; TAIL/REJECT mutants patch the shared
+# CR-family tail/reject via _mutate_tail/_mutate_reject (same image):
+MUT_WRONGBIT = (26, bytes((0xF7,)))    # head AND #$FB -> AND #$F7 (wrong bit: clears bit3 not bit2)
+MUT_DESTROY = (25, bytes((0x09,)))     # head AND -> ORA #$FB (destroys clear, sets bits)
+MUT_NOOP = (25, bytes((0xEA, 0xEA)))   # head AND #$FB -> NOP NOP (no clear)
+MUT_BYPASS = (7, bytes((0xF0,)))       # head BNE -> BEQ (unseeded falls into ok path)
+MUT_NOVDC = (3, bytes((0xEA, 0xEA, 0xEA)))     # tail STA $0002 -> NOPs (no VDC write)
+MUT_NOPUBLISH = (0, bytes((0xEA, 0xEA, 0xEA)))  # tail STA $2502 -> NOPs (no publish)
+MUT_CLC_DROP = (11, bytes((0xEA,)))    # tail CLC -> NOP (ok exits C=entry)
+MUT_SEC_DROP = (2, bytes((0xEA,)))     # reject SEC -> NOP (reject exits C=entry)
+MUT_MPR = (7, bytes((0xEA, 0xEA)))     # tail TAM #$01 -> NOPs (MPR0 stays $FF)
 
 
 class Rcroff2bSynthetic(unittest.TestCase):
@@ -411,10 +447,11 @@ class Rcroff2bSynthetic(unittest.TestCase):
             orig, cls.out, cls.sel, "debug", "m2b", ["-D", "IPL_PUBLIC"],
             track=cls.track_sel, private_input=False,
             cd_2b="experimental")
-        # $2C+$2B chain image (both D2 bodies) for the $2C->$2B chain leg.
-        # Full ExpG ($4A+$25+$24+$36+$35+$2C+$2B) overflows BOOT by 19 bytes
-        # and is refused fail-closed; the $2C+$2B image fits and proves the
-        # chain with bit3 preservation.
+        # $2C+$2B chain image (both D2 heads) for the $2C->$2B chain leg.
+        # Full ExpG ($4A+$25+$24+$36+$35+$2C+$2B) now links with 9 bytes of
+        # slack (Issue #843 commonization); the full-ExpG synchronized
+        # chain is proved by tests/integration/test_g5_expg_843.py, while
+        # this $2C+$2B image proves the chain with bit3 preservation.
         cls.rom, cls.syms = build_ipl_loader_g5_rom(
             orig, cls.out, cls.sel, "debug", "m2c2b", ["-D", "IPL_PUBLIC"],
             track=cls.track_sel, private_input=False,
@@ -429,8 +466,17 @@ class Rcroff2bSynthetic(unittest.TestCase):
                 (cls.rom.read_bytes(), cls.syms, cls.syms["ex_rcroff_entry"], "full")):
             tab = rom_bytes[0xE081 - 0xE000:0xE081 - 0xE000 + 3]
             assert tuple(tab) == (0x4C, addr & 0xFF, (addr >> 8) & 0xFF), (name, addr)
-            assert 0xF000 <= addr <= 0xFFF6 - 44, (name, addr)
-            assert rom_bytes[addr - 0xE000:addr - 0xE000 + 44] == D2F_BODY, (name,)
+            assert 0xF000 <= addr <= 0xFFF6 - D2F_HEAD_LEN, (name, addr)
+            off = addr - 0xE000
+            assert rom_bytes[off:off + 8] == D2F_HEAD_PREFIX, (name,)
+            assert rom_bytes[off + 9:off + 28] == D2F_HEAD_MID, (name,)
+            assert rom_bytes[off + 8] == (symbols["cr_reject"] - (addr + 9)) & 0xFF, (name,)
+            assert rom_bytes[off + 28] == (symbols["cr_tail_publish"] - (addr + 29)) & 0xFF, (name,)
+            tail, reject = symbols["cr_tail_publish"], symbols["cr_reject"]
+            assert 0xF000 <= reject <= 0xFFF6 - 4, (name, reject)
+            assert 0xF000 <= tail <= 0xFFF6 - 13, (name, tail)
+            assert rom_bytes[reject - 0xE000:reject - 0xE000 + 4] == CR_REJECT, (name,)
+            assert rom_bytes[tail - 0xE000:tail - 0xE000 + 13] == CR_TAIL, (name,)
         tab = cls.rom_stub.read_bytes()[0xE081 - 0xE000:0xE081 - 0xE000 + 3]
         fb = cls.syms_stub["api_slot_2B"]
         assert tuple(tab) == (0x4C, fb & 0xFF, (fb >> 8) & 0xFF)
@@ -592,7 +638,22 @@ class Rcroff2bSynthetic(unittest.TestCase):
                          "SPINIT": spinit}}
 
     def _mutate_body(self, rom_bytes, offset, new_bytes):
-        body_off = (self.syms2b["ex_rcroff_entry"] & 0xFFFF) - 0xE000
+        # Head-relative patch (the 29-byte $2B head at ex_rcroff_entry).
+        return self._mutate_at(rom_bytes, self.syms2b["ex_rcroff_entry"],
+                               offset, new_bytes)
+
+    def _mutate_tail(self, rom_bytes, offset, new_bytes):
+        # Shared-tail-relative patch (the 13-byte cr_tail_publish tail).
+        return self._mutate_at(rom_bytes, self.syms2b["cr_tail_publish"],
+                               offset, new_bytes)
+
+    def _mutate_reject(self, rom_bytes, offset, new_bytes):
+        # Shared-reject-relative patch (the 4-byte cr_reject block).
+        return self._mutate_at(rom_bytes, self.syms2b["cr_reject"],
+                               offset, new_bytes)
+
+    def _mutate_at(self, rom_bytes, base, offset, new_bytes):
+        body_off = (base & 0xFFFF) - 0xE000
         out = bytearray(rom_bytes)
         out[body_off + offset:body_off + offset + len(new_bytes)] = new_bytes
         return bytes(out)
@@ -852,14 +913,21 @@ class Rcroff2bSynthetic(unittest.TestCase):
         self._check_canary(warm)
 
     def test_2b_body_bytes_pinned(self):
-        # 44-byte structural pin: the exact reviewed D2F bytes must be
-        # linked in both the unit and the full ExpF images.
-        self.assertEqual(len(D2F_BODY), 44)
+        # Structural pin: the exact reviewed 29-byte $2B head bytes must be
+        # linked in both the unit and the $2C+$2B images, with the branch
+        # operands reaching the shared CR-family reject/tail and the exact
+        # 4-byte reject + 13-byte tail linked in BOOT.
         for romb, syms, tag in ((self.rom2b.read_bytes(), self.syms2b, "unit"),
                                  (self.rom.read_bytes(), self.syms, "full")):
             body = syms["ex_rcroff_entry"] & 0xFFFF
-            self.assertEqual(romb[body - 0xE000:body - 0xE000 + 44], D2F_BODY, tag)
-        self.assertNotEqual(D2F_BODY[0], 0x60)
+            assert_d2f_head(self, romb, body, syms["cr_reject"],
+                            syms["cr_tail_publish"])
+            tail, reject = syms["cr_tail_publish"], syms["cr_reject"]
+            self.assertEqual(romb[reject - 0xE000:reject - 0xE000 + 4],
+                             CR_REJECT, tag)
+            self.assertEqual(romb[tail - 0xE000:tail - 0xE000 + 13],
+                             CR_TAIL, tag)
+        self.assertNotEqual(D2F_HEAD_PREFIX[0], 0x60)
 
     def test_2b_checker_distinguishes(self):
         # The checkers themselves must fire: corrupt each asserted field in
@@ -1159,29 +1227,29 @@ class Rcroff2bSynthetic(unittest.TestCase):
             self._check_vdc_ok(res, 0, 0x3C, 0x12, 0x07, 0x04)
 
     def test_vdc_mutant_novdc_red(self):
-        # M_NOVDC (STA $0002 dropped): the seeded-$04 ok oracle must RED
+        # M_NOVDC (shared-tail STA $0002 dropped): the seeded-$04 ok oracle must RED
         # (correct $00 vs mutant $04: CR unchanged from seed). Defect
         # mechanism: missing VDC write. Note the return-probe shadow oracle
         # stays GREEN here (publish intact) -- the oracles are separated by
         # construction, never conflated.
-        rom = self._mutate_body(self.rom2b.read_bytes(), *MUT_NOVDC)
+        rom = self._mutate_tail(self.rom2b.read_bytes(), *MUT_NOVDC)
         res = self._run_vdc_on_rom("novdc", rom, 0, 0x3C, 0x12, 0x07, 0x04, 1)
         self.assertEqual(res["vdc_r_before"], res["vdc_r_after"])
         with self.assertRaises(AssertionError):
             self._check_vdc_ok(res, 0, 0x3C, 0x12, 0x07, 0x04)
 
     def test_vdc_mutant_nopublish_red(self):
-        # M_NOPUBLISH (STA $2502 dropped): seeded $04, CR $00 still written
+        # M_NOPUBLISH (shared-tail STA $2502 dropped): seeded $04, CR $00 still written
         # (A holds $00) but shadow stays $04 stale. The ok oracle REDs on
         # shadow_post.
-        rom = self._mutate_body(self.rom2b.read_bytes(), *MUT_NOPUBLISH)
+        rom = self._mutate_tail(self.rom2b.read_bytes(), *MUT_NOPUBLISH)
         res = self._run_vdc_on_rom("nopub", rom, 0, 0x3C, 0x12, 0x07, 0x04, 1)
         self.assertEqual(res["vdc_r_after"][5] & 0xFF, 0x00)
         with self.assertRaises(AssertionError):
             self._check_vdc_ok(res, 0, 0x3C, 0x12, 0x07, 0x04)
 
     def test_vdc_mutant_bypass_red(self):
-        # M_BYPASS (BEQ->BRA): unseeded $34 (bit2 set) reject must RED
+        # M_BYPASS (head BNE->BEQ): unseeded $34 (bit2 set) reject must RED
         # (correct $34 unchanged vs mutant $30 cleared + C=0: ok ran).
         rom = self._mutate_body(self.rom2b.read_bytes(), *MUT_BYPASS)
         res = self._run_vdc_on_rom("bypass", rom, 2, 0x3C, 0x12, 0x07, 0x34, 0)
@@ -1332,12 +1400,21 @@ class Rcroff2bSynthetic(unittest.TestCase):
                     self.assertNotIn("RESULT ", r.stdout)
 
     def test_writes_mutant_store_red(self):
-        # Out-of-scope store mutant (balanced B1-style STA $2200 in a BOOT
+        # Out-of-scope store mutant (balanced STA $2200 in a BOOT
         # cavity, vector repointed): halted cleanly, surplus exactly $2200
         # (WRAM offset 0x200). Legacy oracles stay GREEN is not required
         # here (the $2200 store is inside the res_base region of the
         # return probe, a different guest); the tracer RED is exact.
-        mutant = bytes(D2F_BODY[:42]) + bytes((0x8D, 0x00, 0x22, 0x18, 0x60))
+        # Cavity-local copies: the head's BNE/BRA are retargeted at the
+        # cavity-local reject/tail (the shared addresses stay untouched);
+        # the ok-path tail copy gains STA $2200 before CLC/RTS.
+        tail = bytearray(CR_TAIL[:11]) + bytearray((0x8D, 0x00, 0x22,
+                                                    0x18, 0x60))
+        head = bytearray(bytes(D2F_HEAD_PREFIX) + b"\x00"
+                          + bytes(D2F_HEAD_MID) + b"\x00")
+        head[8] = (len(head) + len(tail) - 9) & 0xFF  # BNE -> cavity reject
+        head[28] = (len(head) - 29) & 0xFF  # BRA -> cavity tail (disp 0)
+        mutant = bytes(head) + bytes(tail) + bytes(CR_REJECT)
         out = bytearray(self.rom2b.read_bytes())
         cav = self._cavity_off(bytes(out), len(mutant))
         cav_addr = 0xE000 + cav
@@ -1359,12 +1436,17 @@ class Rcroff2bSynthetic(unittest.TestCase):
         # Write-then-restore mutant ($2200 save/$AA/restore inside the ok
         # path): final $2200 value unchanged, write history non-empty.
         # Proves history-vs-final distinction (same guarantee as the B1
-        # suites, re-scoped to the D2 body).
-        prefix = bytes(D2F_BODY[:31])  # through LDA $2502/AND (A=img)
-        mutant = (prefix
-                  + bytes((0x48, 0xAD, 0x00, 0x22, 0x48, 0xA9, 0xAA,
-                           0x8D, 0x00, 0x22, 0x68, 0x8D, 0x00, 0x22, 0x68))
-                  + bytes(D2F_BODY[31:]))  # STA $2502 .. RTS
+        # suites, re-scoped to the D2 head). The head runs through
+        # LDA $2502/AND (A=img); the BRA falls into the 15-byte inject
+        # block, which falls through into the cavity-local tail copy;
+        # BNE reaches the cavity reject.
+        inject = bytes((0x48, 0xAD, 0x00, 0x22, 0x48, 0xA9, 0xAA,
+                        0x8D, 0x00, 0x22, 0x68, 0x8D, 0x00, 0x22, 0x68))
+        head = bytearray(bytes(D2F_HEAD_PREFIX) + b"\x00"
+                          + bytes(D2F_HEAD_MID) + b"\x00")
+        head[8] = (len(head) + len(inject) + len(CR_TAIL) - 9) & 0xFF
+        head[28] = 0  # BRA falls into the inject block (no skip)
+        mutant = bytes(head) + inject + bytes(CR_TAIL) + bytes(CR_REJECT)
         out = bytearray(self.rom2b.read_bytes())
         cav = self._cavity_off(bytes(out), len(mutant))
         cav_addr = 0xE000 + cav
@@ -1384,17 +1466,19 @@ class Rcroff2bSynthetic(unittest.TestCase):
 
     def test_writes_mutant_reject_store_restore_red(self):
         # Reject-path shadow write-then-restore mutant (MINOR-2 F2): the
-        # reject path (BEQ fall-through) saves $2502, clobbers it with $AA,
-        # then restores the seed -- final RAM unchanged, so the FULL history
-        # stays GREEN ($2502 is in the guest-seed allowed set) but the
-        # CALLEE-window history must RED (any reject-path shadow touch is
-        # a contract violation, even restored). Stack-balanced, clean halt.
-        # BEQ operand retargeted +19 (was +4): the seeded path must skip
-        # the 19-byte reject store-restore block and land on tail; the
+        # reject path (unseeded BEQ fall-through) saves $2502, clobbers it
+        # with $AA, then restores the seed -- final RAM unchanged, so the
+        # FULL history stays GREEN ($2502 is in the guest-seed allowed set)
+        # but the CALLEE-window history must RED (any reject-path shadow
+        # touch is a contract violation, even restored). The head BNE is
+        # assembled as BEQ here so the seeded path skips the 19-byte
+        # reject store-restore block and lands on the ok part; the
         # unseeded path falls through into the block. A stale +4 would land
         # mid-block and hang (harness failure, never RED).
-        prefix = bytes(D2F_BODY[:8]) + bytes((0x13,))  # ... CMP/BEQ +19
-        tail = bytes(D2F_BODY[13:])  # SEI .. RTS (ok path, untouched)
+        prefix = bytes(D2F_HEAD_PREFIX[:7]) + bytes((0xF0, 0x13))  # CMP/BEQ +19
+        # SEI .. mask plus a BRA to the cavity-local tail copy (disp 0).
+        okpart = bytes(D2F_HEAD_MID[:18]) + bytes((0x80, 0x00))
+        tail = bytes(CR_TAIL)  # publish .. RTS (ok path, untouched)
         # Reject block (BEQ fall-through; A holds the $2503 compare residue
         # $00 here, NOT caller-A): PLA restores caller-A first, then PHA
         # saves it; LDA/PHA saves the seed; $AA clobbers $2502; PLA/STA
@@ -1406,8 +1490,9 @@ class Rcroff2bSynthetic(unittest.TestCase):
         rej = bytes((0x68, 0x48, 0xAD, 0x02, 0x25, 0x48, 0xA9, 0xAA,
                      0x8D, 0x02, 0x25, 0x68, 0x8D, 0x02, 0x25,
                      0x68, 0x28, 0x38, 0x60))
-        self.assertEqual(len(prefix) + len(rej) + len(tail), 9 + 19 + 31)
-        mutant = prefix + rej + tail
+        self.assertEqual(len(prefix) + len(rej) + len(okpart) + len(tail),
+                         9 + 19 + 20 + 13)
+        mutant = prefix + rej + okpart + tail
         out = bytearray(self.rom2b.read_bytes())
         cav = self._cavity_off(bytes(out), len(mutant))
         cav_addr = 0xE000 + cav
@@ -1457,11 +1542,16 @@ class Rcroff2bSynthetic(unittest.TestCase):
 
     # ---- single-byte body mutants (G3) ----
 
-    def _run_mutant_returns(self, name, off_new, seed_lo, seed_en, entry_c):
-        # Helper: apply one in-body mutant ROM patch, run the standard ok
-        # or reject payload once, return (cold, warm, base).
+    def _run_mutant_returns(self, name, off_new, seed_lo, seed_en, entry_c,
+                            which="head"):
+        # Helper: apply one in-image mutant ROM patch, run the standard ok
+        # or reject payload once, return (cold, warm, base). `which`
+        # selects the head (29-byte $2B head), tail (shared 13-byte tail),
+        # or reject (shared 4-byte reject) mutant address space.
         off, new = off_new
-        rom = self._mutate_body(self.rom2b.read_bytes(), off, new)
+        mutate = {"head": self._mutate_body, "tail": self._mutate_tail,
+                  "reject": self._mutate_reject}[which]
+        rom = mutate(self.rom2b.read_bytes(), off, new)
         rec, base = self._run_on_rom(name, rom, self._defines(
             0x06 | entry_c, 0x11, 0x22, 0x06 | entry_c, 0x66, 0x77,
             seed_lo=seed_lo, seed_en=seed_en))
@@ -1492,16 +1582,16 @@ class Rcroff2bSynthetic(unittest.TestCase):
             self._check_ok_call(cold, base, 1, 0x06, 0x06, 0x11, 0x22, 0x04)
 
     def test_mutant_nopublish_red(self):
-        # M_NOPUBLISH (STA $2502 dropped): seeded $04, correct publishes
+        # M_NOPUBLISH (shared-tail STA $2502 dropped): seeded $04, correct publishes
         # $00 but mutant leaves $04 stale. Return-probe shadow oracle REDs;
         # the VDC probe alone would stay GREEN (separation documented).
         cold, warm, base = self._run_mutant_returns(
-            "mnopub", MUT_NOPUBLISH, 0x04, 1, 0)
+            "mnopub", MUT_NOPUBLISH, 0x04, 1, 0, which="tail")
         with self.assertRaises(AssertionError):
             self._check_ok_call(cold, base, 1, 0x06, 0x06, 0x11, 0x22, 0x04)
 
     def test_mutant_bypass_red(self):
-        # M_BYPASS (BEQ->BRA): unseeded $04 run performs the ok path (C=0,
+        # M_BYPASS (head BNE->BEQ): unseeded $04 run performs the ok path (C=0,
         # shadow $00 published) vs reject (shadow $04 untouched). Must RED.
         cold, warm, base = self._run_mutant_returns(
             "mbypass", MUT_BYPASS, 0x04, 0, 0)
@@ -1509,29 +1599,29 @@ class Rcroff2bSynthetic(unittest.TestCase):
             self._check_reject_call(cold, base, 1, 0x06, 0x06, 0x11, 0x22, 0x04)
 
     def test_mutant_clc_drop_red(self):
-        # M_CLC_DROP: ok path exits C=entry. Entry C=1 class must RED
+        # M_CLC_DROP (shared-tail CLC dropped): ok path exits C=entry. Entry C=1 class must RED
         # (exit C=1 vs C=0); entry C=0 class stays GREEN (masks the mutant).
         cold, warm, base = self._run_mutant_returns(
-            "mclc", MUT_CLC_DROP, 0x00, 1, 1)
+            "mclc", MUT_CLC_DROP, 0x00, 1, 1, which="tail")
         with self.assertRaises(AssertionError):
             self._check_ok_call(cold, base, 1, 0x07, 0x07, 0x11, 0x22, 0x00)
-        rec, base2 = self._run_on_rom("mclc0", self._mutate_body(
+        rec, base2 = self._run_on_rom("mclc0", self._mutate_tail(
             self.rom2b.read_bytes(), *MUT_CLC_DROP), self._defines(
             0x06, 0x11, 0x22, 0x06, 0x66, 0x77, seed_lo=0x00, seed_en=1))
         c0, w0 = self._buf(rec)
         self._check_ok_call(c0, base2, 1, 0x06, 0x06, 0x11, 0x22, 0x00)
 
     def test_mutant_sec_drop_red(self):
-        # M_SEC_DROP: reject exits C=entry. Entry C=0 class must RED.
+        # M_SEC_DROP (shared-reject SEC dropped): reject exits C=entry. Entry C=0 class must RED.
         cold, warm, base = self._run_mutant_returns(
-            "msec", MUT_SEC_DROP, 0x00, 0, 0)
+            "msec", MUT_SEC_DROP, 0x00, 0, 0, which="reject")
         with self.assertRaises(AssertionError):
             self._check_reject_call(cold, base, 1, 0x06, 0x06, 0x11, 0x22, 0x00)
 
     def test_mutant_mpr_red(self):
-        # M_MPR (MPR0 restore dropped): MPR0 stays $FF. The MPR oracle REDs.
+        # M_MPR (shared-tail MPR0 restore dropped): MPR0 stays $FF. The MPR oracle REDs.
         cold, warm, base = self._run_mutant_returns(
-            "mmpr", MUT_MPR, 0x00, 1, 0)
+            "mmpr", MUT_MPR, 0x00, 1, 0, which="tail")
         with self.assertRaises(AssertionError):
             self._check_common(cold, base, 0xFF, 1)
 

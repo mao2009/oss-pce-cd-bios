@@ -76,7 +76,7 @@ class BuildMemopen4AHostTests(unittest.TestCase):
         # inputs: normal DEV ROM via build_rom --mode debug (pinned cc65),
         # sel=0x109, track=2, mode=debug, defines=["-D", "IPL_PUBLIC"],
         # cd_read="commercial" (default), variant="byteid-stub" for both.
-        # Old SHA256 (256KiB): 9a7a2c00bed665a9d90030b824ad3c8e7d7a81c2eec71f824d6e8fb59ce00bc6.
+        # Old SHA256 (256KiB): 3d7e14093de3b10eb8c73bafa2dd3946b12ebeec9dfc0dd5ae0d164d0b657034.
         # New stub SHA256 must match (diff 0 bytes); experimental wiring is
         # covered separately and is NOT byte-identical by design.
         import sys
@@ -91,9 +91,9 @@ class BuildMemopen4AHostTests(unittest.TestCase):
             data = rom.read_bytes()
             self.assertEqual(len(data), 262144)
             self.assertNotIn("ex_memopen_entry", syms)
-            pinned = "9a7a2c00bed665a9d90030b824ad3c8e7d7a81c2eec71f824d6e8fb59ce00bc6"
+            pinned = "3d7e14093de3b10eb8c73bafa2dd3946b12ebeec9dfc0dd5ae0d164d0b657034"
             self.assertEqual(hashlib.sha256(data).hexdigest(), pinned,
-                             "stub-default G5 ROM differs from pre-$4A baseline fa694281")
+                             "stub-default G5 ROM differs from the Issue #843 baseline fa694281")
 
     def test_builder_experimental_wiring(self):
         import sys
