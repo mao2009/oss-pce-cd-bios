@@ -32,8 +32,7 @@ Companion coverage:
   body (pinned 44-byte construction has no VDC read opcode) nor the probe
   (GetState only) takes the destructive ReadRegister path; (2) frozen-clock
   SR before==after in every VDC case; (3) pending-SR survival NOT_RUN here
-  (needs a real clock + VBLANK event; the GetState mechanism itself is
-  covered by the PR #839 P3 fixture); (4) IRQ timing/handler transitions
+  (needs a real clock + VBLANK event); (4) IRQ timing/handler transitions
   NOT_RUN (out of scope for this D2 experiment);
   work-RAM scope (256-byte canary + full-buffer cold/warm equality +
   per-instruction write history: full-history writes ⊆ transient ∪
@@ -278,18 +277,23 @@ res_base:
     .res 16
 """
 
-# Synthetic $2C->$2B chain leg: seed the shared $2502 shadow with bit2 set,
-# then call $33 -> $2C -> $2B through the real table entries (the $02 leg is
-# the PUBLIC boot that loads this payload; the $2C+$2B image contains only
-# $33 (via glue) + $2C + $2B, so the full 8-call ExpF chain is not used here).
-# The $33 DSPOFF body shares the $2502 shadow family: seeded $04 here, it
-# takes its ok path (CR low = $04 & $3F = $04, bits 6+7 already clear, no
-# visible change); the $2C body then takes its ok path (CR low = $04 | $08 =
-# $0C, bit3 set); the $2B body then takes its ok path (CR low = $0C & $FB =
-# $08, bit2 cleared, bit3 kept). End-to-end records prove resumption,
-# preservation, and bit3 preservation across the pair; APICALL entries prove
-# routing. Full ExpG ($4A+$25+$24+$36+$35+$2C+$2B) overflows BOOT and is
-# refused; this minimal chain fits and proves the $2C->$2B interaction.
+# Synthetic $2C->$2B routing chain leg: seed the shared $2502 shadow with
+# bit2 set, then call $33 -> $2C -> $2B through the real table entries (the
+# $02 leg is the PUBLIC boot that loads this payload; the $2C+$2B image
+# contains only $33 (via glue) + $2C + $2B, so the full 8-call ExpF chain is
+# not used here). Expected transitions from the D2 contracts: seeded $04
+# here, $33 ok would keep $04 ($04 & $3F = $04, EXPECTED, not measured on this
+# chain); $2C ok would set bit3 ($04 | $08 = $0C, EXPECTED, not measured);
+# $2B ok would clear bit2 ($0C & $FB = $08, EXPECTED, not measured). This
+# chain performs no actual-CR or shadow synchronization and records no
+# intermediate/final CR or shadow values (run_probe without VDC snapshots),
+# so `$04->$0C->$08` is EXPECTED, never OBSERVED here. End-to-end records
+# prove routing, resumption, and register/stack preservation (OBSERVED
+# synthetic); APICALL entries prove order. Bit-3 preservation on the chain is
+# unproven (NOT_RUN); individual synchronized VDC tests prove bit2/bit3
+# handling synthetically. Synchronized intermediate CR/shadow chain proof is
+# deferred to #843. Full ExpG ($4A+$25+$24+$36+$35+$2C+$2B) overflows BOOT
+# and is refused; this minimal chain fits and proves routing/resumption.
 CHAIN_ASM = r"""
 .setcpu "huc6280"
 .segment "CODE"
@@ -1534,13 +1538,17 @@ class Rcroff2bSynthetic(unittest.TestCase):
     # ---- synthetic $2C->$2B chain leg ----
 
     def test_chain_33_2c_2b(self):
-        # Synthetic $2C->$2B chain leg on the $2C+$2B image: the PUBLIC boot
-        # ($02 leg) loads this payload, which seeds the shared shadow $04
-        # then calls $33 -> $2C -> $2B through the real table entries.
-        # Per-call entry evidence + end-to-end preservation + final shadow
-        # $08 prove routing, resumption, and bit3 preservation across the
-        # pair ($04 -> $0C -> $08). The observed entry states are
-        # SIMULATED-entry, never genuine.
+        # Synthetic $2C->$2B routing chain on the $2C+$2B image: the PUBLIC
+        # boot ($02 leg) loads this payload, which seeds the shared shadow
+        # $04 then calls $33 -> $2C -> $2B through the real table entries.
+        # Per-call entry evidence + end-to-end register/stack preservation
+        # prove routing and resumption (OBSERVED synthetic). `$04->$0C->$08`
+        # is EXPECTED from the D2 contracts, not measured here (no
+        # intermediate/final CR or shadow assertions on this chain; chain
+        # CR/shadow transitions NOT_RUN). Bit-3 preservation on the chain is
+        # unproven; individual VDC tests cover it. The observed entry states
+        # are SIMULATED-entry, never genuine. Synchronized intermediate proof
+        # deferred to #843.
         import json
         o = self.out / "chain"
         o.mkdir(exist_ok=True)

@@ -90,7 +90,7 @@ Gate: S1-S4 REFERENCE_ONLY/PENDING; S5a test-dependency/REFERENCE_ONLY; S5b PROJ
 | 13 | Flags (Carry/Z/N/V) | UNKNOWN (no public Carry contract; Zeograd OUT N/A) | C=0 ok / C=1 reject on unseeded shadow (PROJECT_SPEC_ONLY family convention, SIMULATED label, never genuine) | Zeograd OUT N/A defines no genuine Carry; D2 convention belongs to CR shadow family (`$2E`/`$33`/`$2C`) and MUST NOT be cited as `$2B` semantics |
 | 14 | IRQ timing/pending/handler/VBlank | UNKNOWN (sync vs async, wait vs enable-and-return, handler setup all UNPROVEN) | No wait, no handler, immediate CR rewrite (effective next horizontal period per pinned-core HW note only) | Natural time-passage IRQ events vs implementation side effects must be distinguished in any future test |
 | 15 | Errors/rejects | UNKNOWN (no public error codes) | Unseeded shadow (`$2503 != $A5`) → reject: no VDC write, no shadow/sentinel write outside transient stack, C=1, A/X/Y/MPR/flags preserved | PROJECT_SPEC_ONLY fail-closed (synthetic oracle: unseeded `$34` stays `$34`, C=1) |
-| 16 | Call order | UNKNOWN genuine; OBSERVED `$2C->$2B` adjacency on one commercial path (SIMULATED upstream) | Synthetic `$33->$2C->$2B` chain proves routing/resumption + bit-3 preservation (`$04->$0C->$08`), never genuine ordering | One-game order under experimental (SIMULATED) upstream returns. Genuine ordering UNKNOWN |
+| 16 | Call order | UNKNOWN genuine; OBSERVED `$2C->$2B` adjacency on one commercial path (SIMULATED upstream) | Synthetic `$33->$2C->$2B` chain proves routing/resumption + register/stack preservation (OBSERVED synthetic); `$04->$0C->$08` is EXPECTED from the D2 contracts (NOT_RUN on the chain — no intermediate/final CR or shadow measurement); bit-3 preservation on the chain is unproven (individual `$2B` VDC tests prove bit-3 preservation synthetically) ; never genuine ordering | One-game order under experimental (SIMULATED) upstream returns. Genuine ordering UNKNOWN. Synchronized intermediate CR/shadow chain proof is deferred to #843 |
 
 Verdict: genuine `$2B` UNKNOWN in every behavioral field. The D2 body below
 is a PROJECT_SPEC_ONLY experimental scope choice, never a genuine claim.
@@ -115,9 +115,13 @@ is a PROJECT_SPEC_ONLY experimental scope choice, never a genuine claim.
   4. Caller-side no-setup practice for both RCR APIs (S3b, REFERENCE_ONLY).
   5. Falsifiable synthetic oracles (seeded `$04->$00`, `$0C->$08` coexistence,
      `$56->$52` mixed, `$FF->$FB` boundary, `$08->$08` already-disabled,
-     unseeded `$34->$34` reject; bit-3 preservation; CR-high/RCR preservation;
-     mask mutants; window/MPR/AR/SP; RAM-diff; `$33->$2C->$2B` chain
-     cold/warm; VDC GetState snapshots with synchronized shadow).
+     unseeded `$34->$34` reject; bit-3 preservation (individual VDC matrix,
+     OBSERVED synthetic); CR-high/RCR preservation; mask mutants;
+     window/MPR/AR/SP; RAM-diff; `$33->$2C->$2B` routing chain cold/warm
+     (routing/resumption/register preservation OBSERVED; chain CR/shadow
+     transitions NOT_RUN — no intermediate/final CR or shadow assertion);
+     VDC GetState snapshots with synchronized shadow (individual matrix,
+     OBSERVED synthetic). Chain `$04->$0C->$08` is EXPECTED, not measured.
   6. Non-target preservation verified (other CR bits incl. bit 3, CR high,
      RCR, `$20F3`/`$20F7`, CPU I, IDR/IRR, SR, VCE/VRAM/SATB/zp/BURAM/CD).
   7. Explicit opt-in isolation (`cd_2b="stub"` default, stub byte-identical,
@@ -192,9 +196,12 @@ Explicitly NOT implemented (guessing forbidden):
   fail-closed with an explicit BOOT-overflow message until a BOOT-saving
   follow-up (CR-family commonization, separate task per §D2 discipline)
   lands. The `$2C+$2B` chain (BOOT `0xA75+0x37` + CODE `0x531` = 4048 bytes,
-  slack 38) fits and proves the `$2C->$2B` interaction (`$04->$0C->$08`).
-  This is a technical BLOCKED, not a contract BLOCKED; it does not affect the
-  D2 functional proof (unit + chain) or the stub-default guarantee.
+  slack 38) fits and proves routing/resumption for the `$2C+$2B` pair;
+  `$04->$0C->$08` is the expected transition (NOT_RUN on the chain — no
+  intermediate/final CR or shadow measurement). Synchronized intermediate
+  CR/shadow chain proof is deferred to #843. This is a technical BLOCKED,
+  not a contract BLOCKED; it does not affect the D2 functional proof
+  (individual VDC matrix) or the stub-default guarantee.
 - ROM 256 KiB, `$FFF6`/`$E800` boundaries, BOOT-span (`entry+44 ≤ $FFF6`),
   exact-JMP targets, window subset/cardinality, overlap refusal, BOOT span,
   input-ROM invariance, invalid-combo fail-closed, symlink guards preserved.
@@ -268,8 +275,10 @@ consistency, never OBSERVED (no commercial WRAM read).
   idempotent, C0/C1 × ok/reject), reject (`$00`, `$F0` ignored, `$34`
   bit2-set), SP/MPR1, VDC synchronized (`$2502`/`$2503` + real CR/RCR/AR
   boundary proof, high/RCR/other-regs preserved, AR=5 ok / entry-AR reject,
-  frozen-clock SR invariance), `$33->$2C->$2B` chain (`$04->$0C->$08`,
-  routing + preservation + bit-3 kept), mutants RED (wrong-bit/destroy/noop/
+  frozen-clock SR invariance), `$33->$2C->$2B` routing chain (routing +
+  resumption + register/stack preservation OBSERVED; `$04->$0C->$08`
+  EXPECTED, chain CR/shadow transitions NOT_RUN, bit-3 on chain unproven —
+  individual VDC matrix proves bit-3 preservation), mutants RED (wrong-bit/destroy/noop/
   novdc/nopublish/bypass/CLC/SEC/MPR + write-history + cavity + buffer
   negatives), cold/warm equality, `make test`/`make check`/`git diff --check`
   clean, Required CI GREEN. Pending-SR survival + IRQ timing NOT_RUN by

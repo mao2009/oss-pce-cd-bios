@@ -549,10 +549,12 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
     SIMULATED separation) or "experimental" (Issue #54 D2 limited-functional
     body, $E084 -> JMP ex_irqon_entry: CR R05 bit3 set via the shared $2502
     shadow, $20F3/$20F7 + CPU I + IDR untouched). Anything else is refused.
-    Only the ($2C-only, cd_2b stub) and (full $4A+$25+$24+$36+$35+$2C,
-    cd_2b stub) experimental combinations are supported; any other
-    cd_2c="experimental" combination is refused fail-closed (bounded variant
-    lattice, no power-set growth).
+    Only the ($2C-only, cd_2b stub), (full $4A+$25+$24+$36+$35+$2C,
+    cd_2b stub), and ($2C+$2B chain, cd_2b experimental, all others stub)
+    experimental combinations are supported; any other cd_2c="experimental"
+    combination is refused fail-closed (bounded variant lattice, no power-set
+    growth). Full ExpG ($4A+$25+$24+$36+$35+$2C+$2B) is refused on BOOT
+    overflow (see cd_2b; tracked in #843).
     `cd_2b` selects the $2B wiring: "stub" (default; the $E081 table entry
     stays on the linked fallback stub, preserving every existing test and the
     SIMULATED separation) or "experimental" (Issue #53 D2 limited-functional
