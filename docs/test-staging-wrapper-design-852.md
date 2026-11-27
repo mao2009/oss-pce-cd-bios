@@ -8,10 +8,12 @@
 > This document is the `test-staging-wrapper-design-852.md` deliverable.
 >
 > **Depends-on Task-A:** the change->test correspondence map (Phase 1,
-> §3 of the #850 survey) is owned by Task-A. Its canonical format is NOT
-> defined here. The prototype reads maps only through the `MapLoader`
-> interface and ships a provisional envelope for prototype tests; any map
-> whose format tag is not recognised falls back to L3 fail-closed.
+> §3 of the #850 survey) is owned by Task-A. The normal CLI path loads the
+> canonical envelope through `CanonicalJsonMapLoader` (default
+> `tools/test_staging_map.json`, or an explicit `--map`, still canonical);
+> the provisional envelope is isolated to explicit synthetic-test use.
+> Any map whose tag is not recognised for the active loader falls back
+> to L3 fail-closed.
 >
 > **Evidence boundary:** prototype + synthetic-fixture unit-test evidence
 > only. No `./rom` access (`rom/` is absent in this worktree), no commercial
@@ -84,11 +86,19 @@ The selector prints a plan and runs nothing. Pipeline:
    `--no-renames`, so a rename always arrives as delete+add (§5, row 5).
    `--fetch` performs an explicit fetch first; the default is read-only
    (no network).
-2. **Load** the map through `MapLoader` (§4).
+2. **Load** the map through `MapLoader` (§4): the normal path starts
+   `CanonicalJsonMapLoader` with the default `tools/test_staging_map.json`
+   (or an explicit `--map`, still canonical); the provisional loader is
+   explicit synthetic-test use only.
 3. **Select** via `select()`: every tracked change must match at least one
    rule; the level is the maximum matched level (fail-closed upward).
-   `--api NAME` additionally requires the `apis` table entry and treats
-   out-of-scope files as unclassified (-> L3).
+   `--api NAME` additionally requires the `apis` table entry (ledger
+   names, slash-name parts, and decimal/`0x`-`/`$`-spellings; bare hex is
+   banned as ambiguous), keeps the slot's own level, and never lowers the
+   required level -- an L3/L4 slot runs the full local-L3 sequence (-> L3).
+   Out-of-scope files are unclassified (-> L3). Any L3 decision emits the
+   ONE mandatory local-L3 set in full (never a partial subset displayed
+   as full).
 4. **Render** via `render()`: level, fallback yes/no + reason, PARTIAL
    marker for L0-L2, LOCAL-L3 vs Required-CI block for L3, SKIP-policy
    line, SELECTED (with full argv + env), UNSELECTED (remainder of the L3
@@ -198,10 +208,14 @@ still required after Owner merges #856: re-run the `CanonicalLoaderTests`
 ## 6. Evidence, reuse, and non-goals
 
 - **Reuse rule:** a prior result may stand in for re-execution only when
-  `evidence_reusable(stored, current)` holds: identical HEAD, base,
-  inputs hash, Python version, platform, toolchain pins (from
-  `tools/dependencies.json`), MODE, and env flags — the same principle as
-  #848's run/attempt binding. Unknown toolchains never reuse. An old HEAD
+  `evidence_reusable(stored, current)` holds: identical HEAD/BASE, input
+  bytes (same path with different bytes never reuses), map content+id,
+  selector id, API choice, level, command set, Python version, platform,
+  toolchain pins (from `tools/dependencies.json`), MODE, and env flags —
+  the same principle as #848's run/attempt binding. Anything unidentifiable
+  (unknown/manual HEAD, unknown inputs from forbidden `./rom` areas or
+  unreadable bytes, missing/unparseable map, unknown selector/level/command
+  set, unknown toolchain) refuses reuse fail-closed. An old HEAD
   result is never claimed for a new HEAD.
 - **PARTIAL:** L0-L2 reports state their level is not full regression and
   is never MERGE_READY evidence alone. MERGE_READY still needs local L3
@@ -239,6 +253,23 @@ spellings, ledger names, and slash-name parts resolve to one subset),
 `name`-carrying rows rejected fail-closed, and the pin test records
 `2ab14d08` as FINAL (superseding `cf428568`). Post-merge re-verification
 on the merged map is still required after Owner merges #856.
+
+Wave1 review-blocker record (Agent B, Issue #852, 4 MAJOR): 77 selector
+tests OK — `L3FullSequenceTests` (8 cases: unknown tracked, untracked,
+safety-gate, L1/L3 mixed, empty selection, missing/inconsistent map, L4
+escalation, partial-rule) assert the ONE mandatory local-L3 set byte-for-byte
+(`build`, `test`, `test-real-core`, `check`, `verify-build-diff`,
+`rom-provenance`, `dev-integration`, `dev-release-gate-blocked`; the retired
+`release-verify` pseudo-command no longer renders a release build as
+verification); `FingerprintContentTests` (bytes-bound inputs, forbidden
+`rom/` refusal, map/selector/API/level/command-set binding) refuse reuse on
+same-path-different-bytes; `CanonicalDefaultTests` prove the normal CLI
+starts canonical (provisional via explicit loader only) plus a CLI `--json`
+end-to-end run against the real Task-A map at interim pin `3dad5dad`
+(read-only branch blob to a temp file, no checkout/copy/`./rom`);
+`ApiAliasLevelTests` ban bare hex, keep slot levels, and prove `--api`
+never lowers the required level. RED proof: the 27 new tests run against
+the pre-fix selector yield 17 failures + 9 errors; restored -> OK (77).
 
 Residual risks: (1) the provisional envelope is throwaway — Task-A must
 define the canonical format and a loader for it; (2) wrapper `Makefile`

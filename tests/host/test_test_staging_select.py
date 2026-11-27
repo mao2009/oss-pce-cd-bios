@@ -6,6 +6,7 @@ SKIP): a skip is never reported as success here.
 """
 import copy
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -188,6 +189,9 @@ class MapTests(unittest.TestCase):
         else:
             map_path = write_map(self.repo, document_or_none)
         kwargs.setdefault("map_path", map_path)
+        # Provisional envelope is synthetic-test-only: the normal CLI path
+        # always starts the canonical loader, so tests say so explicitly.
+        kwargs.setdefault("loader", SEL.ProvisionalJsonMapLoader())
         return SEL.run_selector(str(self.repo), "vbase", **kwargs)
 
     def test_missing_map_falls_back_to_l3(self):
@@ -278,9 +282,12 @@ class PolicyTests(unittest.TestCase):
         git(self.repo, "commit", "-qam", "change")
         self.map_path = write_map(self.repo, provisional_map(
             [l1_rule("src/overrides/*.s")]))
+        # Provisional envelope is synthetic-test-only: say the loader
+        # explicitly (the normal CLI path always starts canonical).
+        self.loader = SEL.ProvisionalJsonMapLoader()
 
     def test_require_cc65_preserved_on_every_command(self):
-        for kwargs in ({"map_path": self.map_path}, {}):
+        for kwargs in ({"map_path": self.map_path, "loader": self.loader}, {}):
             selection, _ = SEL.run_selector(str(self.repo), "vbase", **kwargs)
             self.assertTrue(selection.selected)
             for command in selection.selected:
@@ -297,7 +304,8 @@ class PolicyTests(unittest.TestCase):
     def test_empty_change_set_selects_l3_never_passes_empty(self):
         clean = make_repo("src/a.s")
         empty_map = write_map(clean, provisional_map([l1_rule("src/**")]))
-        selection, _ = SEL.run_selector(str(clean), "vbase", map_path=empty_map)
+        selection, _ = SEL.run_selector(str(clean), "vbase", map_path=empty_map,
+                                        loader=SEL.ProvisionalJsonMapLoader())
         self.assertEqual(selection.level, "L3")
         self.assertTrue(selection.fallback)
         self.assertEqual(selection.selected[0]["env"],
@@ -305,7 +313,8 @@ class PolicyTests(unittest.TestCase):
 
     def test_l1_output_marks_partial_and_lists_unselected(self):
         selection, _ = SEL.run_selector(str(self.repo), "vbase",
-                                        map_path=self.map_path)
+                                        map_path=self.map_path,
+                                        loader=self.loader)
         report = SEL.render(selection)
         self.assertIn("PARTIAL", report)
         self.assertIn("never MERGE_READY evidence on its own", report)
@@ -324,7 +333,7 @@ class PolicyTests(unittest.TestCase):
             self.assertIn(check, report)
 
     def test_skip_policy_is_always_printed(self):
-        for kwargs in ({"map_path": self.map_path}, {}):
+        for kwargs in ({"map_path": self.map_path, "loader": self.loader}, {}):
             selection, _ = SEL.run_selector(str(self.repo), "vbase", **kwargs)
             report = SEL.render(selection)
             self.assertIn("SKIP-POLICY", report)
@@ -384,11 +393,14 @@ class ApiTests(unittest.TestCase):
         self.map_path = write_map(self.repo, provisional_map(
             [l1_rule("src/overrides/*.s", api="MA_MUL8U")],
             apis={"MA_MUL8U": {"commands": [{"make": "dev-rom"}],
-                                 "reason": "provisional api entry"}}))
+                                 "reason": "provisional api entry",
+                                 "level": "L1"}}))
+        self.loader = SEL.ProvisionalJsonMapLoader()
 
     def test_known_api_selects_l1_subset(self):
         selection, _ = SEL.run_selector(str(self.repo), "vbase",
-                                        map_path=self.map_path, api="MA_MUL8U")
+                                        map_path=self.map_path, api="MA_MUL8U",
+                                        loader=self.loader)
         self.assertEqual(selection.level, "L1")
         self.assertFalse(selection.fallback)
         self.assertEqual([cmd["argv"] for cmd in selection.selected],
@@ -396,7 +408,8 @@ class ApiTests(unittest.TestCase):
 
     def test_unknown_api_falls_back_to_l3(self):
         selection, _ = SEL.run_selector(str(self.repo), "vbase",
-                                        map_path=self.map_path, api="NOPE")
+                                        map_path=self.map_path, api="NOPE",
+                                        loader=self.loader)
         self.assertEqual(selection.level, "L3")
         self.assertTrue(selection.fallback)
         self.assertIn("NOPE", selection.fallback_reason)
@@ -405,7 +418,8 @@ class ApiTests(unittest.TestCase):
         write_file(self.repo, "src/common/other.s", "changed\n")
         git(self.repo, "add", "src/common/other.s")
         selection, _ = SEL.run_selector(str(self.repo), "vbase",
-                                        map_path=self.map_path, api="MA_MUL8U")
+                                        map_path=self.map_path, api="MA_MUL8U",
+                                        loader=self.loader)
         self.assertEqual(selection.level, "L3")
         self.assertTrue(selection.fallback)
 
@@ -425,6 +439,12 @@ class ApiTests(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 CANONICAL_PIN = "2ab14d08fc9fbdc704da1b1f07c96501850b542e"
+
+# Interim Wave1 pin of the Task-A branch HEAD used read-only by
+# CanonicalDefaultTests.test_cli_end_to_end_with_real_canonical_map.
+# Recorded 2026-11-28; if the branch moves this pin fails and Wave3
+# finalises it against the merge (no checkout, no tracked copy, no ./rom).
+REAL_MAP_HEAD_PIN = "3dad5dad8ed4c546dc95cbaf9c2527e13af65d69"
 
 
 def canonical_tests(host=(), scripts=(), targets=(), static=()):
@@ -673,8 +693,7 @@ class CanonicalLoaderTests(unittest.TestCase):
 
     def test_slot_number_identifiers_resolve_to_same_subset(self):
         seen = {}
-        for api in ("MA_MUL8U", "63", "0x3F", "0x3f", "3F",
-                    "3f", "$3F"):
+        for api in ("MA_MUL8U", "63", "0x3F", "0x3f", "$3F", "$3f"):
             with self.subTest(api=api):
                 selection, _ = self.select_canonical(canonical_doc(),
                                                      api=api)
@@ -740,6 +759,476 @@ class CanonicalLoaderTests(unittest.TestCase):
                                              api="MA_MUL8U")
         self.assertEqual(selection.level, "L3")
         self.assertTrue(selection.fallback)
+
+
+def full_l3_argvs():
+    """The one mandatory local-L3 set, as rendered argv lists."""
+    return [SEL._command_argv(cmd) for cmd in SEL.FULL_L3_SEQUENCE]
+
+
+def assert_full_l3(testcase, selection, fallback_reason=None):
+    """Every L3 path emits exactly the full set: never partial-as-full."""
+    testcase.assertEqual(selection.level, "L3")
+    testcase.assertTrue(selection.fallback)
+    testcase.assertFalse(selection.partial)
+    testcase.assertEqual(selection.unselected, [])
+    testcase.assertEqual([cmd["argv"] for cmd in selection.selected],
+                         full_l3_argvs())
+    for command in selection.selected:
+        testcase.assertEqual(command["env"],
+                             {SEL.REQUIRE_CC65_ENV: "1"},
+                             f"cc65 gate dropped on {command['argv']}")
+    if fallback_reason is not None:
+        testcase.assertEqual(selection.fallback_reason, fallback_reason)
+
+
+class L3FullSequenceTests(unittest.TestCase):
+    """FIX1 RED->GREEN: L3 always emits ONE complete mandatory set.
+
+    Before the fix, an L3 decision over a non-empty deduped subset returned
+    that subset displayed as full (partial=False, unselected=[]), the
+    hardcoded L3 list missed release verification, and the catch-all only
+    covered test/test-real-core/check. Each case below asserts the exact
+    full argv set.
+    """
+    def setUp(self):
+        self.loader = SEL.ProvisionalJsonMapLoader()
+
+    def select_provisional(self, repo, document, **kwargs):
+        map_path = write_map(repo, document)
+        kwargs.setdefault("map_path", map_path)
+        kwargs.setdefault("loader", self.loader)
+        return SEL.run_selector(str(repo), "vbase", **kwargs)
+
+    def test_unknown_tracked_file_selects_full_l3(self):
+        repo = make_repo("src/known.s")
+        write_file(repo, "src/known.s", "changed\n")
+        git(repo, "commit", "-qam", "change")
+        selection, _ = self.select_provisional(
+            repo, provisional_map([l1_rule("docs/**")]))
+        assert_full_l3(self, selection, "unclassified-file")
+
+    def test_untracked_file_selects_full_l3(self):
+        repo = make_repo("src/known.s")
+        write_file(repo, "src/known.s", "changed\n")
+        git(repo, "commit", "-qam", "change")
+        write_file(repo, "src/scratch_new.s")
+        selection, _ = self.select_provisional(
+            repo, provisional_map([l1_rule("src/**")]))
+        assert_full_l3(self, selection, "untracked-inputs")
+
+    def test_safety_gate_change_selects_full_l3(self):
+        # A safety-gate file (tools/check.py) maps L3 with a narrow subset
+        # ([check]); the emitted set must still be the full sequence.
+        repo = make_repo("src/overrides/slot_3F.s")
+        write_file(repo, "tools/check.py", "changed\n")
+        git(repo, "add", "tools/check.py")
+        git(repo, "commit", "-qam", "safety")
+        safety = dict(l1_rule("tools/check.py", reason="safety gate"))
+        safety["level"] = "L3"
+        safety["commands"] = [{"make": "check"}]
+        selection, _ = self.select_provisional(
+            repo, provisional_map(
+                [safety, l1_rule("src/overrides/*.s")]))
+        assert_full_l3(self, selection, "map-rule-requires-L3")
+
+    def test_l1_l3_mixed_changes_select_full_l3(self):
+        repo = make_repo("src/overrides/slot_3F.s")
+        write_file(repo, "src/overrides/slot_3F.s", "changed\n")
+        write_file(repo, "tools/check.py", "changed\n")
+        git(repo, "add", "-A")
+        git(repo, "commit", "-qam", "mixed")
+        safety = dict(l1_rule("tools/**", reason="safety gate"))
+        safety["level"] = "L3"
+        safety["commands"] = [{"make": "check"}]
+        selection, _ = self.select_provisional(
+            repo, provisional_map(
+                [safety, l1_rule("src/overrides/*.s")]))
+        assert_full_l3(self, selection, "map-rule-requires-L3")
+
+    def test_empty_selection_selects_full_l3(self):
+        # A classification yielding zero commands is a 0-test run, never
+        # PASS -> full L3 (direct select: an L1 rule with no commands).
+        changed = SEL.ChangedInputs(
+            head="h" * 40, base="vbase", committed=[("M", "a.s")])
+        rules = [SEL.MapRule(pattern="a.s", level="L1", commands=[],
+                             reason="empty fixture rule")]
+        selection = SEL.select(changed, rules, {}, fingerprint={})
+        assert_full_l3(self, selection, "empty-selection")
+        self.assertTrue(any("empty-selection" in reason
+                            for reason in selection.reasons))
+
+    def test_missing_map_selects_full_l3(self):
+        repo = make_repo("src/a.s")
+        write_file(repo, "src/a.s", "changed\n")
+        git(repo, "commit", "-qam", "change")
+        selection, _ = SEL.run_selector(
+            str(repo), "vbase",
+            map_path=str(repo / "does-not-exist.json"))
+        assert_full_l3(self, selection, "map-missing-or-inconsistent")
+
+    def test_inconsistent_map_selects_full_l3(self):
+        # A provisional envelope via the normal (canonical) path is
+        # inconsistent -> full L3, never a misread subset.
+        repo = make_repo("src/overrides/slot_3F.s")
+        write_file(repo, "src/overrides/slot_3F.s", "changed\n")
+        git(repo, "commit", "-qam", "change")
+        selection, _ = self.select_provisional(
+            repo, provisional_map([l1_rule("src/overrides/*.s")]),
+            loader=SEL.CanonicalJsonMapLoader())
+        assert_full_l3(self, selection, "map-missing-or-inconsistent")
+
+    def test_l4_auto_escalation_selects_full_l3(self):
+        l4_entry = canonical_entry(
+            "fixture-optin", "exact", "src/overrides/slot_3F.s", "L4",
+            canonical_tests(scripts=["tests/integration/" +
+                                     "dev_getver_multi_input.py"],
+                            targets=["dev-rom"]),
+            reason="fixture opt-in", category="real-core")
+        repo = make_repo("src/overrides/slot_3F.s")
+        write_file(repo, "src/overrides/slot_3F.s", "changed\n")
+        git(repo, "commit", "-qam", "change")
+        map_path = write_map(repo, canonical_doc(
+            entries=[l4_entry, canonical_fallback_entry()]))
+        selection, _ = SEL.run_selector(
+            str(repo), "vbase", map_path=map_path,
+            loader=SEL.CanonicalJsonMapLoader())
+        assert_full_l3(self, selection, "map-rule-requires-L3")
+        argvs = [" ".join(cmd["argv"]) for cmd in selection.selected]
+        self.assertFalse(any("dev_getver" in argv for argv in argvs))
+
+    def test_partial_rule_case_selects_full_l3(self):
+        # A canonical L3 rule with a non-empty subset (narrower than full)
+        # must still emit the full sequence, displayed as full.
+        narrow = canonical_entry(
+            "fixture-narrow-l3", "exact", "src/overrides/slot_3F.s",
+            "L3", canonical_tests(targets=["test"]),
+            reason="fixture narrow L3", category="shared-code")
+        repo = make_repo("src/overrides/slot_3F.s")
+        write_file(repo, "src/overrides/slot_3F.s", "changed\n")
+        git(repo, "commit", "-qam", "change")
+        map_path = write_map(repo, canonical_doc(
+            entries=[narrow, canonical_fallback_entry()]))
+        selection, _ = SEL.run_selector(
+            str(repo), "vbase", map_path=map_path,
+            loader=SEL.CanonicalJsonMapLoader())
+        assert_full_l3(self, selection, "map-rule-requires-L3")
+        self.assertTrue(any("l3-requires-full" in reason
+                            for reason in selection.reasons))
+
+
+class FingerprintContentTests(unittest.TestCase):
+    """FIX2 RED->GREEN: the fingerprint binds bytes, not just paths.
+
+    Before the fix, only origin:status:path was hashed, so the same HEAD /
+    same status / same path with different bytes reused old evidence.
+    """
+    def fingerprint(self, repo, changed, **kwargs):
+        kwargs.setdefault("map_path", self.map_path)
+        return SEL.evidence_fingerprint(repo, changed, **kwargs)
+
+    def setUp(self):
+        self.map_doc = provisional_map([l1_rule("src/**")])
+        self.map_path = write_map(None, self.map_doc)
+
+    def test_same_path_different_bytes_refuses_reuse(self):
+        repo = make_repo("f.s")
+        write_file(repo, "f.s", "version-one\n")
+        git(repo, "add", "f.s")
+        first = self.fingerprint(
+            str(repo), SEL.collect_changes(str(repo), "vbase"))
+        self.assertNotEqual(first["inputs_sha256"], "unknown")
+        write_file(repo, "f.s", "version-two\n")
+        git(repo, "add", "f.s")
+        second = self.fingerprint(
+            str(repo), SEL.collect_changes(str(repo), "vbase"))
+        # Same HEAD (no commit), same staged status, same path -- but the
+        # old origin:status:path-only hash would call these identical.
+        self.assertEqual(first["head"], second["head"])
+        self.assertEqual(
+            SEL.collect_changes(str(repo), "vbase").staged,
+            [("M", "f.s")])
+        self.assertNotEqual(first["inputs_sha256"],
+                            second["inputs_sha256"])
+        self.assertFalse(SEL.evidence_reusable(first, second))
+
+    def test_identical_bytes_match_on_inputs(self):
+        repo = make_repo("f.s")
+        write_file(repo, "f.s", "same\n")
+        git(repo, "add", "f.s")
+        first = self.fingerprint(
+            str(repo), SEL.collect_changes(str(repo), "vbase"))
+        second = self.fingerprint(
+            str(repo), SEL.collect_changes(str(repo), "vbase"))
+        self.assertEqual(first["inputs_sha256"], second["inputs_sha256"])
+        self.assertNotEqual(first["inputs_sha256"], "unknown")
+
+    def test_forbidden_area_refuses_reuse_unread(self):
+        # Bytes under rom/ are private reference inputs: never hashed, and
+        # the fingerprint refuses reuse instead of identifying them.
+        repo = make_repo("src/a.s")
+        write_file(repo, "rom/secret.bin", "private\n")
+        git(repo, "add", "rom/secret.bin")
+        changed = SEL.collect_changes(str(repo), "vbase")
+        fingerprint = self.fingerprint(str(repo), changed)
+        self.assertEqual(fingerprint["inputs_sha256"], "unknown")
+        self.assertFalse(SEL.evidence_reusable(fingerprint, fingerprint))
+
+    def test_unidentifiable_head_refuses_reuse(self):
+        for head in ("unknown", "manual"):
+            with self.subTest(head=head):
+                changed = SEL.ChangedInputs(head=head, base="vbase")
+                fingerprint = SEL.evidence_fingerprint(
+                    str(make_repo("a.s")), changed,
+                    map_path=self.map_path)
+                self.assertEqual(fingerprint["inputs_sha256"], "unknown")
+                self.assertFalse(
+                    SEL.evidence_reusable(fingerprint, fingerprint))
+
+    def test_map_content_change_refuses_reuse(self):
+        repo = make_repo("f.s")
+        write_file(repo, "f.s", "x\n")
+        git(repo, "add", "f.s")
+        changed = SEL.collect_changes(str(repo), "vbase")
+        first = SEL.evidence_fingerprint(str(repo), changed,
+                                         map_path=self.map_path,
+                                         level="L1",
+                                         commands=[{"make": "check"}])
+        other_map = write_map(None, provisional_map([l1_rule("other/**")]))
+        second = SEL.evidence_fingerprint(str(repo), changed,
+                                          map_path=other_map,
+                                          level="L1",
+                                          commands=[{"make": "check"}])
+        self.assertNotEqual(first["map_sha256"], "unknown")
+        self.assertNotEqual(first["map_sha256"], second["map_sha256"])
+        self.assertFalse(SEL.evidence_reusable(first, second))
+
+    def test_missing_map_refuses_reuse(self):
+        repo = make_repo("f.s")
+        changed = SEL.collect_changes(str(repo), "vbase")
+        fingerprint = SEL.evidence_fingerprint(str(repo), changed)
+        self.assertEqual(fingerprint["map_sha256"], "unknown")
+        self.assertFalse(SEL.evidence_reusable(fingerprint, fingerprint))
+
+    def test_selection_and_conditions_change_refuses_reuse(self):
+        repo = make_repo("f.s")
+        write_file(repo, "f.s", "x\n")
+        git(repo, "add", "f.s")
+        changed = SEL.collect_changes(str(repo), "vbase")
+        base_kwargs = {"map_path": self.map_path, "api": "none",
+                       "level": "L1", "commands": [{"make": "check"}]}
+        first = SEL.evidence_fingerprint(str(repo), changed, **base_kwargs)
+        for label, override in {
+                "api": {"api": "MA_MUL8U"},
+                "level": {"level": "L3"},
+                "commands": {"commands": [{"make": "test"}]},
+                "mode": {},
+        }.items():
+            with self.subTest(label=label):
+                kwargs = dict(base_kwargs)
+                kwargs.update(override)
+                if label == "mode":
+                    other = SEL.evidence_fingerprint(str(repo), changed,
+                                                     mode="release",
+                                                     **kwargs)
+                else:
+                    other = SEL.evidence_fingerprint(str(repo), changed,
+                                                     **kwargs)
+                self.assertFalse(SEL.evidence_reusable(first, other))
+
+
+class CanonicalDefaultTests(unittest.TestCase):
+    """FIX3: the normal CLI path starts the canonical loader.
+
+    Provisional maps load only with an explicitly passed provisional loader
+    (synthetic-test use); the default path and an explicit --map both start
+    canonical, and a missing/inconsistent canonical map fails closed to L3.
+    """
+    def test_default_path_starts_canonical_loader(self):
+        # A provisional envelope without an explicit loader is inconsistent
+        # to the canonical default -> L3 (never a misread subset).
+        repo = make_repo("src/overrides/slot_3F.s")
+        write_file(repo, "src/overrides/slot_3F.s", "changed\n")
+        git(repo, "commit", "-qam", "change")
+        map_path = write_map(repo, provisional_map(
+            [l1_rule("src/overrides/*.s")]))
+        defaulted, _ = SEL.run_selector(str(repo), "vbase",
+                                        map_path=map_path)
+        assert_full_l3(self, defaulted, "map-missing-or-inconsistent")
+        explicit, _ = SEL.run_selector(
+            str(repo), "vbase", map_path=map_path,
+            loader=SEL.ProvisionalJsonMapLoader())
+        self.assertEqual(explicit.level, "L1")
+        self.assertFalse(explicit.fallback)
+
+    def test_missing_default_canonical_map_fails_closed(self):
+        repo = make_repo("src/a.s")
+        write_file(repo, "src/a.s", "changed\n")
+        git(repo, "commit", "-qam", "change")
+        selection, _ = SEL.run_selector(str(repo), "vbase")
+        self.assertEqual(selection.level, "L3")
+        self.assertTrue(selection.fallback)
+        self.assertEqual(selection.fallback_reason,
+                         "map-missing-or-inconsistent")
+
+    def test_cli_end_to_end_with_real_canonical_map(self):
+        # Interim pin (Wave1): read-only use of the Task-A branch HEAD.
+        # No checkout, no copy into tracked paths, no ./rom. If the branch
+        # moves, this pin fails and Wave3 finalises against the merge.
+        ref = "origin/agent/test-staging-map-v0-20261128"
+        try:
+            head = subprocess.run(
+                ["git", "rev-parse", ref], cwd=str(ROOT),
+                capture_output=True, text=True,
+                timeout=120)
+        except (OSError, subprocess.SubprocessError) as error:
+            self.skipTest(f"cannot resolve {ref}: {error}")
+        if head.returncode != 0:
+            self.skipTest(f"Task-A branch ref absent: {head.stderr[-200:]}")
+        self.assertEqual(head.stdout.strip(), REAL_MAP_HEAD_PIN)
+        blob = subprocess.run(
+            ["git", "show", f"{REAL_MAP_HEAD_PIN}:tools/test_staging_map.json"],
+            cwd=str(ROOT), capture_output=True, timeout=120)
+        self.assertEqual(blob.returncode, 0)
+        with tempfile.NamedTemporaryFile(
+                suffix=".json", delete=False) as handle:
+            handle.write(blob.stdout)
+            real_map = handle.name
+        try:
+            repo = make_repo("src/overrides/slot_3F.s")
+            write_file(repo, "src/overrides/slot_3F.s", "changed\n")
+            git(repo, "commit", "-qam", "change")
+            cli = [sys.executable,
+                   str(ROOT / "tools" / "test_staging_select.py"),
+                   "--repo", str(repo), "--base", "vbase",
+                   "--map", real_map, "--json"]
+            proc = subprocess.run(cli, capture_output=True, text=True,
+                                  timeout=300)
+            self.assertEqual(proc.returncode, 0, proc.stderr[-2000:])
+            payload = json.loads(proc.stdout)
+            self.assertEqual(payload["level"], "L1")
+            self.assertFalse(payload["fallback"])
+            argv = [cmd["argv"] for cmd in payload["selected"]]
+            self.assertIn(["make", "dev-rom"], argv)
+            fingerprint = payload["fingerprint"]
+            self.assertIn("test-staging-map-v0",
+                          fingerprint["map_id"])
+            self.assertNotEqual(fingerprint["map_sha256"], "unknown")
+            self.assertEqual(fingerprint["level"], "L1")
+            self.assertNotEqual(fingerprint["commands_sha256"],
+                                "unknown")
+        finally:
+            try:
+                os.unlink(real_map)
+            except OSError:
+                pass
+
+
+class ApiAliasLevelTests(unittest.TestCase):
+    """FIX4 RED->GREEN: no bare hex, slot levels kept, --api never lowers.
+
+    Before the fix, str(number) vs bare-hex spellings collided via
+    setdefault, and the slot level was dropped (--api forced at least L1,
+    so an L3 slot could select an L1 subset).
+    """
+    def load_fixture(self):
+        loader = SEL.CanonicalJsonMapLoader()
+        map_path = write_map(None, canonical_doc())
+        _rules, apis = loader.load(map_path)
+        return loader, apis
+
+    def test_api_slot_levels_are_kept(self):
+        _loader, apis = self.load_fixture()
+        self.assertEqual(apis["MA_MUL8U"]["level"], "L1")
+        self.assertEqual(apis["CD_BOOT"]["level"], "L3")
+
+    def test_boundary_slots_resolve(self):
+        loader, _apis = self.load_fixture()
+        self.assertEqual(loader.resolve_api("0"), "CD_BOOT")
+        self.assertEqual(loader.resolve_api("0x00"), "CD_BOOT")
+        self.assertEqual(loader.resolve_api("$00"), "CD_BOOT")
+        self.assertEqual(loader.resolve_api("80"),
+                         "MA_DIV8U / MA_CBASIS")
+        self.assertEqual(loader.resolve_api("0x50"),
+                         "MA_DIV8U / MA_CBASIS")
+        self.assertEqual(loader.resolve_api("$50"),
+                         "MA_DIV8U / MA_CBASIS")
+
+    def test_decimal_means_decimal_in_collisions(self):
+        loader, _apis = self.load_fixture()
+        # "10" is slot 10 decimal (CD_SUBQ), never slot 0x10 == 16.
+        self.assertEqual(loader.resolve_api("10"), "CD_SUBQ")
+        self.assertEqual(loader.resolve_api("16"), "AD_RESET")
+        self.assertEqual(loader.resolve_api("0x10"), "AD_RESET")
+        self.assertEqual(loader.resolve_api("$10"), "AD_RESET")
+        self.assertNotEqual(loader.resolve_api("10"),
+                              loader.resolve_api("0x10"))
+
+    def test_bare_hex_is_banned_to_l3(self):
+        loader, _apis = self.load_fixture()
+        for bad in ("3F", "3f", "A", "0A", "FF", "ff"):
+            with self.subTest(bad=bad):
+                self.assertEqual(loader.resolve_api(bad), bad)
+                repo = make_repo("src/overrides/slot_3F.s")
+                write_file(repo, "src/overrides/slot_3F.s", "changed\n")
+                git(repo, "commit", "-qam", "change")
+                map_path = write_map(repo, canonical_doc())
+                selection, _ = SEL.run_selector(
+                    str(repo), "vbase", map_path=map_path, api=bad,
+                    loader=SEL.CanonicalJsonMapLoader())
+                self.assertEqual(selection.level, "L3")
+                self.assertTrue(selection.fallback)
+
+    def test_unimplemented_slot_selects_full_l3(self):
+        # CD_BOOT (slot 0) is L3 in the fixture: requesting it runs the
+        # full sequence, never a filtered subset.
+        repo = make_repo("src/overrides/slot_3F.s")
+        write_file(repo, "src/overrides/slot_3F.s", "changed\n")
+        git(repo, "commit", "-qam", "change")
+        map_path = write_map(repo, canonical_doc())
+        selection, _ = SEL.run_selector(
+            str(repo), "vbase", map_path=map_path, api="CD_BOOT",
+            loader=SEL.CanonicalJsonMapLoader())
+        assert_full_l3(self, selection)
+
+    def test_api_never_lowers_required_level(self):
+        # A rule matching at L1 for the requested API, but the slot itself
+        # is L3: the result is full L3, not the L1 subset (direct select).
+        changed = SEL.ChangedInputs(
+            head="h" * 40, base="vbase", committed=[("M", "f.s")])
+        rules = [SEL.MapRule(pattern="f.s", level="L1",
+                             commands=[{"make": "dev-rom"}],
+                             reason="fixture", api="SLOT_X")]
+        apis = {"SLOT_X": {"commands": [{"make": "dev-rom"}],
+                             "reason": "fixture slot",
+                             "level": "L3"}}
+        selection = SEL.select(changed, rules, apis, api="SLOT_X",
+                               fingerprint={})
+        assert_full_l3(self, selection, "api-slot-requires-L3")
+
+    def test_unknown_and_invalid_apis_select_l3(self):
+        repo = make_repo("src/overrides/slot_3F.s")
+        write_file(repo, "src/overrides/slot_3F.s", "changed\n")
+        git(repo, "commit", "-qam", "change")
+        map_path = write_map(repo, canonical_doc())
+        for bad in ("NOPE", "", "81", "0x51", "$51", "-1", "0x",
+                    "$", "CD_SUB", "063"):
+            with self.subTest(bad=bad):
+                selection, _ = SEL.run_selector(
+                    str(repo), "vbase", map_path=map_path, api=bad,
+                    loader=SEL.CanonicalJsonMapLoader())
+                self.assertEqual(selection.level, "L3")
+                self.assertTrue(selection.fallback)
+
+    def test_ledger_names_and_slash_parts_resolve(self):
+        loader, _apis = self.load_fixture()
+        self.assertEqual(loader.resolve_api("MA_MUL8U"), "MA_MUL8U")
+        self.assertEqual(loader.resolve_api("CD_SUBRQ / CD_SUBRD"),
+                         "CD_SUBRQ / CD_SUBRD")
+        self.assertEqual(loader.resolve_api("CD_SUBRQ"),
+                         "CD_SUBRQ / CD_SUBRD")
+        self.assertEqual(loader.resolve_api("CD_SUBRD"),
+                         "CD_SUBRQ / CD_SUBRD")
 
 
 if __name__ == "__main__":

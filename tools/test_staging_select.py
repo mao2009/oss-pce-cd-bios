@@ -7,13 +7,16 @@ verification logic and changes no test body, Makefile target, workflow, or
 Required Check.
 
 Map-format isolation: the change->test correspondence table (Task-A) is read
-through the MapLoader interface below. The only loader shipped here
-understands the *provisional* envelope
-``test-staging-impact-map/provisional-0`` used for prototype tests. The
-canonical Task-A format is NOT defined here; when Task-A lands, a new
-loader implementing MapLoader must replace the provisional one, and any map
-whose ``format`` tag is not recognised is treated as inconsistent and falls
-back to L3 (fail-closed). Nothing in this file hardcodes Task-A's schema.
+through the MapLoader interface below. The normal CLI path uses
+CanonicalJsonMapLoader with the canonical Task-A envelope
+``test-staging-map-v0`` (default tools/test_staging_map.json, or an
+explicit --map, which is still loaded as canonical). ProvisionalJsonMapLoader
+understands only the *provisional* envelope
+``test-staging-impact-map/provisional-0`` and is isolated to explicit
+synthetic-test use (callers pass loader= explicitly); a provisional
+envelope via the normal CLI path is rejected as inconsistent and falls
+back to L3 (fail-closed). Nothing in the selector hardcodes Task-A's
+schema beyond the canonical loader's strict validation.
 
 Fail-closed summary: BASE unresolvable (ref absent, shallow history, fetch
 failure when --fetch is given), any diff-collection failure, missing or
@@ -28,7 +31,9 @@ substitute for L3. Local L3 (commands runnable in this worktree) and
 Required CI (the 6 Required Checks, which need CI trust boundaries such as
 the trusted guard and artifact handoff) are different evidence; MERGE_READY
 needs both. Reusing a prior result additionally requires the evidence
-fingerprint (HEAD, inputs, env, toolchain, conditions) to match exactly.
+fingerprint (HEAD/BASE, input bytes, map content+id, selector id, API
+choice, level, command set, toolchain, env/conditions) to match exactly;
+selecting commands is never reported as execution success.
 """
 
 import argparse
@@ -69,14 +74,29 @@ KNOWN_MAKE_TARGETS = frozenset({
     "dev-bcdbin-sweep", "dev-mul16s-sweep", "dev-release-gate-blocked",
 })
 
-# Representative local-L3 command set (existing commands only). L0-L2 output
-# lists the unselected remainder from this sequence for auditability.
+# Mandatory local-L3 command set: the single source of truth for EVERY L3
+# path (input-collection failure, empty change set, untracked inputs,
+# unclassified files, empty selections, map missing/inconsistent, L3 rule
+# hits, L4 auto-escalation). Derived from the Makefile (build, test,
+# test-real-core, check including the verify-build-diff audit,
+# rom-provenance reproduce set, dev-integration including dev-rom and both
+# full sweeps, dev-release-gate-blocked), the six Required CI checks
+# (separate evidence, never executed here), the Phase 1 Task-A map v0
+# (DEV/provenance/release-gate/applicable-gate coverage), and the #850
+# survey test-full sequence. `make release` is BLOCKED by design and is
+# never selected; release *verification* is the existing `verify-build-diff`
+# audit (debug/release diff + --report, also run inside `make check`), not a
+# release build -- selecting a build is never reported as verification
+# success, and selecting commands is never reported as execution success.
+# Every L3 path emits exactly this set (partial=False, unselected=[]); the
+# displayed argv is exactly the command that runs. L0-L2 output lists the
+# unselected remainder of this sequence for auditability.
 FULL_L3_SEQUENCE = [
     {"make": "build"},
     {"make": "test"},
     {"make": "test-real-core"},
     {"make": "check"},
-    {"release-verify": True},
+    {"make": "verify-build-diff"},
     {"make": "rom-provenance"},
     {"make": "dev-integration"},
     {"make": "dev-release-gate-blocked"},
@@ -467,9 +487,12 @@ class CanonicalJsonMapLoader(MapLoader):
     number, and display/API names resolve via the spec/api_slots.json
     ledger (the single source -- a row duplicating a ledger name, or a
     reason embedding one, is deformed -> L3, so not-wired negative tests
-    never trip on the map). Slot-number spellings (63, 0x3F, $3F) and
+    never trip on the map). Slot-number spellings (63, 0x3F, $3F -- decimal
+    as decimal, 0x-/$-prefixed hex; bare hex is banned as ambiguous) and
     ledger slash-name parts (CD_SUBRQ for "CD_SUBRQ / CD_SUBRD") resolve
-    to the slot's ledger name via resolve_api().
+    to the slot's ledger name via resolve_api(). An api_slots row keeps its
+    own level in the apis table, and --api never lowers the required level:
+    requesting a slot whose level is L3/L4 runs the full local-L3 sequence.
 
     Classification is first-match-wins in entry order (the canonical
     fallback entry is last and matches everything). A document carrying the
@@ -493,8 +516,11 @@ class CanonicalJsonMapLoader(MapLoader):
 
         Aliases are populated at load() from the spec/api_slots.json
         ledger (63, 0x3F, $3F, MA_MUL8U, CD_SUBRQ all resolve to their
-        slot's ledger name); anything unknown passes through unchanged
-        and fails closed as unknown-api -> L3 in select().
+        slot's ledger name). Bare hex ("3F", "A") is never an alias:
+        it collides with decimal spellings ("10" is slot 10 decimal,
+        never slot 0x10), so it passes through unchanged and fails
+        closed as unknown-api -> L3 in select(). Anything else unknown
+        likewise passes through unchanged -> L3.
         """
         if api is None:
             return None
@@ -579,15 +605,29 @@ class CanonicalJsonMapLoader(MapLoader):
             apis[name] = {
                 "commands": commands,
                 "reason": str(slot.get("reason") or f"canonical slot ${number:02X}"),
+                "level": slot["level"],
             }
             parts = [name] + [part.strip() for part in name.split("/")]
-            spellings = [str(number), f"{number:X}",
-                         f"{number:02X}", f"{number:02x}",
+            # Slot-number spellings: decimal-as-decimal ("63" is slot 63),
+            # 0x-prefixed hex ("0x3F"), and $-prefixed hex ("$3F").
+            # Bare hex ("3F", "3f", "A") is BANNED: it collides with
+            # decimal spellings ("10" is slot 10 decimal, never slot
+            # 0x10 == 16), so a bare-hex-looking input is ambiguous and
+            # unknown inputs fail closed to L3 in select(). Any alias
+            # claimed by two slots is deformed -> L3, never first-wins.
+            spellings = [str(number),
                          f"0x{number:X}", f"0x{number:x}",
-                         f"0x{number:02X}", f"${number:02X}"]
+                         f"0x{number:02X}", f"0x{number:02x}",
+                         f"${number:X}", f"${number:x}",
+                         f"${number:02X}", f"${number:02x}"]
             for alias in parts + spellings:
-                if alias:
-                    aliases.setdefault(alias, name)
+                if not alias:
+                    continue
+                if alias in aliases and aliases[alias] != name:
+                    raise MapError(
+                        f"canonical slot alias {alias!r} is ambiguous "
+                        f"({aliases[alias]!r} vs {name!r}) -> L3")
+                aliases.setdefault(alias, name)
         self._api_aliases = aliases
         return rules, apis
 
@@ -860,8 +900,6 @@ def _command_argv(command):
                 f"tests/{suite}", "-p", command["unittest"], "-v"]
     if "script" in command:
         return ["python3", command["script"], *command.get("args", [])]
-    if "release-verify" in command:
-        return ["make", "build", "MODE=release"]
     raise MapError(f"cannot render command: {command!r}")
 
 
@@ -877,12 +915,137 @@ def _with_required_env(command):
     return rendered
 
 
-def evidence_fingerprint(repo, changed, mode="debug", extra_env=None):
-    """Build the reuse fingerprint for the current selection inputs."""
-    entries = sorted(f"{origin}:{status}:{path}"
-                     for origin, status, path in changed.all_classifiable())
-    entries.extend(f"untracked:??:{path}" for path in sorted(changed.untracked))
-    digest = hashlib.sha256("\n".join(entries).encode()).hexdigest()
+# Selector identity stamped into every fingerprint. Bumped whenever the
+# selection semantics change (L3 set, alias rules, api-level handling),
+# so results from an older selector never reuse against a newer one.
+SELECTOR_ID = "test_staging_select/l3full-no-barehex-v1"
+
+# Top-level input paths that must never be content-hashed (private
+# reference inputs, not fixtures). A change touching them still classifies
+# normally, but the fingerprint records inputs_sha256 "unknown" (refuse
+# reuse) instead of reading the bytes.
+FORBIDDEN_INPUT_TOPS = frozenset({"rom"})
+
+# Fingerprint values that force reuse refusal (fail-closed). "manual" is
+# the L4 opt-in placeholder head; anything unidentifiable refuses.
+_UNIDENTIFIABLE = ("unknown", "manual")
+
+
+def _input_content_hash(repo, origin, status, path):
+    """Hash the bytes behind one changed input, or a stable marker.
+
+    Returns the sha256 of the input bytes, the string "deleted" for a
+    delete (no bytes to hash), or "unknown" when the bytes cannot be
+    established without reading a forbidden area (fail-closed: the caller
+    turns the whole fingerprint unidentifiable). Never reads forbidden
+    areas: an escaping path or a path under rom/ is "unknown" unread.
+    """
+    parts = path.replace("\\", "/").split("/")
+    if not parts or any(part in ("", ".", "..") for part in parts):
+        return "unknown"
+    if parts[0] in FORBIDDEN_INPUT_TOPS:
+        return "unknown"
+    if status == "D":
+        return "deleted"
+    try:
+        if origin == "committed":
+            proc = subprocess.run(
+                ["git", "-C", str(repo), "show", f"HEAD:{path}"],
+                capture_output=True, timeout=120)
+            if proc.returncode != 0:
+                return "unknown"
+            return hashlib.sha256(proc.stdout).hexdigest()
+        if origin == "staged":
+            proc = subprocess.run(
+                ["git", "-C", str(repo), "show", f":{path}"],
+                capture_output=True, timeout=120)
+            if proc.returncode != 0:
+                return "unknown"
+            return hashlib.sha256(proc.stdout).hexdigest()
+        target = Path(repo) / path
+        try:
+            target.relative_to(Path(repo).resolve())
+        except ValueError:
+            return "unknown"
+        if not target.is_file():
+            return "deleted"
+        return hashlib.sha256(target.read_bytes()).hexdigest()
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return "unknown"
+
+
+def _map_identity(map_path):
+    """Identify the impact map by content hash plus envelope id.
+
+    Returns (map_sha256, map_id). Anything missing, unreadable, or
+    unparseable is ("unknown", "unknown") so reuse is refused
+    fail-closed. The envelope id is the provisional ``format`` tag or
+    ``name/v<schema>@<base_commit>`` for the canonical map; bytes alone
+    are not trusted to identify the schema.
+    """
+    if not map_path:
+        return "unknown", "unknown"
+    try:
+        raw = Path(map_path).read_bytes()
+    except OSError:
+        return "unknown", "unknown"
+    digest = hashlib.sha256(raw).hexdigest()
+    try:
+        document = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return "unknown", "unknown"
+    if not isinstance(document, dict):
+        return "unknown", "unknown"
+    if "format" in document:
+        tag = document.get("format")
+        if not isinstance(tag, str) or not tag:
+            return "unknown", "unknown"
+        return digest, f"provisional:{tag}"
+    name = document.get("name")
+    schema = document.get("schema_version")
+    base_commit = document.get("base_commit")
+    if not isinstance(name, str) or not name:
+        return "unknown", "unknown"
+    if not isinstance(base_commit, str) or not _HEX40_RE.match(base_commit):
+        return digest, f"{name}/v{schema}@unidentified"
+    return digest, f"{name}/v{schema}@{base_commit}"
+
+
+def evidence_fingerprint(repo, changed, mode="debug", extra_env=None,
+                         map_path=None, api=None, level=None, commands=None):
+    """Build the reuse fingerprint for the current selection inputs.
+
+    Covers content plus selection plus execution conditions: HEAD, BASE,
+    every committed/staged/unstaged/untracked input (origin, status, path
+    AND bytes -- the same path with different bytes is a different
+    fingerprint), the map (content hash plus envelope id), the selector
+    id, the API choice, the selected level, the selected command set, the
+    toolchain pins, and the env/mode conditions. Forbidden areas are never
+    hashed: touching them (or any unidentifiable input: unknown/manual
+    HEAD, missing map, unknown toolchain) marks the fingerprint
+    unidentifiable so reuse is refused. Prefer refuse-on-incomplete: when
+    in doubt the fingerprint says "unknown" and evidence_reusable says
+    no.
+    """
+    entries = []
+    for origin, status, path in changed.all_classifiable():
+        entries.append(
+            f"{origin}:{status}:{path}:"
+            f"{_input_content_hash(repo, origin, status, path)}")
+    for path in sorted(changed.untracked):
+        entries.append(
+            f"untracked:??:{path}:"
+            f"{_input_content_hash(repo, 'untracked', '??', path)}")
+    if not entries:
+        inputs_digest = hashlib.sha256(b"").hexdigest()
+    elif any(entry.rsplit(":", 1)[-1] == "unknown" for entry in entries):
+        inputs_digest = "unknown"
+    else:
+        inputs_digest = hashlib.sha256(
+            "\n".join(sorted(entries)).encode()).hexdigest()
+    if changed.head in _UNIDENTIFIABLE or changed.base in _UNIDENTIFIABLE:
+        inputs_digest = "unknown"
+    map_sha256, map_id = _map_identity(map_path)
     toolchain = "unknown"
     try:
         deps = json.loads((Path(repo) / "tools" / "dependencies.json").read_text())
@@ -890,10 +1053,25 @@ def evidence_fingerprint(repo, changed, mode="debug", extra_env=None):
                                 for name in sorted(deps)}, sort_keys=True)
     except (OSError, ValueError, KeyError, AttributeError):
         toolchain = "unknown"
+    if commands is None:
+        commands_digest = "unknown"
+    else:
+        try:
+            commands_digest = hashlib.sha256(
+                json.dumps(commands, sort_keys=True,
+                           default=str).encode()).hexdigest()
+        except (ValueError, TypeError):
+            commands_digest = "unknown"
     return {
         "head": changed.head,
         "base": changed.base,
-        "inputs_sha256": digest,
+        "inputs_sha256": inputs_digest,
+        "map_sha256": map_sha256,
+        "map_id": map_id,
+        "selector": SELECTOR_ID,
+        "api": "none" if api is None else str(api),
+        "level": "unknown" if level is None else str(level),
+        "commands_sha256": commands_digest,
         "python": platform.python_version(),
         "platform": sys.platform,
         "toolchain": toolchain,
@@ -906,24 +1084,39 @@ def evidence_reusable(stored, current):
     """A stored result is reusable only on exact fingerprint equality.
 
     Unknown toolchains never reuse: without pins, "same toolchain" cannot be
-    established, so reuse is refused fail-closed.
+    established, so reuse is refused fail-closed. The same refusal applies
+    to any unidentifiable input (unknown/manual HEAD, unknown inputs from
+    forbidden areas or unreadable bytes, missing/unparseable map, unknown
+    selector, unknown level/command set): when identity cannot be
+    established, reuse is refused. Legacy fingerprints missing the newer
+    keys compare equal only to equally legacy fingerprints; any stored
+    fingerprint from before content hashing never matches a current one.
     """
-    required = ("head", "base", "inputs_sha256", "python", "platform",
-                "toolchain", "mode", "env")
+    required = ("head", "base", "inputs_sha256", "map_sha256", "map_id",
+                "selector", "api", "level", "commands_sha256",
+                "python", "platform", "toolchain", "mode", "env")
     for key in required:
         if stored.get(key) != current.get(key):
             return False
-    if current.get("toolchain") == "unknown":
-        return False
+    for key in ("head", "base", "inputs_sha256", "map_sha256", "map_id",
+                "selector", "level", "commands_sha256", "toolchain"):
+        if current.get(key) in _UNIDENTIFIABLE:
+            return False
     return True
 
 
-def _l3_selection(reasons, fallback_reason, fingerprint, selected=None):
-    full = [_with_required_env({"make": target} if isinstance(target, str) else target)
-            for target in ["build", "test", "test-real-core", "check",
-                           "rom-provenance", "dev-integration",
-                           "dev-release-gate-blocked"]]
-    return Selection(level="L3", selected=selected if selected is not None else full,
+def _l3_selection(reasons, fallback_reason, fingerprint):
+    """Every L3 path emits the full mandatory local-L3 set.
+
+    L3 is never a subset: a partial (deduped) command list is never
+    displayed as full, so callers pass only reasons -- the selected set is
+    always FULL_L3_SEQUENCE (partial=False, unselected=[]). A map L3 rule
+    listing fewer commands (e.g. a catch-all naming only test/test-real-core
+    /check) still runs the full sequence; the rule's subset is
+    informational, never the executed set.
+    """
+    full = [_with_required_env(command) for command in FULL_L3_SEQUENCE]
+    return Selection(level="L3", selected=full,
                      unselected=[], reasons=reasons, fallback=True,
                      fallback_reason=fallback_reason, partial=False,
                      fingerprint=fingerprint)
@@ -982,10 +1175,24 @@ def select(changed, rules, apis, api=None, fingerprint=None,
                            f"(pattern {rule.pattern!r} -> {rule.level})")
             selected.extend(rule.commands)
     if api is not None:
+        api_level = apis[api].get("level", "L1")
+        if api_level not in LEVEL_RANK:
+            return _l3_selection(
+                reasons + [f"api:{api}: slot level {api_level!r} is not "
+                             "a selectable level -> L3"],
+                f"api-level-unknown ({api!r})", fingerprint)
+        if api_level in ("L3", "L4"):
+            # --api must never lower the required level: a slot whose own
+            # level is L3 (e.g. not DEV-implemented) or manual-only L4
+            # runs the full local-L3 sequence, never a filtered subset.
+            reasons.append(f"api:{api}: {apis[api]['reason']} "
+                           f"(slot level {api_level} requires full L3)")
+            return _l3_selection(reasons, "api-slot-requires-L3",
+                                 fingerprint)
         wanted = apis[api]["commands"]
         selected = [cmd for cmd in selected if cmd in wanted] or list(wanted)
         reasons.append(f"api:{api}: {apis[api]['reason']}")
-        level_rank = max(level_rank, LEVEL_RANK["L1"])
+        level_rank = max(level_rank, LEVEL_RANK[api_level])
     deduped = []
     for command in selected:
         if command not in deduped:
@@ -1002,8 +1209,14 @@ def select(changed, rules, apis, api=None, fingerprint=None,
             "empty-selection", fingerprint)
     level = LEVELS[level_rank]
     if level == "L3":
-        return _l3_selection(reasons, "map-rule-requires-L3", fingerprint,
-                             selected=[_with_required_env(cmd) for cmd in deduped])
+        # Full regression: the matched subset (even non-empty) is
+        # informational only and is never emitted as the L3 set.
+        return _l3_selection(
+            reasons + [f"l3-requires-full: {len(deduped)} matched "
+                         "command(s) discarded in favour of the full "
+                         "local-L3 sequence; a partial set is never "
+                         "displayed as full"],
+            "map-rule-requires-L3", fingerprint)
     rendered = [_with_required_env(cmd) for cmd in deduped]
     full_rendered = [_with_required_env(
         {"make": t} if isinstance(t, str) else t) for t in FULL_L3_SEQUENCE]
@@ -1030,6 +1243,10 @@ def render(selection):
                      + ", ".join(REQUIRED_CI_CHECKS) + ") is separate "
                      "evidence from CI trust boundaries (trusted guard, "
                      "artifact handoff) and is still mandatory for MERGE_READY.")
+        lines.append("SELECTION-IS-NOT-SUCCESS: selecting commands is not "
+                     "running them; L3 success requires executing every "
+                     "command above with exit 0. This report alone is never "
+                     "PASS evidence.")
     lines.append("SKIP-POLICY: a SKIP, BLOCKED-as-pass, missing-tool, or "
                  "0-test result is never PASS; every command below exports "
                  f"{REQUIRE_CC65_ENV}=1 so a missing cc65 FAILs.")
@@ -1046,15 +1263,36 @@ def render(selection):
     lines.append("EVIDENCE-FINGERPRINT: "
                  + json.dumps(selection.fingerprint, sort_keys=True))
     lines.append("REUSE-RULE: reuse a prior result only when its fingerprint "
-                 "matches exactly (same HEAD/input/env/toolchain/conditions); "
-                 "an old HEAD result is never claimed for a new HEAD.")
+                 "matches exactly (same HEAD/BASE, same input bytes, same "
+                 "map content+id, same selector, same API/level/command set, "
+                 "same toolchain/env/conditions); "
+                 "an old HEAD result is never claimed for a new HEAD, and "
+                 "a same-path result with different bytes never reuses.")
     return "\n".join(lines) + "\n"
+
+
+# Default impact map for the normal CLI path: the Task-A canonical map
+# v0 (tracked at tools/test_staging_map.json after Owner merges #856; read
+# from that path by default, or from an explicit --map). The
+# ProvisionalJsonMapLoader is isolated to explicit synthetic-test use
+# (callers pass loader=ProvisionalJsonMapLoader() directly); the normal
+# CLI path -- including an explicit --map -- always starts the canonical
+# loader, so a provisional envelope via --map fails closed to L3 instead of
+# being misread. A missing or inconsistent canonical map is L3 fail-closed.
+DEFAULT_CANONICAL_MAP = ROOT / "tools" / "test_staging_map.json"
 
 
 def run_selector(repo, base, map_path=None, api=None, fetch=False,
                  mode="debug", loader=None, runner=_real_runner,
                  requested_level=None):
-    """Collect inputs, load the map, select, and return (selection, report)."""
+    """Collect inputs, load the map, select, and return (selection, report).
+
+    The normal path uses CanonicalJsonMapLoader with DEFAULT_CANONICAL_MAP
+    unless the caller passes an explicit --map (still canonical) or an
+    explicit loader (synthetic tests only). The returned fingerprint is
+    finalised with the map identity, API choice, level, and command set so
+    reuse comparisons cover content plus selection plus conditions.
+    """
     if requested_level in MANUAL_ONLY_LEVELS:
         changed = ChangedInputs(head="manual", base=base)
         fingerprint = {"head": "manual", "base": base, "inputs_sha256": "manual",
@@ -1074,18 +1312,19 @@ def run_selector(repo, base, map_path=None, api=None, fetch=False,
         changed = collect_changes(repo, base, runner=runner, fetch=fetch)
     except GitError as error:
         changed = ChangedInputs(head="unknown", base=base)
-        fingerprint = evidence_fingerprint(repo, changed, mode=mode)
+        fingerprint = evidence_fingerprint(
+            repo, changed, mode=mode, map_path=map_path, api=api,
+            level="L3", commands=None)
         selection = _l3_selection(
             [f"input-collection failed ({error.kind}): {error.detail}"],
             f"{error.kind}", fingerprint)
         return selection, render(selection)
-    fingerprint = evidence_fingerprint(repo, changed, mode=mode)
+    active_loader = loader if loader is not None else CanonicalJsonMapLoader()
+    resolved_map = str(map_path) if map_path is not None else str(DEFAULT_CANONICAL_MAP)
+    fingerprint = evidence_fingerprint(repo, changed, mode=mode,
+                                       map_path=resolved_map)
     try:
-        active_loader = loader or ProvisionalJsonMapLoader()
-        if map_path is None:
-            raise MapError("no impact map supplied (Task-A canonical map "
-                           "pending) -> L3")
-        rules, apis = active_loader.load(map_path)
+        rules, apis = active_loader.load(resolved_map)
         resolve = getattr(active_loader, "resolve_api", None)
         if api is not None and callable(resolve):
             api = resolve(api)
@@ -1093,10 +1332,29 @@ def run_selector(repo, base, map_path=None, api=None, fetch=False,
     except MapError as error:
         selection = _l3_selection([f"impact-map: {error}"],
                                   "map-missing-or-inconsistent", fingerprint)
+        _finalise_selection_fingerprint(
+            repo, changed, mode, resolved_map, api, selection)
         return selection, render(selection)
     selection = select(changed, rules, apis, api=api,
                        fingerprint=fingerprint, match_mode=match_mode)
+    _finalise_selection_fingerprint(
+        repo, changed, mode, resolved_map, api, selection)
     return selection, render(selection)
+
+
+def _finalise_selection_fingerprint(repo, changed, mode, map_path, api,
+                                    selection):
+    """Replace the preliminary fingerprint with the complete one.
+
+    select() fingerprints the inputs; the CLI path additionally binds the
+    map content+id, the (resolved) API choice, the selected level, and the
+    selected command set, so a stored result reuses only for the same
+    selection under the same conditions. Direct select() callers (unit
+    tests) keep their preliminary fingerprint.
+    """
+    selection.fingerprint = evidence_fingerprint(
+        repo, changed, mode=mode, map_path=map_path, api=api,
+        level=selection.level, commands=selection.selected)
 
 
 def main(argv=None):
@@ -1107,7 +1365,10 @@ def main(argv=None):
     parser.add_argument("--base", default="origin/main",
                         help="comparison ref (default: origin/main)")
     parser.add_argument("--map", default=None,
-                        help="impact-map JSON (Task-A canonical pending)")
+                        help="impact-map JSON (default: "
+                             "tools/test_staging_map.json, canonical Task-A "
+                             "v0; the provisional envelope is synthetic-test "
+                             "only and never loads via this CLI)")
     parser.add_argument("--api", default=None)
     parser.add_argument("--fetch", action="store_true",
                         help="fetch BASE before resolving (failure -> L3)")
