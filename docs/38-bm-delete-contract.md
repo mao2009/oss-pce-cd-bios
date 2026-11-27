@@ -272,12 +272,14 @@ VERIFIED（真正 BIOS の確認）は 0 件。`release_eligible=false`。
     真正 BIOS の返値集合の主張ではない（§5.2-4、§10-1）。
   - `HarnessOutcome`: 判定層（入力検証・監査）の結果域。`{REFUSED, CORRUPTED}`。
     PROJECT-INVENTED の入力拒否・検証失敗であり、`MockStatus` とは別の型・別の層である。
-  - 判定フロー `judge(image, name)`:
-    1. `validate_input(name)`: `name` が `bytes` かつ `len == 12` でなければ `REFUSED`。
-       `mock_delete` は呼ばない。画像は不変（N4、B1）。
-    2. `audit_image(image)`: 下記 CLEAN 不変条件を満たさなければ `CORRUPTED`。
+  - 判定フロー `judge(image, name)`（`CORRUPTED` が `REFUSED` に優先する）:
+    0. `structure_gate(image)`: スナップショット不能（非 dict・キー欠落・`entries` 非 list・
+       非 dict 件・`name`/`data` 非 bytes 系）なら `CORRUPTED`＋空画像規約。例外を投げない。
+    1. `audit_image(image)`: 下記 CLEAN 不変条件を満たさなければ `CORRUPTED`＋入力同一スナップショット。
        `mock_delete` は呼ばない。画像は不変（N5）。`formatted == false` は監査対象外であり、
        `mock_delete` が `(NOT_FORMATTED, 同一画像)` を返す正常系（N2）と区別する。
+       画像も名前も不正な二重不良は `CORRUPTED` とする（`REFUSED` ではない）。
+    2. `validate_input(name)`: `name` が `bytes` かつ `len == 12` でなければ `REFUSED`。
     3. `mock_delete(clean_image, name)`: `formatted == false` なら `(NOT_FORMATTED, 同一画像)`（N2）。
        名前完全一致の entry が無ければ `(NOT_FOUND, 同一画像)`（N1、N3、N7 の 2 回目）。
        あれば当該 1 件を除去し後続を詰めて `(OK, 新画像)`（P1–P4、N6、N7 の 1 回目）。

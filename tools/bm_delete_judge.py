@@ -19,7 +19,11 @@ Synthetic model (PROJECT-INVENTED, never a System Card claim):
       CALLER-EXPECTED-derived PROJECT-INVENTED choice; NOT a genuine BIOS return-set claim.
     HarnessOutcome: the judge-layer result domain {REFUSED, CORRUPTED} for input-validation
       and audit failures. PROJECT-INVENTED; never a MockStatus value.
-    judge(image, name): validate_input -> audit_image -> mock_delete.
+  Precedence: CORRUPTED wins over REFUSED. The judge runs the structure gate and the CLEAN
+  audit BEFORE validate_input, so a doubly-bad call (bad name + bad image) returns CORRUPTED.
+  Un-snapshotable images (gate failure) return the empty-image convention; snapshot-able
+  abnormal images return a byte-identical snapshot. Abnormal paths never call mock_delete.
+    judge(image, name): structure gate -> audit_image -> validate_input -> mock_delete.
 """
 
 OK, NOT_FOUND, NOT_FORMATTED = "OK", "NOT_FOUND", "NOT_FORMATTED"
@@ -51,6 +55,37 @@ def make_image(entries=(), formatted=True, capacity=2048):
     if end > capacity:
         raise ValueError(f"mock image over capacity: used {end} > {capacity}")
     return {"entries": lst, "formatted": bool(formatted), "capacity": capacity, "end": end}
+
+
+def _empty_image():
+    """Fresh empty-image convention for un-snapshotable inputs. New dict per call (no aliasing)."""
+    return {"entries": [], "formatted": False, "capacity": 0, "end": 0}
+
+
+def _is_snapshotable(image):
+    """Structure gate: True iff _snapshot(image) cannot fail. Explicit checks only (no try/except).
+
+    Covers isinstance-dict, required keys, entries-is-list, and each entry being a dict
+    with bytes/bytearray name+data. Scalar sanity (formatted/capacity/end types, name length,
+    duplicates, end consistency) is snapshot-safe and left to _clean_errors, which runs before
+    any _snapshot call. The gate never mutates its input and performs no I/O.
+    """
+    if not isinstance(image, dict):
+        return False
+    if "entries" not in image or "formatted" not in image or "capacity" not in image or "end" not in image:
+        return False
+    if not isinstance(image["entries"], list):
+        return False
+    for entry in image["entries"]:
+        if not isinstance(entry, dict):
+            return False
+        if "name" not in entry or "data" not in entry:
+            return False
+        if not isinstance(entry["name"], (bytes, bytearray)):
+            return False
+        if not isinstance(entry["data"], (bytes, bytearray)):
+            return False
+    return True
 
 
 def _snapshot(image):
@@ -148,14 +183,20 @@ def mock_delete(image, name):
 
 
 def judge(image, name):
-    """Full harness: (outcome, image). REFUSED/CORRUPTED never call mock_delete; failures return input bytes."""
-    if not validate_input(name):
-        return REFUSED, _snapshot(image)
-    if not isinstance(image, dict):
-        return CORRUPTED, {"entries": [], "formatted": False, "capacity": 0, "end": 0}
+    """Full harness: (outcome, image). CORRUPTED wins over REFUSED on doubly-bad calls.
+
+    Order: structure gate -> CLEAN audit -> input validation -> mock_delete domain.
+    Un-snapshotable images return (CORRUPTED, empty-image convention). Snapshot-able
+    abnormal images return (outcome, _snapshot(image)) byte-identical to the input.
+    Abnormal paths never call mock_delete; the returned dicts are always new objects.
+    """
+    if not _is_snapshotable(image):
+        return CORRUPTED, _empty_image()
     err = _clean_errors(image)
     if err is not None:
         return CORRUPTED, _snapshot(image)
+    if not validate_input(name):
+        return REFUSED, _snapshot(image)
     if not image["formatted"]:
         return NOT_FORMATTED, _snapshot(image)
     blob = bytes(name)

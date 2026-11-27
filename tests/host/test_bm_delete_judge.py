@@ -201,5 +201,171 @@ class BmDeleteJudgeTest(unittest.TestCase):
             self.assertNotIn(f"import {mod}", src)
 
 
+class BmDeleteStructureGateTest(unittest.TestCase):
+    """Issue #38 Wave2: structure-gate regression pins (Wave1 RED rows T1-T4, T6, T8-T11, T18).
+
+    Un-snapshotable images return (CORRUPTED, empty-image convention); snapshot-able abnormal
+    images return (CORRUPTED, byte-identical snapshot). CORRUPTED wins over REFUSED on
+    doubly-bad calls. Gate checks are explicit (no try/except) and never call mock_delete.
+    Synthetic images only; no I/O.
+    """
+
+    EMPTY = {"entries": [], "formatted": False, "capacity": 0, "end": 0}
+
+    def test_T1_none_image_is_corrupted_empty(self):
+        outcome, out = bj.judge(None, N_A)
+        self.assertEqual(outcome, bj.CORRUPTED)
+        self.assertEqual(out, self.EMPTY)
+
+    def test_T2_non_dict_images_are_corrupted_empty(self):
+        for bad in ("notadict", 1234, ["entries"], ("entries",), b"bytes"):
+            with self.subTest(bad=type(bad).__name__):
+                outcome, out = bj.judge(bad, N_A)
+                self.assertEqual(outcome, bj.CORRUPTED)
+                self.assertEqual(out, self.EMPTY)
+
+    def test_T3_missing_keys_are_corrupted_empty(self):
+        base = bj._snapshot(_image([(N_A, b"a")]))
+        for key in ("entries", "formatted", "capacity", "end"):
+            with self.subTest(missing=key):
+                broken = {k: v for k, v in base.items() if k != key}
+                outcome, out = bj.judge(broken, N_A)
+                self.assertEqual(outcome, bj.CORRUPTED)
+                self.assertEqual(out, self.EMPTY)
+
+    def test_T4_entries_not_list_is_corrupted_empty(self):
+        base = bj._snapshot(_image([(N_A, b"a")]))
+        for bad in (None, "entries", {"name": N_A}, 18, ({"name": N_A, "data": b"a"},)):
+            with self.subTest(bad=type(bad).__name__):
+                broken = dict(base, entries=bad)
+                outcome, out = bj.judge(broken, N_A)
+                self.assertEqual(outcome, bj.CORRUPTED)
+                self.assertEqual(out, self.EMPTY)
+
+    def test_T6_non_dict_entry_is_corrupted_empty(self):
+        base = bj._snapshot(_image([(N_A, b"a")]))
+        for bad in ("entry", None, 18, [N_A], (N_A, b"a")):
+            with self.subTest(bad=repr(bad)[:20]):
+                broken = dict(base, entries=[bad])
+                outcome, out = bj.judge(broken, N_A)
+                self.assertEqual(outcome, bj.CORRUPTED)
+                self.assertEqual(out, self.EMPTY)
+
+    def test_T8_entry_missing_name_is_corrupted_empty(self):
+        broken = {"entries": [{"data": b"a"}], "formatted": True, "capacity": 2048, "end": 19}
+        outcome, out = bj.judge(broken, N_A)
+        self.assertEqual(outcome, bj.CORRUPTED)
+        self.assertEqual(out, self.EMPTY)
+
+    def test_T9_entry_missing_data_is_corrupted_empty(self):
+        broken = {"entries": [{"name": N_A}], "formatted": True, "capacity": 2048, "end": 19}
+        outcome, out = bj.judge(broken, N_A)
+        self.assertEqual(outcome, bj.CORRUPTED)
+        self.assertEqual(out, self.EMPTY)
+
+    def test_T10_non_bytes_name_is_corrupted_empty(self):
+        for bad in ("short", None, 1234, ["x"], {"n": 1}):
+            with self.subTest(bad=type(bad).__name__):
+                broken = {"entries": [{"name": bad, "data": b"a"}],
+                          "formatted": True, "capacity": 2048, "end": 19}
+                outcome, out = bj.judge(broken, N_A)
+                self.assertEqual(outcome, bj.CORRUPTED)
+                self.assertEqual(out, self.EMPTY)
+
+    def test_T11_non_bytes_data_is_corrupted_empty(self):
+        for bad in ("a", None, 1234, ["x"]):
+            with self.subTest(bad=type(bad).__name__):
+                broken = {"entries": [{"name": N_A, "data": bad}],
+                          "formatted": True, "capacity": 2048, "end": 19}
+                outcome, out = bj.judge(broken, N_A)
+                self.assertEqual(outcome, bj.CORRUPTED)
+                self.assertEqual(out, self.EMPTY)
+
+    def test_T18_scalar_insanity_is_corrupted_snapshot(self):
+        base = bj._snapshot(_image([(N_A, b"a")]))
+        cases = []
+        cases.append(dict(base, formatted=1))
+        cases.append(dict(base, formatted="yes"))
+        cases.append(dict(base, capacity="2048"))
+        cases.append(dict(base, capacity=0))
+        cases.append(dict(base, capacity=-8))
+        cases.append(dict(base, end="19"))
+        cases.append(dict(base, end=-1))
+        cases.append(dict(base, end=base["capacity"] + 1))
+        for broken in cases:
+            with self.subTest(broken=(broken["formatted"], broken["capacity"], broken["end"])):
+                outcome, out = bj.judge(broken, N_A)
+                self.assertEqual(outcome, bj.CORRUPTED)
+                self.assertTrue(bj._images_equal(out, broken))
+
+    def test_doubly_bad_corrupted_wins_over_refused(self):
+        # Un-snapshotable image + bad name: CORRUPTED (empty convention), never REFUSED, never raises.
+        for bad_name in (b"", b"short", "FILE_A", None, 1234):
+            with self.subTest(bad_name=repr(bad_name)[:20]):
+                self.assertEqual(bj.judge(None, bad_name), (bj.CORRUPTED, self.EMPTY))
+        # Snapshot-able corrupt image + bad name: CORRUPTED with byte-identical snapshot.
+        base = bj._snapshot(_image([(N_A, b"a")]))
+        broken = dict(base, end=base["end"] + 1)
+        for bad_name in (b"", b"short", None):
+            with self.subTest(bad_name=repr(bad_name)[:20]):
+                outcome, out = bj.judge(broken, bad_name)
+                self.assertEqual(outcome, bj.CORRUPTED)
+                self.assertTrue(bj._images_equal(out, broken))
+
+    def test_gate_results_are_fresh_objects_never_aliased(self):
+        _, first = bj.judge(None, N_A)
+        _, second = bj.judge(None, N_A)
+        self.assertEqual(first, second)
+        self.assertIsNot(first, second)
+        base = bj._snapshot(_image([(N_A, b"a")]))
+        broken = dict(base, end=base["end"] + 1)
+        _, snap = bj.judge(broken, N_A)
+        self.assertIsNot(snap, broken)
+        self.assertIsNot(snap["entries"], broken["entries"])
+
+    def test_corrupt_inputs_are_not_mutated(self):
+        import copy
+        corrupt = [
+            None,
+            "notadict",
+            {"entries": "nope", "formatted": True, "capacity": 2048, "end": 0},
+            {"entries": [[N_A]], "formatted": True, "capacity": 2048, "end": 0},
+            {"entries": [{"name": "str-name", "data": b"a"}],
+             "formatted": True, "capacity": 2048, "end": 19},
+            dict(bj._snapshot(_image([(N_A, b"a")])), end=999),
+            dict(bj._snapshot(_image([(N_A, b"a")])), formatted=1),
+        ]
+        for bad_image in corrupt:
+            with self.subTest(bad_image=repr(bad_image)[:40]):
+                frozen = copy.deepcopy(bad_image)
+                bj.judge(bad_image, N_A)
+                bj.judge(bad_image, b"short")
+                self.assertEqual(bad_image, frozen)
+
+    def test_mock_delete_never_called_on_abnormal(self):
+        import copy
+        from unittest import mock as utm
+        base = bj._snapshot(_image([(N_A, b"a")]))
+        abnormal = [
+            (None, N_A),
+            ("notadict", N_A),
+            (dict(base, entries="nope"), N_A),
+            ({"entries": [{"name": "s", "data": b"a"}],
+              "formatted": True, "capacity": 2048, "end": 19}, N_A),
+            (dict(base, end=base["end"] + 1), N_A),  # audit-level corrupt
+            (dict(base, formatted=1), N_A),  # scalar-level corrupt
+            (base, b"short"),  # REFUSED path
+            (base, None),  # REFUSED path
+            (dict(base, formatted=False), N_A),  # NOT_FORMATTED path
+            (base, b"\x00\x00NOPE      "),  # NOT_FOUND path
+        ]
+        with utm.patch.object(bj, "mock_delete", side_effect=AssertionError("must not call")) as spy:
+            for bad_image, name in abnormal:
+                frozen = copy.deepcopy(bad_image)
+                bj.judge(bad_image, name)
+                self.assertEqual(bad_image, frozen)
+            self.assertEqual(spy.call_count, 0)
+
+
 if __name__ == "__main__":
     unittest.main()
