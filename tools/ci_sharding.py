@@ -326,6 +326,13 @@ def _gate_states():
     }
 
 
+def _write_evidence(evidence_out, evidence):
+    parent = os.path.dirname(os.path.abspath(evidence_out))
+    os.makedirs(parent, exist_ok=True)
+    with open(evidence_out, "w", encoding="utf-8") as fh:
+        json.dump(evidence, fh, indent=2, sort_keys=True)
+
+
 def _base_evidence(kind, shard_id):
     return {
         "schema": EVIDENCE_SCHEMA,
@@ -375,8 +382,7 @@ def run_shard(shard_id, evidence_out):
         "errors": len(collector.errors),
         "duration_s": round(duration, 3),
     })
-    with open(evidence_out, "w", encoding="utf-8") as fh:
-        json.dump(evidence, fh, indent=2, sort_keys=True)
+    _write_evidence(evidence_out, evidence)
     return collector
 
 
@@ -405,8 +411,7 @@ def run_host(evidence_out):
         "errors": len(collector.errors),
         "duration_s": round(duration, 3),
     })
-    with open(evidence_out, "w", encoding="utf-8") as fh:
-        json.dump(evidence, fh, indent=2, sort_keys=True)
+    _write_evidence(evidence_out, evidence)
     return collector
 
 
@@ -448,8 +453,7 @@ def _run_unit_list(units, planned, runner, kind, shard_id, evidence_out):
         "planned_units": list(planned),
         "executed": records,
     })
-    with open(evidence_out, "w", encoding="utf-8") as fh:
-        json.dump(evidence, fh, indent=2, sort_keys=True)
+    _write_evidence(evidence_out, evidence)
     return records
 
 

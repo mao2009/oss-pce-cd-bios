@@ -268,3 +268,13 @@ class RequireCc65ContractTests(unittest.TestCase):
                 os.environ.pop("OSS_PCE_REQUIRE_CC65", None)
             else:
                 os.environ["OSS_PCE_REQUIRE_CC65"] = old
+
+class EvidenceWriterTests(unittest.TestCase):
+    def test_write_evidence_creates_missing_dirs(self):
+        import tempfile, os
+        base = tempfile.mkdtemp(prefix="ci-shard-ev-")
+        target = os.path.join(base, "nope", "nested", "evidence.json")
+        shard._write_evidence(target, {"a": 1})
+        with open(target, encoding="utf-8") as fh:
+            import json
+            self.assertEqual(json.load(fh), {"a": 1})
