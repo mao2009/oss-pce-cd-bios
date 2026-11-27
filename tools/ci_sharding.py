@@ -170,7 +170,24 @@ ALLOWED_SKIPS = [
         "id": "test_ex_dspoff_real_core.ExperimentalSlot33RealCpuTests."
               "test_two_call_flow_reaches_slot_33_after_slot_02_scaffolding",
         "reason_prefix": "superseded by the union real-$02 SEQ",
-        "scope": "always",
+    },
+    {
+        # Env-gated: commercial-CUE tests run only with a local CUE path.
+        # Allowed only when the gate is tripped (env unset); the gate state
+        # is recorded per-shard evidence (B4 root cause: countTestCases vs
+        # testsRun accounting for conditional skips).
+        "id": "test_cd_boot_loader_layout.GameCueTests.",
+        "reason_prefix": "set OSS_PCE_GAME_CUE to the local game CUE path",
+        "gate": "unset OSS_PCE_GAME_CUE",
+    },
+    {
+        # Env-gated: synthetic G5 measurement needs the dev-rom build output.
+        # Allowed only when the recorded gate shows it absent; any other
+        # sub-reason (e.g. core absent) is NOT covered and stays RED.
+        "id": "test_g5_progress.G5SyntheticMeasurementTests."
+              "test_synthetic_abc_differential",
+        "reason_prefix": "SKIP real-core G5 synthetic (not attempted): DEV ROM absent",
+        "gate": "missing build/debug/bios-dev/dev-only-not-compatible-syscard3.pce",
     },
 ]
 
@@ -323,6 +340,7 @@ def _gate_states():
     return {
         "dev_rom_present": os.path.isfile(os.path.join(
             ROOT, "build", "debug", "bios-dev", "dev-only-not-compatible-syscard3.pce")),
+        "env_oss_pce_game_cue_set": bool(os.environ.get("OSS_PCE_GAME_CUE")),
     }
 
 
@@ -494,10 +512,28 @@ def run_static(only, evidence_out):
                           "static", evidence_out)
 
 
-def _match_allowed_skip(test_id, reason):
+def _gate_tripped(gate, gate_states):
+    if gate.startswith("missing "):
+        marker = gate.split(None, 1)[1]
+        if marker.endswith("dev-only-not-compatible-syscard3.pce"):
+            return not gate_states.get("dev_rom_present", True)
+        return False
+    if gate.startswith("unset "):
+        var = gate.split(None, 1)[1]
+        return not gate_states.get("env_" + var.lower().replace("-", "_") + "_set", True)
+    return False
+
+
+def _match_allowed_skip(test_id, reason, gate_states):
     for rule in ALLOWED_SKIPS:
-        if (test_id == rule["id"] or test_id.startswith(rule["id"])) and \
-                reason.startswith(rule["reason_prefix"]):
+        if not (test_id == rule["id"] or test_id.startswith(rule["id"])):
+            continue
+        if not reason.startswith(rule["reason_prefix"]):
+            continue
+        gate = rule.get("gate")
+        if gate is None:
+            return rule
+        if _gate_tripped(gate, gate_states):
             return rule
     return None
 
@@ -629,7 +665,7 @@ def aggregate(evidence_list, live_integration_modules=None, live_host_ids=None):
             if r["result"] in ("fail", "error", "unexpected-success"):
                 problems.append(f"shard {sid}: {rid} result={r['result']}")
             elif r["result"] == "skipped":
-                if _match_allowed_skip(rid, r.get("reason", "")):
+                if _match_allowed_skip(rid, r.get("reason", ""), e.get("gate_states", {})):
                     continue
                 problems.append(f"shard {sid}: unlisted SKIP {rid}: {r.get('reason', '')!r}")
             elif r["result"] not in ("ok", "expected-failure"):

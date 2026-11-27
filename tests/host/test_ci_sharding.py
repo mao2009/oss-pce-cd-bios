@@ -28,7 +28,8 @@ def _evidence(shard_id="rc-0", kind="integration-unittest", n=3, sha="abc123",
         "schema": 1, "manifest_version": 1, "sha": sha, "kind": kind,
         "shard_id": shard_id, "run_id": run_id, "run_attempt": attempt,
         "toolchain": {"cc65": "x", "geargrafx": "y"},
-        "gate_states": {"dev_rom_present": True},
+        "gate_states": {"dev_rom_present": True,
+                         "env_oss_pce_game_cue_set": False},
         "started": "2026-11-27T00:00:00Z",
         "planned_ids": list(planned),
         "executed": [_ok_record(i) for i in range(n)],
@@ -255,6 +256,56 @@ class AggregateNegativeTests(unittest.TestCase):
         problems = self._problems(evs)
         self.assertEqual([], [p for p in problems if "unclassified" not in p
                               and "unknown test module" not in p])
+
+
+    def _gated_skip_case(self, test_id, reason, gates):
+        evs = self._green()
+        rec = dict(evs[0]["executed"][0])
+        rec["id"] = test_id
+        rec["result"] = "skipped"
+        rec["reason"] = reason
+        evs[0]["planned_ids"] = [test_id] + evs[0]["planned_ids"][1:]
+        evs[0]["executed"] = [rec] + evs[0]["executed"][1:]
+        for e in evs:
+            e["gate_states"] = dict(gates)
+        return self._problems(evs)
+
+    def test_gate_gamecue_tripped_green(self):
+        problems = self._gated_skip_case(
+            "test_cd_boot_loader_layout.GameCueTests.test_x",
+            "set OSS_PCE_GAME_CUE to the local game CUE path",
+            {"dev_rom_present": True, "env_oss_pce_game_cue_set": False})
+        self.assertEqual([], problems, problems)
+
+    def test_gate_gamecue_env_set_red(self):
+        problems = self._gated_skip_case(
+            "test_cd_boot_loader_layout.GameCueTests.test_x",
+            "set OSS_PCE_GAME_CUE to the local game CUE path",
+            {"dev_rom_present": True, "env_oss_pce_game_cue_set": True})
+        self.assertTrue(any("unlisted SKIP" in p for p in problems), problems)
+
+    def test_gate_gamecue_wrong_reason_red(self):
+        problems = self._gated_skip_case(
+            "test_cd_boot_loader_layout.GameCueTests.test_x",
+            "some other reason",
+            {"dev_rom_present": True, "env_oss_pce_game_cue_set": False})
+        self.assertTrue(any("unlisted SKIP" in p for p in problems), problems)
+
+    def test_gate_g5progress_tripped_green(self):
+        problems = self._gated_skip_case(
+            "test_g5_progress.G5SyntheticMeasurementTests."
+            "test_synthetic_abc_differential",
+            "SKIP real-core G5 synthetic (not attempted): DEV ROM absent",
+            {"dev_rom_present": False, "env_oss_pce_game_cue_set": False})
+        self.assertEqual([], problems, problems)
+
+    def test_gate_g5progress_present_red(self):
+        problems = self._gated_skip_case(
+            "test_g5_progress.G5SyntheticMeasurementTests."
+            "test_synthetic_abc_differential",
+            "SKIP real-core G5 synthetic (not attempted): DEV ROM absent",
+            {"dev_rom_present": True, "env_oss_pce_game_cue_set": False})
+        self.assertTrue(any("unlisted SKIP" in p for p in problems), problems)
 
 
 class ManifestSelfCheckTests(unittest.TestCase):
