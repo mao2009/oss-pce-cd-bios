@@ -131,7 +131,7 @@ in Task-A. Until then any non-provisional `format` tag raises
 Nothing in the selector hardcodes Task-A's schema: `test_map_loader_is_an_
 interface` proves a third-party loader plugs in through the interface.
 
-### 4a. Canonical loader (interim, pre-#856-merge)
+### 4a. Canonical loader (FINAL, Task-A map v0 at 2ab14d08)
 
 `CanonicalJsonMapLoader` (same file, `match_mode = "first-match"`)
 validates the Task-A v0 envelope strictly and converts it to selector
@@ -144,9 +144,15 @@ rules:
   `match`, level in L0-L4, known `ci_class`, bool `required_ci`, full
   `tests` object, non-empty reason; unique ids; `fallback` is the last
   entry with `match == "**"` at L3;
-- `api_slots`: exactly 81 rows covering slots 0-80 once, unique names,
-  `dev_source` path or null; slot-number identifiers (`63`, `0x3F`,
-  `$3F`, …) resolve to the slot name via `resolve_api()`;
+- `api_slots`: exactly 81 rows covering slots 0-80 once, carrying NO
+  `name` (a row with `name` duplicates the ledger and is deformed ->
+  L3); identity is the slot number, display/API names resolve via the
+  `spec/api_slots.json` ledger (single source, must resolve every slot
+  0-80 or the load fails closed); `dev_source` path or null;
+  slot-number identifiers (`63`, `0x3F`, `$3F`, …), ledger names
+  (`MA_MUL8U`), and ledger slash-name parts (`CD_SUBRQ` for
+  `"CD_SUBRQ / CD_SUBRD"`) resolve to the slot's ledger name via
+  `resolve_api()`;
 - commands: `dev_targets` must exist in the live `Makefile`, `host` refs
   (`tests.host.MOD` or `tests/host/PATTERN.py`) must resolve, `script`
   entries must be existing in-repo `tests/integration/*.py`, `static_units`
@@ -157,14 +163,15 @@ rules:
   validated but discarded — never auto-selected); L3 entries with empty
   tests likewise run the full local-L3 sequence.
 
-Dependency pin (interim): read-only fetch of
-`origin/agent/test-staging-map-v0-20261128` at `cf428568` — recorded as
+Dependency pin (FINAL): read-only fetch of
+`origin/agent/test-staging-map-v0-20261128` at `2ab14d08` — recorded as
 `CANONICAL_SOURCE_HEAD` and pinned by
-`test_dependency_head_pin_is_recorded`. The loader was verified against
-that revision's schema (232 rules / 81 slots load from the fetched
-revision read-only). This is **not** final verification: after Task-A
-(#856) integrates, the pin must advance to the merged HEAD and the
-`CanonicalLoaderTests` (14 tests) plus `make check` / `make test` re-run.
+`test_dependency_head_pin_is_recorded`. The loader implements that
+revision's FINAL schema (nameless slot rows, ledger-resolved names,
+slot-number-form reasons, narrowed `tests/fixtures/*.s`). This record
+supersedes the interim `cf428568` pin. Post-merge re-verification is
+still required after Owner merges #856: re-run the `CanonicalLoaderTests`
+(17 tests) plus `make check` on the merged map and re-request review.
 
 ## 5. Issue #852 acceptance matrix
 
@@ -208,14 +215,14 @@ revision read-only). This is **not** final verification: after Task-A
 
 ## 7. Validation record
 
-Prototype: `tools/test_staging_select.py` (~470 lines, stdlib only).
-Tests: `tests/host/test_test_staging_select.py`, 47 tests, all synthetic
+Prototype: `tools/test_staging_select.py` (~530 lines, stdlib only).
+Tests: `tests/host/test_test_staging_select.py`, 50 tests, all synthetic
 (temp git repos + injected failing runners; no cc65, no core, no network).
 
 | Command | Result | Timing |
 | --- | --- | --- |
-| `python3 -m unittest tests.host.test_test_staging_select` | OK (47 tests) | ~2.5 s |
-| `OSS_PCE_REQUIRE_CC65=1 python3 -m unittest tests.host.test_test_staging_select` (required gate) | OK (47 tests) | ~2.5 s |
+| `python3 -m unittest tests.host.test_test_staging_select` | OK (50 tests) | ~2.5 s |
+| `OSS_PCE_REQUIRE_CC65=1 python3 -m unittest tests.host.test_test_staging_select` (required gate) | OK (50 tests) | ~2.5 s |
 | RED proof, mutation A (drop `OSS_PCE_REQUIRE_CC65=1` from emitted env) | FAIL (3 failures), restored -> OK | — |
 | RED proof, mutation B (untracked no longer forces L3) | FAIL (1 failure), restored -> OK | — |
 | `make check` (contracts + check + c3 + verify_build_diff) | PASS | ~4.8 s |
@@ -224,6 +231,14 @@ Interim canonical-loader record (pre-#856-merge, same commands plus): 14
 `CanonicalLoaderTests` OK on this branch; the fetched Task-A revision
 (`cf428568`, read-only) loads as 232 rules / 81 api slots; slot-number
 spellings (`63`, `0x3F`, `$3F`, …) resolve to one subset.
+
+FINAL canonical-loader record (Task-A map v0 at `2ab14d08`, read-only
+fetch): 17 `CanonicalLoaderTests` OK — nameless slot rows accepted with
+names resolved via the `spec/api_slots.json` ledger (slot-number
+spellings, ledger names, and slash-name parts resolve to one subset),
+`name`-carrying rows rejected fail-closed, and the pin test records
+`2ab14d08` as FINAL (superseding `cf428568`). Post-merge re-verification
+on the merged map is still required after Owner merges #856.
 
 Residual risks: (1) the provisional envelope is throwaway — Task-A must
 define the canonical format and a loader for it; (2) wrapper `Makefile`

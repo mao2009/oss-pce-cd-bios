@@ -409,12 +409,16 @@ class ProvisionalJsonMapLoader(MapLoader):
 # envelope -- either direction falls back to L3, never a misread).
 CANONICAL_MAP_NAME = "test-staging-map-v0"
 CANONICAL_SCHEMA_VERSION = 1
-# Interim dependency pin (pre-#856-merge): read-only fetch of
-# origin/agent/test-staging-map-v0-20261128 gave this HEAD. This loader was
-# built against that revision's schema. It is NOT final verification: after
-# Task-A (#856) integrates, re-fetch the merged map, re-run the connection
-# tests plus make check / make test, and update this pin to the merged HEAD.
-CANONICAL_SOURCE_HEAD = "cf428568dceecc6f7ed0607a182f222f28148e54"
+# FINAL dependency pin (Task-A map v0, PR #856 HEAD): read-only fetch of
+# origin/agent/test-staging-map-v0-20261128 confirmed HEAD 2ab14d08. This
+# loader implements that revision's FINAL schema: api_slots rows carry NO
+# name (identity by slot number; display/API names resolve via the
+# spec/api_slots.json ledger, the single source), reasons use the
+# slot-number form (e.g. $07), and tests-fixtures is narrowed to *.s.
+# This supersedes the interim cf428568 pin. Post-merge re-verification
+# (re-run on the merged map + re-request review) is still required after
+# Owner merges #856; see docs/test-staging-wrapper-design-852.md §4a.
+CANONICAL_SOURCE_HEAD = "2ab14d08fc9fbdc704da1b1f07c96501850b542e"
 
 CANONICAL_LEVELS = ("L0", "L1", "L2", "L3", "L4")
 CANONICAL_MATCH_TYPES = ("exact", "exact-list", "glob")
@@ -456,8 +460,16 @@ class CanonicalJsonMapLoader(MapLoader):
                                   "dev_targets", "static_units"},
                         "reason"}, ...],
          "fallback": {...same shape, match "**", level "L3"...},
-         "api_slots": [{"slot": 0..80, "name", "dev_implemented",
+         "api_slots": [{"slot": 0..80, "dev_implemented",
                           "dev_source", "level", "tests", "reason"}]}
+
+    api_slots rows carry NO name (FINAL Task-A form): identity is the slot
+    number, and display/API names resolve via the spec/api_slots.json
+    ledger (the single source -- a row duplicating a ledger name, or a
+    reason embedding one, is deformed -> L3, so not-wired negative tests
+    never trip on the map). Slot-number spellings (63, 0x3F, $3F) and
+    ledger slash-name parts (CD_SUBRQ for "CD_SUBRQ / CD_SUBRD") resolve
+    to the slot's ledger name via resolve_api().
 
     Classification is first-match-wins in entry order (the canonical
     fallback entry is last and matches everything). A document carrying the
@@ -477,7 +489,13 @@ class CanonicalJsonMapLoader(MapLoader):
         self._api_aliases = {}
 
     def resolve_api(self, api):
-        """Accept slot names and slot-number spellings (63, 0x3F, $3F)."""
+        """Accept ledger names, slash-name parts, and slot-number spellings.
+
+        Aliases are populated at load() from the spec/api_slots.json
+        ledger (63, 0x3F, $3F, MA_MUL8U, CD_SUBRQ all resolve to their
+        slot's ledger name); anything unknown passes through unchanged
+        and fails closed as unknown-api -> L3 in select().
+        """
         if api is None:
             return None
         return self._api_aliases.get(str(api), str(api))
@@ -538,13 +556,14 @@ class CanonicalJsonMapLoader(MapLoader):
             raise MapError("canonical fallback must be match '**' at L3 "
                            "-> L3")
         slots = document.get("api_slots")
-        slot_names = self._check_slots(slots)
+        ledger_names = self._load_ledger_names()
+        self._check_slots(slots)
         targets = _makefile_targets()
         dev_source_to_slot = {}
         for slot in slots:
             source = slot.get("dev_source")
             if source:
-                dev_source_to_slot[source] = slot["name"]
+                dev_source_to_slot[source] = ledger_names[slot["slot"]]
         rules = []
         for index, entry in enumerate(entries):
             rules.extend(self._convert_entry(index, entry, targets, static_set,
@@ -552,20 +571,23 @@ class CanonicalJsonMapLoader(MapLoader):
         apis = {}
         aliases = {}
         for slot in slots:
-            name = slot["name"]
             number = slot["slot"]
+            name = ledger_names[number]
             commands = self._convert_tests(slot["tests"], static_set,
-                                           targets, f"api-slot {name}",
+                                           targets, f"api-slot ${number:02X}",
                                            require_commands=True)
             apis[name] = {
                 "commands": commands,
-                "reason": str(slot.get("reason") or f"canonical slot {name}"),
+                "reason": str(slot.get("reason") or f"canonical slot ${number:02X}"),
             }
-            for alias in (name, str(number), f"{number:X}",
-                          f"{number:02X}", f"{number:02x}",
-                          f"0x{number:X}", f"0x{number:x}",
-                          f"0x{number:02X}", f"${number:02X}"):
-                aliases.setdefault(alias, name)
+            parts = [name] + [part.strip() for part in name.split("/")]
+            spellings = [str(number), f"{number:X}",
+                         f"{number:02X}", f"{number:02x}",
+                         f"0x{number:X}", f"0x{number:x}",
+                         f"0x{number:02X}", f"${number:02X}"]
+            for alias in parts + spellings:
+                if alias:
+                    aliases.setdefault(alias, name)
         self._api_aliases = aliases
         return rules, apis
 
@@ -622,6 +644,45 @@ class CanonicalJsonMapLoader(MapLoader):
         if len(set(ids)) != len(ids):
             raise MapError("canonical entry ids must be unique -> L3")
 
+    def _load_ledger_names(self):
+        """Resolve slot-number -> candidate name via spec/api_slots.json.
+
+        The FINAL canonical map identifies api_slots by number only; names
+        live in the ledger (the single source). A missing, unreadable, or
+        deformed ledger is inconsistent -> L3 (fail-closed, never unnamed).
+        """
+        ledger_path = ROOT / "spec" / "api_slots.json"
+        try:
+            ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as error:
+            raise MapError(f"canonical slot ledger {ledger_path} is "
+                           f"missing or not valid JSON: {error} -> L3") from error
+        raw = ledger.get("slots") if isinstance(ledger, dict) else None
+        if not isinstance(raw, list):
+            raise MapError("canonical slot ledger needs a 'slots' list -> L3")
+        names = {}
+        for entry in raw:
+            if not isinstance(entry, dict):
+                raise MapError("canonical slot ledger entries must be "
+                               "objects -> L3")
+            slot_id = entry.get("id")
+            candidate = entry.get("candidate_name")
+            if (not isinstance(slot_id, int) or isinstance(slot_id, bool)
+                    or not 0 <= slot_id <= 80):
+                raise MapError(f"canonical slot ledger id {slot_id!r} is "
+                               "not a slot 0..80 -> L3")
+            if not candidate or not isinstance(candidate, str):
+                raise MapError(f"canonical slot ledger id {slot_id} has no "
+                               "candidate name -> L3")
+            if slot_id in names:
+                raise MapError(f"duplicate canonical slot ledger id "
+                               f"{slot_id} -> L3")
+            names[slot_id] = candidate
+        if sorted(names) != list(range(CANONICAL_API_SLOT_COUNT)):
+            raise MapError("canonical slot ledger must resolve every slot "
+                           "0..80 -> L3")
+        return names
+
     def _check_slots(self, slots):
         if not isinstance(slots, list):
             raise MapError("canonical 'api_slots' must be a list -> L3")
@@ -630,48 +691,44 @@ class CanonicalJsonMapLoader(MapLoader):
                 f"canonical api_slots has {len(slots)} rows, expected "
                 f"{CANONICAL_API_SLOT_COUNT} -> L3")
         seen_ids = set()
-        seen_names = set()
         for slot in slots:
             if not isinstance(slot, dict):
                 raise MapError("canonical api_slot must be an object -> L3")
+            if "name" in slot:
+                raise MapError(
+                    f"canonical api_slot {slot.get('slot')!r} duplicates "
+                    "the ledger name: FINAL rows carry no 'name' (identity "
+                    "by slot number, names resolve via spec/api_slots.json) "
+                    "-> L3")
             number = slot.get("slot")
-            name = slot.get("name")
             if (not isinstance(number, int) or isinstance(number, bool)
                     or not 0 <= number <= 80):
                 raise MapError(f"canonical api_slot number {number!r} is "
                                "not a slot 0..80 -> L3")
-            if not name or not isinstance(name, str):
-                raise MapError("canonical api_slot needs a non-empty name "
-                               "-> L3")
             if number in seen_ids:
                 raise MapError(f"duplicate canonical slot number {number} "
                                "-> L3")
-            if name in seen_names:
-                raise MapError(f"duplicate canonical slot name {name!r} "
-                               "-> L3")
             seen_ids.add(number)
-            seen_names.add(name)
             if slot.get("level") not in CANONICAL_LEVELS:
-                raise MapError(f"canonical slot {name} has unknown level "
-                               f"{slot.get('level')!r} -> L3")
+                raise MapError(f"canonical slot ${number:02X} has unknown "
+                               f"level {slot.get('level')!r} -> L3")
             source = slot.get("dev_source")
             if source is not None and not (isinstance(source, str)
                                            and source):
-                raise MapError(f"canonical slot {name} dev_source must be a "
-                               "path or null -> L3")
+                raise MapError(f"canonical slot ${number:02X} dev_source "
+                               "must be a path or null -> L3")
             tests = slot.get("tests")
             if not isinstance(tests, dict):
-                raise MapError(f"canonical slot {name} tests must be an "
-                               "object -> L3")
+                raise MapError(f"canonical slot ${number:02X} tests must "
+                               "be an object -> L3")
             for key in ("host", "integration_scripts", "dev_targets",
                         "static_units"):
                 if key not in tests or not isinstance(tests[key], list):
-                    raise MapError(f"canonical slot {name} tests misses list "
-                                   f"{key!r} -> L3")
+                    raise MapError(f"canonical slot ${number:02X} tests "
+                                   f"misses list {key!r} -> L3")
         if sorted(seen_ids) != list(range(CANONICAL_API_SLOT_COUNT)):
             raise MapError("canonical api_slots must cover slots 0..80 "
                            "exactly once -> L3")
-        return seen_names
 
     def _convert_entry(self, index, entry, targets, static_set,
                        dev_source_to_slot):

@@ -413,15 +413,18 @@ class ApiTests(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # Canonical Task-A map loader connection tests (Issue #854 dependency).
 #
-# These tests pin the canonical envelope (name test-staging-map-v0,
+# These tests pin the FINAL canonical envelope (name test-staging-map-v0,
 # schema_version 1, 40-hex base_commit fingerprint, exact Required Checks,
-# first-match-wins classification, 81 slot-number identifiers) against
-# synthetic fixtures shaped like the Task-A map. They run against
-# SEL.CANONICAL_SOURCE_HEAD (interim pre-#856-merge pin, read-only fetch);
-# after Task-A integrates, the pin and these tests re-run on the merged map.
+# first-match-wins classification, 81 slot-number identifiers with NO name
+# key -- names resolve via the spec/api_slots.json ledger) against
+# synthetic fixtures shaped like the Task-A map at SEL.CANONICAL_SOURCE_HEAD
+# (FINAL pin 2ab14d08, read-only fetch of
+# origin/agent/test-staging-map-v0-20261128). This supersedes the interim
+# cf428568 record. Post-merge re-verification on the merged map is still
+# required after Owner merges #856.
 # ---------------------------------------------------------------------------
 
-CANONICAL_PIN = "cf428568dceecc6f7ed0607a182f222f28148e54"
+CANONICAL_PIN = "2ab14d08fc9fbdc704da1b1f07c96501850b542e"
 
 
 def canonical_tests(host=(), scripts=(), targets=(), static=()):
@@ -453,26 +456,30 @@ def canonical_fallback_entry():
         reason="fixture catch-all", category="shared-code")
 
 
-def canonical_slots(dev_name="MA_MUL8U"):
+def canonical_slots():
+    # FINAL Task-A form: rows carry NO name (identity by slot number;
+    # names resolve via the spec/api_slots.json ledger, e.g. slot 0x3F ->
+    # MA_MUL8U). Reasons use the slot-number form (e.g. $3F), never a
+    # ledger name.
     slots = []
     for number in range(81):
         if number == 0x3F:
             slots.append({
-                "slot": number, "name": dev_name, "dev_implemented": True,
+                "slot": number, "dev_implemented": True,
                 "dev_source": "src/overrides/slot_3F.s", "level": "L1",
                 "tests": canonical_tests(
                     host=["tests.host.test_api_contracts"],
                     targets=["dev-rom"]),
-                "reason": "fixture DEV slot"})
+                "reason": f"fixture DEV slot ${number:02X}"})
         else:
             slots.append({
-                "slot": number, "name": f"SLOT_{number:02X}",
+                "slot": number,
                 "dev_implemented": False, "dev_source": None,
                 "level": "L3",
                 "tests": canonical_tests(
                     host=["tests.host.test_api_contracts"],
                     targets=["test"]),
-                "reason": f"fixture slot {number}"})
+                "reason": f"fixture slot ${number:02X}"})
     return slots
 
 
@@ -516,9 +523,12 @@ class CanonicalLoaderTests(unittest.TestCase):
                          "map-missing-or-inconsistent")
 
     def test_dependency_head_pin_is_recorded(self):
-        # Interim pre-#856-merge pin: read-only fetch of
-        # origin/agent/test-staging-map-v0-20261128. Final verification
-        # after Task-A integration updates this to the merged HEAD.
+        # FINAL pin 2ab14d08 (Task-A map v0, PR #856 HEAD, read-only
+        # fetch of origin/agent/test-staging-map-v0-20261128): slot rows
+        # carry NO name; identity by slot number via spec/api_slots.json.
+        # Supersedes the interim cf428568 record. Post-merge
+        # re-verification on the merged map is still required after Owner
+        # merges #856.
         self.assertEqual(SEL.CANONICAL_SOURCE_HEAD, CANONICAL_PIN)
         self.assertRegex(SEL.CANONICAL_SOURCE_HEAD, r"^[0-9a-f]{40}$")
         self.assertEqual(SEL.CANONICAL_MAP_NAME, "test-staging-map-v0")
@@ -682,6 +692,39 @@ class CanonicalLoaderTests(unittest.TestCase):
                             for argv in seen["MA_MUL8U"]))
         self.assertFalse(any("test_api_table.py" in argv
                              for argv in seen["MA_MUL8U"]))
+
+    def test_ledger_names_resolve_without_row_names(self):
+        # FINAL form: slot rows carry NO name, yet apis resolve through
+        # the spec/api_slots.json ledger (slot 0x3F -> MA_MUL8U).
+        loader = SEL.CanonicalJsonMapLoader()
+        map_path = write_map(self.repo, canonical_doc())
+        _rules, apis = loader.load(map_path)
+        self.assertIn("MA_MUL8U", apis)
+        self.assertEqual(loader.resolve_api("MA_MUL8U"), "MA_MUL8U")
+        self.assertEqual(loader.resolve_api("$3F"), "MA_MUL8U")
+        self.assertEqual(loader.resolve_api("63"), "MA_MUL8U")
+
+    def test_ledger_slash_name_parts_resolve(self):
+        # Ledger slash-names (e.g. "CD_SUBRQ / CD_SUBRD") resolve by full
+        # name and by either part, without any row carrying a name.
+        loader = SEL.CanonicalJsonMapLoader()
+        map_path = write_map(self.repo, canonical_doc())
+        loader.load(map_path)
+        self.assertEqual(loader.resolve_api("CD_SUBRQ / CD_SUBRD"),
+                         "CD_SUBRQ / CD_SUBRD")
+        self.assertEqual(loader.resolve_api("CD_SUBRQ"),
+                         "CD_SUBRQ / CD_SUBRD")
+        self.assertEqual(loader.resolve_api("CD_SUBRD"),
+                         "CD_SUBRQ / CD_SUBRD")
+        self.assertEqual(loader.resolve_api("$0D"),
+                         "CD_SUBRQ / CD_SUBRD")
+
+    def test_name_duplication_rejected(self):
+        # FINAL schema: a slot row carrying 'name' duplicates the ledger
+        # (single source) and is deformed -> L3, never misread.
+        slots = canonical_slots()
+        slots[0] = dict(slots[0], name="CD_BOOT")
+        self.assert_inconsistent(canonical_doc(slots=slots))
 
     def test_unknown_api_falls_back_to_l3(self):
         selection, _ = self.select_canonical(canonical_doc(), api="NOPE")
