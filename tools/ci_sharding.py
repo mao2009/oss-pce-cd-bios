@@ -21,6 +21,7 @@ and fails aggregation (add it to a shard in the same PR that adds the test).
 """
 import argparse
 import fnmatch
+import hashlib
 import json
 import os
 import re

@@ -6,6 +6,7 @@ self-consistency test pins the CURRENT tree: an unclassified module fails
 until it is added to a shard in the same PR that adds the test.
 """
 import copy
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -666,6 +667,163 @@ class MakefileParityTests(unittest.TestCase):
                             "\t$(MAKE) block-preblock\n\t@echo hello")
         problems = shard.check_makefile_parity(text)
         self.assertTrue(any("unrecognized" in p for p in problems), problems)
+
+
+class SmokeHandoffTests(unittest.TestCase):
+    """MAJOR 3: the transferred smoke evidence is validated, not re-generated."""
+
+    def _world(self, tmpdir, smoke=None, rom_bytes=b"ROMBYTES", gate=None):
+        import json as _json
+        gate = dict(gate or {"dev_rom_present": True, "env_oss_pce_game_cue_set": False})
+        mods = {"rc-%d" % i: ["test_sm_m%d" % i] for i in range(4)}
+        shards = dict(mods)
+        live = {m: ["%s.Class.test_%02d" % (m, i) for i in range(2)]
+                for ms in mods.values() for m in ms}
+        evs = []
+        for sid, ms in shards.items():
+            planned = sorted({i for m in ms for i in live[m]})
+            recs = [{"id": pid, "result": "ok", "reason": "", "duration_s": 0.1}
+                    for pid in planned]
+            evs.append({"schema": 1, "manifest_version": 1, "sha": "abc123",
+                        "kind": "integration-unittest", "shard_id": sid,
+                        "run_id": "run-1", "run_attempt": "1",
+                        "toolchain": {"cc65": "x", "geargrafx": "rev-pin"},
+                        "gate_states": dict(gate), "gate_states_end": dict(gate),
+                        "started": "2026-11-27T00:00:00Z",
+                        "planned_ids": list(planned),
+                        "executed": list(recs),
+                        "failures": 0, "errors": 0, "duration_s": 1.0})
+        host = _evidence("host", kind="host-unittest", n=0)
+        host["planned_ids"] = ["test_m_host.Class.test_%02d" % i for i in range(2)]
+        host["executed"] = [{"id": pid, "result": "ok", "reason": "", "duration_s": 0.1}
+                            for pid in host["planned_ids"]]
+        host["failures"] = 0
+        host["errors"] = 0
+        host["toolchain"] = {"cc65": "x", "geargrafx": "rev-pin"}
+        static = _static_evidence()
+        direct = _direct_evidence(units=tuple(shard.DIRECT_UNITS))
+        direct["toolchain"] = {"cc65": "x", "geargrafx": "rev-pin"}
+        static["toolchain"] = {"cc65": "x", "geargrafx": "rev-pin"}
+        host["toolchain"] = {"cc65": "x", "geargrafx": "rev-pin"}
+        ev_dir = os.path.join(tmpdir, "direct")
+        os.makedirs(ev_dir, exist_ok=True)
+        direct_path = os.path.join(ev_dir, "evidence.json")
+        with open(direct_path, "w", encoding="utf-8") as fh:
+            _json.dump(direct, fh)
+        rom_path = os.path.join(tmpdir, "hand.pce")
+        with open(rom_path, "wb") as fh:
+            fh.write(rom_bytes)
+        smoke_path = os.path.join(ev_dir, "geargrafx-evidence.json")
+        if smoke is not None:
+            with open(smoke_path, "w", encoding="utf-8") as fh:
+                _json.dump(smoke, fh)
+        all_evs = evs + [dict(host, run_id="run-1", run_attempt="1",
+                              gate_states=dict(gate), gate_states_end=dict(gate)),
+                         dict(direct, run_id="run-1", run_attempt="1",
+                              gate_states=dict(gate), gate_states_end=dict(gate)),
+                         dict(static, run_id="run-1", run_attempt="1",
+                              gate_states=dict(gate), gate_states_end=dict(gate))]
+        live_host = [r["id"] for r in host["executed"]]
+        return all_evs, shards, live, live_host, direct_path, rom_path
+
+    def _identity(self):
+        return {"sha": "abc123", "run_id": "run-1", "run_attempt": "1",
+                "toolchain": {"cc65": "x", "geargrafx": "rev-pin"}}
+
+    def _good_smoke(self, digest):
+        return {"schema_version": 1, "status": "PASS", "scope": "hucard-smoke-only",
+                "rom_sha256": digest, "geargrafx_revision": "rev-pin",
+                "core_sha256": "x" * 64, "observations": []}
+
+    def test_smoke_ok_green(self):
+        import tempfile, hashlib
+        with tempfile.TemporaryDirectory() as td:
+            digest = hashlib.sha256(b"ROMBYTES").hexdigest()
+            evs, shards, live, live_host, direct_path, rom = self._world(
+                td, smoke=self._good_smoke(digest), rom_bytes=b"ROMBYTES")
+            problems = shard.aggregate(
+                evs, shards=shards, live_integration_ids=live, live_host_ids=live_host,
+                identity=self._identity(),
+                smoke_evidence_path=os.path.join(td, "direct", "evidence.json"),
+                smoke_rom_path=rom)
+            self.assertEqual([], problems, problems)
+
+    def test_smoke_missing_red(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            evs, shards, live, live_host, direct_path, rom = self._world(td, smoke=None)
+            problems = shard.aggregate(
+                evs, shards=shards, live_integration_ids=live, live_host_ids=live_host,
+                identity=self._identity(),
+                smoke_evidence_path=os.path.join(td, "direct", "evidence.json"),
+                smoke_rom_path=rom)
+            self.assertTrue(any("missing transferred smoke evidence" in p for p in problems),
+                            problems)
+
+    def test_smoke_rom_mismatch_red(self):
+        import tempfile, hashlib
+        with tempfile.TemporaryDirectory() as td:
+            digest = hashlib.sha256(b"ROMBYTES").hexdigest()
+            evs, shards, live, live_host, direct_path, rom = self._world(
+                td, smoke=self._good_smoke(digest), rom_bytes=b"OTHER")
+            problems = shard.aggregate(
+                evs, shards=shards, live_integration_ids=live, live_host_ids=live_host,
+                identity=self._identity(),
+                smoke_evidence_path=os.path.join(td, "direct", "evidence.json"),
+                smoke_rom_path=rom)
+            self.assertTrue(any("ROM digest" in p for p in problems), problems)
+
+    def test_smoke_status_not_pass_red(self):
+        import tempfile, hashlib
+        with tempfile.TemporaryDirectory() as td:
+            bad = self._good_smoke(hashlib.sha256(b"R").hexdigest())
+            bad["status"] = "FAIL"
+            evs, shards, live, live_host, direct_path, rom = self._world(td, smoke=bad, rom_bytes=b"R")
+            problems = shard.aggregate(
+                evs, shards=shards, live_integration_ids=live, live_host_ids=live_host,
+                identity=self._identity(),
+                smoke_evidence_path=os.path.join(td, "direct", "evidence.json"),
+                smoke_rom_path=rom)
+            self.assertTrue(any("status is not PASS" in p for p in problems), problems)
+
+    def test_smoke_wrong_scope_red(self):
+        import tempfile, hashlib
+        with tempfile.TemporaryDirectory() as td:
+            bad = self._good_smoke(hashlib.sha256(b"R").hexdigest())
+            bad["scope"] = "other-scope"
+            evs, shards, live, live_host, direct_path, rom = self._world(td, smoke=bad, rom_bytes=b"R")
+            problems = shard.aggregate(
+                evs, shards=shards, live_integration_ids=live, live_host_ids=live_host,
+                identity=self._identity(),
+                smoke_evidence_path=os.path.join(td, "direct", "evidence.json"),
+                smoke_rom_path=rom)
+            self.assertTrue(any("scope" in p for p in problems), problems)
+
+    def test_smoke_bad_pin_red(self):
+        import tempfile, hashlib
+        with tempfile.TemporaryDirectory() as td:
+            bad = self._good_smoke(hashlib.sha256(b"R").hexdigest())
+            bad["geargrafx_revision"] = "other-pin"
+            evs, shards, live, live_host, direct_path, rom = self._world(td, smoke=bad, rom_bytes=b"R")
+            problems = shard.aggregate(
+                evs, shards=shards, live_integration_ids=live, live_host_ids=live_host,
+                identity=self._identity(),
+                smoke_evidence_path=os.path.join(td, "direct", "evidence.json"),
+                smoke_rom_path=rom)
+            self.assertTrue(any("core mismatch" in p for p in problems), problems)
+
+    def test_smoke_bad_schema_red(self):
+        import tempfile, hashlib
+        with tempfile.TemporaryDirectory() as td:
+            bad = self._good_smoke(hashlib.sha256(b"R").hexdigest())
+            bad["schema_version"] = "1"
+            evs, shards, live, live_host, direct_path, rom = self._world(td, smoke=bad, rom_bytes=b"R")
+            problems = shard.aggregate(
+                evs, shards=shards, live_integration_ids=live, live_host_ids=live_host,
+                identity=self._identity(),
+                smoke_evidence_path=os.path.join(td, "direct", "evidence.json"),
+                smoke_rom_path=rom)
+            self.assertTrue(any("schema_version" in p for p in problems), problems)
 
 
 class ManifestSelfCheckTests(unittest.TestCase):
