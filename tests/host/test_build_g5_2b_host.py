@@ -466,16 +466,19 @@ class BuildRcroff2bHostTests(unittest.TestCase):
     def test_spec_classification(self):
         import json
         spec = json.loads((ROOT / "spec" / "c3_static_contracts.json").read_text())
-        # Issue #843 single unit: the deleted per-body files are gone, the
-        # family unit carries the fixture classification + merged reason.
+        # Issue #843 single unit: the deleted per-body files are gone; the
+        # family unit carries real C-3 declarations (bios scope + files
+        # entry with per-variant TAM and shared-tail MMIO windows), not a
+        # fixture-reason-only classification.
         self.assertNotIn("src/ex_rcroff.s", spec["scope"]["fixture"])
         self.assertNotIn("src/ex_dspoff.s", spec["scope"]["bios"])
-        self.assertIn("src/ex_cr_family.s", spec["scope"]["fixture"])
-        reason = spec["scope"]["fixture_reasons"]["src/ex_cr_family.s"]
-        self.assertIn("EX_RCROFF", reason)
-        self.assertIn("EX_IRQON", reason)
-        self.assertIn("EX_DSPOFF", reason)
-        self.assertNotIn("src/ex_cr_family.s", spec.get("files", {}))
+        self.assertIn("src/ex_cr_family.s", spec["scope"]["bios"])
+        self.assertNotIn("src/ex_cr_family.s", spec["scope"].get("fixture", []))
+        entry = spec["files"]["src/ex_cr_family.s"]
+        self.assertEqual(entry["role"], "api")
+        self.assertEqual(entry["mmio"]["shared_tail"], "cr_tail_publish")
+        self.assertEqual(sorted(entry["mmio"]["variants"]),
+                         ["NEED_CR2B", "NEED_CR2C", "NEED_CR33"])
 
 
 if __name__ == "__main__":

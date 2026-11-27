@@ -41,6 +41,7 @@ class Line:
     operand: str           # operand text, comment removed, stripped
     segment: str
     conditional: bool
+    ifs: tuple = ()         # active conditional headers (innermost last), e.g. ("NEED_CR33",)
     directive: str = ""    # lower case directive (".word", ".segment" ...) or ""
     text: str = ""
 
@@ -181,6 +182,7 @@ def parse(path, root=None):
     rel = rel.replace("\\", "/")
     src = Source(rel)
     segment, depth = "CODE", 0
+    istack = []   # active conditional headers (the .ifdef/.if operand text)
     raw_lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     # first pass: constants (NAME = expr), in order; unresolved ones stay unknown. A constant assigned inside a
     # conditional block (.if / .ifdef / .ifndef ...) depends on the build (e.g. a -D option), so it is NOT
@@ -227,7 +229,7 @@ def parse(path, root=None):
             src.labels[m.group(1)] = segment
             body = m.group(2).strip()
         if not body:
-            src.lines.append(Line(rel, number_, labels, "", "", segment, depth > 0, text=raw))
+            src.lines.append(Line(rel, number_, labels, "", "", segment, depth > 0, tuple(istack), text=raw))
             continue
         parts = re.split(r"\s+", body, maxsplit=1)   # any whitespace (space or TAB) ends the statement word
         word, rest = parts[0], (parts[1] if len(parts) > 1 else "")
@@ -237,18 +239,25 @@ def parse(path, root=None):
                 src.unsupported.append((number_, f"directive {word_l} is not supported by the C-3 reader"))
             elif word_l in CONDITIONAL_OPEN:
                 depth += 1
+                istack.append(rest.strip())
+            elif word_l in (".else", ".elseif"):
+                pass   # still conditional under the same header
             elif word_l == ".endif":
                 depth = max(0, depth - 1)
+                if istack:
+                    istack.pop()
             elif word_l == ".segment":
                 segment = rest.strip().strip('"')
             elif word_l in SEGMENT_SHORTCUTS:
                 segment = SEGMENT_SHORTCUTS[word_l]
             elif word_l == ".include":
                 src.includes.append(rest.strip().strip('"'))
-            src.lines.append(Line(rel, number_, labels, "", rest.strip(), segment, depth > 0, word_l, raw))
+            src.lines.append(Line(rel, number_, labels, "", rest.strip(), segment, depth > 0, tuple(istack),
+                                  word_l, raw))
             continue
         if word_l in MNEMONICS:
-            src.lines.append(Line(rel, number_, labels, word_l, rest.strip(), segment, depth > 0, text=raw))
+            src.lines.append(Line(rel, number_, labels, word_l, rest.strip(), segment, depth > 0, tuple(istack),
+                                  text=raw))
             continue
         src.unsupported.append((number_, f"unrecognised statement {word!r} (macro invocation or unknown mnemonic)"))
     return src
