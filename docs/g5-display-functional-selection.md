@@ -15,7 +15,7 @@ Task: G5 P0 #802（親 #635）。第一候補 $25（Issue #47）を含む6 API�
 
 - **選定API: `$2C` EX_IRQON（Issue #54）。区分 D2（限定機能experimental）。**
 - **実装範囲: VDC CR R05 bit3 の set（OR `$08`、他bit保持）のみ。**
-  `$2502` 共有shadow経由（port RMW禁止）、AR=5、MPR0 window + SEI、
+  `$2502` 共有shadow経由（port RMW禁止）、AR=5（ok path）／entry AR保持（reject）、MPR0 window + SEI、
   C=0 ok / C=1 reject（shadow未初期化時、VDC/RAM無書込み）。
   CPU I・IDR/IRR・SR・VCE・VRAM/SATB・`$20F3`/`$20F7`・ゼロページ等は不変
   （`$20F3`/`$20F7` は未実装として明示）。
@@ -104,9 +104,10 @@ D1=根拠ある機能実装 / D2=限定機能experimental / D2-B1=B1型preservat
   （sibling bodiesと同一）。MPR1!=`$F8` は OUT OF CONTRACT（harnessがJSR前に検証、
   body内gateなし＝family/B1と同一理由：JSR自体がreturn bytesを書込むため）。
 - 正常系（shadow初期化済み `$2503==$A5`）:
-  `SEI` → MPR0=`$FF` window → `ST0=$0000` に `$05`（AR=5）→ `$2502 |= $08`
+  `SEI` → MPR0=`$FF` window → `ST0=$0000` に `$05`（AR=5、ok path）→ `$2502 |= $08`
   → shadow publish → `ST1=$0002` に shadow（CR low書込み、high不触）→
-  MPR0復元 → A復元 → PLP → `CLC`（C=0）。AR=5残置。CR high・R[5]上位bit不触
+  MPR0復元 → A復元 → PLP → `CLC`（C=0）。AR=5残置（ok path。reject pathは
+  AR=entry ARのまま）。CR high・R[5]上位bit不触
   （mask `0x1FFF` でHW保証）。
 - 拒否系（shadow未初期化）: VDC書込みなし・shadow/sentinel以外のRAM書込みなし、
   `SEC`（C=1）。A/X/Y/MPR/他flags保持。callerは初回前に `$2502`/`$2503` をseedする
