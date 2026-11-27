@@ -19,17 +19,36 @@ Companion coverage:
   entry-C=0 and entry-C=1 classes on both paths (all four combinations);
   nonzero entry A/X/Y preservation incl. A!=P vectors (a clobber mutant
   goes RED: no fixed success value);
-  VDC state on the real core (dedicated probe with GetState snapshots:
-  ok CR low exact + high/other regs unchanged + AR=5; reject all unchanged;
-  MPRs/IDR/IRR unchanged);
+  VDC state on the real core (dedicated single-run probe with GetState
+  snapshots at the real JSR boundary: the guest synchronizes actual CR
+  low/high + RCR sentinel with the shadow BEFORE the call (in-contract
+  state, verified at the boundary); ok CR low == seed|$08 with high/RCR/
+  other regs preserved + AR=5 + shadow published; reject all VDC regs
+  unchanged (incl. nonzero CR/RCR sentinels) + AR == entry AR + shadow
+  untouched; MPRs/IDR/IRR unchanged; frozen-clock SR invariance (GetState
+  reads only); single guest execution per case, so no cold/warm pair
+  here -- cold/warm equality is covered by the return-probe and
+  writes-tracer paths. SR evidence split: (1) source audit -- neither the
+  body (pinned 44-byte construction has no VDC read opcode) nor the probe
+  (GetState only) takes the destructive ReadRegister path; (2) frozen-clock
+  SR before==after in every VDC case; (3) pending-SR survival NOT_RUN here
+  (needs a real clock + VBLANK event; the GetState mechanism itself is
+  covered by the PR #839 P3 fixture); (4) IRQ timing/handler transitions
+  NOT_RUN (out of scope for this D2 experiment);
   work-RAM scope (256-byte canary + full-buffer cold/warm equality +
-  per-instruction write history: writes ⊆ transient ∪ {$2502,$2503}, and
-  the transient stack discipline intact);
+  per-instruction write history: full-history writes ⊆ transient ∪
+  {$2502,$2503} (guest setup shares the shadow addresses), plus a
+  callee-window history (first JSR at/after) where ok ⊆ transient ∪
+  {$2502} and reject ⊆ transient exactly -- a reject-path
+  write-then-restore of the shadow is RED in the callee window even
+  though the full history stays GREEN (MINOR-2 fix; same-value stores
+  stay invisible by construction in both windows);
   MPR1=$F8 precondition validated by the harness BEFORE JSR (T13: a $FF
   candidate refuses at refused_halt without executing JSR, never reaches
   $2C, and never remaps first);
-  SP depth (SP=$FF and boundary SP=$06 GREEN and balanced guest-executed;
-  SP=$00/$05 probe-argument refusal GREEN with no guest execution);
+  SP depth (SP=$FF/$06/$05 GREEN and balanced guest-executed, $05 being
+  the caller minimum; below-minimum $00-$04 probe-argument refusal GREEN
+  with no guest execution);
   synthetic chain $33->$4A->$23->$25->$24->$36->$35->$2C through the real
   table entries with per-call APICALL evidence (the $02 leg is the PUBLIC
   boot itself; the observed $2C entry state is SIMULATED-entry);
@@ -872,7 +891,23 @@ class Irqon2cSynthetic(unittest.TestCase):
 
     # ---- VDC-state probe (dedicated GetState snapshots) ----
 
-    def _run_vdc(self, name, entry_ar, areg, xreg, pseed, seed_lo, seed_en):
+    # Default synchronized sentinel values: CR high $0B (within the pinned
+    # R[5] mask $1FFF, nonzero to prove preservation), RCR $55 (untouched
+    # sentinel proving no cross-register write). Documented per case below.
+    CRHI = 0x0B
+    RCRLO = 0x55
+
+    def _run_vdc(self, name, entry_ar, areg, xreg, pseed, seed_lo, seed_en,
+                 crhi=None, rcr_lo=None, ncalls=1):
+        # Synchronized fixture: the guest writes the ACTUAL VDC CR low/high
+        # to seed_lo/crhi (and RCR to rcr_lo) BEFORE the JSR, so the shadow
+        # and the hardware start synchronized -- the D2 contract's
+        # in-contract state. The C++ snapshots at the real call boundary
+        # (first JSR about to execute), never before guest init.
+        if crhi is None:
+            crhi = self.CRHI
+        if rcr_lo is None:
+            rcr_lo = self.RCRLO
         import tempfile
         o = self.out / ("vdc-" + name)
         o.mkdir(exist_ok=True)
@@ -882,7 +917,8 @@ class Irqon2cSynthetic(unittest.TestCase):
         r = subprocess.run([str(self.vdc_probe), str(self.rom2c.resolve()),
                             str(cue.resolve()), "4096", str(entry_ar),
                             str(areg), str(xreg), str(pseed),
-                            str(seed_lo), str(seed_en)],
+                            str(seed_lo), str(seed_en), str(crhi),
+                            str(rcr_lo), str(ncalls)],
                            capture_output=True, text=True, timeout=120, check=True)
         import json
         for line in r.stdout.splitlines():
@@ -892,63 +928,134 @@ class Irqon2cSynthetic(unittest.TestCase):
 
     def _check_vdc_common(self, res, entry_ar, areg, xreg, pseed, cout):
         # P is per the D2 convention (C forced to cout, T masked), not
-        # preserved: entry C must NOT leak into the result.
+        # preserved: entry C must NOT leak into the result. Entry regs are
+        # OBSERVED at the JSR boundary (entry_*), not inferred from argv.
         self.assertEqual(res["pc"], res["halt"])
+        # jsr_pc is the GUEST address of the JSR $E084 instruction (BIOS
+        # window, distinct from halt): it pins the snapshot to the real
+        # call boundary, not to a fixed constant (guest layout is
+        # build-derived). Entry-state correctness is proven by entry_* +
+        # synchronized before-CR below, never by this address alone.
+        self.assertTrue(0xE000 <= res["jsr_pc"] < 0xFFF6)
+        self.assertNotEqual(res["jsr_pc"], res["halt"])
         self.assertEqual(res["a"], areg)
         self.assertEqual(res["p"] & ~0x10, (pseed & ~0x11) | cout)
         self.assertEqual(res["p"] & 0x01, cout)
         self.assertEqual(res["x"], xreg)
         self.assertEqual(res["y"], 0xA5)
         self.assertEqual(res["sp"], 0xFF)
+        self.assertEqual(res["entry_a"], areg)
+        self.assertEqual(res["entry_p"] & ~0x10, pseed & ~0x10)
+        self.assertEqual(res["entry_x"], xreg)
+        self.assertEqual(res["entry_y"], 0xA5)
+        self.assertEqual(res["entry_sp"], 0xFF)
         self.assertEqual(res["mpr_store"], res["mpr_after"])
         self.assertEqual(res["mpr_after"][0], 0xF8)
         self.assertEqual(res["mpr_after"][1], 0xF8)
         self.assertEqual(res["mpr_after"][2:], res["mpr_before"][2:])
         self.assertEqual(res["idr_before"], res["idr_after"])
         self.assertEqual(res["irr_before"], res["irr_after"])
+        # Frozen-clock SR invariance (GetState reads only; the probe never
+        # takes the destructive ReadRegister path). Pending-SR survival and
+        # IRQ timing are NOT_RUN here by design (see module docstring).
+        self.assertEqual(res["sr_before"], res["sr_after"])
 
-    def _check_vdc_ok(self, res, entry_ar, areg, xreg, pseed, seed_lo):
-        # Full ok oracle: common discipline + AR=5 + CR low == seed|$08
-        # with high byte and every other VDC register unchanged.
+    def _check_vdc_sync_before(self, res, entry_ar, seed_lo, crhi, rcr_lo):
+        # Synchronization proof: at the JSR boundary the actual hardware
+        # already holds the seeded values (shadow == CR is the in-contract
+        # state; a desynchronized fixture would fail here, never downstream).
+        before = res["vdc_r_before"]
+        self.assertEqual(res["vdc_ar_before"], entry_ar)
+        self.assertEqual(before[5] & 0xFF, seed_lo)
+        self.assertEqual(before[5] >> 8, crhi)
+        self.assertEqual(before[6] & 0xFF, rcr_lo)
+        self.assertEqual(before[6] >> 8, 0x00)
+
+    def _check_vdc_ok(self, res, entry_ar, areg, xreg, pseed, seed_lo,
+                      crhi=None, rcr_lo=None):
+        # Full ok oracle on the synchronized fixture: common discipline +
+        # AR=5 + CR low == seed|$08, CR high and RCR sentinel preserved,
+        # every other VDC register unchanged, shadow published.
+        if crhi is None:
+            crhi = self.CRHI
+        if rcr_lo is None:
+            rcr_lo = self.RCRLO
         self._check_vdc_common(res, entry_ar, areg, xreg, pseed, 0)
+        self._check_vdc_sync_before(res, entry_ar, seed_lo, crhi, rcr_lo)
         self.assertEqual(res["vdc_ar_after"], 5)
         before, after = res["vdc_r_before"], res["vdc_r_after"]
         self.assertEqual(after[5] & 0xFF, seed_lo | 0x08)
-        self.assertEqual(after[5] & 0xFF00, before[5] & 0xFF00)
-        for i in list(range(5)) + list(range(6, 20)):
+        self.assertEqual(after[5] >> 8, crhi)
+        self.assertEqual(after[6] & 0xFF, rcr_lo)
+        self.assertEqual(after[6] >> 8, 0x00)
+        for i in list(range(5)) + list(range(7, 20)):
             self.assertEqual(after[i], before[i], f"VDC R{i} changed")
+        self.assertEqual(res["shadow_post"], [seed_lo | 0x08, 0xA5])
 
     def test_vdc_ok_zero_seed(self):
-        # ok: shadow $00 -> CR low $08, AR=5, high/other regs unchanged.
+        # B4 zero: actual CR $0B00 + shadow $00 -> CR low $08, C=0.
         res = self._run_vdc("ok0", 0, 0x3C, 0x12, 0x07, 0x00, 1)
         self._check_vdc_ok(res, 0, 0x3C, 0x12, 0x07, 0x00)
 
     def test_vdc_ok_nonzero_seed(self):
-        # ok: shadow $F0 -> CR low $F8 (other bits kept), AR=5.
+        # B4 nonzero: actual CR $0BF0 + shadow $F0 -> CR low $F8, C=0.
         res = self._run_vdc("okf0", 9, 0x00, 0x80, 0x06, 0xF0, 1)
         self._check_vdc_ok(res, 9, 0x00, 0x80, 0x06, 0xF0)
 
-    def test_vdc_ok_idempotent_seed(self):
-        # ok: shadow $08 (bit already set) -> CR low stays $08.
+    def test_vdc_ok_already_enabled(self):
+        # B4+B5 already-set: actual CR bit3 already 1 ($0B08) + shadow $08.
+        # The call must keep CR $0B08 exactly (true idempotence needs a set
+        # bit BEFORE the call; shadow-only $08 is not idempotence proof).
         res = self._run_vdc("ok08", 5, 0x5A, 0x34, 0x06, 0x08, 1)
         self._check_vdc_ok(res, 5, 0x5A, 0x34, 0x06, 0x08)
 
-    def _check_vdc_reject(self, res, entry_ar, areg, xreg, pseed):
+    def test_vdc_ok_mixed_bits(self):
+        # B4 mixed: actual CR $0B52 + shadow $52 -> CR low $5A (bit3 added,
+        # every other low bit kept), high $0B kept, C=0.
+        res = self._run_vdc("okmix", 3, 0x11, 0x44, 0x07, 0x52, 1)
+        self._check_vdc_ok(res, 3, 0x11, 0x44, 0x07, 0x52)
+
+    def test_vdc_ok_boundary_ff(self):
+        # B4 boundary: actual CR $0BFF + shadow $FF -> CR low stays $FF.
+        res = self._run_vdc("okff", 18, 0xFF, 0x00, 0x85, 0xFF, 1)
+        self._check_vdc_ok(res, 18, 0xFF, 0x00, 0x85, 0xFF)
+
+    def test_vdc_ok_double_call_idempotent(self):
+        # B5: two consecutive JSR $E084 in one run (seed $00). Final CR
+        # $0B08 + shadow [$08,$A5] + C=0 prove the second call kept the
+        # first call's state (value-level idempotence; no mid-call
+        # observation, so same-value-store invisibility still applies).
+        res = self._run_vdc("ok2x", 0, 0x3C, 0x12, 0x07, 0x00, 1, ncalls=2)
+        self._check_vdc_ok(res, 0, 0x3C, 0x12, 0x07, 0x00)
+
+    def _check_vdc_reject(self, res, entry_ar, areg, xreg, pseed, seed_lo,
+                          crhi=None, rcr_lo=None):
         # Full reject oracle: common discipline C=1, AR unchanged (no ST0
-        # executed), no VDC write at all (all 20 regs equal).
+        # executed), no VDC write at all (all 20 regs equal incl. the
+        # nonzero CR/RCR sentinels), shadow + marker untouched.
+        if crhi is None:
+            crhi = self.CRHI
+        if rcr_lo is None:
+            rcr_lo = self.RCRLO
         self._check_vdc_common(res, entry_ar, areg, xreg, pseed, 1)
+        self._check_vdc_sync_before(res, entry_ar, seed_lo, crhi, rcr_lo)
         self.assertEqual(res["vdc_ar_after"], entry_ar)
         self.assertEqual(res["vdc_r_before"], res["vdc_r_after"])
+        self.assertEqual(res["shadow_post"], [seed_lo, 0x00])
 
-    def test_vdc_reject_unseeded(self):
-        # reject: no VDC write at all (all 20 regs equal), AR unchanged
-        # (no ST0 executed), C=1 out.
-        res = self._run_vdc("rej", 2, 0x3C, 0x12, 0x07, 0x00, 0)
-        self._check_vdc_reject(res, 2, 0x3C, 0x12, 0x07)
+    def test_vdc_reject_unseeded_nonzero_cr(self):
+        # B4 reject: actual CR $0B30 (nonzero) + marker $00 -> CR/RCR/AR
+        # unchanged, C=1 out. A nonzero CR proves the no-write claim.
+        res = self._run_vdc("rej", 2, 0x3C, 0x12, 0x07, 0x30, 0)
+        self._check_vdc_reject(res, 2, 0x3C, 0x12, 0x07, 0x30)
 
     def _run_vdc_on_rom(self, name, rom_bytes, entry_ar, areg, xreg, pseed,
-                        seed_lo, seed_en):
+                        seed_lo, seed_en, crhi=None, rcr_lo=None, ncalls=1):
         # VDC probe against a caller-supplied (mutant) ROM. Returns RESULT.
+        if crhi is None:
+            crhi = self.CRHI
+        if rcr_lo is None:
+            rcr_lo = self.RCRLO
         o = self.out / ("vdc-" + name)
         o.mkdir(exist_ok=True)
         (o / "d.bin").write_bytes(bytes(2352 * 32))
@@ -959,7 +1066,8 @@ class Irqon2cSynthetic(unittest.TestCase):
         r = subprocess.run([str(self.vdc_probe), str(p.resolve()),
                             str(cue.resolve()), "4096", str(entry_ar),
                             str(areg), str(xreg), str(pseed),
-                            str(seed_lo), str(seed_en)],
+                            str(seed_lo), str(seed_en), str(crhi),
+                            str(rcr_lo), str(ncalls)],
                            capture_output=True, text=True, timeout=120, check=True)
         import json
         for line in r.stdout.splitlines():
@@ -976,6 +1084,23 @@ class Irqon2cSynthetic(unittest.TestCase):
         with self.assertRaises(AssertionError):
             self._check_vdc_ok(res, 0, 0x3C, 0x12, 0x07, 0x00)
 
+    def test_vdc_mutant_destroy_red(self):
+        # M_DESTROY (AND #$08 instead of ORA): seeded-$F0 ok oracle REDs
+        # (CR=$00: other bits destroyed, not kept).
+        rom = self._mutate_body(self.rom2c.read_bytes(), *MUT_DESTROY)
+        res = self._run_vdc_on_rom("destroy", rom, 9, 0x00, 0x80, 0x06, 0xF0, 1)
+        self.assertEqual(res["vdc_r_after"][5] & 0xFF, 0x00)
+        with self.assertRaises(AssertionError):
+            self._check_vdc_ok(res, 9, 0x00, 0x80, 0x06, 0xF0)
+
+    def test_vdc_mutant_noop_red(self):
+        # M_NOOP (mask op -> NOPs): seeded-$00 ok oracle REDs (CR stays $00).
+        rom = self._mutate_body(self.rom2c.read_bytes(), *MUT_NOOP)
+        res = self._run_vdc_on_rom("noop", rom, 0, 0x3C, 0x12, 0x07, 0x00, 1)
+        self.assertEqual(res["vdc_r_after"][5] & 0xFF, 0x00)
+        with self.assertRaises(AssertionError):
+            self._check_vdc_ok(res, 0, 0x3C, 0x12, 0x07, 0x00)
+
     def test_vdc_mutant_novdc_red(self):
         # M_NOVDC (STA $0002 dropped): the seeded-$00 ok oracle must RED
         # (CR unchanged). Defect mechanism: missing VDC write. Note the
@@ -987,32 +1112,49 @@ class Irqon2cSynthetic(unittest.TestCase):
         with self.assertRaises(AssertionError):
             self._check_vdc_ok(res, 0, 0x3C, 0x12, 0x07, 0x00)
 
+    def test_vdc_mutant_nopublish_red(self):
+        # M_NOPUBLISH (STA $2502 dropped): CR still set (A holds the image)
+        # but the shadow stays stale. The ok oracle REDs on shadow_post.
+        rom = self._mutate_body(self.rom2c.read_bytes(), *MUT_NOPUBLISH)
+        res = self._run_vdc_on_rom("nopub", rom, 0, 0x3C, 0x12, 0x07, 0x00, 1)
+        self.assertEqual(res["vdc_r_after"][5] & 0xFF, 0x08)
+        with self.assertRaises(AssertionError):
+            self._check_vdc_ok(res, 0, 0x3C, 0x12, 0x07, 0x00)
+
     def test_vdc_mutant_bypass_red(self):
         # M_BYPASS (BEQ->BRA): the unseeded reject oracle must RED (CR set
         # + C=0 out: the ok path ran without seeding).
         rom = self._mutate_body(self.rom2c.read_bytes(), *MUT_BYPASS)
-        res = self._run_vdc_on_rom("bypass", rom, 2, 0x3C, 0x12, 0x07, 0x00, 0)
+        res = self._run_vdc_on_rom("bypass", rom, 2, 0x3C, 0x12, 0x07, 0x30, 0)
         self.assertNotEqual(res["vdc_r_before"], res["vdc_r_after"])
         self.assertEqual(res["p"] & 0x01, 0x00)
         with self.assertRaises(AssertionError):
-            self._check_vdc_reject(res, 2, 0x3C, 0x12, 0x07)
+            self._check_vdc_reject(res, 2, 0x3C, 0x12, 0x07, 0x30)
 
-    def test_vdc_probe_rejects_bad_seed_en(self):
-        # New argv (seed_lo/seed_en) fail closed: seed_en=2 exits 2 with
-        # no RESULT line.
+    def test_vdc_probe_rejects_bad_argv(self):
+        # Extended argv fails closed: seed_en=2 and ncalls=3 each exit 2
+        # with no RESULT line; the valid control (seed_en=1, ncalls=1)
+        # completes on a real file.
         import tempfile
         with tempfile.TemporaryDirectory(prefix="pce-2c-argv-") as td:
             o = Path(td)
             (o / "d.bin").write_bytes(bytes(2352 * 32))
             cue = o / "d.cue"
             cue.write_text('FILE "d.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n')
-            r = subprocess.run([str(self.vdc_probe), str(self.rom2c.resolve()),
-                                str(cue.resolve()), "4096", "0", "60", "18",
-                                "7", "0", "2"],
-                               capture_output=True, text=True, timeout=120)
-            self.assertEqual(r.returncode, 2)
-            self.assertNotIn("RESULT ", r.stdout)
-
+            for tag, args in (("seed_en", ["0", "60", "18", "7", "0", "2",
+                                           "11", "85", "1"]),
+                              ("ncalls", ["0", "60", "18", "7", "0", "1",
+                                          "11", "85", "3"])):
+                with self.subTest(arg=tag):
+                    r = subprocess.run([str(self.vdc_probe),
+                                        str(self.rom2c.resolve()),
+                                        str(cue.resolve()), "4096"] + args,
+                                       capture_output=True, text=True,
+                                       timeout=120)
+                    self.assertEqual(r.returncode, 2)
+                    self.assertNotIn("RESULT ", r.stdout)
+            res = self._run_vdc("argv-ok", 0, 0x3C, 0x12, 0x07, 0x00, 1)
+            self._check_vdc_ok(res, 0, 0x3C, 0x12, 0x07, 0x00)
     # ---- WRAM write-tracer probe ----
 
     def _run_writes(self, name, spinit, seed_lo, seed_en, rom_bytes=None):
@@ -1046,6 +1188,15 @@ class Irqon2cSynthetic(unittest.TestCase):
             out.update(range(s, e + 1))
         return out
 
+    def _written_callee_set(self, res):
+        # Callee-window writes only (first JSR $E084 at/after): guest setup
+        # stores are excluded, so reject-path shadow touches -- even
+        # write-then-restore -- are detected here (F2, MINOR-2 fix).
+        out = set()
+        for s, e in res.get("written_callee", []):
+            out.update(range(s, e + 1))
+        return out
+
     def _allowed_2c(self, spinit, seed_en):
         # T05 scope for D2: JSR (2 bytes) + body (3 transient pushes) below
         # SP, plus the guest-established shadow bytes $2502/$2503 (WRAM
@@ -1066,16 +1217,32 @@ class Irqon2cSynthetic(unittest.TestCase):
 
     def _check_writes_contained(self, recs, spinit, seed_en):
         allowed, transient = self._allowed_2c(spinit, seed_en)
+        # Callee-window contract (MINOR-2): ok may publish the shadow image
+        # $2502 once; reject must touch neither $2502 nor $2503 (even
+        # transiently: write-then-restore still lands in the window set).
+        # Same-value stores and ok-path same-address restores stay invisible
+        # by construction (documented residual, unchanged).
+        callee_allowed = transient | ({0x502} if seed_en else set())
         seen = []
+        callee_seen = []
         for res in recs:
             self.assertTrue(res["halted"], f"tracer did not halt ({res['cycle']})")
             self.assertFalse(res["truncated"], f"history truncated ({res['cycle']})")
+            self.assertFalse(res.get("truncated_callee", False),
+                             f"callee history truncated ({res['cycle']})")
             seen.append(self._written_set(res))
+            callee_seen.append(self._written_callee_set(res))
         self.assertEqual(seen[0], seen[1], "cold/warm write sets differ")
+        self.assertEqual(callee_seen[0], callee_seen[1],
+                         "cold/warm callee write sets differ")
         self.assertLessEqual(seen[0], allowed,
                              f"out-of-scope writes: {sorted(seen[0] - allowed)}")
         self.assertTrue(transient <= seen[0],
                         f"transient stack writes missing: {sorted(transient - seen[0])}")
+        self.assertLessEqual(callee_seen[0], callee_allowed,
+                             f"callee-window out-of-scope writes: {sorted(callee_seen[0] - callee_allowed)}")
+        self.assertTrue(transient <= callee_seen[0],
+                        f"callee transient writes missing: {sorted(transient - callee_seen[0])}")
 
     def test_writes_ok_sp_ff(self):
         self._check_writes_contained(self._run_writes("okff", 0xFF, 0x00, 1), 0xFF, 1)
@@ -1155,6 +1322,64 @@ class Irqon2cSynthetic(unittest.TestCase):
         self.assertEqual(seen[0], seen[1])
         surplus = seen[0] - allowed
         self.assertIn(0x200, surplus, "restore mutant left no history")
+
+    def test_writes_mutant_reject_store_restore_red(self):
+        # Reject-path shadow write-then-restore mutant (MINOR-2 F2): the
+        # reject path (BEQ fall-through) saves $2502, clobbers it with $AA,
+        # then restores the seed -- final RAM unchanged, so the FULL history
+        # stays GREEN ($2502 is in the guest-seed allowed set) but the
+        # CALLEE-window history must RED (any reject-path shadow touch is
+        # a contract violation, even restored). Stack-balanced, clean halt.
+        # BEQ operand retargeted +19 (was +4): the seeded path must skip
+        # the 19-byte reject store-restore block and land on tail; the
+        # unseeded path falls through into the block. A stale +4 would land
+        # mid-block and hang (harness failure, never RED).
+        prefix = bytes(D2F_BODY[:8]) + bytes((0x13,))  # ... CMP/BEQ +19
+        tail = bytes(D2F_BODY[13:])  # SEI .. RTS (ok path, untouched)
+        # Reject block (BEQ fall-through; A holds the $2503 compare residue
+        # $00 here, NOT caller-A): PLA restores caller-A first, then PHA
+        # saves it; LDA/PHA saves the seed; $AA clobbers $2502; PLA/STA
+        # restores the seed; PLA/PLP restore caller state. The naive order
+        # (PHA first) would push the $00 residue and re-store it over the
+        # restored seed -- caught during development by the PC tracer (RTS
+        # pulled stack garbage). Stack-balanced (PHP/PHA + PHA/PHA vs
+        # PLA/PLA + PLA/PLP).
+        rej = bytes((0x68, 0x48, 0xAD, 0x02, 0x25, 0x48, 0xA9, 0xAA,
+                     0x8D, 0x02, 0x25, 0x68, 0x8D, 0x02, 0x25,
+                     0x68, 0x28, 0x38, 0x60))
+        self.assertEqual(len(prefix) + len(rej) + len(tail), 9 + 19 + 31)
+        mutant = prefix + rej + tail
+        out = bytearray(self.rom2c.read_bytes())
+        cav = self._cavity_off(bytes(out), len(mutant))
+        cav_addr = 0xE000 + cav
+        out[cav:cav + len(mutant)] = mutant
+        out[3 * 0x2C:3 * 0x2C + 3] = bytes((0x4C, cav_addr & 0xFF,
+                                            (cav_addr >> 8) & 0xFF))
+        recs = self._run_writes("mutrejrestore", 0xFF, 0xF0, 0,
+                                rom_bytes=bytes(out))
+        allowed, transient = self._allowed_2c(0xFF, 0)
+        seen = []
+        callee_seen = []
+        for res in recs:
+            self.assertTrue(res["halted"])
+            self.assertFalse(res["truncated"])
+            seen.append(self._written_set(res))
+            callee_seen.append(self._written_callee_set(res))
+        self.assertEqual(seen[0], seen[1])
+        self.assertEqual(callee_seen[0], callee_seen[1])
+        # Full history: the mutant legitimately uses two deeper stack bytes
+        # ($21FA-$21FB for its own save/restore) on top of the guest-seed
+        # addresses -- assert exactly that superset (no other out-of-scope
+        # write). The callee window REDs on the shadow touch itself.
+        allowed_mut = set(range(0x100 + 0xFF - 5, 0x100 + 0xFF + 1)) | {0x502, 0x503}
+        self.assertLessEqual(seen[0], allowed_mut,
+                             f"mutant wrote outside its own scope: {sorted(seen[0] - allowed_mut)}")
+        # The RED signal is the shadow touch itself; the mutant's own
+        # deeper stack bytes ($21FA-$21FB) are its legitimate scope.
+        self.assertIn(0x502, callee_seen[0],
+                      "reject store-restore left no callee history")
+        self.assertLessEqual(callee_seen[0] - transient - {0x502}, {0x1FA, 0x1FB},
+                             f"callee wrote outside mutant scope: {sorted(callee_seen[0])}")
 
     def _cavity_off(self, rom_bytes, size):
         bank = rom_bytes[:0x2000]
@@ -1312,7 +1537,10 @@ class Irqon2cSynthetic(unittest.TestCase):
         self.assertEqual(cold[base], 0xAA)
         self.assertEqual((cold[base + 1], cold[base + 2], cold[base + 3]),
                          (0x31, 0x12, 0x34))
-        # Last chain call is the $2C ok path: entry P=$07 (C=1) exits C=0.
+        # Last chain call is the $2C ok path. The payload entered the chain
+        # with P=$07 (C=1); the $33 DSPOFF ok path cleared C and every
+        # downstream B1 scaffold preserved C=0, so the $2C entry P is $06
+        # and the ok path exits C=0 (asserted $06 above and below).
         self.assertEqual(cold[base + 4] & ~0x10, 0x06)
         self.assertEqual(cold[base + 4] & 0x01, 0x00)
         self.assertEqual(cold[base + 5], 0xFF)

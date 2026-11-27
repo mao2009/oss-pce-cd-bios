@@ -102,6 +102,21 @@ int main(int argc, char** argv) {
     const int wsize = mem->GetWorkingRAMSize();
     if (wsize <= 0 || wsize > 0x8000) { fprintf(stderr, "wsize %d\n", wsize); return 3; }
 
+    // Callee-window observation (MINOR-2 reject gap): the first JSR $E084
+    // in the guest marks the callee entry. A second bitmap accumulates only
+    // steps at/after that PC, so guest setup stores (shadow seeding before
+    // JSR) are excluded and a reject-path write-then-restore of $2502 or
+    // $2503 by the callee is still detected. Same-value stores stay
+    // invisible by construction (documented residual, unchanged).
+    u16 jsr_pc = 0;
+    for (size_t i = 0; i + 2 < code.size(); ++i) {
+        if (code[i] == 0x20 && code[i + 1] == (u8)(entry & 0xFF) && code[i + 2] == (u8)(entry >> 8)) {
+            jsr_pc = (u16)(reset + i);
+            break;
+        }
+    }
+    if (jsr_pc == 0) { fprintf(stderr, "jsr not found\n"); return 3; }
+
     const char* cycle = "cold";
     auto run_once = [&](bool warm) {
         cycle = warm ? "warm" : "cold";
@@ -109,13 +124,17 @@ int main(int argc, char** argv) {
         const u8* wram0 = mem->GetWorkingRAM();
         for (int i = 0; i < wsize; i++) prev[i] = wram0[i];
         std::vector<char> written(wsize, 0);
+        std::vector<char> written_callee(wsize, 0);
         long distinct = 0;
+        long distinct_callee = 0;
         bool halted = false;
+        bool in_callee = false;
         long run_steps = 0;
         long confirm = 0;
         long arrival = 0;
         for (long i = 0; i < steps; ++i) {
             u16 pc_before = cpu->GetState()->PC->GetValue();
+            if (pc_before == jsr_pc) in_callee = true;
             cpu->RunInstruction();
             run_steps++;
             u16 pc_after = cpu->GetState()->PC->GetValue();
@@ -123,6 +142,7 @@ int main(int argc, char** argv) {
             for (int k = 0; k < wsize; k++) {
                 if (w[k] != prev[k]) {
                     if (!written[k]) { written[k] = 1; distinct++; }
+                    if (in_callee && !written_callee[k]) { written_callee[k] = 1; distinct_callee++; }
                     prev[k] = w[k];
                 }
             }
@@ -157,12 +177,25 @@ int main(int argc, char** argv) {
                 ranges.push_back({s, k - 1});
             } else k++;
         }
+        std::vector<std::pair<int,int>> ranges_callee;
+        bool truncated_callee = distinct_callee > 256;
+        k = 0;
+        while (k < wsize && (int)ranges_callee.size() < 256) {
+            if (written_callee[k]) {
+                int s = k;
+                while (k < wsize && written_callee[k]) k++;
+                ranges_callee.push_back({s, k - 1});
+            } else k++;
+        }
         std::printf("RESULT {\"cycle\":\"%s\",\"pc\":%u,\"halt\":%u,\"halted\":%s,"
                     "\"steps\":%ld,\"arrival\":%ld,\"truncated\":%s,\"written\":[",
                     cycle, cpu->GetState()->PC->GetValue(), halt,
                     halted ? "true" : "false", run_steps, arrival, truncated ? "true" : "false");
         for (size_t r = 0; r < ranges.size(); r++)
             std::printf("%s[%d,%d]", r ? "," : "", ranges[r].first, ranges[r].second);
+        std::printf("],\"truncated_callee\":%s,\"written_callee\":[", truncated_callee ? "true" : "false");
+        for (size_t r = 0; r < ranges_callee.size(); r++)
+            std::printf("%s[%d,%d]", r ? "," : "", ranges_callee[r].first, ranges_callee[r].second);
         std::printf("]}\n");
     };
     run_once(false);

@@ -56,11 +56,11 @@ D1=根拠ある機能実装 / D2=限定機能experimental / D2-B1=B1型preservat
 
 | API | 1 公開記述 | 2 独立根拠 | 3 caller | 4 入力確度 | 5 HW操作確度 | 6 shadow確度 | 7 検証可能性 | 8 規模 | 9 回帰リスク | 10 G5診断価値 | 判定 |
 |-----|-----------|-----------|---------|-----------|-------------|-------------|-------------|-------|-------------|--------------|------|
-| `$25` EX_SCRMOD (#47) | ×（bare heading、IN/OUTなし）／△（HuC L384-386 `$2244-2246`＋旧HuC同帯域。値encodingなし） | △（HW位置はpinnedだが `$25`→HW対応付けなし） | △（X/Y呼出はコメントアウト無効コード。HuC startupはsetupなし） | ×（X=`xres/8`・Y=30は無効コード。商用entry regs未観測＝`$25`でhalt） | ×（VCE `$0400`？VDC HSR/HDR/MWR？不明。どれもHYPOTHESIS） | ×（`$2244-2246`がshadowかcaller変数か不明。値・順序不明） | ○（B1済み。機能oracleなし） | 小（RAM書込みのみなら）だが値不明で不可 | 中（VDC誤設定は表示破壊） | ○（NEXT特定の価値はあるがB1済み。機能 debt残存） | **D1 BLOCKED・D2-機能 BLOCKED**（B1維持） |
+| `$25` EX_SCRMOD (#47) | ×（bare heading、IN/OUTなし）／△（HuC L384-386 `$2244-2246`＋旧HuC同帯域。値encodingなし） | △（HW位置はpinnedだが `$25`→HW対応付けなし） | △（X/Y呼出はコメントアウト無効コード。HuC startupはsetupなし） | ×（X=`xres/8`・Y=30は無効コード。商用entryはExpEで観測済み A=0/X=32/Y=32/P=`$05` だが単一callsiteであり真正入力契約の証拠にならない） | ×（VCE `$0400`？VDC HSR/HDR/MWR？不明。どれもHYPOTHESIS） | ×（`$2244-2246`がshadowかcaller変数か不明。値・順序不明） | ○（B1済み。機能oracleなし） | 小（RAM書込みのみなら）だが値不明で不可 | 中（VDC誤設定は表示破壊） | ○（NEXT特定の価値はあるがB1済み。機能 debt残存） | **D1 BLOCKED・D2-機能 BLOCKED**（B1維持） |
 | `$24` EX_DOTMOD (#46) | ×（bare heading） | △（VCE `$0400` clock位置はpinnedだが `$24`→VCE対応付けはHYPOTHESIS） | ×（wrapperなし。商用entry A=`$00`,X=Y=`$20`は単一callsite） | × | ×（VCE `$0400`？VDC HSR/HDR/MWR？不明） | × | ○（B1済み） | 小だが対象不明で不可 | 中 | ○（B1済み） | **D1 BLOCKED・D2-機能 BLOCKED**（B1維持） |
 | `$36` EX_SATCLR (#64) | ×（bare heading。`$35` one-linerは`$36`証拠にならない） | △（SATB DMA位置はpinnedだが対象不明） | × | × | ×（WRAM SAT？VRAM SAT？SATB？不明。「zero-fill」も推測禁止） | × | ○（B1済み） | 対象不明で不可 | 大（VRAM破壊リスク） | ○（B1済み） | **D1 BLOCKED・D2-機能 BLOCKED**（B1維持） |
 | `$35` EX_SPRDMA (#63) | △（N/A＋「`$2214/5` word→VDC #19」one-liner。値域・timing・完了条件なし） | △（DVSSR R13位置はpinnedだがtrigger/wait不明） | ×（wrapperなし） | ×（`$2214/5`の方向・所有・値域不明） | △（#19=DVSSRは対応付け可。書込み値・handshake不明） | × | ○（B1済み。DMA完了oracleなし） | 中 | 大（DMA誤動作リスク） | ○（B1済み） | **D1 BLOCKED・D2-機能 BLOCKED**（B1維持） |
-| `$2C` EX_IRQON (#54) | ◎（N/A＋「VDC reg #5 の bit3 をsetし `$20F3`/`$20F7` 更新」。IN N/A＝入力なしの公開記述。`$2A`/`$2B` bit2対称、`$2D` bit3対称の3点一致） | ◎（pinned: CR=`$05`、bit3=`0x08` VBLANK IE、mask `0x1FFF`、stale-RMW hazard→shadow正当化、VBLANK path） | ◎（HuC startupが `$2C`/`$2D` 前にreg setupなし＝no-input呼出慣行。IN N/Aと整合） | ◎（入力なし：Zeograd IN N/A＋HuC no-setup。A=7はresidual仮説であり入力要件にしない） | ◎（OR `$08`、他bit保持。mask・AR・windowはfamily実績） | ○（`$2502`共有shadowで保持を保証。`$20F3`/`$20F7`は未解決→未実装として明示） | ◎（seed済みOR保持・未seed reject・mask mutant・window・RAM-diff・chain、全て合成oracle可） | 小（family雛形流用、9→約30 bytes） | 小（window＋shadow＋rejectでfail-closed。I/IDR不変） | ◎（商用ブロッカ到達済み。ExpF比較で復帰・NEXT・VDC変化を観測可） | **D2-機能 SELECTED**（ExpF） |
+| `$2C` EX_IRQON (#54) | ◎（IN N/A＋「VDC reg #5 の bit3 をsetし `$20F3`/`$20F7` 更新」の記述具体性。単一reverse-engineering所見であり真正契約の証明ではない。`$2A`/`$2B` bit2対称、`$2D` bit3対称の3点一致） | ◎（pinned: CR=`$05`、bit3=`0x08` VBLANK IE、mask `0x1FFF`、stale-RMW hazard→shadow正当化、VBLANK path） | ○（HuC startupが `$2C`/`$2D` 前にreg setupなし＝caller側観測。真正入力要件の証明ではない） | ○（D2範囲では入力なし：Zeograd IN N/A（公開記述）＋HuC no-setup（caller観測）。真正入力要件はUNKNOWN、A=7はresidual HYPOTHESIS、bitmask/enumはUNGROUNDED。D2がA/X/Yを使用しないことはPROJECT_SPEC_ONLY） | ◎（OR `$08`、他bit保持。mask・AR・windowはfamily実績） | ○（`$2502`共有shadowで保持を保証。`$20F3`/`$20F7`は未解決→未実装として明示） | ◎（同期済みfixtureでOR保持・未seed reject・mask mutant・window・RAM-diff・chain・冪等性、全て合成oracle可） | 小（family雛形流用、44 bytes確定） | 小（window＋shadow＋rejectでfail-closed。I/IDR不変） | ◎（商用ブロッカ到達済み。ExpF比較で復帰・NEXT・VDC変化を観測済み） | **D2-機能 SELECTED**（ExpF） |
 | `$2D` EX_IRQOFF (#55) | ◎（`$2C`対称：bit3 clear＋同mirrors） | ◎（`$2C`対称） | ◎（`$2C`対称） | ◎（入力なし） | ◎（AND `~$08`、他bit保持） | ○（同上） | ◎（同上） | 小 | 小 | ×（商用経路で到達不能。ExpF比較不可） | **D2-機能 可能だが本タスクでは見送り**（次候補筆頭。対称実装の誘惑を排し1 API原則を守る） |
 
 ### 選定理由（`$2C`、第一候補 `$25` からの変更理由）
@@ -137,8 +137,8 @@ D1=根拠ある機能実装 / D2=限定機能experimental / D2-B1=B1型preservat
 | # | 項目 | D2-機能契約 | 分類 |
 |---|------|------------|------|
 | F-1 | slot/entry `$2C`/`$E084` | table JMP→body→RTS caller+3 | SOURCE_CONFIRMED（台帳機構）／mapping HYPOTHESIS（S1+S2+S3一致） |
-| F-2 | 入力 A/X/Y | 読まない（保存のみ）。A=7分岐なし | SOURCE_CONFIRMED（Zeograd IN N/A＋HuC no-setup呼出慣行） |
-| F-3 | VDC操作 | CR R05 low `\|= $08`、high不触、AR=5 | SOURCE_CONFIRMED（S1 bit3＋S5a bit/mask＋S5b window）。値 `$08`=OBSERVED HW事実 |
+| F-2 | 入力 A/X/Y | 読まない（保存のみ）。A=7分岐なし | PROJECT_SPEC_ONLY（D2契約。根拠：Zeograd IN N/A＝公開資料上の記述 REFERENCE_ONLY、HuC no-setup＝caller側観測 REFERENCE_ONLY。真正入力要件はUNKNOWN、A=7残存値はHYPOTHESIS、bitmask/enumはUNGROUNDED。D2不使用と真正不要を混同しない） |
+| F-3 | VDC操作 | CR R05 low `\|= $08`、high不触、AR=5（ok path。reject pathはAR=entry ARのまま） | PROJECT_SPEC_ONLY（D2契約。根拠：S1 bit3記述 REFERENCE_ONLY＋S5a bit/mask等のpinned HW事実＋S5b window規律。真正VDC操作契約はUNKNOWN） |
 | F-4 | shadow | `$2502` 共有（CR-low image）、`$2503==$A5` marker、`$2504` reserved。single-writer family（`$2E`/`$33`＋`$2C`） | PROJECT_SPEC_ONLY（S5b/S6規律。genuine mirror `$20F3`/`$20F7`はUNKNOWN→不触） |
 | F-5 | `$20F3`/`$20F7` | 不変（未実装） | UNKNOWN（genuine）→ D2範囲外として明示。合成で不変assert |
 | F-6 | 出力・flags | C=0 ok / C=1 reject（PROJECT_SPEC_ONLY約定）。他flags latch-exact（T=1域外） | PROJECT_SPEC_ONLY（OUT N/Aのためgenuine C約定なし） |
@@ -156,8 +156,18 @@ D1=根拠ある機能実装 / D2=限定機能experimental / D2-B1=B1型preservat
   `$2C` は functional bodyへ到達（entry `$E084`、in_table、MPR1=`$F8`）。
   shadow未seed（gameは `$2503=$A5` を書かない）のため **reject（C=1、CR不変）** が
   高確率。復帰（RTS）するので NEXT API到達または新規halt理由が観測対象。
-  VDC snapshot：CR=0維持（期待）、AR=5（`$2C` windowの残置。ExpEではAR=2）。
-  CUE[1]は `$1E→…→$1C` 不変（回帰）。
+  VDC snapshot：CR=0維持（期待、reject経路）。ARはreject pathではentry ARの
+  まま（ok pathのみAR=5）。ExpEの `$2C` entry AR=2のため、ExpFでもAR=2維持が
+  reject整合の期待値。CUE[1]は `$1E→…→$1C` 不変（回帰）。
+- 観測記録（ExpF実施済み、OBSERVED／INFERRED／UNKNOWNの分離）:
+  OBSERVED：CUE[0] 10 calls `$02→…→$2C→$2B` stub halt（cold/warm一致、
+  truncなし）。`$2C` entry P=`$06`/I=1・AR=2/CR=0/RCR=0/SR=0（ExpEと同一）、
+  `$2B` entry P=`$07`。CR=0維持・AR=2維持。CUE[1] 6 calls `$1C` halt不変。
+  タイトル未到達（G5_OBSERVED=false）。
+  INFERRED：reject経路と整合する挙動（未seed推論。商用WRAM `$2503` は
+  観測していないため、shadow値の直接確認ではなく `$2C` body分岐条件と
+  観測結果の整合による推論として扱う）。
+  UNKNOWN：実際の商用shadow値、caller Carry分岐（`$2B` entry P=`$07`）の意味。
 - 反証条件（仮説の棄却）:
   (a) 合成で seed済み `$2502=$00` に対して CR=`$08` にならない→実装誤り。
   (b) 合成で seed済み `$2502=$F0` に対して CR低位が `$F8` 以外→他bit破壊。

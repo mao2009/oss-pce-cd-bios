@@ -14,8 +14,11 @@
 ;     (work RAM $2000-$3FFF readable; general BIOS discipline, same as every
 ;     DEV shadow design), stack in work RAM, IRQs masked by the caller (same
 ;     assumption as the sibling experimental bodies). Entry A/X/Y are
-;     arbitrary (Zeograd IN (N/A); HuC startup performs no register setup
-;     before its own ex_irqon call). Entry P is arbitrary EXCEPT T=1
+;     arbitrary and UNUSED by this D2 body (Zeograd IN (N/A) is a public
+;     description, HuC no-setup is a caller-side observation; the genuine
+;     input requirements stay UNKNOWN and MUST NOT be inferred from either.
+;     D2-makes-no-use-of-A/X/Y is a PROJECT_SPEC_ONLY scope choice, never
+;     a genuine ABI claim). Entry P is arbitrary EXCEPT T=1
 ;     (T=1 entry is OUT OF THE VERIFIED DOMAIN: the pinned core consumes the
 ;     transfer flag at every instruction boundary, so entry T=1 cannot
 ;     round-trip on ANY implementation; platform fact, not body behavior).
@@ -29,7 +32,9 @@
 ;     bit 3 = VBLANK IE $08, R[5] mask $1FFF, and the stale-RMW hazard that
 ;     forces a work-RAM shadow instead of port read-modify-write. THIS BODY
 ;     IMPLEMENTS ONLY THE BIT OPERATION: CR low := shadow | $08 (other bits
-;     preserved), via the shared $2502 shadow, AR left at 5, CR high untouched.
+;     preserved), via the shared $2502 shadow, CR high untouched. AR left
+;     at 5 on the ok path; the reject path executes no ST0 and leaves AR
+;     at its entry value.
 ;   Explicitly NOT implemented (guessing forbidden):
 ;     $20F3/$20F7 mirrors (address/value/order unresolved, family precedent
 ;     touches neither; synthetic tests assert them UNCHANGED), CPU I action
@@ -45,7 +50,8 @@
 ;     Single straight-line MPR0=$FF window with SEI (validate shadow BEFORE
 ;     the window; never remap MPR1); restore MPR0 before RTS. ST0 select R05
 ;     (AR left at 5, family convention). No work-RAM writes outside the
-;     transient caller-stack slots and the owned shadow $2502 (ok path only).
+;     transient caller-stack slots and the owned shadow $2502 image publish
+;     (ok path only; the marker $2503 is never written by the body).
 ;     No zero-page/VRAM/joypad/CD/BURAM access.
 ;   ok: VDC CR low = shadow | $08 (set VBLANK IE, keep every other CR bit);
 ;        shadow updated; CR high untouched; C=0. A, X, Y, MPRs, N/Z/V/D/I/T
