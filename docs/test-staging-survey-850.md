@@ -5,7 +5,7 @@
 > **Evidence boundary:** 本書の PASS/OK は記載の証拠範囲にのみ適用される。部分計測の成功を全回帰成功として扱わない。
 > **Local media:** `./rom/` は存在せず（`ls rom/` で確認）、商用媒体・参照BIOS には一切アクセスしていない。
 
-関連: #845（verify-full timeout 30→60、P0 安定化・適用済み）、#846（CI 並列化の設計・計測 Issue）、#848（#846 の実装 PR、OPEN）、#849（ツールチェーン事前ビルド調査、OPEN）。本調査はこれらと独立した改善として扱う。
+関連: #845（verify-full timeout 30→60、P0 安定化・適用済み）、#846（CI 並列化の設計・計測 Issue）、#848（#846 の実装。`origin/main` `7041972e` に統合済み）、#849（ツールチェーン事前ビルド調査、OPEN）。本調査はこれらと独立した改善として扱う。
 
 ---
 
@@ -155,7 +155,7 @@ nightly plan（main SHA 比較）→ 変更時のみ build 節点以降を再実
 
 読み取り:
 
-- ボトルネックは real-core（CI serial の約 8 割）。host は CI 3m51s / LOCAL 5m11s で、開発ループへの挿入には重い。
+- ボトルネックは real-core（旧 serial CI の約 8 割。並列化後も shards＋direct が wall の主体）。host は CI 3m51s / LOCAL 5m11s で、開発ループへの挿入には重い。
 - 一方で `make check`（2.5s）、`contracts.py`（0.06s）、host 単体ファイル（1s 未満）、`dev-rom`（0.9s）、単一 DEV API 実コア（約 5s）はいずれも軽量。**変更点に紐づくサブセットだけを回せば L0（30 秒）・L1（2 分）は十分に射程内**である。
 - 重い直接スクリプト（block-transfer-matrix 40s 級）が L2（5 分）の予算を圧迫するため、L2 には「必要な real-core」の選別が必須（後述 3.2）。
 
