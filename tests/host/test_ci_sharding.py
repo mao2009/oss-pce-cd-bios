@@ -278,3 +278,32 @@ class EvidenceWriterTests(unittest.TestCase):
         with open(target, encoding="utf-8") as fh:
             import json
             self.assertEqual(json.load(fh), {"a": 1})
+
+class ShardLoaderTests(unittest.TestCase):
+    def test_shard_modules_import_cleanly(self):
+        import unittest
+        import sys
+        idir = str(ROOT / "tests" / "integration")
+        sys.path.insert(0, idir)
+        try:
+            loader = unittest.TestLoader()
+            for sid, mods in shard.INTEGRATION_SHARDS.items():
+                with self.subTest(shard=sid):
+                    suite = unittest.TestSuite()
+                    for mod in mods:
+                        suite.addTests(loader.loadTestsFromName(mod))
+                    bad = [t.id() for t in _iter(suite)
+                           if "FailedTest" in type(t).__name__]
+                    self.assertEqual([], bad, f"shard {sid} has unloadable modules")
+                    self.assertGreater(suite.countTestCases(), 0,
+                                       f"shard {sid} is empty")
+        finally:
+            sys.path.remove(idir)
+
+
+def _iter(suite):
+    for t in suite:
+        if isinstance(t, unittest.TestSuite):
+            yield from _iter(t)
+        else:
+            yield t

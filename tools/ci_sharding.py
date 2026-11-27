@@ -357,10 +357,20 @@ def run_shard(shard_id, evidence_out):
     if shard_id not in INTEGRATION_SHARDS:
         raise ValueError(f"unknown shard: {shard_id} (expected one of {sorted(INTEGRATION_SHARDS)})")
     modules = INTEGRATION_SHARDS[shard_id]
-    loader = unittest.TestLoader()
-    suite = unittest.TestSuite()
-    for mod in modules:
-        suite.addTests(loader.loadTestsFromName(mod))
+    # Mirror `unittest discover -s tests/integration`: plain module names need
+    # the tests directory itself on sys.path (there is no package __init__).
+    idir = os.path.join(ROOT, "tests", "integration")
+    sys.path.insert(0, idir)
+    try:
+        loader = unittest.TestLoader()
+        suite = unittest.TestSuite()
+        for mod in modules:
+            suite.addTests(loader.loadTestsFromName(mod))
+    finally:
+        try:
+            sys.path.remove(idir)
+        except ValueError:
+            pass
     planned = []
 
     def walk(s):
