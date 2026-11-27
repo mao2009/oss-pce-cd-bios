@@ -34,10 +34,14 @@ jobs:
     needs: scope
     if: needs.scope.outputs.docs_only != 'true'
     runs-on: ubuntu-24.04
-    # 30 min: the required real-core matrix (incl. G5 CD_BASE/CD_READ suites)
-    # needs ~22 min on hosted runners; 20 min timed out with zero failures.
-    # Owner-approved infra budget (not a product/test change).
-    timeout-minutes: 30
+    # 60 min: the required real-core matrix (incl. G5 CD_BASE/CD_READ suites)
+    # needed ~22 min on hosted runners (20 min timed out with zero failures),
+    # then ~29 min after G5 $2C/$2B suite growth (run 45941187061: setup ~1m20s,
+    # host ~3m51s / 5935 tests, real-core ~23m50s / 715 tests), and a docs-only
+    # PR run hit 30m15s and was killed with zero test failures (issue #845).
+    # Owner-approved infra budget (not a product/test change, not a verdict
+    # relaxation). Revisit after the #846 parallelization lands.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
