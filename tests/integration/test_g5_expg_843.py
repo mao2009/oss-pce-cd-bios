@@ -476,19 +476,21 @@ class Expg843FullChain(unittest.TestCase):
                 self.assertEqual(c["vdc_cr"] & 0xFF, 0x34, (cycle, c))
             self.assertEqual(calls[7]["vdc_cr"] & 0xFF, 0x3C, (cycle, c))
             # Entry-state propagation: caller regs exact at every call;
-            # C=0 from the $33 ok path on (family convention).
+            # C=0 from the $33 ok path on (family convention). The guest
+            # pha/lda $2502/pla between calls clears Z (A=$31 nonzero),
+            # so calls[1:] observe P=0x04 (I=1,Z=0,C=0), not 0x06.
             for c in calls:
                 self.assertEqual((c["caller_a"], c["caller_x"], c["caller_y"]),
                                  (0x31, 0x12, 0x34), (cycle, c))
             self.assertEqual(calls[0]["caller_p"] & ~0x10, 0x07, cycle)
             for c in calls[1:]:
-                self.assertEqual(c["caller_p"] & ~0x10, 0x06, (cycle, c))
+                self.assertEqual(c["caller_p"] & ~0x10, 0x04, (cycle, c))
             self.assertEqual(calls[0]["mpr"][1], 0xF8, cycle)
         # Guest-recorded intermediate shadow: $F4->$34->$3C->$38.
         self.assertEqual(cold[base + 14], 0x34)
         self.assertEqual(cold[base + 15], 0x3C)
         self.assertEqual(cold[base + 16], 0x38)
-        self._check_end_state(cold, base, 0xF4, 1, 0x06, (0x34, 0x3C, 0x38))
+        self._check_end_state(cold, base, 0xF4, 1, 0x04, (0x34, 0x3C, 0x38))
         self.assertEqual(cold[base + 4] & 0x01, 0x00)
         self._check_canary(warm)
 
@@ -514,12 +516,15 @@ class Expg843FullChain(unittest.TestCase):
                 self.assertEqual((c["caller_a"], c["caller_x"], c["caller_y"]),
                                  (0x31, 0x12, 0x34), (cycle, c))
             # C=1 preserved from entry through every reject + B1 scaffold.
-            for c in calls:
-                self.assertEqual(c["caller_p"] & ~0x10, 0x07, (cycle, c))
+            # Same guest Z-clobber as the ok chain: first call P=0x07,
+            # later calls P=0x05 (I=1,Z=0,C=1).
+            self.assertEqual(calls[0]["caller_p"] & ~0x10, 0x07, cycle)
+            for c in calls[1:]:
+                self.assertEqual(c["caller_p"] & ~0x10, 0x05, (cycle, c))
         self.assertEqual(cold[base + 14], 0xF0)
         self.assertEqual(cold[base + 15], 0xF0)
         self.assertEqual(cold[base + 16], 0xF0)
-        self._check_end_state(cold, base, 0xF0, 0, 0x07, (0xF0, 0xF0, 0xF0))
+        self._check_end_state(cold, base, 0xF0, 0, 0x05, (0xF0, 0xF0, 0xF0))
         self.assertEqual(cold[base + 4] & 0x01, 0x01)
         self._check_canary(warm)
 
@@ -527,7 +532,9 @@ class Expg843FullChain(unittest.TestCase):
 
     def test_chain_mutant_wrongbit_red(self):
         # $2C-head WRONGBIT mutant (ORA #$08 -> ORA #$04) on the full ExpG
-        # image, seeded $00: correct $08 vs mutant $04 after $2C, $04 final.
+        # image, seeded $00: correct $08 vs mutant $04 after $2C; the $2B
+        # AND #$FB mask then clears mutant bit 2, so final is $00
+        # ($04 & $FB = $00), proving mask precision.
         data = bytearray(self.rom.read_bytes())
         off = (self.syms["ex_irqon_entry"] & 0xFFFF) - 0xE000
         data[off + 26] = 0x04
@@ -536,9 +543,9 @@ class Expg843FullChain(unittest.TestCase):
         rec, cold, warm, base = self._run_chain("mutwrong", 0x00, 1, rom=tmp)
         # The mutant ran: $04 observed where $08 is correct.
         self.assertEqual(cold[base + 15], 0x04)
-        self.assertEqual(cold[base + 16], 0x04)
+        self.assertEqual(cold[base + 16], 0x00)
         with self.assertRaises(AssertionError):
-            self._check_end_state(cold, base, 0x00, 1, 0x06, (0x00, 0x08, 0x08))
+            self._check_end_state(cold, base, 0x00, 1, 0x04, (0x00, 0x08, 0x08))
 
     # ---- write history on the full image (shared tail linked once) ----
 
