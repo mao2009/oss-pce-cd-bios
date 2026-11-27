@@ -52,10 +52,41 @@ def build_payload(out: Path, name: str, defines: list, origin: int = 0x3000) -> 
     return code
 
 
-def run_probe(probe, rom, cue, labels, budget, mode="synthetic"):
+def run_probe(probe, rom, cue, labels, budget, mode="synthetic", max_apicalls=None, vdc_snapshot=None):
     # Paths stay local-only: errors are sanitized to fixed codes below (no paths logged).
+    # max_apicalls is an optional bounded APICALL capacity (default 8, allowed
+    # 1..64); None keeps the historical 6-argument probe invocation unchanged.
+    # vdc_snapshot is an optional non-invasive VDC observation flag (default
+    # disabled; True/1 enables, False/0/None keeps historical behavior). When
+    # enabled, each APICALL record carries vdc_ar/vdc_cr/vdc_rcr/vdc_sr read via
+    # GetState() pointers only (no MMIO, no SR-clear, no extra steps). The
+    # commercial output stays structural (integer fields only).
+    if max_apicalls is not None:
+        if (isinstance(max_apicalls, bool) or not isinstance(max_apicalls, int)
+                or not 1 <= max_apicalls <= 64):
+            raise ValueError("max_apicalls must be an int in 1..64")
+    if vdc_snapshot is not None:
+        if isinstance(vdc_snapshot, bool):
+            vdc_flag = 1 if vdc_snapshot else 0
+        elif isinstance(vdc_snapshot, int) and vdc_snapshot in (0, 1):
+            vdc_flag = vdc_snapshot
+        else:
+            raise ValueError("vdc_snapshot must be a bool or 0/1")
+    else:
+        vdc_flag = None
     try:
-        result = subprocess.run([str(probe), str(rom), str(cue), str(labels), str(budget), mode],
+        cmd = [str(probe), str(rom), str(cue), str(labels), str(budget), mode]
+        if max_apicalls is not None:
+            cmd.append(str(max_apicalls))
+        if vdc_flag is not None:
+            # Preserve 6/7-arg history when disabled: only append the 8th arg
+            # when explicitly requested; when vdc is requested without an
+            # explicit cap, materialize the default cap 8 as the 7th arg so
+            # the 8th position stays the VDC flag.
+            if max_apicalls is None:
+                cmd.append("8")
+            cmd.append(str(vdc_flag))
+        result = subprocess.run(cmd,
                                 check=True, capture_output=True, text=True, timeout=900)
     except subprocess.CalledProcessError:
         raise ValueError(f"probe execution failed (mode {mode})")

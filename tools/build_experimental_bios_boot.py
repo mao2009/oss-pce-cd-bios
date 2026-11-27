@@ -77,6 +77,116 @@ _SLOT33_PATCH_LABELS = ("api_slot_33", "experimental_slot_33")
 # stays False, and cd_read_api_slot_03 stays NOT_IMPLEMENTED).
 _SLOT03_TABLE = 3 * 0x03
 _SLOT03_PATCH_LABELS = ("api_slot_03", "cd_read_link_entry")
+# Experimental slot-$4A wiring (Issue #84; this image only when selected; normal
+# ROM keeps its nonreturning $4A fallback stub, and the 2-base builder default
+# keeps the table on the stub). The $E0DE table entry (file offset 3*$4A,
+# table starts at $E000) is redirected from the linked $4A fallback stub to the
+# BOOT-region ex_memopen_entry body (src/ex_memopen.s, preservation-only
+# experimental service). NOT the genuine KEY_BIOS/EX_MEMOPEN ABI (genuine
+# slot/entry/return semantics stay UNKNOWN/BLOCKED, release_eligible stays
+# False).
+_SLOT4A_TABLE = 3 * 0x4A
+_SLOT4A_PATCH_LABELS = ("api_slot_4A", "ex_memopen_entry")
+# Experimental slot-$25 wiring (Issue #47 B1; this image only when selected;
+# normal ROM keeps its nonreturning $25 fallback stub, and the 2-base builder
+# default keeps the table on the stub). The $E06F table entry (file offset
+# 3*$25, table starts at $E000) is redirected from the linked $25 fallback
+# stub to the BOOT-region ex_scrmod_entry body (src/ex_scrmod.s,
+# preservation-only SIMULATED scaffold). NOT the genuine EX_SCRMOD ABI
+# (genuine slot/entry/return semantics stay UNKNOWN/BLOCKED, release_eligible
+# stays False).
+_SLOT25_TABLE = 3 * 0x25
+_SLOT25_PATCH_LABELS = ("api_slot_25", "ex_scrmod_entry")
+# B1 body length in bytes (src/ex_scrmod.s: PHP/PHA/PHX/PHY/PLY/PLX/PLA/PLP/
+# RTS). The redirect helper requires the whole span inside BOOT (start-only
+# is not enough: an entry at $FFF5 with a valid prologue would otherwise
+# overlap VECTORS at $FFF6). Pinned against the 9-byte structural pin in
+# tests/host/test_build_g5_25_host.py and
+# tests/integration/test_g5_scrmod_25.py (change together).
+_SLOT25_BODY_LEN = 9
+# Experimental slot-$24 wiring (Issue #46 B1-analogous; this image only when
+# selected; normal ROM keeps its nonreturning $24 fallback stub, and the
+# 2-base builder default keeps the table on the stub). The $E06C table entry
+# (file offset 3*$24, table starts at $E000) is redirected from the linked
+# $24 fallback stub to the BOOT-region ex_dotmod_entry body
+# (src/ex_dotmod.s, preservation-only SIMULATED scaffold). NOT the genuine
+# EX_DOTMOD ABI (genuine slot/entry/return semantics stay UNKNOWN/BLOCKED,
+# release_eligible stays False).
+_SLOT24_TABLE = 3 * 0x24
+_SLOT24_PATCH_LABELS = ("api_slot_24", "ex_dotmod_entry")
+# B1-analogous body length in bytes (src/ex_dotmod.s:
+# PHP/PHA/PHX/PHY/PLY/PLX/PLA/PLP/RTS). Same BOOT-span discipline as $25.
+# Pinned against the 9-byte structural pin in
+# tests/host/test_build_g5_24_host.py and
+# tests/integration/test_g5_dotmod_24.py (change together).
+_SLOT24_BODY_LEN = 9
+# Experimental slot-$36 wiring (Issue #64 B1-analogous; this image only when
+# selected; normal ROM keeps its nonreturning $36 fallback stub, and the
+# 2-base builder default keeps the table on the stub). The $E0A2 table entry
+# (file offset 3*$36, table starts at $E000) is redirected from the linked
+# $36 fallback stub to the BOOT-region ex_satclr_entry body
+# (src/ex_satclr.s, preservation-only SIMULATED scaffold). NOT the genuine
+# EX_SATCLR ABI (genuine slot/entry/return semantics stay UNKNOWN/BLOCKED,
+# release_eligible stays False).
+_SLOT36_TABLE = 3 * 0x36
+_SLOT36_PATCH_LABELS = ("api_slot_36", "ex_satclr_entry")
+# B1-analogous body length in bytes (src/ex_satclr.s:
+# PHP/PHA/PHX/PHY/PLY/PLX/PLA/PLP/RTS). Same BOOT-span discipline as $25.
+# Pinned against the 9-byte structural pin in
+# tests/host/test_build_g5_36_host.py and
+# tests/integration/test_g5_satclr_36.py (change together).
+_SLOT36_BODY_LEN = 9
+# Experimental slot-$35 wiring (Issue #63 B1-analogous; this image only when
+# selected; normal ROM keeps its nonreturning $35 fallback stub, and the
+# 2-base builder default keeps the table on the stub). The $E09F table entry
+# (file offset 3*$35, table starts at $E000) is redirected from the linked
+# $35 fallback stub to the BOOT-region ex_sprdma_entry body
+# (src/ex_sprdma.s, preservation-only SIMULATED scaffold). NOT the genuine
+# EX_SPRDMA ABI (genuine slot/entry/return semantics stay UNKNOWN/BLOCKED,
+# release_eligible stays False).
+_SLOT35_TABLE = 3 * 0x35
+_SLOT35_PATCH_LABELS = ("api_slot_35", "ex_sprdma_entry")
+# B1-analogous body length in bytes (src/ex_sprdma.s:
+# PHP/PHA/PHX/PHY/PLY/PLX/PLA/PLP/RTS). Same BOOT-span discipline as $25.
+# Pinned against the 9-byte structural pin in
+# tests/host/test_build_g5_35_host.py and
+# tests/integration/test_g5_sprdma_35.py (change together).
+_SLOT35_BODY_LEN = 9
+# Experimental slot-$2C wiring (Issue #54 D2 limited-functional; this image
+# only when selected; normal ROM keeps its nonreturning $2C fallback stub, and
+# the 2-base builder default keeps the table on the stub). The $E084 table entry
+# (file offset 3*$2C, table starts at $E000) is redirected from the linked
+# $2C fallback stub to the BOOT-region ex_irqon_entry body (src/ex_irqon.s,
+# CR R05 bit3 set via the shared $2502 shadow). NOT the genuine EX_IRQON ABI
+# (genuine slot/entry/return semantics stay UNKNOWN/BLOCKED, $20F3/$20F7
+# mirrors + CPU I + IDR stay untouched, release_eligible stays False).
+_SLOT2C_TABLE = 3 * 0x2C
+_SLOT2C_PATCH_LABELS = ("api_slot_2C", "ex_irqon_entry")
+# D2-functional body length in bytes (src/ex_irqon.s: PHP/PHA/LDA/CMP/BEQ/
+# PLA/PLP/SEC/RTS reject path + SEI/TMA/PHA/LDA/TAM/LDA/STA/LDA/ORA/STA/STA/
+# PLA/TAM/PLA/PLP/CLC/RTS ok path = 44 bytes). Same BOOT-span discipline as
+# $25 (entry + len must end at or before $FFF6). Pinned against the 44-byte
+# structural pin in tests/host/test_build_g5_2c_host.py and
+# tests/integration/test_g5_irqon_2c.py (change together).
+_SLOT2C_BODY_LEN = 44
+# Experimental slot-$2B wiring (Issue #53 D2 limited-functional; this image
+# only when selected; normal ROM keeps its nonreturning $2B fallback stub, and
+# the 2-base builder default keeps the table on the stub). The $E081 table entry
+# (file offset 3*$2B, table starts at $E000) is redirected from the linked
+# $2B fallback stub to the BOOT-region ex_rcroff_entry body (src/ex_rcroff.s,
+# CR R05 bit2 clear via the shared $2502 shadow, bit3 preserved). NOT the
+# genuine EX_RCROFF ABI (genuine slot/entry/return semantics stay
+# UNKNOWN/BLOCKED, $20F3/$20F7 mirrors + CPU I + IDR stay untouched,
+# release_eligible stays False).
+_SLOT2B_TABLE = 3 * 0x2B
+_SLOT2B_PATCH_LABELS = ("api_slot_2B", "ex_rcroff_entry")
+# D2-functional body length in bytes (src/ex_rcroff.s: PHP/PHA/LDA/CMP/BEQ/
+# PLA/PLP/SEC/RTS reject path + SEI/TMA/PHA/LDA/TAM/LDA/STA/LDA/AND/STA/STA/
+# PLA/TAM/PLA/PLP/CLC/RTS ok path = 44 bytes). Same BOOT-span discipline as
+# $2C (entry + len must end at or before $FFF6). Pinned against the 44-byte
+# structural pin in tests/host/test_build_g5_2b_host.py and
+# tests/integration/test_g5_rcroff_2b.py (change together).
+_SLOT2B_BODY_LEN = 44
 # Merged input branches whose heads are recorded (never hardcoded) in the manifest.
 _MERGED_REFS = ("origin/agent-a/cd-base-proto-g5", "origin/agent-b/ex-dspoff-real-cpu-g5",
                 "origin/agent-b/cd-read-link-g5")
@@ -178,6 +288,219 @@ def _redirect_slot03_to_link(bank: bytes, slot03_stub: int, link_entry: int) -> 
     return bytes(out)
 
 
+def _redirect_slot4a_to_body(bank: bytes, slot4a_stub: int, memopen_entry: int) -> bytes:
+    """Return bank with the $E0DE table entry redirected from stub to body. Fail-closed.
+
+    The table must still hold the linked fallback stub (nothing else may be
+    redirected), and the body must sit in BOOT and start with the body's
+    PHP/PHA prologue (guards against silent body drift). The wired entry keeps
+    the EXPERIMENTAL preservation contract only; it never claims the genuine
+    $4A ABI (genuine KEY_BIOS/EX_MEMOPEN semantics stay UNKNOWN/BLOCKED).
+    """
+    for name, addr in (("api_slot_4A", slot4a_stub), ("ex_memopen_entry", memopen_entry)):
+        if type(addr) is not int or not 0xE000 <= addr <= 0xFFFF:
+            raise ValueError(f"{name} address {addr!r} outside BIOS window $E000-$FFFF")
+    if not 0xE100 <= slot4a_stub < 0xFFF6:
+        raise ValueError(f"slot $4A fallback stub ${slot4a_stub:04X} outside bank0 body")
+    if not 0xF000 <= memopen_entry < 0xFFF6:
+        raise ValueError(f"experimental slot $4A body ${memopen_entry:04X} outside the BOOT region")
+    out = bytearray(bank)
+    want_stub = bytes((0x4C, slot4a_stub & 0xFF, slot4a_stub >> 8))
+    if bytes(out[_SLOT4A_TABLE:_SLOT4A_TABLE + 3]) != want_stub:
+        raise ValueError("slot $4A table entry is not the linked fallback stub; "
+                         "refusing to redirect an unexpected table")
+    out[_SLOT4A_TABLE:_SLOT4A_TABLE + 3] = bytes((0x4C, memopen_entry & 0xFF, memopen_entry >> 8))
+    body_off = memopen_entry - 0xE000
+    if bytes(out[body_off:body_off + 2]) != bytes((0x08, 0x48)):  # PHP, PHA
+        raise ValueError("experimental slot $4A body does not start with the body prologue")
+    return bytes(out)
+
+
+def _redirect_slot25_to_body(bank: bytes, slot25_stub: int, scrmod_entry: int) -> bytes:
+    """Return bank with the $E06F table entry redirected from stub to body. Fail-closed.
+
+    The table must still hold the linked fallback stub (nothing else may be
+    redirected), and the body must sit in BOOT and start with the body's
+    PHP/PHA prologue (guards against silent body drift). The wired entry keeps
+    the EXPERIMENTAL B1 preservation contract only (SIMULATED scaffold); it
+    never claims the genuine $25 ABI (genuine EX_SCRMOD semantics stay
+    UNKNOWN/BLOCKED, T04/T08/T09 NOT_APPLICABLE: no I/O window, no shadow,
+    no mask).
+    """
+    for name, addr in (("api_slot_25", slot25_stub), ("ex_scrmod_entry", scrmod_entry)):
+        if type(addr) is not int or not 0xE000 <= addr <= 0xFFFF:
+            raise ValueError(f"{name} address {addr!r} outside BIOS window $E000-$FFFF")
+    if not 0xE100 <= slot25_stub < 0xFFF6:
+        raise ValueError(f"slot $25 fallback stub ${slot25_stub:04X} outside bank0 body")
+    if not 0xF000 <= scrmod_entry <= 0xFFF6 - _SLOT25_BODY_LEN:
+        raise ValueError(f"experimental slot $25 body ${scrmod_entry:04X} outside the BOOT region "
+                         f"(9-byte span must end at or before $FFF6)")
+    out = bytearray(bank)
+    want_stub = bytes((0x4C, slot25_stub & 0xFF, slot25_stub >> 8))
+    if bytes(out[_SLOT25_TABLE:_SLOT25_TABLE + 3]) != want_stub:
+        raise ValueError("slot $25 table entry is not the linked fallback stub; "
+                         "refusing to redirect an unexpected table")
+    out[_SLOT25_TABLE:_SLOT25_TABLE + 3] = bytes((0x4C, scrmod_entry & 0xFF, scrmod_entry >> 8))
+    body_off = scrmod_entry - 0xE000
+    if bytes(out[body_off:body_off + 2]) != bytes((0x08, 0x48)):  # PHP, PHA
+        raise ValueError("experimental slot $25 body does not start with the body prologue")
+    return bytes(out)
+
+
+def _redirect_slot24_to_body(bank: bytes, slot24_stub: int, dotmod_entry: int) -> bytes:
+    """Return bank with the $E06C table entry redirected from stub to body. Fail-closed.
+
+    The table must still hold the linked fallback stub (nothing else may be
+    redirected), and the body must sit in BOOT and start with the body's
+    PHP/PHA prologue (guards against silent body drift). The wired entry keeps
+    the EXPERIMENTAL B1-analogous preservation contract only (SIMULATED
+    scaffold); it never claims the genuine $24 ABI (genuine EX_DOTMOD
+    semantics stay UNKNOWN/BLOCKED, T04/T08/T09 NOT_APPLICABLE: no I/O window,
+    no shadow, no mask).
+    """
+    for name, addr in (("api_slot_24", slot24_stub), ("ex_dotmod_entry", dotmod_entry)):
+        if type(addr) is not int or not 0xE000 <= addr <= 0xFFFF:
+            raise ValueError(f"{name} address {addr!r} outside BIOS window $E000-$FFFF")
+    if not 0xE100 <= slot24_stub < 0xFFF6:
+        raise ValueError(f"slot $24 fallback stub ${slot24_stub:04X} outside bank0 body")
+    if not 0xF000 <= dotmod_entry <= 0xFFF6 - _SLOT24_BODY_LEN:
+        raise ValueError(f"experimental slot $24 body ${dotmod_entry:04X} outside the BOOT region "
+                         f"(9-byte span must end at or before $FFF6)")
+    out = bytearray(bank)
+    want_stub = bytes((0x4C, slot24_stub & 0xFF, slot24_stub >> 8))
+    if bytes(out[_SLOT24_TABLE:_SLOT24_TABLE + 3]) != want_stub:
+        raise ValueError("slot $24 table entry is not the linked fallback stub; "
+                         "refusing to redirect an unexpected table")
+    out[_SLOT24_TABLE:_SLOT24_TABLE + 3] = bytes((0x4C, dotmod_entry & 0xFF, dotmod_entry >> 8))
+    body_off = dotmod_entry - 0xE000
+    if bytes(out[body_off:body_off + 2]) != bytes((0x08, 0x48)):  # PHP, PHA
+        raise ValueError("experimental slot $24 body does not start with the body prologue")
+    return bytes(out)
+
+
+def _redirect_slot36_to_body(bank: bytes, slot36_stub: int, satclr_entry: int) -> bytes:
+    """Return bank with the $E0A2 table entry redirected from stub to body. Fail-closed.
+
+    The table must still hold the linked fallback stub (nothing else may be
+    redirected), and the body must sit in BOOT and start with the body's
+    PHP/PHA prologue (guards against silent body drift). The wired entry keeps
+    the EXPERIMENTAL B1-analogous preservation contract only (SIMULATED
+    scaffold); it never claims the genuine $36 ABI (genuine EX_SATCLR
+    semantics stay UNKNOWN/BLOCKED, T04/T08/T09 NOT_APPLICABLE: no I/O window,
+    no shadow, no mask).
+    """
+    for name, addr in (("api_slot_36", slot36_stub), ("ex_satclr_entry", satclr_entry)):
+        if type(addr) is not int or not 0xE000 <= addr <= 0xFFFF:
+            raise ValueError(f"{name} address {addr!r} outside BIOS window $E000-$FFFF")
+    if not 0xE100 <= slot36_stub < 0xFFF6:
+        raise ValueError(f"slot $36 fallback stub ${slot36_stub:04X} outside bank0 body")
+    if not 0xF000 <= satclr_entry <= 0xFFF6 - _SLOT36_BODY_LEN:
+        raise ValueError(f"experimental slot $36 body ${satclr_entry:04X} outside the BOOT region "
+                         f"(9-byte span must end at or before $FFF6)")
+    out = bytearray(bank)
+    want_stub = bytes((0x4C, slot36_stub & 0xFF, slot36_stub >> 8))
+    if bytes(out[_SLOT36_TABLE:_SLOT36_TABLE + 3]) != want_stub:
+        raise ValueError("slot $36 table entry is not the linked fallback stub; "
+                         "refusing to redirect an unexpected table")
+    out[_SLOT36_TABLE:_SLOT36_TABLE + 3] = bytes((0x4C, satclr_entry & 0xFF, satclr_entry >> 8))
+    body_off = satclr_entry - 0xE000
+    if bytes(out[body_off:body_off + 2]) != bytes((0x08, 0x48)):  # PHP, PHA
+        raise ValueError("experimental slot $36 body does not start with the body prologue")
+    return bytes(out)
+
+
+def _redirect_slot35_to_body(bank: bytes, slot35_stub: int, sprdma_entry: int) -> bytes:
+    """Return bank with the $E09F table entry redirected from stub to body. Fail-closed.
+
+    The table must still hold the linked fallback stub (nothing else may be
+    redirected), and the body must sit in BOOT and start with the body's
+    PHP/PHA prologue (guards against silent body drift). The wired entry keeps
+    the EXPERIMENTAL B1-analogous preservation contract only (SIMULATED
+    scaffold); it never claims the genuine $35 ABI (genuine EX_SPRDMA
+    semantics stay UNKNOWN/BLOCKED, T04/T08/T09 NOT_APPLICABLE: no I/O window,
+    no shadow, no mask).
+    """
+    for name, addr in (("api_slot_35", slot35_stub), ("ex_sprdma_entry", sprdma_entry)):
+        if type(addr) is not int or not 0xE000 <= addr <= 0xFFFF:
+            raise ValueError(f"{name} address {addr!r} outside BIOS window $E000-$FFFF")
+    if not 0xE100 <= slot35_stub < 0xFFF6:
+        raise ValueError(f"slot $35 fallback stub ${slot35_stub:04X} outside bank0 body")
+    if not 0xF000 <= sprdma_entry <= 0xFFF6 - _SLOT35_BODY_LEN:
+        raise ValueError(f"experimental slot $35 body ${sprdma_entry:04X} outside the BOOT region "
+                         f"(9-byte span must end at or before $FFF6)")
+    out = bytearray(bank)
+    want_stub = bytes((0x4C, slot35_stub & 0xFF, slot35_stub >> 8))
+    if bytes(out[_SLOT35_TABLE:_SLOT35_TABLE + 3]) != want_stub:
+        raise ValueError("slot $35 table entry is not the linked fallback stub; "
+                         "refusing to redirect an unexpected table")
+    out[_SLOT35_TABLE:_SLOT35_TABLE + 3] = bytes((0x4C, sprdma_entry & 0xFF, sprdma_entry >> 8))
+    body_off = sprdma_entry - 0xE000
+    if bytes(out[body_off:body_off + 2]) != bytes((0x08, 0x48)):  # PHP, PHA
+        raise ValueError("experimental slot $35 body does not start with the body prologue")
+    return bytes(out)
+
+
+def _redirect_slot2c_to_body(bank: bytes, slot2c_stub: int, irqon_entry: int) -> bytes:
+    """Return bank with the $E084 table entry redirected from stub to body. Fail-closed.
+
+    The table must still hold the linked fallback stub (nothing else may be
+    redirected), and the body must sit in BOOT and start with the body's
+    PHP/PHA prologue (guards against silent body drift). The wired entry keeps
+    the EXPERIMENTAL D2 limited-functional contract only (CR bit3 set via the
+    shared $2502 shadow, $20F3/$20F7 + CPU I + IDR untouched); it never claims
+    the genuine $2C ABI (genuine EX_IRQON semantics stay UNKNOWN/BLOCKED).
+    """
+    for name, addr in (("api_slot_2C", slot2c_stub), ("ex_irqon_entry", irqon_entry)):
+        if type(addr) is not int or not 0xE000 <= addr <= 0xFFFF:
+            raise ValueError(f"{name} address {addr!r} outside BIOS window $E000-$FFFF")
+    if not 0xE100 <= slot2c_stub < 0xFFF6:
+        raise ValueError(f"slot $2C fallback stub ${slot2c_stub:04X} outside bank0 body")
+    if not 0xF000 <= irqon_entry <= 0xFFF6 - _SLOT2C_BODY_LEN:
+        raise ValueError(f"experimental slot $2C body ${irqon_entry:04X} outside the BOOT region "
+                         f"(44-byte span must end at or before $FFF6)")
+    out = bytearray(bank)
+    want_stub = bytes((0x4C, slot2c_stub & 0xFF, slot2c_stub >> 8))
+    if bytes(out[_SLOT2C_TABLE:_SLOT2C_TABLE + 3]) != want_stub:
+        raise ValueError("slot $2C table entry is not the linked fallback stub; "
+                         "refusing to redirect an unexpected table")
+    out[_SLOT2C_TABLE:_SLOT2C_TABLE + 3] = bytes((0x4C, irqon_entry & 0xFF, irqon_entry >> 8))
+    body_off = irqon_entry - 0xE000
+    if bytes(out[body_off:body_off + 2]) != bytes((0x08, 0x48)):  # PHP, PHA
+        raise ValueError("experimental slot $2C body does not start with the body prologue")
+    return bytes(out)
+
+
+def _redirect_slot2b_to_body(bank: bytes, slot2b_stub: int, rcroff_entry: int) -> bytes:
+    """Return bank with the $E081 table entry redirected from stub to body. Fail-closed.
+
+    The table must still hold the linked fallback stub (nothing else may be
+    redirected), and the body must sit in BOOT and start with the body's
+    PHP/PHA prologue (guards against silent body drift). The wired entry keeps
+    the EXPERIMENTAL D2 limited-functional contract only (CR bit2 clear via
+    the shared $2502 shadow, bit3 preserved, $20F3/$20F7 + CPU I + IDR
+    untouched, RCR R06 untouched); it never claims the genuine $2B ABI
+    (genuine EX_RCROFF semantics stay UNKNOWN/BLOCKED).
+    """
+    for name, addr in (("api_slot_2B", slot2b_stub), ("ex_rcroff_entry", rcroff_entry)):
+        if type(addr) is not int or not 0xE000 <= addr <= 0xFFFF:
+            raise ValueError(f"{name} address {addr!r} outside BIOS window $E000-$FFFF")
+    if not 0xE100 <= slot2b_stub < 0xFFF6:
+        raise ValueError(f"slot $2B fallback stub ${slot2b_stub:04X} outside bank0 body")
+    if not 0xF000 <= rcroff_entry <= 0xFFF6 - _SLOT2B_BODY_LEN:
+        raise ValueError(f"experimental slot $2B body ${rcroff_entry:04X} outside the BOOT region "
+                         f"(44-byte span must end at or before $FFF6)")
+    out = bytearray(bank)
+    want_stub = bytes((0x4C, slot2b_stub & 0xFF, slot2b_stub >> 8))
+    if bytes(out[_SLOT2B_TABLE:_SLOT2B_TABLE + 3]) != want_stub:
+        raise ValueError("slot $2B table entry is not the linked fallback stub; "
+                         "refusing to redirect an unexpected table")
+    out[_SLOT2B_TABLE:_SLOT2B_TABLE + 3] = bytes((0x4C, rcroff_entry & 0xFF, rcroff_entry >> 8))
+    body_off = rcroff_entry - 0xE000
+    if bytes(out[body_off:body_off + 2]) != bytes((0x08, 0x48)):  # PHP, PHA
+        raise ValueError("experimental slot $2B body does not start with the body prologue")
+    return bytes(out)
+
+
 def unified_api_windows(slot02_addr: int) -> set:
     """File offsets in the first 4 KiB allowed to differ from the normal DEV ROM.
 
@@ -192,6 +515,358 @@ def unified_api_windows(slot02_addr: int) -> set:
     windows |= set(range(_SLOT03_TABLE, _SLOT03_TABLE + 3))
     if len(windows) != SLOT02_PATCH_LEN + 3 + 3:
         raise ValueError("slot-$02/slot-$33/slot-$03 patch windows overlap; refusing ambiguous wiring")
+    return windows
+
+
+def unified_api_windows_4a(slot02_addr: int) -> set:
+    """File offsets allowed to differ when the experimental $4A body is wired.
+
+    Base three-window set plus the slot-$4A 3-byte table redirect. Pure and
+    fail-closed like the base set; the default unified_api_windows() is
+    untouched so existing stub-default images keep their exact contract.
+    """
+    windows = set(unified_api_windows(slot02_addr))
+    windows |= set(range(_SLOT4A_TABLE, _SLOT4A_TABLE + 3))
+    if len(windows) != SLOT02_PATCH_LEN + 3 + 3 + 3:
+        raise ValueError("slot-$02/slot-$33/slot-$03/slot-$4A patch windows overlap; refusing ambiguous wiring")
+    return windows
+
+
+def unified_api_windows_25(slot02_addr: int) -> set:
+    """File offsets allowed to differ when the experimental $25 body is wired.
+
+    Base three-window set plus the slot-$25 3-byte table redirect. Pure and
+    fail-closed like the base set; the default unified_api_windows() is
+    untouched so existing stub-default images keep their exact contract.
+    """
+    windows = set(unified_api_windows(slot02_addr))
+    windows |= set(range(_SLOT25_TABLE, _SLOT25_TABLE + 3))
+    if len(windows) != SLOT02_PATCH_LEN + 3 + 3 + 3:
+        raise ValueError("slot-$02/slot-$33/slot-$03/slot-$25 patch windows overlap; refusing ambiguous wiring")
+    return windows
+
+
+def unified_api_windows_4a_25(slot02_addr: int) -> set:
+    """File offsets allowed to differ when both experimental bodies are wired.
+
+    Base three-window set plus the slot-$4A and slot-$25 3-byte table
+    redirects. Pure and fail-closed like the base set.
+    """
+    windows = set(unified_api_windows_4a(slot02_addr))
+    windows |= set(range(_SLOT25_TABLE, _SLOT25_TABLE + 3))
+    if len(windows) != SLOT02_PATCH_LEN + 3 + 3 + 3 + 3:
+        raise ValueError("slot-$02/slot-$33/slot-$03/slot-$4A/slot-$25 patch windows overlap; refusing ambiguous wiring")
+    return windows
+
+
+def unified_api_windows_24(slot02_addr: int) -> set:
+    """File offsets allowed to differ when the experimental $24 body is wired.
+
+    Base three-window set plus the slot-$24 3-byte table redirect. Pure and
+    fail-closed like the base set; the default unified_api_windows() is
+    untouched so existing stub-default images keep their exact contract.
+    """
+    windows = set(unified_api_windows(slot02_addr))
+    windows |= set(range(_SLOT24_TABLE, _SLOT24_TABLE + 3))
+    if len(windows) != SLOT02_PATCH_LEN + 3 + 3 + 3:
+        raise ValueError("slot-$02/slot-$33/slot-$03/slot-$24 patch windows overlap; refusing ambiguous wiring")
+    return windows
+
+
+def unified_api_windows_4a_24(slot02_addr: int) -> set:
+    """File offsets allowed to differ when $4A and $24 bodies are wired."""
+    windows = set(unified_api_windows_4a(slot02_addr))
+    windows |= set(range(_SLOT24_TABLE, _SLOT24_TABLE + 3))
+    if len(windows) != SLOT02_PATCH_LEN + 3 + 3 + 3 + 3:
+        raise ValueError("slot-$02/slot-$33/slot-$03/slot-$4A/slot-$24 patch windows overlap; refusing ambiguous wiring")
+    return windows
+
+
+def unified_api_windows_25_24(slot02_addr: int) -> set:
+    """File offsets allowed to differ when $25 and $24 bodies are wired."""
+    windows = set(unified_api_windows_25(slot02_addr))
+    windows |= set(range(_SLOT24_TABLE, _SLOT24_TABLE + 3))
+    if len(windows) != SLOT02_PATCH_LEN + 3 + 3 + 3 + 3:
+        raise ValueError("slot-$02/slot-$33/slot-$03/slot-$25/slot-$24 patch windows overlap; refusing ambiguous wiring")
+    return windows
+
+
+def unified_api_windows_4a_25_24(slot02_addr: int) -> set:
+    """File offsets allowed to differ when $4A, $25 and $24 are wired."""
+    windows = set(unified_api_windows_4a_25(slot02_addr))
+    windows |= set(range(_SLOT24_TABLE, _SLOT24_TABLE + 3))
+    if len(windows) != SLOT02_PATCH_LEN + 3 + 3 + 3 + 3 + 3:
+        raise ValueError("slot-$02/slot-$33/slot-$03/slot-$4A/slot-$25/slot-$24 patch windows overlap; refusing ambiguous wiring")
+    return windows
+
+def unified_api_windows_36(slot02_addr: int) -> set:
+    """File offsets allowed to differ when the experimental $36 body is wired."""
+    windows = set(unified_api_windows(slot02_addr))
+    windows |= set(range(_SLOT36_TABLE, _SLOT36_TABLE + 3))
+    if len(windows) != SLOT02_PATCH_LEN + 3 + 3 + 3:
+        raise ValueError("slot-$02/slot-$33/slot-$03/slot-$36 patch windows overlap; refusing ambiguous wiring")
+    return windows
+
+
+def unified_api_windows_4a_36(slot02_addr: int) -> set:
+    """File offsets allowed to differ when $4A and $36 bodies are wired."""
+    windows = set(unified_api_windows_4a(slot02_addr))
+    windows |= set(range(_SLOT36_TABLE, _SLOT36_TABLE + 3))
+    if len(windows) != SLOT02_PATCH_LEN + 3 + 3 + 3 + 3:
+        raise ValueError("slot-$02/slot-$33/slot-$03/slot-$4A/slot-$36 patch windows overlap; refusing ambiguous wiring")
+    return windows
+
+
+def unified_api_windows_25_36(slot02_addr: int) -> set:
+    """File offsets allowed to differ when $25 and $36 bodies are wired."""
+    windows = set(unified_api_windows_25(slot02_addr))
+    windows |= set(range(_SLOT36_TABLE, _SLOT36_TABLE + 3))
+    if len(windows) != SLOT02_PATCH_LEN + 3 + 3 + 3 + 3:
+        raise ValueError("slot-$02/slot-$33/slot-$03/slot-$25/slot-$36 patch windows overlap; refusing ambiguous wiring")
+    return windows
+
+
+def unified_api_windows_4a_25_36(slot02_addr: int) -> set:
+    """File offsets allowed to differ when $4A, $25 and $36 are wired."""
+    windows = set(unified_api_windows_4a_25(slot02_addr))
+    windows |= set(range(_SLOT36_TABLE, _SLOT36_TABLE + 3))
+    if len(windows) != SLOT02_PATCH_LEN + 3 + 3 + 3 + 3 + 3:
+        raise ValueError("slot-$02/slot-$33/slot-$03/slot-$4A/slot-$25/slot-$36 patch windows overlap; refusing ambiguous wiring")
+    return windows
+
+
+def unified_api_windows_24_36(slot02_addr: int) -> set:
+    """File offsets allowed to differ when $24 and $36 bodies are wired."""
+    windows = set(unified_api_windows_24(slot02_addr))
+    windows |= set(range(_SLOT36_TABLE, _SLOT36_TABLE + 3))
+    if len(windows) != SLOT02_PATCH_LEN + 3 + 3 + 3 + 3:
+        raise ValueError("slot-$02/slot-$33/slot-$03/slot-$24/slot-$36 patch windows overlap; refusing ambiguous wiring")
+    return windows
+
+
+def unified_api_windows_4a_24_36(slot02_addr: int) -> set:
+    """File offsets allowed to differ when $4A, $24 and $36 bodies are wired."""
+    windows = set(unified_api_windows_4a_24(slot02_addr))
+    windows |= set(range(_SLOT36_TABLE, _SLOT36_TABLE + 3))
+    if len(windows) != SLOT02_PATCH_LEN + 3 + 3 + 3 + 3 + 3:
+        raise ValueError("slot-$02/slot-$33/slot-$03/slot-$4A/slot-$24/slot-$36 patch windows overlap; refusing ambiguous wiring")
+    return windows
+
+
+def unified_api_windows_25_24_36(slot02_addr: int) -> set:
+    """File offsets allowed to differ when $25, $24 and $36 bodies are wired."""
+    windows = set(unified_api_windows_25_24(slot02_addr))
+    windows |= set(range(_SLOT36_TABLE, _SLOT36_TABLE + 3))
+    if len(windows) != SLOT02_PATCH_LEN + 3 + 3 + 3 + 3 + 3:
+        raise ValueError("slot-$02/slot-$33/slot-$03/slot-$25/slot-$24/slot-$36 patch windows overlap; refusing ambiguous wiring")
+    return windows
+
+
+def unified_api_windows_4a_25_24_36(slot02_addr: int) -> set:
+    """File offsets allowed to differ when $4A, $25, $24 and $36 are wired."""
+    windows = set(unified_api_windows_4a_25_24(slot02_addr))
+    windows |= set(range(_SLOT36_TABLE, _SLOT36_TABLE + 3))
+    if len(windows) != SLOT02_PATCH_LEN + 3 + 3 + 3 + 3 + 3 + 3:
+        raise ValueError("slot-$02/slot-$33/slot-$03/slot-$4A/slot-$25/slot-$24/slot-$36 patch windows overlap; refusing ambiguous wiring")
+    return windows
+
+
+def unified_api_windows_35(slot02_addr: int) -> set:
+    """File offsets allowed to differ when the experimental $35 body is wired."""
+    windows = set(unified_api_windows(slot02_addr))
+    windows |= set(range(_SLOT35_TABLE, _SLOT35_TABLE + 3))
+    if len(windows) != SLOT02_PATCH_LEN + 3 + 3 + 3:
+        raise ValueError("slot-$02/slot-$33/slot-$03/slot-$35 patch windows overlap; refusing ambiguous wiring")
+    return windows
+
+
+def unified_api_windows_4a_35(slot02_addr: int) -> set:
+    """File offsets allowed to differ when $4A and $35 bodies are wired."""
+    windows = set(unified_api_windows_4a(slot02_addr))
+    windows |= set(range(_SLOT35_TABLE, _SLOT35_TABLE + 3))
+    if len(windows) != SLOT02_PATCH_LEN + 3 + 3 + 3 + 3:
+        raise ValueError("slot-$02/slot-$33/slot-$03/slot-$4A/slot-$35 patch windows overlap; refusing ambiguous wiring")
+    return windows
+
+
+def unified_api_windows_25_35(slot02_addr: int) -> set:
+    """File offsets allowed to differ when $25 and $35 bodies are wired."""
+    windows = set(unified_api_windows_25(slot02_addr))
+    windows |= set(range(_SLOT35_TABLE, _SLOT35_TABLE + 3))
+    if len(windows) != SLOT02_PATCH_LEN + 3 + 3 + 3 + 3:
+        raise ValueError("slot-$02/slot-$33/slot-$03/slot-$25/slot-$35 patch windows overlap; refusing ambiguous wiring")
+    return windows
+
+
+def unified_api_windows_4a_25_35(slot02_addr: int) -> set:
+    """File offsets allowed to differ when $4A, $25 and $35 are wired."""
+    windows = set(unified_api_windows_4a_25(slot02_addr))
+    windows |= set(range(_SLOT35_TABLE, _SLOT35_TABLE + 3))
+    if len(windows) != SLOT02_PATCH_LEN + 3 + 3 + 3 + 3 + 3:
+        raise ValueError("slot-$02/slot-$33/slot-$03/slot-$4A/slot-$25/slot-$35 patch windows overlap; refusing ambiguous wiring")
+    return windows
+
+
+def unified_api_windows_24_35(slot02_addr: int) -> set:
+    """File offsets allowed to differ when $24 and $35 bodies are wired."""
+    windows = set(unified_api_windows_24(slot02_addr))
+    windows |= set(range(_SLOT35_TABLE, _SLOT35_TABLE + 3))
+    if len(windows) != SLOT02_PATCH_LEN + 3 + 3 + 3 + 3:
+        raise ValueError("slot-$02/slot-$33/slot-$03/slot-$24/slot-$35 patch windows overlap; refusing ambiguous wiring")
+    return windows
+
+
+def unified_api_windows_4a_24_35(slot02_addr: int) -> set:
+    """File offsets allowed to differ when $4A, $24 and $35 bodies are wired."""
+    windows = set(unified_api_windows_4a_24(slot02_addr))
+    windows |= set(range(_SLOT35_TABLE, _SLOT35_TABLE + 3))
+    if len(windows) != SLOT02_PATCH_LEN + 3 + 3 + 3 + 3 + 3:
+        raise ValueError("slot-$02/slot-$33/slot-$03/slot-$4A/slot-$24/slot-$35 patch windows overlap; refusing ambiguous wiring")
+    return windows
+
+
+def unified_api_windows_25_24_35(slot02_addr: int) -> set:
+    """File offsets allowed to differ when $25, $24 and $35 bodies are wired."""
+    windows = set(unified_api_windows_25_24(slot02_addr))
+    windows |= set(range(_SLOT35_TABLE, _SLOT35_TABLE + 3))
+    if len(windows) != SLOT02_PATCH_LEN + 3 + 3 + 3 + 3 + 3:
+        raise ValueError("slot-$02/slot-$33/slot-$03/slot-$25/slot-$24/slot-$35 patch windows overlap; refusing ambiguous wiring")
+    return windows
+
+
+def unified_api_windows_4a_25_24_35(slot02_addr: int) -> set:
+    """File offsets allowed to differ when $4A, $25, $24 and $35 are wired."""
+    windows = set(unified_api_windows_4a_25_24(slot02_addr))
+    windows |= set(range(_SLOT35_TABLE, _SLOT35_TABLE + 3))
+    if len(windows) != SLOT02_PATCH_LEN + 3 + 3 + 3 + 3 + 3 + 3:
+        raise ValueError("slot-$02/slot-$33/slot-$03/slot-$4A/slot-$25/slot-$24/slot-$35 patch windows overlap; refusing ambiguous wiring")
+    return windows
+
+
+def unified_api_windows_36_35(slot02_addr: int) -> set:
+    """File offsets allowed to differ when $36 and $35 bodies are wired."""
+    windows = set(unified_api_windows_36(slot02_addr))
+    windows |= set(range(_SLOT35_TABLE, _SLOT35_TABLE + 3))
+    if len(windows) != SLOT02_PATCH_LEN + 3 + 3 + 3 + 3:
+        raise ValueError("slot-$02/slot-$33/slot-$03/slot-$36/slot-$35 patch windows overlap; refusing ambiguous wiring")
+    return windows
+
+
+def unified_api_windows_4a_36_35(slot02_addr: int) -> set:
+    """File offsets allowed to differ when $4A, $36 and $35 bodies are wired."""
+    windows = set(unified_api_windows_4a_36(slot02_addr))
+    windows |= set(range(_SLOT35_TABLE, _SLOT35_TABLE + 3))
+    if len(windows) != SLOT02_PATCH_LEN + 3 + 3 + 3 + 3 + 3:
+        raise ValueError("slot-$02/slot-$33/slot-$03/slot-$4A/slot-$36/slot-$35 patch windows overlap; refusing ambiguous wiring")
+    return windows
+
+
+def unified_api_windows_25_36_35(slot02_addr: int) -> set:
+    """File offsets allowed to differ when $25, $36 and $35 bodies are wired."""
+    windows = set(unified_api_windows_25_36(slot02_addr))
+    windows |= set(range(_SLOT35_TABLE, _SLOT35_TABLE + 3))
+    if len(windows) != SLOT02_PATCH_LEN + 3 + 3 + 3 + 3 + 3:
+        raise ValueError("slot-$02/slot-$33/slot-$03/slot-$25/slot-$36/slot-$35 patch windows overlap; refusing ambiguous wiring")
+    return windows
+
+
+def unified_api_windows_4a_25_36_35(slot02_addr: int) -> set:
+    """File offsets allowed to differ when $4A, $25, $36 and $35 are wired."""
+    windows = set(unified_api_windows_4a_25_36(slot02_addr))
+    windows |= set(range(_SLOT35_TABLE, _SLOT35_TABLE + 3))
+    if len(windows) != SLOT02_PATCH_LEN + 3 + 3 + 3 + 3 + 3 + 3:
+        raise ValueError("slot-$02/slot-$33/slot-$03/slot-$4A/slot-$25/slot-$36/slot-$35 patch windows overlap; refusing ambiguous wiring")
+    return windows
+
+
+def unified_api_windows_24_36_35(slot02_addr: int) -> set:
+    """File offsets allowed to differ when $24, $36 and $35 bodies are wired."""
+    windows = set(unified_api_windows_24_36(slot02_addr))
+    windows |= set(range(_SLOT35_TABLE, _SLOT35_TABLE + 3))
+    if len(windows) != SLOT02_PATCH_LEN + 3 + 3 + 3 + 3 + 3:
+        raise ValueError("slot-$02/slot-$33/slot-$03/slot-$24/slot-$36/slot-$35 patch windows overlap; refusing ambiguous wiring")
+    return windows
+
+
+def unified_api_windows_4a_24_36_35(slot02_addr: int) -> set:
+    """File offsets allowed to differ when $4A, $24, $36 and $35 bodies are wired."""
+    windows = set(unified_api_windows_4a_24_36(slot02_addr))
+    windows |= set(range(_SLOT35_TABLE, _SLOT35_TABLE + 3))
+    if len(windows) != SLOT02_PATCH_LEN + 3 + 3 + 3 + 3 + 3 + 3:
+        raise ValueError("slot-$02/slot-$33/slot-$03/slot-$4A/slot-$24/slot-$36/slot-$35 patch windows overlap; refusing ambiguous wiring")
+    return windows
+
+
+def unified_api_windows_25_24_36_35(slot02_addr: int) -> set:
+    """File offsets allowed to differ when $25, $24, $36 and $35 bodies are wired."""
+    windows = set(unified_api_windows_25_24_36(slot02_addr))
+    windows |= set(range(_SLOT35_TABLE, _SLOT35_TABLE + 3))
+    if len(windows) != SLOT02_PATCH_LEN + 3 + 3 + 3 + 3 + 3 + 3:
+        raise ValueError("slot-$02/slot-$33/slot-$03/slot-$25/slot-$24/slot-$36/slot-$35 patch windows overlap; refusing ambiguous wiring")
+    return windows
+
+
+def unified_api_windows_4a_25_24_36_35(slot02_addr: int) -> set:
+    """File offsets allowed to differ when $4A, $25, $24, $36 and $35 are wired."""
+    windows = set(unified_api_windows_4a_25_24_36(slot02_addr))
+    windows |= set(range(_SLOT35_TABLE, _SLOT35_TABLE + 3))
+    if len(windows) != SLOT02_PATCH_LEN + 3 + 3 + 3 + 3 + 3 + 3 + 3:
+        raise ValueError("slot-$02/slot-$33/slot-$03/slot-$4A/slot-$25/slot-$24/slot-$36/slot-$35 patch windows overlap; refusing ambiguous wiring")
+    return windows
+
+
+def unified_api_windows_2c(slot02_addr: int) -> set:
+    """File offsets allowed to differ when the experimental $2C body is wired.
+
+    Base three-window set plus the slot-$2C 3-byte table redirect. Pure and
+    fail-closed like the base set; the default unified_api_windows() is
+    untouched so existing stub-default images keep their exact contract.
+    """
+    windows = set(unified_api_windows(slot02_addr))
+    windows |= set(range(_SLOT2C_TABLE, _SLOT2C_TABLE + 3))
+    if len(windows) != SLOT02_PATCH_LEN + 3 + 3 + 3:
+        raise ValueError("slot-$02/slot-$33/slot-$03/slot-$2C patch windows overlap; refusing ambiguous wiring")
+    return windows
+
+
+def unified_api_windows_4a_25_24_36_35_2c(slot02_addr: int) -> set:
+    """File offsets allowed to differ when $4A, $25, $24, $36, $35 and $2C are wired."""
+    windows = set(unified_api_windows_4a_25_24_36_35(slot02_addr))
+    windows |= set(range(_SLOT2C_TABLE, _SLOT2C_TABLE + 3))
+    if len(windows) != SLOT02_PATCH_LEN + 3 + 3 + 3 + 3 + 3 + 3 + 3 + 3:
+        raise ValueError("slot-$02/slot-$33/slot-$03/slot-$4A/slot-$25/slot-$24/slot-$36/slot-$35/slot-$2C patch windows overlap; refusing ambiguous wiring")
+    return windows
+
+
+def unified_api_windows_2b(slot02_addr: int) -> set:
+    """File offsets allowed to differ when the experimental $2B body is wired.
+
+    Base three-window set plus the slot-$2B 3-byte table redirect. Pure and
+    fail-closed like the base set; the default unified_api_windows() is
+    untouched so existing stub-default images keep their exact contract.
+    """
+    windows = set(unified_api_windows(slot02_addr))
+    windows |= set(range(_SLOT2B_TABLE, _SLOT2B_TABLE + 3))
+    if len(windows) != SLOT02_PATCH_LEN + 3 + 3 + 3:
+        raise ValueError("slot-$02/slot-$33/slot-$03/slot-$2B patch windows overlap; refusing ambiguous wiring")
+    return windows
+
+
+def unified_api_windows_4a_25_24_36_35_2c_2b(slot02_addr: int) -> set:
+    """File offsets allowed to differ when $4A, $25, $24, $36, $35, $2C and $2B are wired (full ExpG)."""
+    windows = set(unified_api_windows_4a_25_24_36_35_2c(slot02_addr))
+    windows |= set(range(_SLOT2B_TABLE, _SLOT2B_TABLE + 3))
+    if len(windows) != SLOT02_PATCH_LEN + 3 + 3 + 3 + 3 + 3 + 3 + 3 + 3 + 3:
+        raise ValueError("slot-$02/slot-$33/slot-$03/slot-$4A/slot-$25/slot-$24/slot-$36/slot-$35/slot-$2C/slot-$2B patch windows overlap; refusing ambiguous wiring")
+    return windows
+
+
+def unified_api_windows_2c_2b(slot02_addr: int) -> set:
+    """File offsets allowed to differ when $2C and $2B are wired ($2C->$2B chain)."""
+    windows = set(unified_api_windows_2c(slot02_addr))
+    windows |= set(range(_SLOT2B_TABLE, _SLOT2B_TABLE + 3))
+    if len(windows) != SLOT02_PATCH_LEN + 3 + 3 + 3 + 3:
+        raise ValueError("slot-$02/slot-$33/slot-$03/slot-$2C/slot-$2B patch windows overlap; refusing ambiguous wiring")
     return windows
 
 
