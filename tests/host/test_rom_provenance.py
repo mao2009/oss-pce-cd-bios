@@ -323,15 +323,34 @@ class CliTests(unittest.TestCase):
 
 class WiringTests(unittest.TestCase):
     def test_ci_runs_reproducibility_before_handoff(self):
+        # Sharded CI (Issue #846): the static shard runs check/release/repro
+        # in order and the aggregate verify-full job still hands off the
+        # identical intermediate artifact afterwards. The release/repro step
+        # bodies live in tools/ci_sharding.py STATIC_MAKE_TARGETS (single
+        # source of truth, covered by the sharding manifest tests); the
+        # workflow pins the unit order via the static shard plus the
+        # fail-closed aggregation gate.
+        import sys
+        sys.path.insert(0, str(ROOT / "tools"))
+        try:
+            import ci_sharding as shard
+        finally:
+            sys.path.remove(str(ROOT / "tools"))
+        self.assertEqual(shard.STATIC_UNITS, ["static:check", "static:release",
+                                               "static:repro"])
+        repro = shard.STATIC_MAKE_TARGETS["static:repro"]
+        flat = [a for cmd in repro for a in cmd]
+        joined = " ".join(flat)
+        self.assertLess(joined.index("--reproduce"), joined.index("build/rom-provenance/a/"))
+        self.assertLess(joined.index("build/rom-provenance/a/"), joined.index("--rom"))
         text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-        reproduce = text.index("rom_provenance.py --reproduce smoke")
-        compare = text.index("cmp build/debug/smoke-test-not-bios.pce build/rom-provenance/a/smoke-test-not-bios.pce")
-        record = text.index("rom_provenance.py --rom build/debug/smoke-test-not-bios.pce")
         handoff = text.index("Hand off the test fixture")
-        self.assertLess(reproduce, compare)
-        self.assertLess(compare, record)
-        self.assertLess(record, handoff)
-        self.assertNotIn("continue-on-error", text[reproduce:handoff])
+        static_job = text.index("  static-release:")
+        aggregate = text.index("Aggregate shard evidence")
+        self.assertLess(static_job, handoff)
+        self.assertLess(aggregate, handoff)
+        self.assertIn("run-static", text[static_job:handoff])
+        self.assertNotIn("continue-on-error", text[static_job:handoff])
 
 
 if __name__ == "__main__":

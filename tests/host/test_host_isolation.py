@@ -62,6 +62,57 @@ JOB_LEVEL_CONTINUE_ON_ERROR = re.compile(r"(?m)^    continue-on-error:")
 JOB_LEVEL_IF = re.compile(r"(?m)^    if:[ \t]*(.*?)[ \t]*$")
 # Job-level if: expressions allowed on the real-core job, pinned exactly. nightly.yml's build job is skipped when
 # main's SHA is unchanged (change-aware plan); no other workflow may guard the real-core job.
+def _assert_sharded_real_core_gate(testcase, text, workflow):
+        import sys as _sys
+        _sys.path.insert(0, str(ROOT / "tools"))
+        try:
+            import ci_sharding as _sh
+        finally:
+            _sys.path.remove(str(ROOT / "tools"))
+        shard_ids = sorted(_sh.INTEGRATION_SHARDS)
+        testcase.assertEqual(shard_ids, ["rc-0", "rc-1", "rc-2", "rc-3"])
+        # Every manifest shard has a CI job running exactly its slice.
+        for sid in shard_ids:
+            job = f"  real-core-shard-{sid.split('-')[1]}:\n"
+            testcase.assertIn(job, text)
+            testcase.assertIn(f"run: python3 tools/ci_sharding.py run-shard --shard {sid} "
+                          f"--evidence-out intermediate/shard-{sid}/evidence.json", text)
+        for job in ["host-tests", "integration-direct", "static-release",
+                    "real-core-shard-0", "real-core-shard-1",
+                    "real-core-shard-2", "real-core-shard-3"]:
+            block = re.search(rf"(?m)^  {job}:\n((?:    [^\n]*\n|      [^\n]*\n|        [^\n]*\n)*)", text)
+            testcase.assertIsNotNone(block, f"{workflow}: job {job} missing")
+            testcase.assertEqual(JOB_LEVEL_CONTINUE_ON_ERROR.findall(block.group(0)), [],
+                             f"{workflow}: job {job} is optional")
+            # Shard jobs run unconditionally once scoped (no silent skip path):
+            # the disabled docs_only fast path is enforced only by verify-full.
+            testcase.assertEqual(JOB_LEVEL_IF.findall(block.group(0)), [],
+                             f"{workflow}: job {job} must not carry a job-level if")
+        # No sharding step may carry its own if:/continue-on-error (same
+        # fail-closed rule). Steps start at 6-space `- ` items; the pattern
+        # stays inside one step (continuation lines are 8+ spaces, never a
+        # less-indented line and never another 6-space `- ` item).
+        step_pat = (r"(?m)^      - (?:name|uses|run|with|id):[^\n]*\n"
+                    r"(?:(?:      - (?:name|uses|run|with|id):[^\n]*|        [^\n]*)\n)*?"
+                    r"        run: python3 tools/ci_sharding\.py[^\n]*")
+        sharding_steps = re.findall(step_pat, text)
+        testcase.assertTrue(sharding_steps, f"{workflow}: no sharding steps found")
+        for step in sharding_steps:
+            testcase.assertNotRegex(step, r"(?m)^ +continue-on-error:",
+                                f"{workflow}: sharding step is optional")
+            testcase.assertNotRegex(step, r"(?m)^        if:",
+                                f"{workflow}: sharding step is guarded by if:")
+        # The aggregate requires every shard explicitly and validates the manifest.
+        testcase.assertIn("run: python3 tools/ci_sharding.py aggregate --evidence "
+                      ".intake-shard-host/evidence.json .intake-shard-direct/evidence.json "
+                      ".intake-shard-static/evidence.json .intake-shard-rc-0/evidence.json "
+                      ".intake-shard-rc-1/evidence.json .intake-shard-rc-2/evidence.json "
+                      ".intake-shard-rc-3/evidence.json", text)
+        for gated in ["host-tests", "integration-direct", "static-release",
+                      "real-core-shard-0", "real-core-shard-1",
+                      "real-core-shard-2", "real-core-shard-3"]:
+            testcase.assertIn(f'test "${{{{ needs.{gated}.result }}}}" = "success"', text)
+
 ALLOWED_JOB_IF = {
     ".github/workflows/nightly.yml": {"needs.plan.outputs.build == 'true'"},
     ".github/workflows/ci.yml": {"needs.scope.outputs.docs_only != 'true'"},
@@ -133,28 +184,36 @@ class HostIsolationTests(unittest.TestCase):
             with self.subTest(workflow=workflow):
                 text = (ROOT / workflow).read_text(encoding="utf-8")
                 self.assertRegex(text, r"run: make test\n")
-                self.assertRegex(text, r"run: make test-real-core\n")
-                step = real_core_step(text)
-                self.assertIsNotNone(step, f"{workflow}: no step runs make test-real-core")
-                # The real-core gate must be required: no continue-on-error, no if: guard on its step.
-                self.assertNotRegex(step, r"(?m)^\s*(?:-\s+)?continue-on-error:", f"{workflow}: real-core step is optional")
-                self.assertNotRegex(step, r"(?m)^\s*(?:-\s+)?if:", f"{workflow}: real-core step is guarded by if:")
-                # A job-level continue-on-error or if: on the job that holds the step makes the gate optional too.
-                jobs = real_core_jobs(text)
-                self.assertTrue(jobs, f"{workflow}: no job runs make test-real-core")
-                for job in jobs:
-                    self.assertEqual(JOB_LEVEL_CONTINUE_ON_ERROR.findall(job), [],
-                                     f"{workflow}: job running make test-real-core is optional")
-                    self.assertLessEqual(set(JOB_LEVEL_IF.findall(job)), ALLOWED_JOB_IF.get(workflow, set()),
-                                         f"{workflow}: job running make test-real-core is guarded by if:")
+                if workflow == ".github/workflows/nightly.yml":
+                    self.assertRegex(text, r"run: make test-real-core\n")
+                    step = real_core_step(text)
+                    self.assertIsNotNone(step, f"{workflow}: no step runs make test-real-core")
+                    # The real-core gate must be required: no continue-on-error, no if: guard on its step.
+                    self.assertNotRegex(step, r"(?m)^\s*(?:-\s+)?continue-on-error:", f"{workflow}: real-core step is optional")
+                    self.assertNotRegex(step, r"(?m)^\s*(?:-\s+)?if:", f"{workflow}: real-core step is guarded by if:")
+                    # A job-level continue-on-error or if: on the job that holds the step makes the gate optional too.
+                    jobs = real_core_jobs(text)
+                    self.assertTrue(jobs, f"{workflow}: no job runs make test-real-core")
+                    for job in jobs:
+                        self.assertEqual(JOB_LEVEL_CONTINUE_ON_ERROR.findall(job), [],
+                                         f"{workflow}: job running make test-real-core is optional")
+                        self.assertLessEqual(set(JOB_LEVEL_IF.findall(job)), ALLOWED_JOB_IF.get(workflow, set()),
+                                             f"{workflow}: job running make test-real-core is guarded by if:")
+                else:
+                    # ci.yml runs the sharded real-core gate (Issue #846): the serial
+                    # `make test-real-core` step is replaced by shard jobs plus a
+                    # fail-closed aggregate. The serial form must not come back
+                    # silently alongside the shards (double run / divergence).
+                    self.assertNotRegex(text, r"run: make test-real-core\n",
+                                        f"{workflow}: serial make test-real-core must stay replaced by shards")
+                    _assert_sharded_real_core_gate(self, text, workflow)
 
 
     def test_documentation_fast_path_disabled_and_full_result_required(self):
         # The docs-only fast path is disabled: the only value ever written to docs_only is false, so every change runs
         # the full job. The required names must still reject both a failed scope and a failed full job.
         for workflow, required, full in (
-                (".github/workflows/ci.yml", "verify", "verify-full"),
-                (".github/workflows/api-source.yml", "bios-dev", "bios-dev-full")):
+                (".github/workflows/api-source.yml", "bios-dev", "bios-dev-full"),):
             with self.subTest(workflow=workflow):
                 text = (ROOT / workflow).read_text(encoding="utf-8")
                 self.assertIn(f"  {full}:\n    needs: scope\n    if: needs.scope.outputs.docs_only != 'true'", text)
@@ -167,6 +226,32 @@ class HostIsolationTests(unittest.TestCase):
                 # docs/*.md run only in the full job, so no change may be classified documentation-only.
                 self.assertIn('echo "docs_only=false" >> "$GITHUB_OUTPUT"', text)
                 self.assertNotIn("docs_only=true", text)
+        # ci.yml runs the sharded gate (Issue #846): verify-full aggregates the
+        # shard jobs, and `verify` still enforces scope + verify-full.
+        text = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        for job in ["host-tests", "integration-direct", "static-release",
+                    "real-core-shard-0", "real-core-shard-1",
+                    "real-core-shard-2", "real-core-shard-3"]:
+            # Shard jobs run unconditionally once scoped (no silent skip path):
+            # the disabled docs_only fast path is enforced only by verify-full.
+            self.assertIn(f"  {job}:\n    needs: scope\n", text)
+            block = re.search(rf"(?m)^  {re.escape(job)}:\n((?:    [^\n]*\n)+)", text)
+            self.assertIsNotNone(block, job)
+            self.assertNotIn("if:", block.group(1).split("steps:")[0],
+                             f"{job} must not carry a job-level if")
+        self.assertIn("    needs: [scope, host-tests, integration-direct, static-release, "
+                      "real-core-shard-0, real-core-shard-1, real-core-shard-2, real-core-shard-3]\n"
+                      "    if: always() && needs.scope.outputs.docs_only != 'true'", text)
+        self.assertIn("  verify:\n", text)
+        self.assertIn("    needs: [scope, verify-full]\n    if: always()\n", text)
+        self.assertIn('test "${{ needs.scope.result }}" = "success"', text)
+        self.assertIn('test "${{ needs.verify-full.result }}" = "success"', text)
+        for gated in ["host-tests", "integration-direct", "static-release",
+                      "real-core-shard-0", "real-core-shard-1",
+                      "real-core-shard-2", "real-core-shard-3"]:
+            self.assertIn(f'test "${{{{ needs.{gated}.result }}}}" = "success"', text)
+        self.assertIn('echo "docs_only=false" >> "$GITHUB_OUTPUT"', text)
+        self.assertNotIn("docs_only=true", text)
 
 
 if __name__ == "__main__":
