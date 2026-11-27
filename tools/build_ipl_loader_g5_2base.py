@@ -92,6 +92,7 @@ if __package__:
         _redirect_slot36_to_body,
         _redirect_slot35_to_body,
         _redirect_slot2c_to_body,
+        _redirect_slot2b_to_body,
         unified_api_windows,
         unified_api_windows_4a,
         unified_api_windows_25,
@@ -126,6 +127,9 @@ if __package__:
         unified_api_windows_4a_25_24_36_35,
         unified_api_windows_2c,
         unified_api_windows_4a_25_24_36_35_2c,
+        unified_api_windows_2b,
+        unified_api_windows_4a_25_24_36_35_2c_2b,
+        unified_api_windows_2c_2b,
     )
     from .environment import DEPENDENCIES, executable
 else:
@@ -142,6 +146,7 @@ else:
         _redirect_slot36_to_body,
         _redirect_slot35_to_body,
         _redirect_slot2c_to_body,
+        _redirect_slot2b_to_body,
         unified_api_windows,
         unified_api_windows_4a,
         unified_api_windows_25,
@@ -176,6 +181,9 @@ else:
         unified_api_windows_4a_25_24_36_35,
         unified_api_windows_2c,
         unified_api_windows_4a_25_24_36_35_2c,
+        unified_api_windows_2b,
+        unified_api_windows_4a_25_24_36_35_2c_2b,
+        unified_api_windows_2c_2b,
     )
     from environment import DEPENDENCIES, executable
 
@@ -198,6 +206,8 @@ SPRDMA_SOURCE = ROOT / "src" / "ex_sprdma.s"
 SPRDMA_ENTRY = "ex_sprdma_entry"
 IRQON_SOURCE = ROOT / "src" / "ex_irqon.s"
 IRQON_ENTRY = "ex_irqon_entry"
+RCROFF_SOURCE = ROOT / "src" / "ex_rcroff.s"
+RCROFF_ENTRY = "ex_rcroff_entry"
 BANK0_CFG = ROOT / "src" / "bank0.cfg"
 
 ROM_STEM = "dev-ipl-loader-g5-not-compatible"
@@ -210,6 +220,7 @@ EXP_LABELS = ("api_slot_02", "api_unimplemented", "cd_base_2base_entry",
               "api_slot_36", "ex_satclr_entry",
               "api_slot_35", "ex_sprdma_entry",
               "api_slot_2C", "ex_irqon_entry",
+              "api_slot_2B", "ex_rcroff_entry",
               "experimental_selection")
 ALL_LABELS = tuple(dict.fromkeys(list(LOADER_REQUIRED) + list(EXP_LABELS)))
 
@@ -345,6 +356,7 @@ def _g5_leaf_names(variant: str) -> list:
               f"cd_read_link_{variant}.o", f"ex_memopen_{variant}.o",
               f"ex_scrmod_{variant}.o", f"ex_dotmod_{variant}.o", f"ex_satclr_{variant}.o",
               f"ex_sprdma_{variant}.o", f"ex_irqon_{variant}.o",
+              f"ex_rcroff_{variant}.o",
               f"ipl_loader_g5_glue_{variant}.o", f"ipl_loader_{variant}.o",
               "bank0-ipl-loader-g5.cfg",
               f"bank0-{variant}-g5.bin", f"ipl-loader-g5-{variant}.lbl",
@@ -427,7 +439,7 @@ def _normalize_defines(defines) -> tuple:
 def g5_manifest(sel: int, track: int, mode: str, variant: str, defines: list,
                 data: bytes, symbols: dict, link_labels: dict, rom_name: str,
                 private_input: bool = False, cd_read: str = "commercial",
-                cd_4a: str = "stub", cd_25: str = "stub", cd_24: str = "stub", cd_36: str = "stub", cd_35: str = "stub", cd_2c: str = "stub") -> dict:
+                cd_4a: str = "stub", cd_25: str = "stub", cd_24: str = "stub", cd_36: str = "stub", cd_35: str = "stub", cd_2c: str = "stub", cd_2b: str = "stub") -> dict:
     # `defines` must be the canonical argv from _normalize_defines, so this
     # strict equality classifies exactly the build ca65 performed (MEDIUM-1:
     # no guessing from substrings like ["-I", "IPL_PUBLIC"]).
@@ -453,7 +465,8 @@ def g5_manifest(sel: int, track: int, mode: str, variant: str, defines: list,
                                 + (["src/ex_dotmod.s"] if cd_24 == "experimental" else [])
                                 + (["src/ex_satclr.s"] if cd_36 == "experimental" else [])
                                 + (["src/ex_sprdma.s"] if cd_35 == "experimental" else [])
-                                + (["src/ex_irqon.s"] if cd_2c == "experimental" else [])),
+                                + (["src/ex_irqon.s"] if cd_2c == "experimental" else [])
+                                + (["src/ex_rcroff.s"] if cd_2b == "experimental" else [])),
         "defines": list(defines), "symbols": dict(symbols), "labels": dict(link_labels),
         "pinned_cc65": DEPENDENCIES["cc65"]["revision"],
         "pinned_geargrafx": DEPENDENCIES["geargrafx"]["revision"],
@@ -469,13 +482,15 @@ def g5_manifest(sel: int, track: int, mode: str, variant: str, defines: list,
                                 + (["$24"] if cd_24 == "experimental" else [])
                                 + (["$36"] if cd_36 == "experimental" else [])
                                 + (["$35"] if cd_35 == "experimental" else [])
-                                + (["$2C"] if cd_2c == "experimental" else [])),
+                                + (["$2C"] if cd_2c == "experimental" else [])
+                                + (["$2B"] if cd_2b == "experimental" else [])),
         "cd_4a": cd_4a,
         "cd_25": cd_25,
         "cd_24": cd_24,
         "cd_36": cd_36,
         "cd_35": cd_35,
         "cd_2c": cd_2c,
+        "cd_2b": cd_2b,
         "reference_jsr": "0/81", "abi_verified": "0/81",
         "private_media_used": bool(private_input),
     }
@@ -500,7 +515,8 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
                             cd_24: str = "stub",
                             cd_36: str = "stub",
                             cd_35: str = "stub",
-                            cd_2c: str = "stub"):
+                            cd_2c: str = "stub",
+                            cd_2b: str = "stub"):
     """Return (rom_path, symbols). `sel` is the 16-bit INDEX 01 LBA.
 
     `defines` selects the loader format through an explicit whitelist
@@ -533,9 +549,26 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
     SIMULATED separation) or "experimental" (Issue #54 D2 limited-functional
     body, $E084 -> JMP ex_irqon_entry: CR R05 bit3 set via the shared $2502
     shadow, $20F3/$20F7 + CPU I + IDR untouched). Anything else is refused.
-    Only the ($2C-only) and (full $4A+$25+$24+$36+$35+$2C) experimental
-    combinations are supported; any other cd_2c="experimental" combination
-    is refused fail-closed (bounded variant lattice, no power-set growth).
+    Only the ($2C-only, cd_2b stub), (full $4A+$25+$24+$36+$35+$2C,
+    cd_2b stub), and ($2C+$2B chain, cd_2b experimental, all others stub)
+    experimental combinations are supported; any other cd_2c="experimental"
+    combination is refused fail-closed (bounded variant lattice, no power-set
+    growth). Full ExpG ($4A+$25+$24+$36+$35+$2C+$2B) is refused on BOOT
+    overflow (see cd_2b; tracked in #843).
+    `cd_2b` selects the $2B wiring: "stub" (default; the $E081 table entry
+    stays on the linked fallback stub, preserving every existing test and the
+    SIMULATED separation) or "experimental" (Issue #53 D2 limited-functional
+    body, $E081 -> JMP ex_rcroff_entry: CR R05 bit2 clear via the shared
+    $2502 shadow, bit3 preserved, $20F3/$20F7 + CPU I + IDR + RCR R06
+    untouched). Anything else is refused. Only the ($2B-only, all others
+    stub) and ($2C+$2B chain, all others stub) experimental combinations
+    are supported; any other cd_2b="experimental" combination is refused
+    fail-closed (bounded variant lattice, no power-set growth). The full
+    ExpG ($4A+$25+$24+$36+$35+$2C+$2B) overflows the $F000-$FFF5 BOOT+CODE
+    budget by 19 bytes (ExpF slack 25 bytes, $2B body 44 bytes; linker
+    overflow proved) and is refused fail-closed until a BOOT-saving
+    follow-up (CR-family commonization) lands; the $2C->$2B synthetic
+    chain reuses the $2C+$2B image.
     """
     if cd_read not in ("commercial", "link"):
         raise ValueError("cd_read must be 'commercial' or 'link'")
@@ -551,15 +584,27 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
         raise ValueError("cd_35 must be 'stub' or 'experimental'")
     if cd_2c not in ("stub", "experimental"):
         raise ValueError("cd_2c must be 'stub' or 'experimental'")
-    if cd_2c == "experimental" and not (
+    if cd_2b not in ("stub", "experimental"):
+        raise ValueError("cd_2b must be 'stub' or 'experimental'")
+    if cd_2c == "experimental" and cd_2b == "stub" and not (
             (cd_4a == "stub" and cd_25 == "stub" and cd_24 == "stub"
              and cd_36 == "stub" and cd_35 == "stub")
             or (cd_4a == "experimental" and cd_25 == "experimental"
                 and cd_24 == "experimental" and cd_36 == "experimental"
                 and cd_35 == "experimental")):
-        raise ValueError("cd_2c='experimental' supports only the $2C-only unit "
+        raise ValueError("cd_2c='experimental' (cd_2b stub) supports only the $2C-only unit "
                          "combination and the full ExpF combination "
                          "($4A+$25+$24+$36+$35+$2C); refusing unbounded lattice growth")
+    if cd_4a == "experimental" and cd_25 == "experimental" and cd_24 == "experimental" and cd_36 == "experimental" and cd_35 == "experimental" and cd_2c == "experimental" and cd_2b == "experimental":
+        raise ValueError("full ExpG ($4A+$25+$24+$36+$35+$2C+$2B) overflows the $F000-$FFF5 BOOT+CODE budget by 19 bytes "
+                         "(ExpF slack 25 bytes, $2B body 44 bytes; ld65 overflow proved); refusing until a BOOT-saving follow-up lands")
+    if cd_2b == "experimental" and not (
+            (cd_4a == "stub" and cd_25 == "stub" and cd_24 == "stub"
+             and cd_36 == "stub" and cd_35 == "stub" and cd_2c == "stub")
+            or (cd_4a == "stub" and cd_25 == "stub" and cd_24 == "stub"
+                and cd_36 == "stub" and cd_35 == "stub" and cd_2c == "experimental")):
+        raise ValueError("cd_2b='experimental' supports only the $2B-only unit "
+                         "combination and the $2C+$2B chain combination; refusing unbounded lattice growth")
     link_source = LINK_SOURCE_COMMERCIAL if cd_read == "commercial" else LINK_SOURCE_V1
     link_entry = LINK_ENTRY_COMMERCIAL if cd_read == "commercial" else LINK_ENTRY_V1
     # MAJOR-1: experimental bodies are opt-in only. A stub default must not
@@ -588,6 +633,9 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
     exp_labels.append("api_slot_2C")
     if cd_2c == "experimental":
         exp_labels.append(IRQON_ENTRY)
+    exp_labels.append("api_slot_2B")
+    if cd_2b == "experimental":
+        exp_labels.append(RCROFF_ENTRY)
     exp_labels.append("experimental_selection")
     exp_labels = tuple(exp_labels)
     all_labels = tuple(dict.fromkeys(list(LOADER_REQUIRED) + list(exp_labels)))
@@ -613,6 +661,8 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
         required_sources.append(SPRDMA_SOURCE)
     if cd_2c == "experimental":
         required_sources.append(IRQON_SOURCE)
+    if cd_2b == "experimental":
+        required_sources.append(RCROFF_SOURCE)
     required_sources = tuple(required_sources)
     for src in required_sources:
         if not src.is_file():
@@ -673,6 +723,8 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
         g5_sources.append((SPRDMA_SOURCE, []))
     if cd_2c == "experimental":
         g5_sources.append((IRQON_SOURCE, []))
+    if cd_2b == "experimental":
+        g5_sources.append((RCROFF_SOURCE, []))
     g5_sources.append((GLUE_SOURCE, exp_defs))
     for src, extra in g5_sources:
         obj = output / f"{src.stem}_{variant}.o"
@@ -728,8 +780,15 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
     if cd_2c == "experimental":
         patched = _redirect_slot2c_to_body(
             patched, symbols["api_slot_2C"], symbols[IRQON_ENTRY])
+    if cd_2b == "experimental":
+        patched = _redirect_slot2b_to_body(
+            patched, symbols["api_slot_2B"], symbols[RCROFF_ENTRY])
     slot02_addr = symbols["api_slot_02"]
-    if cd_4a == "experimental" and cd_25 == "experimental" and cd_24 == "experimental" and cd_36 == "experimental" and cd_35 == "experimental" and cd_2c == "experimental":
+    if cd_2b == "experimental" and cd_2c == "experimental":
+        allowed = unified_api_windows_2c_2b(slot02_addr)
+    elif cd_2b == "experimental":
+        allowed = unified_api_windows_2b(slot02_addr)
+    elif cd_4a == "experimental" and cd_25 == "experimental" and cd_24 == "experimental" and cd_36 == "experimental" and cd_35 == "experimental" and cd_2c == "experimental":
         allowed = unified_api_windows_4a_25_24_36_35_2c(slot02_addr)
     elif cd_2c == "experimental":
         allowed = unified_api_windows_2c(slot02_addr)
@@ -857,6 +916,14 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
         if bytes(patched[3 * 0x2C:3 * 0x2C + 3]) != \
                 bytes((0x4C, irqon_addr & 0xFF, (irqon_addr >> 8) & 0xFF)):
             raise ValueError("slot-$2C window is not the expected JMP body")
+    slot2b_window = set(range(3 * 0x2B, 3 * 0x2B + 3))
+    if cd_2b == "experimental":
+        if not (set(api_diff) & slot2b_window):
+            raise ValueError("G5 image is missing the $2B patch window; refusing silent no-op")
+        rcroff_addr = symbols[RCROFF_ENTRY]
+        if bytes(patched[3 * 0x2B:3 * 0x2B + 3]) != \
+                bytes((0x4C, rcroff_addr & 0xFF, (rcroff_addr >> 8) & 0xFF)):
+            raise ValueError("slot-$2B window is not the expected JMP body")
     proto = symbols["cd_base_2base_entry"]
     if bytes(patched[slot02_addr - 0xE000:slot02_addr - 0xE000 + SLOT02_PATCH_LEN]) != \
             bytes((0x4C, proto & 0xFF, (proto >> 8) & 0xFF, 0xEA, 0xEA)):
@@ -897,6 +964,10 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
     if cd_2c == "stub":
         if bytes(patched[at_2c:at_2c + 3]) != bytes(original[at_2c:at_2c + 3]):
             raise ValueError("$2C table entry changed; stub default must stay separate")
+    at_2b = 3 * 0x2B
+    if cd_2b == "stub":
+        if bytes(patched[at_2b:at_2b + 3]) != bytes(original[at_2b:at_2b + 3]):
+            raise ValueError("$2B table entry changed; stub default must stay separate")
     # MEDIUM-2: build the final image in memory and verify it BEFORE any
     # disk write. A failed verification leaves no .pce behind and never
     # touches a previous good ROM/manifest/trace. Each final file is then
@@ -953,6 +1024,7 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
         "slot_36_table_entry": 0xE000 + 3 * 0x36,
         "slot_35_table_entry": 0xE000 + 3 * 0x35,
         "slot_2c_table_entry": 0xE000 + 3 * 0x2C,
+        "slot_2b_table_entry": 0xE000 + 3 * 0x2B,
     }
     # MAJOR-1: record each experimental entry only when linked.
     if cd_4a == "experimental":
@@ -967,10 +1039,12 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
         link_labels[SPRDMA_ENTRY] = symbols[SPRDMA_ENTRY]
     if cd_2c == "experimental":
         link_labels[IRQON_ENTRY] = symbols[IRQON_ENTRY]
+    if cd_2b == "experimental":
+        link_labels[RCROFF_ENTRY] = symbols[RCROFF_ENTRY]
     manifest = g5_manifest(sel, track, mode, variant, canon_defines, data, symbols,
                            link_labels, rom.name, private_input=private_input,
                            cd_read=cd_read, cd_4a=cd_4a, cd_25=cd_25, cd_24=cd_24, cd_36=cd_36, cd_35=cd_35,
-                           cd_2c=cd_2c)
+                           cd_2c=cd_2c, cd_2b=cd_2b)
     _atomic_write(output / manifest_name,
                   json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8") + b"\n")
     lines = "".join(f"{name} {value:04x}\n" for name, value in symbols.items())
