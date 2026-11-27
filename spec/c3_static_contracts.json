@@ -92,7 +92,8 @@
       "src/ipl_loader_g5_glue.s",
       "src/startup_probe.s",
       "src/ex_sprdma.s",
-      "src/ex_irqon.s"
+      "src/ex_irqon.s",
+      "src/ex_rcroff.s"
     ],
     "fixture_reasons": {
       "src/ad_trans_dma_probe.s": "development-only hardware diagnostic guest (#400 / #299), not firmware code",
@@ -113,6 +114,7 @@
       "src/ex_dotmod.s": "experimental-only EX_DOTMOD B1-analogous preservation-only SIMULATED scaffold for slot $24 (Issue #46, G5 P0: entry-state preservation for the verified T=0 domain with Carry preserved exactly (T=1 entry OUT OF CONTRACT per pinned-core instruction-boundary T-consumption; PHP/PLP save is distinct from T-consumption; no T-bit operation), MPRs unchanged, SP balanced with stacked bytes not scrubbed, no VDC/VCE/MMIO writes and no work-RAM writes outside the transient caller-stack bytes (caller-side JSR 2 plus callee 4 transient equals 6 total; value-diff tracer observes changed offsets only with same-value stores invisible and the static 9-byte pin as the stronger guarantee); MPR1=$F8 is a caller precondition validated by the harness BEFORE JSR, MPR1!=$F8 is BLOCKED/out of contract); never linked into the normal/production BIOS, not firmware code",
       "src/ex_satclr.s": "experimental-only EX_SATCLR B1-analogous preservation-only SIMULATED scaffold for slot $36 (Issue #64, G5 P0: entry-state preservation with Carry preserved (verified T=0 domain; T=1 excluded), MPRs unchanged, SP balanced, no WRAM writes outside the transient caller-stack bytes and no VRAM/VDC/VCE/MMIO writes; MPR1=$F8 is a caller precondition validated by the harness BEFORE JSR, MPR1!=$F8 is BLOCKED/out of contract); never linked into the normal/production BIOS, not firmware code",
       "src/ex_irqon.s": "experimental-only EX_IRQON D2 limited-functional body for slot $2C (Issue #54, G5 P0: CR R05 bit3 set via the shared $2502 shadow with other CR bits preserved, AR=5 on the ok path (reject leaves entry AR), MPR0=$FF window + SEI, C=0 ok / C=1 reject on unseeded shadow, $20F3/$20F7 + CPU I + IDR + SR untouched; MPR1=$F8 is a caller precondition validated by the harness BEFORE JSR, MPR1!=$F8 is BLOCKED/out of contract); never linked into the normal/production BIOS, not firmware code",
+      "src/ex_rcroff.s": "experimental-only EX_RCROFF D2 limited-functional body for slot $2B (Issue #53, G5 P0: CR R05 bit2 clear via the shared $2502 shadow with other CR bits preserved including bit3, AR=5 on the ok path (reject leaves entry AR), MPR0=$FF window + SEI, C=0 ok / C=1 reject on unseeded shadow, $20F3/$20F7 + CPU I + IDR + SR + RCR R06 untouched; MPR1=$F8 is a caller precondition validated by the harness BEFORE JSR, MPR1!=$F8 is BLOCKED/out of contract); never linked into the normal/production BIOS, not firmware code",
       "src/ex_sprdma.s": "experimental-only EX_SPRDMA B1-analogous preservation-only SIMULATED scaffold for slot $35 (Issue #63, G5 P0: entry-state preservation with Carry preserved (verified T=0 domain; T=1 excluded), MPRs unchanged, SP balanced, no WRAM writes outside the transient caller-stack bytes and no VRAM/VDC/VCE/MMIO writes including no $2214/$2215 touch and no VDC #19 write; MPR1=$F8 is a caller precondition validated by the harness BEFORE JSR, MPR1!=$F8 is BLOCKED/out of contract); never linked into the normal/production BIOS, not firmware code"
     }
   },
