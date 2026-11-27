@@ -1,7 +1,7 @@
 # テスト段階化による開発効率改善：調査・設計（Issue #850）
 
 > **Scope:** 技術調査・設計・非侵襲的性能計測のみ。本番CI・Required Checks・テスト本体・CLAUDE.md・AGENTS.md の変更は含まない。
-> **Base:** `origin/main` (`d27a65ba`, Merge PR #842)。専用ブランチ `agent/test-staging-survey-20261127`。
+> **Base:** `origin/main`（調査時 `d27a65ba`, Merge PR #842）。専用ブランチ `agent/test-staging-survey-20261127`。修正時に最新 `origin/main`（`7041972e`、#848 統合）を照合し、CI 構成・分類記述を整合させた。計測値は調査時 base の実測であり改変していない。
 > **Evidence boundary:** 本書の PASS/OK は記載の証拠範囲にのみ適用される。部分計測の成功を全回帰成功として扱わない。
 > **Local media:** `./rom/` は存在せず（`ls rom/` で確認）、商用媒体・参照BIOS には一切アクセスしていない。
 
@@ -25,7 +25,7 @@
 | release 検証 | `make build MODE=release` ＋ `cmp` ＋ `tools/build.py --verify` | debug/release バイト同一、`make release` は未完成 BIOS のため常に `BLOCKED` 終了（exit 1） | CI、開発者（CONTRIBUTING 推奨手順） |
 | DEV ROM 系（opt-in） | `make dev-rom`、`dev-test`、`dev-integration`、`dev-*-integration` 等 | 256 KiB DEV ROM（81 スロット）と診断群。`bios-dev-full` が実行する範囲のみ CI 必須 | `bios-dev-full`、開発者（opt-in） |
 | 定期検証 | nightly ワークフロー | 変更検知時のみ full セット再実行（下記 1.3） | schedule / workflow_dispatch |
-| CI 外 opt-in | `routine-real-core`、`api-unimplemented-integration`、`api-entry-integration`、`slot02-return-integration`、`public-dev-gap-integration`、`dev-*-sweep` 等 | ワークフロー run ステップ allowlist 固定のため CI 未接続、または手動 large-sweep。開発者の明示的実行のみ | 開発者（opt-in） |
+| CI 外 opt-in | `routine-real-core`、`api-unimplemented-integration`、`api-entry-integration`、`slot02-return-integration`、`public-dev-gap-integration`、`dev-mul16s-sweep` 等 | ワークフロー run ステップ allowlist 固定のため CI 未接続、または手動 large-sweep。開発者の明示的実行のみ。`dev-bcdbin-sweep` / `dev-sweep` は `make dev-integration` 経由で必須 CI に含まれるためここには含めない（§1.3(f)） | 開発者（opt-in） |
 
 CONTRIBUTING.md の推奨開発者手順は `make setup` → `make build` → `make test` → `make test-real-core` → `make check` → `make clean` → `make build`（＋ release 比較）であり、**1 タスクあたり全回帰が複数回実行される構造**になっている。これが本調査の問題意識である。
 
@@ -34,7 +34,7 @@ CONTRIBUTING.md の推奨開発者手順は `make setup` → `make build` → `m
 | ワークフロー | ジョブ | timeout | 役割 |
 | --- | --- | --- | --- |
 | `ci.yml` | `scope` | 5 分 | PR コード・ツールチェーンを実行せず docs_only 判定。**現在 fast path は無効化**（`docs_only=false` 固定）。host suite が `docs/*.md` を読むため軽量パスの被覆を証明できないことが理由 |
-| `ci.yml` | `verify-full` | 60 分（#845 で 30→60 に緩和、Owner 承認済みインフラ予算） | `make setup` → `make build` → `make test` → `make test-real-core` → `make check` → release 検証 → rom_provenance 再現 → 中間 artifact handoff |
+| `ci.yml` | `scope` → `provenance` → 並列群（`host-tests` / `integration-direct` / `real-core-shard-0..3` / `static-release`）→ `verify-full`（集約） | 5 / 5 / 15〜25 / 60 分（#845 で 30→60 に緩和、Owner 承認済みインフラ予算） | #848（`origin/main` `7041972e` に統合済み）により同一テスト集合を並列実行。`host-tests`（`make test` 相当）・`integration-direct`（`integration` 22 単位）・`real-core-shard-0..3`（unittest 715 を計測重みで分割）・`static-release`（`make check`＋release＋再現）を `verify-full` が fail-closed 集約（manifest 検証・SHA/run/attempt binding・欠落/重複/未分類検出）＋中間 artifact handoff。テスト集合・Required 名に変更なし |
 | `ci.yml` | `verify`（**Required**） | 5 分 | `verify-full` の結果を強制する ruleset 用名前維持ジョブ |
 | `ci.yml` | `guard-verify`（**Required**） | 10 分 | trusted main の `artifact_guard.py` で配置・stage・verify を検証し、検証済み fixture を公開 |
 | `api-source.yml` | `scope` | 5 分 | 同上（docs_only=false 固定） |
@@ -106,7 +106,7 @@ Ruleset `protect-main` の Required Checks（全 6 件、API 照会で確認）:
 
 - real-core 変異: `block-transfer-matrix`（計測時 1017 applied / 1017 detected、3 excluded）、smoke の TII→NOP 置換 negative、各 DEV API の mutant 拒否（例: MA_MUL8U の no-CLD mutant 3/3 拒否）、`st-boundary` の 22 runs × 9 mutation kinds＋positive control。
 - host 変異: 上記 (a) の変異系テスト群。`tools/verify_build_diff.py` の same-length 置換への盲目性は文書化済み（`verify_dev_rom` のバイト同一性で補完）。
-- 長時間 sweep（`dev-bcdbin-sweep` 全 256×18 条件、`dev-sweep`、`dev-mul16s-sweep`）は CI 外 opt-in であり、L4 候補。
+- sweep の分類（推移的呼び出しで判定。直接のワークフロー呼び出しの有無だけでは判定しない）: `dev-bcdbin-sweep`（全 0..255×18 条件）と `dev-sweep`（全 0..255）は `Makefile` の `dev-integration` レシピ（`$(MAKE) dev-bcdbin-sweep` / `$(MAKE) dev-sweep`）に組み込まれ、`bios-dev-full` の `make dev-integration` 経由で**必須 CI に含まれるため L3**。`dev-mul16s-sweep` のみ Makefile コメントで "Not run by CI" の CI 外 opt-in であり **L4 候補**。
 
 ### 1.4 テスト間の依存関係
 
@@ -134,7 +134,7 @@ nightly plan（main SHA 比較）→ 変更時のみ build 節点以降を再実
 
 ### 1.5 実行時間の計測結果
 
-**凡例:** [CI] は CI 実測（#846 の baseline run `45941187061` および #848 の run `45990514643` の報告値、ubuntu-24.04）。[LOCAL] は本調査の実測（同一 worktree、Python 3.12.3、8 vCPU、`TOOLS_DIR=/tmp/oss-pce-cd-bios-tools-1000` に pin 済みツールがキャッシュ済み、`JOBS` 既定）。両者は Runner・キャッシュ状態・並列度が異なるため直接比較しない。
+**凡例:** [CI] は CI 実測（旧 serial の #846 baseline run `45941187061`、および #848 統合後の現行 CI run `45990514643` の報告値、ubuntu-24.04）。[LOCAL] は本調査の実測（同一 worktree、Python 3.12.3、8 vCPU、`TOOLS_DIR=/tmp/oss-pce-cd-bios-tools-1000` に pin 済みツールがキャッシュ済み、`JOBS` 既定）。両者は Runner・キャッシュ状態・並列度が異なるため直接比較しない。
 
 | 対象 | [CI] 実測 | [LOCAL] 実測（本調査） |
 | --- | --- | --- |
@@ -142,8 +142,8 @@ nightly plan（main SHA 比較）→ 変更時のみ build 節点以降を再実
 | `make build`（増分・キャッシュ済み） | baseline 内訳に含まれる（単独値なし） | **0.07s**（`PASS fixture structure: 8192 bytes`） |
 | host 全量（`make test` 相当） | 約 3m51s（5935 tests、run 45941187061） | **309.7s（5m11s）、Ran 5939 tests、OK (skipped=3, expected failures=3)** |
 | real-core 全量（`make test-real-core` 相当） | 約 23m50s（715 unittest で 982.107s＋直接スクリプト群） | **未計測**（全量未実行。以下の単体のみ実測） |
-| serial 合計（verify-full body） | 約 29m09s（baseline）。分散あり（23m30s の回も報告） | — |
-| 並列化後（#848、参考値） | 約 12m33s wall（host 9m59s / integration-direct 8m18s / shards 4〜7m / static-release 1m44s / verify-full 集約 1m47s）。約 57% 削減 | —（#848 は main 未統合のためローカル再現せず） |
+| serial 合計（旧 verify-full body） | 約 29m09s（baseline）。分散あり（23m30s の回も報告） | — |
+| 並列化後（#848 統合後の現行 CI） | 約 12m33s wall（run `45990514643`: host 9m59s / integration-direct 8m18s / shards 4〜7m / static-release 1m44s / verify-full 集約 1m47s）。約 57% 削減。同一テスト集合・同一 Required 名 | —（CI 構成の変更でありローカル再現対象外） |
 | `make check` 全量 | static-release 1m44s の一部（#848 並列時。単独値は baseline 内訳なし） | **2.5s**（内訳: contracts.py 0.06s、check.py 2.2s、c3＋verify_build_diff が残差） |
 | 直接スクリプト例: smoke | — | **0.27s** |
 | 直接スクリプト例: st-bypass | — | **4.0s** |
@@ -196,7 +196,7 @@ CONTRIBUTING・過去 PR の証拠報告から、エージェントは実装途�
 | --- | --- | --- | --- |
 | Q1 | Python/shell 構文チェック（変更ファイル） | `check.py` の構文節点相当 | check 全量 2.2s の部分集合 |
 | Q2 | HuC6280 構文プローブ（`.s` 変更時） | `check.py` のアセンブラ節点相当 | 同上 |
-| Q3 | 契約rogen整合（API 表変更時） | `tools/contracts.py` | **0.06s** |
+| Q3 | 契約整合（API 表変更時） | `tools/contracts.py` | **0.06s** |
 | Q4 | whitespace・配置検証（変更ファイル） | `check.py` の Git 節点相当 | 同上 |
 | Q5 | 変更ファイルに対応する host 単体ファイル | `python3 -m unittest tests.host.test_<対象>` | **0.08s**（例） |
 
@@ -231,20 +231,29 @@ L2 の予算圧迫要因は 40s 級の重い直接スクリプト（block-transf
 
 ### L3: FULL（現行全回帰と同等以上）
 
-現行の必須セットを**そのまま**実行する。削減・置換・並列化による意味変更なし。
+現行の必須セットを**無条件に**実行する。削減・置換・並列化による意味変更なし。**DEV 変更の有無を理由に必須検証を省略しない**（`api-source.yml` の `bios-dev-full` は `scope` の `docs_only=false` 固定により、非 DEV 変更でも必須実行される。現行 CI に「DEV 変更時のみ実行」の条件分岐は存在しない）。
 
 ```text
 make setup → make build → make test → make test-real-core → make check
 → release 検証（release build＋cmp＋--verify）
 → rom_provenance 再現一式
-（DEV 変更時は bios-dev-full 相当: dev-rom/test/integration 群＋ release 比較＋ release-gate-blocked）
+→ bios-dev-full 相当（無条件: dev-rom/test/integration 群＋ debug/release 比較＋ release-gate-blocked。
+  dev-integration は dev-bcdbin-sweep / dev-sweep を含む。§1.3(f)）
+→ core-harness / BCDBIN 系の該当ゲート（ローカル実行可能な範囲）
 ```
 
-現行 CI（serial 29 分級／#848 並列 12 分級）と同等以上の検証範囲を必須とする。PR・統合前の唯一の MERGE_READY 根拠。
+ローカル L3（開発者が実行する全回帰）と Required CI（6 Required Checks を生む CI 実行）は**別の証拠**として区別する。両者の関係:
+
+- ローカル L3 の範囲: 上記のローカル実行可能な必須ゲート群。provenance guard、artifact guard の trusted-main 検証、中間 artifact handoff という CI 固有の信頼境界は含まない。
+- Required CI の範囲: 上記と同等の検証を CI 環境で実行し、6 Required Checks（`bios-dev`・`verify`・`guard-bios-dev`・`guard-verify`・`guard-core-harness`・`guard-bcdbin-core`）の成功証拠を生むもの。provenance guard、artifact guard の配置・stage・verify、中間 artifact handoff を含み、ローカルでは再現できない信頼境界を含む。現行の必須検証集合（core-harness、BCDBIN、guard、release 検証を含む）を維持し、省略・代替を認めない。
+- MERGE_READY の必要条件は**ローカル L3 の成功かつ Required CI（6 件）の成功**の両方である。**ローカル L3 の成功だけでは MERGE_READY と判定しない。**
+- 同一 HEAD・同一入力・同一検証条件に対する有効な証拠の再利用は許容する（§5 の流用条件）。Required CI の省略や代替は認めない。
+
+現行 CI（旧 serial 29 分級／#848 並列統合後の 12 分級。§1.5）と同等以上の検証範囲を必須とする。
 
 ### L4: EXTENDED（現行必須外の追加検証）
 
-- 長時間 sweep（`dev-bcdbin-sweep`、`dev-sweep`、`dev-mul16s-sweep`）
+- 長時間 sweep（`dev-mul16s-sweep` 等の CI 外 sweep。"Not run by CI" が明示されたものに限る。`dev-bcdbin-sweep` / `dev-sweep` は必須 CI に含まれるため L3 であり、L4 に含めない）
 - 探索的検証・ストレステスト・追加の変異テスト（将来追加の高コスト検証の受け皿）
 - nightly の change-aware full とは別軸の、明示的 opt-in 長時間検証
 
@@ -291,6 +300,8 @@ tests/** ──→ 変更されたテスト自身＋ L3（テスト選択漏れ�
 
 **不明な変更をテスト対象外として扱わない。** 迷ったら L3。
 
+未コミット入力の取扱い（staged / unstaged / untracked / 削除・改名、BASE 取得失敗・差分取得失敗時の動作、対応表未登録・不整合時の動作、検証入力の同一性確認）は Phase 2 実装時の受入条件として Issue #852 に正式移管した（独立レビュー 6089974846 MEDIUM 1 / FOLLOW_UP）。判定失敗時は fail-closed で L3。
+
 ---
 
 ## 4. コマンド体系案
@@ -310,7 +321,7 @@ tests/** ──→ 変更されたテスト自身＋ L3（テスト選択漏れ�
 - AI エージェントが複雑な選択を毎回判断しなくてよい（`API=`・`BASE=` の 2 引数のみ）。
 - 実行開始時に**実行テスト・未実行テスト・選択理由（対応表の該当行）・検証範囲（Lx の定義）**を標準出力に明示する（選択の監査可能性）。
 - ラッパーは現行ターゲットを呼び出すだけで、テスト本体・ゲート・閾値を一切変更しない。
-- `BASE` の既定は `origin/main` の merge-base。HEAD・入力・環境・ツールチェーン・検証条件のいずれかが異なる結果の流用はしない（§5）。
+- `BASE` の既定は `origin/main` の merge-base。HEAD・入力・環境・ツールチェーン・検証条件のいずれかが異なる結果の流用はしない（§5）。未コミット入力の詳細な取扱いは #852 に移管。
 
 ---
 
@@ -321,7 +332,7 @@ tests/** ──→ 変更されたテスト自身＋ L3（テスト選択漏れ�
 | 実装途中（編集〜初回確認） | L0・L1 | 30 秒〜2 分でフィードバック。現行の「不安からの全回帰」を置換 |
 | 修正完了時 | L2 | 間接影響の確認（5 分枠） |
 | 独立コードレビュー後 | L2 または内容に応じた L3 | レビュー指摘が共有部・ABI に及ぶ場合は L3（§3.3） |
-| PR | L3 | 現行全回帰と同等以上。唯一の MERGE_READY 根拠 |
+| PR | L3（ローカル）＋ Required CI 6 件の成功 | ローカル全回帰と CI 証拠の両方が必要。ローカル L3 のみでは MERGE_READY としない（§2 L3） |
 | 統合前 | 対象 HEAD＋最新 main との整合を確認した L3 | main 進展時の drift 検出（現行 CONTRIBUTING の branch 方針と同一） |
 | 定期検証 | L4（＋現行 nightly） | 長時間・探索的検証の受け皿 |
 
@@ -348,7 +359,7 @@ tests/** ──→ 変更されたテスト自身＋ L3（テスト選択漏れ�
 - [ ] 商用媒体・`./rom` にアクセスしない（本調査の計測は合成 fixture のみ。CI への商用実行許可を与えない）
 - [ ] docs-only fast path を安易に導入しない（現行の無効化を維持。host suite の docs 読込が被覆証明の blocker であることを確認済み）
 - [ ] 部分テストの成功を全回帰成功として扱わない（L0〜L2 の PASS 表示に「Lx PARTIAL、L3 ではない」旨を明示する設計）
-- [ ] 部分テストのみで MERGE_READY と判定しない（MERGE_READY の根拠は L3 のみ）
+- [ ] 部分テストのみで MERGE_READY と判定しない（MERGE_READY の必要条件はローカル L3 の成功かつ Required CI 6 件の成功。ローカル L3 のみ・Required CI の省略や代替は認めない）
 
 ### 6.2 テスト選択漏れの検出（fail-closed 設計）
 
@@ -361,7 +372,7 @@ tests/** ──→ 変更されたテスト自身＋ L3（テスト選択漏れ�
 
 - 対応表の陳腐化（新規 API 追加時の登録漏れ）→ 上記 6.2-1,2 の二重構造で緩和。登録漏れは L3 実行コストの増加として顕在化し、安全性の低下としては顕在化しない設計。
 - L2 の選別誤り（関連テストの過小選択）→ L2 は MERGE_READY 根拠にならないため、誤りは開発ループの手戻りに留まる。
-- 所要時間のばらつき（CI 23〜29 分の分散、runner 差）→ 段階の時間は性能目標であり SLO ではない。超過時は検証を削らず、超過事実を記録して対応表・選別の見直し材料にする。
+- 所要時間のばらつき（旧 serial 23〜29 分の分散、#848 並列統合後の 12 分級、runner 差）→ 段階の時間は性能目標であり SLO ではない。超過時は検証を削らず、超過事実を記録して対応表・選別の見直し材料にする。
 
 ---
 
@@ -375,8 +386,8 @@ tests/** ──→ 変更されたテスト自身＋ L3（テスト選択漏れ�
 | 修正 1 回あたりのテスト時間 | host 全量 5 分（LOCAL 実測）＋ real-core 全量（CI 20 分級。LOCAL 全量は未計測） | **L1: 1〜2 分**（dev-rom 0.9s＋API 実コア 4.9s×数本＋host パターン。API 1 件の代表例で推定） |
 | レビューループ 1 周 | 全回帰反復（現行推奨手順で host＋real-core＋check＋clean＋build） | **L2: 5 分以内**（関連 subset のみ。重スクリプト除外が条件） |
 | エージェント 1 タスクの総テスト時間 | 全回帰 × N 回（N はエージェントの判断依存で不定） | L0/L1 × N ＋ L2 × 1〜2 ＋ L3 × 1（PR 前）。**全回帰回数を 1〜2 回に固定** |
-| 全回帰実行回数 | 任务あたり複数回（習慣的反復） | **PR 前・統合前の 1〜2 回**（同一 HEAD の有効結果は流用） |
-| CPU 使用時間 | serial 29 分級（CI）。LOCAL 全量は未計測 | L0〜L2 の subset 分のみ。L3 は現行と同一（削減なし） |
+| 全回帰実行回数 | 任务あたり複数回（習慣的反復） | **PR 前・統合前の 1〜2 回**（同一 HEAD の有効結果は流用）。PR 時は Required CI 6 件も実行（省略・代替不可） |
+| CPU 使用時間 | 旧 serial 29 分級／現行並列 12 分級（CI）。LOCAL 全量は未計測 | L0〜L2 の subset 分のみ。L3 は現行と同一（削減なし） |
 | テスト選択の正確性 | エージェントの判断依存（ばらつき） | 対応表による決定的選択＋ L3 の二重捕捉 |
 | 運用負担 | 「どこまで回すか」の判断コスト | コマンド選択のみ（`API=`・`BASE=`） |
 | 選択漏れリスク | 過小実行の可能性（統制なし） | fail-closed＋L3 必須化で現行以下に抑制（§6.2） |
@@ -396,7 +407,7 @@ tests/** ──→ 変更されたテスト自身＋ L3（テスト選択漏れ�
 
 1. **Phase 0（本 Issue #850）**: 調査・設計・非侵襲計測。成果物は本ドキュメント＋調査 PR。main への機能変更なし。
 2. **Phase 1**: 対応表 v0（§3.2）の作成とレビュー。対象は現行 API（DEV 18＋ stubs）と主要モジュール。成果物は docs＋表ファイル。CI・Makefile 変更なし。
-3. **Phase 2**: ラッパーターゲット（§4）の追加。既存ターゲットの呼び出しのみ。新規検証ロジックなし。CI 接続なし（ローカル専用）。
+3. **Phase 2**: ラッパーターゲット（§4）の追加。既存ターゲットの呼び出しのみ。新規検証ロジックなし。CI 接続なし（ローカル専用）。受入条件（未コミット入力の取扱い: staged/unstaged/untracked/削除・改名、BASE・差分取得失敗時、対応表未登録・不整合時、入力同一性確認）は Issue #852 に移管済み（独立レビュー 6089974846 MEDIUM 1 / FOLLOW_UP）。
 4. **Phase 3**: AI 運用ルール（§5）の試行と計測（複数代表パターンでの L0〜L2 実測、選択正確性、漏れ検出の動作確認）。
 5. **Phase 4（別 Issue）**: 効果・安全性の再評価を経て、CI への接続要否を判断。要否判断自体を Owner 承認事項とする。本調査は Phase 4 の実施を承認しない。
 
@@ -407,10 +418,10 @@ tests/** ──→ 変更されたテスト自身＋ L3（テスト選択漏れ�
 ## 9. 未解決事項
 
 - [ ] `make setup` の新規取得時間（本調査ではキャッシュ済みのため未計測。#849 の範囲）
-- [ ] LOCAL 環境での `make test-real-core` 全量時間（未計測。重スクリプト群の合 replay 値は CI の 23m50s のみ）
+- [ ] LOCAL 環境での `make test-real-core` 全量時間（未計測。重スクリプト群の合計値は旧 serial CI の 23m50s のみ）
 - [ ] `dev-test` パターン（`test_api*.py`＋`test_ma*.py`）の LOCAL 実測時間
 - [ ] L2 関連 subset（例: G5 系 `test_g5_*`＋直接スクリプト数本）の実測時間
-- [ ] #848 統合後の main における CI 各段階時間（比較基準の更新。#848 は OPEN のため本書は serial baseline を基準とする）
+- [x] #848 の統合状態（`origin/main` `7041972e` に統合済みを確認。現行 CI の各段階時間は §1.5 の並列行に記録。今後の比較基準は統合後の現行 CI とする。旧 serial 値は履歴として保持）
 - [ ] 対応表 v0 の網羅性（81 スロット× host/integration の完全マッピングは Phase 1 の作業）
 - [ ] テストタグ方式（方式 C）の将来性判断（Phase 3 以降）
 - [ ] Windows/WSL 環境は対象外（Linux CI のみが必須環境。`docs/testing.md` の既定と同一）
@@ -422,7 +433,7 @@ tests/** ──→ 変更されたテスト自身＋ L3（テスト選択漏れ�
 **推奨: 採用（Phase 1→2→3 の順に段階導入）。** 理由:
 
 1. **安全性の不変条件を満たせる設計**であること（§6.1 の 7 項目はいずれも「現行の維持」であり、新規の緩和を含まない）。
-2. **L3 が現行全回帰と同一**であり、品質保証の削減がゼロであること。段階化は開発ループの実行順序・範囲の最適化に限定される。
+2. **L3 が現行全回帰と同一（無条件実行）**であり、品質保証の削減がゼロであること。MERGE_READY の必要条件をローカル L3 の成功かつ Required CI 6 件の成功とし、ローカル L3 のみでの判定・Required CI の省略や代替を認めない。段階化は開発ループの実行順序・範囲の最適化に限定される。
 3. **効果の根拠が実測断片で裏付け**られること（L0/L1 の構成要素はいずれも秒オーダーで実測済み）。
 4. **#846/#848/#849 と直交**し、競合・重複がないこと（CI 並列化は wall-time 短縮、ツールチェーン事前ビルドは setup 短縮、本調査は開発ループの実行回数・範囲の最適化）。
 5. **fail-closed の漏れ検出**（§6.2）により、選択漏れリスクが現行（統制なしの過小実行）より低減する見込みであること。
@@ -433,7 +444,7 @@ tests/** ──→ 変更されたテスト自身＋ L3（テスト選択漏れ�
 
 ## 11. 作業記録（証拠境界の明示）
 
-- 実行したこと: `origin/main` 確認（`d27a65ba`）、既存 Issue/PR 調査（#845/#846/#848/#849 と重複なし）、AGENTS.md・CONTRIBUTING.md・`docs/testing.md`・`docs/building.md` 確認、Issue #850 起票、専用ブランチ作成、Makefile・全ワークフロー・ruleset（Required 6 件）調査、LOCAL 計測（§1.5 の表）。
+- 実行したこと: `origin/main` 確認（調査時 `d27a65ba`、修正時最新 `7041972e`＝#848 統合済み）、既存 Issue/PR 調査（#845/#846/#848/#849 と重複なし）、AGENTS.md・CONTRIBUTING.md・`docs/testing.md`・`docs/building.md` 確認、Issue #850 起票、専用ブランチ作成、Makefile・全ワークフロー・ruleset（Required 6 件）調査、LOCAL 計測（§1.5 の表）、独立レビュー 6089974846 対応（MAJOR 2 件の設計書修正、MEDIUM 1 の #852 移管）、新 main での不変条件維持確認（docs-only 無効・JSR 0/81・VERIFIED 0/81・`release_eligible=false`）。
 - 実行していないこと: 本番 CI・Required Checks・テスト本体・CLAUDE.md・AGENTS.md の変更（なし）、`./rom`・商用媒体へのアクセス（`rom/` 不在を確認のみ）、`main` への統合（Owner 承認なしに行わない）。
 - 未計測の明示: setup 新規取得時間、LOCAL real-core 全量時間（§9 に記録し、PASS と主張しない）。
 
