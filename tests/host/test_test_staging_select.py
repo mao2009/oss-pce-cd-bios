@@ -4,6 +4,7 @@ Static only: no cc65, no Geargrafx core, no private media, no network. Git
 fixtures are synthetic temporary repositories. Every test must RUN (never
 SKIP): a skip is never reported as success here.
 """
+import copy
 import json
 import subprocess
 import sys
@@ -405,6 +406,295 @@ class ApiTests(unittest.TestCase):
         git(self.repo, "add", "src/common/other.s")
         selection, _ = SEL.run_selector(str(self.repo), "vbase",
                                         map_path=self.map_path, api="MA_MUL8U")
+        self.assertEqual(selection.level, "L3")
+        self.assertTrue(selection.fallback)
+
+
+# ---------------------------------------------------------------------------
+# Canonical Task-A map loader connection tests (Issue #854 dependency).
+#
+# These tests pin the canonical envelope (name test-staging-map-v0,
+# schema_version 1, 40-hex base_commit fingerprint, exact Required Checks,
+# first-match-wins classification, 81 slot-number identifiers) against
+# synthetic fixtures shaped like the Task-A map. They run against
+# SEL.CANONICAL_SOURCE_HEAD (interim pre-#856-merge pin, read-only fetch);
+# after Task-A integrates, the pin and these tests re-run on the merged map.
+# ---------------------------------------------------------------------------
+
+CANONICAL_PIN = "cf428568dceecc6f7ed0607a182f222f28148e54"
+
+
+def canonical_tests(host=(), scripts=(), targets=(), static=()):
+    return {"host": list(host), "integration_scripts": list(scripts),
+            "dev_targets": list(targets), "static_units": list(static)}
+
+
+def canonical_entry(entry_id, match_type, match, level, tests,
+                    reason="fixture reason", category="dev-api-impl",
+                    ci_class="required-ci", required_ci=True):
+    return {"id": entry_id, "match_type": match_type, "match": match,
+            "level": level, "category": category, "ci_class": ci_class,
+            "required_ci": required_ci, "tests": tests, "reason": reason}
+
+
+def canonical_l1_entry():
+    return canonical_entry(
+        "fixture-slot-3F", "exact", "src/overrides/slot_3F.s", "L1",
+        canonical_tests(host=["tests.host.test_api_contracts",
+                              "tests.host.test_api_table"],
+                        targets=["dev-rom"]),
+        reason="fixture DEV-implemented slot")
+
+
+def canonical_fallback_entry():
+    return canonical_entry(
+        "fallback-unclassified", "glob", "**", "L3",
+        canonical_tests(targets=["test", "check"]),
+        reason="fixture catch-all", category="shared-code")
+
+
+def canonical_slots(dev_name="MA_MUL8U"):
+    slots = []
+    for number in range(81):
+        if number == 0x3F:
+            slots.append({
+                "slot": number, "name": dev_name, "dev_implemented": True,
+                "dev_source": "src/overrides/slot_3F.s", "level": "L1",
+                "tests": canonical_tests(
+                    host=["tests.host.test_api_contracts"],
+                    targets=["dev-rom"]),
+                "reason": "fixture DEV slot"})
+        else:
+            slots.append({
+                "slot": number, "name": f"SLOT_{number:02X}",
+                "dev_implemented": False, "dev_source": None,
+                "level": "L3",
+                "tests": canonical_tests(
+                    host=["tests.host.test_api_contracts"],
+                    targets=["test"]),
+                "reason": f"fixture slot {number}"})
+    return slots
+
+
+def canonical_doc(entries=None, slots=None, name="test-staging-map-v0",
+                  version=1, base_commit="9" * 40, required_checks=None,
+                  static_units=("make-check:contracts",)):
+    if entries is None:
+        entries = [canonical_l1_entry(), canonical_fallback_entry()]
+    if required_checks is None:
+        required_checks = sorted(SEL.REQUIRED_CI_CHECKS)
+    return {"name": name, "schema_version": version,
+            "base_commit": base_commit,
+            "required_checks": list(required_checks),
+            "static_units_defined": list(static_units),
+            "entries": entries, "fallback": copy.deepcopy(entries[-1]),
+            "api_slots": slots if slots is not None else canonical_slots()}
+
+
+class CanonicalLoaderTests(unittest.TestCase):
+    def setUp(self):
+        self.repo = make_repo("src/overrides/slot_3F.s")
+        write_file(self.repo, "src/overrides/slot_3F.s", "changed\n")
+        git(self.repo, "commit", "-qam", "change")
+
+    def select_canonical(self, document, **kwargs):
+        map_path = write_map(self.repo, document)
+        kwargs.setdefault("map_path", map_path)
+        kwargs.setdefault("loader", SEL.CanonicalJsonMapLoader())
+        return SEL.run_selector(str(self.repo), "vbase", **kwargs)
+
+    def assert_inconsistent(self, document):
+        map_path = write_map(self.repo, document)
+        with self.assertRaises(SEL.MapError):
+            SEL.CanonicalJsonMapLoader().load(map_path)
+        selection, _ = SEL.run_selector(
+            str(self.repo), "vbase", map_path=map_path,
+            loader=SEL.CanonicalJsonMapLoader())
+        self.assertEqual(selection.level, "L3")
+        self.assertTrue(selection.fallback)
+        self.assertEqual(selection.fallback_reason,
+                         "map-missing-or-inconsistent")
+
+    def test_dependency_head_pin_is_recorded(self):
+        # Interim pre-#856-merge pin: read-only fetch of
+        # origin/agent/test-staging-map-v0-20261128. Final verification
+        # after Task-A integration updates this to the merged HEAD.
+        self.assertEqual(SEL.CANONICAL_SOURCE_HEAD, CANONICAL_PIN)
+        self.assertRegex(SEL.CANONICAL_SOURCE_HEAD, r"^[0-9a-f]{40}$")
+        self.assertEqual(SEL.CANONICAL_MAP_NAME, "test-staging-map-v0")
+        self.assertEqual(SEL.CANONICAL_SCHEMA_VERSION, 1)
+
+    def test_canonical_l1_selects_partial_with_required_env(self):
+        selection, report = self.select_canonical(canonical_doc())
+        self.assertEqual(selection.level, "L1")
+        self.assertFalse(selection.fallback)
+        self.assertEqual(selection.fallback_reason, "none")
+        self.assertTrue(selection.partial)
+        self.assertTrue(selection.selected)
+        for command in selection.selected:
+            self.assertEqual(command["env"],
+                             {SEL.REQUIRE_CC65_ENV: "1"},
+                             f"cc65 gate dropped on {command['argv']}")
+        self.assertIn("PARTIAL", report)
+        self.assertIn("never MERGE_READY evidence on its own", report)
+        self.assertIn("SKIP-POLICY", report)
+
+    def test_first_match_wins_over_covering_glob(self):
+        # Canonical semantics: entry order decides, not the max level.
+        # (The provisional loader would take max -> L3 here.)
+        cover = canonical_entry(
+            "fixture-cover", "glob", "src/overrides/*.s", "L3",
+            canonical_tests(targets=["test"]),
+            reason="fixture covering glob", category="shared-code")
+        document = canonical_doc(
+            entries=[canonical_l1_entry(), cover,
+                     canonical_fallback_entry()])
+        selection, _ = self.select_canonical(document)
+        self.assertEqual(selection.level, "L1")
+        self.assertFalse(selection.fallback)
+        self.assertTrue(any("fixture-slot-3F" in reason
+                            for reason in selection.reasons))
+        self.assertFalse(any("fixture-cover" in reason
+                             for reason in selection.reasons))
+
+    def test_unknown_file_falls_back_to_l3(self):
+        write_file(self.repo, "docs/brand_new.md")
+        git(self.repo, "add", "docs/brand_new.md")
+        git(self.repo, "commit", "-qam", "docs")
+        selection, report = self.select_canonical(canonical_doc())
+        self.assertEqual(selection.level, "L3")
+        self.assertTrue(selection.fallback)
+        self.assertEqual(selection.fallback_reason, "map-rule-requires-L3")
+        self.assertIn("LOCAL-L3 vs REQUIRED-CI", report)
+
+    def test_provisional_envelope_is_never_canonical(self):
+        # Isolation: the provisional envelope must not be misread as the
+        # canonical format (and vice versa -- see MapTests above).
+        self.assert_inconsistent(
+            provisional_map([l1_rule("src/overrides/*.s")]))
+
+    def test_bad_name_version_fingerprint_rejected(self):
+        cases = {
+            "name": {"name": "test-staging-map-something-else"},
+            "schema_version": {"version": 2},
+            "base_commit": {"base_commit": "not-a-fingerprint"},
+            "required_checks": {"required_checks": ["bios-dev"]},
+            "static_units": {"static_units": []},
+        }
+        for label, override in cases.items():
+            with self.subTest(label=label):
+                self.assert_inconsistent(canonical_doc(**override))
+
+    def test_fallback_must_be_last_l3_catch_all(self):
+        entries = [canonical_fallback_entry(), canonical_l1_entry()]
+        self.assert_inconsistent(canonical_doc(entries=entries))
+        bad_level = canonical_doc()
+        bad_level["fallback"] = copy.deepcopy(canonical_l1_entry())
+        bad_level["entries"][-1] = copy.deepcopy(canonical_l1_entry())
+        self.assert_inconsistent(bad_level)
+
+    def test_non_81_slot_table_rejected(self):
+        self.assert_inconsistent(
+            canonical_doc(slots=canonical_slots()[:80]))
+        dup = canonical_slots()
+        dup[0] = copy.deepcopy(dup[1])
+        self.assert_inconsistent(canonical_doc(slots=dup))
+
+    def test_unknown_commands_rejected(self):
+        bad_target = canonical_doc(entries=[canonical_entry(
+            "bad-target", "exact", "src/overrides/slot_3F.s", "L1",
+            canonical_tests(targets=["test-magic-does-not-exist"])),
+            canonical_fallback_entry()])
+        self.assert_inconsistent(bad_target)
+        bad_host = canonical_doc(entries=[canonical_entry(
+            "bad-host", "exact", "src/overrides/slot_3F.s", "L1",
+            canonical_tests(host=["tests.host.test_no_such_module_xyz"])),
+            canonical_fallback_entry()])
+        self.assert_inconsistent(bad_host)
+        bad_script = canonical_doc(entries=[canonical_entry(
+            "bad-script", "exact", "src/overrides/slot_3F.s", "L1",
+            canonical_tests(scripts=["tests/integration/no-such.py"])),
+            canonical_fallback_entry()])
+        self.assert_inconsistent(bad_script)
+        bad_static = canonical_doc(entries=[canonical_entry(
+            "bad-static", "exact", "src/overrides/slot_3F.s", "L1",
+            canonical_tests(static=["make-check:no-such-unit"])),
+            canonical_fallback_entry()])
+        self.assert_inconsistent(bad_static)
+
+    def test_l4_entry_escalated_to_full_l3(self):
+        l4_entry = canonical_entry(
+            "fixture-optin", "exact", "src/overrides/slot_3F.s", "L4",
+            canonical_tests(scripts=["tests/integration/" +
+                                     "dev_getver_multi_input.py"],
+                            targets=["dev-rom"]),
+            reason="fixture opt-in", category="real-core")
+        selection, _ = self.select_canonical(
+            canonical_doc(entries=[l4_entry, canonical_fallback_entry()]))
+        self.assertEqual(selection.level, "L3")
+        self.assertTrue(selection.fallback)
+        self.assertEqual(selection.fallback_reason, "map-rule-requires-L3")
+        argvs = [" ".join(cmd["argv"]) for cmd in selection.selected]
+        # Full local-L3 sequence, not the discarded L4 opt-in commands.
+        self.assertIn("make test", argvs)
+        self.assertIn("make test-real-core", argvs)
+        self.assertFalse(any("dev_getver" in argv for argv in argvs))
+        self.assertTrue(any("canonical-L4-escalated-to-L3" in reason
+                            for reason in selection.reasons))
+
+    def test_empty_tests_l3_entry_runs_full_l3(self):
+        repo = make_repo(".github/workflows/pages.yml")
+        write_file(repo, ".github/workflows/pages.yml", "changed\n")
+        git(repo, "commit", "-qam", "pages")
+        empty = canonical_entry(
+            "fixture-pages", "exact", ".github/workflows/pages.yml",
+            "L3", canonical_tests(), reason="fixture CI page",
+            category="ci-workflow")
+        map_path = write_map(repo, canonical_doc(
+            entries=[empty, canonical_fallback_entry()]))
+        selection, _ = SEL.run_selector(
+            str(repo), "vbase", map_path=map_path,
+            loader=SEL.CanonicalJsonMapLoader())
+        self.assertEqual(selection.level, "L3")
+        self.assertTrue(selection.fallback)
+        argvs = [" ".join(cmd["argv"]) for cmd in selection.selected]
+        self.assertIn("make test", argvs)
+        self.assertIn("make check", argvs)
+
+    def test_slot_number_identifiers_resolve_to_same_subset(self):
+        seen = {}
+        for api in ("MA_MUL8U", "63", "0x3F", "0x3f", "3F",
+                    "3f", "$3F"):
+            with self.subTest(api=api):
+                selection, _ = self.select_canonical(canonical_doc(),
+                                                     api=api)
+                self.assertEqual(selection.level, "L1")
+                self.assertFalse(selection.fallback)
+                seen[api] = sorted(tuple(cmd["argv"])
+                                   for cmd in selection.selected)
+        for api, argvs in seen.items():
+            with self.subTest(api=api):
+                self.assertEqual(argvs, seen["MA_MUL8U"])
+        # The slot subset is the slot's own commands (dev-rom + the slot
+        # host pattern), not the whole entry command set.
+        self.assertIn(("make", "dev-rom"), seen["MA_MUL8U"])
+        self.assertTrue(any("test_api_contracts.py" in argv
+                            for argv in seen["MA_MUL8U"]))
+        self.assertFalse(any("test_api_table.py" in argv
+                             for argv in seen["MA_MUL8U"]))
+
+    def test_unknown_api_falls_back_to_l3(self):
+        selection, _ = self.select_canonical(canonical_doc(), api="NOPE")
+        self.assertEqual(selection.level, "L3")
+        self.assertTrue(selection.fallback)
+        self.assertIn("NOPE", selection.fallback_reason)
+
+    def test_api_scoping_out_of_scope_file_falls_back_to_l3(self):
+        write_file(self.repo, "docs/other.md")
+        git(self.repo, "add", "docs/other.md")
+        git(self.repo, "commit", "-qam", "docs")
+        selection, _ = self.select_canonical(canonical_doc(),
+                                             api="MA_MUL8U")
         self.assertEqual(selection.level, "L3")
         self.assertTrue(selection.fallback)
 

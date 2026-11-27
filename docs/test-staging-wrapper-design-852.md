@@ -126,11 +126,45 @@ envelope `test-staging-impact-map/provisional-0` with three command kinds:
 Rules carry `pattern` (fnmatch), `level` (L0-L3), `commands`, `reason`
 (audit text), and an optional `api` tag. Depends-on Task-A: the canonical
 map format, the v0 content (§3.2 of the survey), and ownership/review live
-in Task-A. When the canonical spec lands, a new `MapLoader` replaces the
-provisional one; until then any non-provisional `format` tag raises
+in Task-A. Until then any non-provisional `format` tag raises
 `MapError` -> L3 (covered by `test_unknown_format_tag_falls_back_to_l3`).
 Nothing in the selector hardcodes Task-A's schema: `test_map_loader_is_an_
 interface` proves a third-party loader plugs in through the interface.
+
+### 4a. Canonical loader (interim, pre-#856-merge)
+
+`CanonicalJsonMapLoader` (same file, `match_mode = "first-match"`)
+validates the Task-A v0 envelope strictly and converts it to selector
+rules:
+
+- identity: `name == "test-staging-map-v0"`, `schema_version == 1`, any
+  `format` key rejected (provisional envelope is never canonical), 40-hex
+  `base_commit` fingerprint, Required Checks exactly the pinned 6;
+- entries: `exact` / `exact-list` (split per path) / `glob` with non-empty
+  `match`, level in L0-L4, known `ci_class`, bool `required_ci`, full
+  `tests` object, non-empty reason; unique ids; `fallback` is the last
+  entry with `match == "**"` at L3;
+- `api_slots`: exactly 81 rows covering slots 0-80 once, unique names,
+  `dev_source` path or null; slot-number identifiers (`63`, `0x3F`,
+  `$3F`, …) resolve to the slot name via `resolve_api()`;
+- commands: `dev_targets` must exist in the live `Makefile`, `host` refs
+  (`tests.host.MOD` or `tests/host/PATTERN.py`) must resolve, `script`
+  entries must be existing in-repo `tests/integration/*.py`, `static_units`
+  must be declared (contributing `make check`); anything else raises
+  `MapError` -> L3.
+- classification is first-match-wins in entry order; L4 entries escalate
+  to L3 running the full local-L3 sequence (L4 opt-in commands are
+  validated but discarded — never auto-selected); L3 entries with empty
+  tests likewise run the full local-L3 sequence.
+
+Dependency pin (interim): read-only fetch of
+`origin/agent/test-staging-map-v0-20261128` at `cf428568` — recorded as
+`CANONICAL_SOURCE_HEAD` and pinned by
+`test_dependency_head_pin_is_recorded`. The loader was verified against
+that revision's schema (232 rules / 81 slots load from the fetched
+revision read-only). This is **not** final verification: after Task-A
+(#856) integrates, the pin must advance to the merged HEAD and the
+`CanonicalLoaderTests` (14 tests) plus `make check` / `make test` re-run.
 
 ## 5. Issue #852 acceptance matrix
 
@@ -175,16 +209,21 @@ interface` proves a third-party loader plugs in through the interface.
 ## 7. Validation record
 
 Prototype: `tools/test_staging_select.py` (~470 lines, stdlib only).
-Tests: `tests/host/test_test_staging_select.py`, 33 tests, all synthetic
+Tests: `tests/host/test_test_staging_select.py`, 47 tests, all synthetic
 (temp git repos + injected failing runners; no cc65, no core, no network).
 
 | Command | Result | Timing |
 | --- | --- | --- |
-| `python3 -m unittest tests.host.test_test_staging_select` | OK (33 tests) | ~1.1 s |
-| `OSS_PCE_REQUIRE_CC65=1 python3 -m unittest tests.host.test_test_staging_select` (required gate) | OK (33 tests) | ~1.1 s |
-| RED proof, mutation A (drop `OSS_PCE_REQUIRE_CC65=1` from emitted env) | FAIL (2 failures), restored -> OK | — |
+| `python3 -m unittest tests.host.test_test_staging_select` | OK (47 tests) | ~2.5 s |
+| `OSS_PCE_REQUIRE_CC65=1 python3 -m unittest tests.host.test_test_staging_select` (required gate) | OK (47 tests) | ~2.5 s |
+| RED proof, mutation A (drop `OSS_PCE_REQUIRE_CC65=1` from emitted env) | FAIL (3 failures), restored -> OK | — |
 | RED proof, mutation B (untracked no longer forces L3) | FAIL (1 failure), restored -> OK | — |
 | `make check` (contracts + check + c3 + verify_build_diff) | PASS | ~4.8 s |
+
+Interim canonical-loader record (pre-#856-merge, same commands plus): 14
+`CanonicalLoaderTests` OK on this branch; the fetched Task-A revision
+(`cf428568`, read-only) loads as 232 rules / 81 api slots; slot-number
+spellings (`63`, `0x3F`, `$3F`, …) resolve to one subset.
 
 Residual risks: (1) the provisional envelope is throwaway — Task-A must
 define the canonical format and a loader for it; (2) wrapper `Makefile`

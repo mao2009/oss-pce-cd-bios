@@ -265,9 +265,19 @@ class MapLoader:
     inconsistent raises MapError, which the caller turns into fail-closed L3.
     """
 
+    # How select() matches rules to files. "max" keeps the highest matching
+    # level (provisional semantics); "first-match" uses entry order
+    # (Task-A canonical semantics). Loaders declare their mode; select()
+    # defaults to "max" so existing callers are unaffected.
+    match_mode = "max"
+
     def load(self, path):
         """Return (rules, apis) or raise MapError."""
         raise NotImplementedError
+
+    def resolve_api(self, api):
+        """Normalise an --api identifier to the apis-dict key, or itself."""
+        return api
 
 
 @dataclass
@@ -391,6 +401,396 @@ class ProvisionalJsonMapLoader(MapLoader):
 
 
 # ---------------------------------------------------------------------------
+# Canonical Task-A map loader (Phase 1 v0, Issue #854).
+# ---------------------------------------------------------------------------
+
+# Canonical envelope identity (owned by Task-A; the provisional loader above
+# must never accept it, and this loader must never accept the provisional
+# envelope -- either direction falls back to L3, never a misread).
+CANONICAL_MAP_NAME = "test-staging-map-v0"
+CANONICAL_SCHEMA_VERSION = 1
+# Interim dependency pin (pre-#856-merge): read-only fetch of
+# origin/agent/test-staging-map-v0-20261128 gave this HEAD. This loader was
+# built against that revision's schema. It is NOT final verification: after
+# Task-A (#856) integrates, re-fetch the merged map, re-run the connection
+# tests plus make check / make test, and update this pin to the merged HEAD.
+CANONICAL_SOURCE_HEAD = "cf428568dceecc6f7ed0607a182f222f28148e54"
+
+CANONICAL_LEVELS = ("L0", "L1", "L2", "L3", "L4")
+CANONICAL_MATCH_TYPES = ("exact", "exact-list", "glob")
+CANONICAL_CI_CLASSES = ("required-ci", "ci-nonrequired",
+                        "ci-outside-optin", "push-only")
+CANONICAL_API_SLOT_COUNT = 81
+
+_MAKE_TARGET_RE = re.compile(r"^([A-Za-z0-9_.-]+)\s*:[^=]*$")
+_HEX40_RE = re.compile(r"^[0-9a-f]{40}$")
+_DOTTED_HOST_RE = re.compile(r"^tests\.host\.([A-Za-z_][A-Za-z0-9_]*)$")
+
+
+def _makefile_targets():
+    """Parse live Makefile targets (a map may only reference real ones)."""
+    try:
+        text = (ROOT / "Makefile").read_text(encoding="utf-8")
+    except OSError as error:
+        raise MapError("cannot read Makefile for target validation: "
+                       f"{error}") from error
+    targets = set()
+    for line in text.splitlines():
+        match = _MAKE_TARGET_RE.match(line)
+        if match:
+            targets.add(match.group(1))
+    return targets
+
+
+class CanonicalJsonMapLoader(MapLoader):
+    """Loader for the Task-A canonical map (Issue #854, Phase 1 v0).
+
+    Expected envelope::
+
+        {"name": "test-staging-map-v0", "schema_version": 1,
+         "base_commit": "<40-hex>", "required_checks": [...6...],
+         "static_units_defined": [...],
+         "entries": [{"id", "match_type", "match", "level",
+                        "category", "ci_class", "required_ci",
+                        "tests": {"host", "integration_scripts",
+                                  "dev_targets", "static_units"},
+                        "reason"}, ...],
+         "fallback": {...same shape, match "**", level "L3"...},
+         "api_slots": [{"slot": 0..80, "name", "dev_implemented",
+                          "dev_source", "level", "tests", "reason"}]}
+
+    Classification is first-match-wins in entry order (the canonical
+    fallback entry is last and matches everything). A document carrying the
+    provisional ``format`` tag, a wrong name/version, a non-40-hex
+    base_commit fingerprint, renamed Required Checks, unknown Makefile
+    targets, unknown host refs/scripts/static units, or a non-81-slot
+    table is inconsistent (-> L3, never a partial read).
+
+    Level L4 (manual-only opt-in, never a Required substitute) is escalated
+    to L3 at load time: automatically selecting L4 commands would under-test,
+    so L4-classified changes run the full regression fail-closed.
+    """
+
+    match_mode = "first-match"
+
+    def __init__(self):
+        self._api_aliases = {}
+
+    def resolve_api(self, api):
+        """Accept slot names and slot-number spellings (63, 0x3F, $3F)."""
+        if api is None:
+            return None
+        return self._api_aliases.get(str(api), str(api))
+
+    def load(self, path):
+        raw_path = Path(path)
+        if not raw_path.is_file():
+            raise MapError(f"canonical map is missing: {path}")
+        try:
+            document = json.loads(raw_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as error:
+            raise MapError(f"canonical map is not valid JSON: {error}") from error
+        if not isinstance(document, dict):
+            raise MapError("canonical map root must be an object")
+        if "format" in document:
+            raise MapError(
+                "non-canonical envelope tag "
+                f"{document.get('format')!r}: the provisional envelope is "
+                "never treated as canonical -> L3")
+        if document.get("name") != CANONICAL_MAP_NAME:
+            raise MapError(
+                f"canonical map name {document.get('name')!r} is not "
+                f"{CANONICAL_MAP_NAME!r} -> L3")
+        if document.get("schema_version") != CANONICAL_SCHEMA_VERSION:
+            raise MapError(
+                "canonical map schema_version "
+                f"{document.get('schema_version')!r} is not "
+                f"{CANONICAL_SCHEMA_VERSION} -> L3")
+        base_commit = document.get("base_commit")
+        if (not isinstance(base_commit, str)
+                or not _HEX40_RE.match(base_commit)):
+            raise MapError("canonical map needs a 40-hex base_commit "
+                           "fingerprint -> L3")
+        required = document.get("required_checks")
+        if (not isinstance(required, list)
+                or set(required) != set(REQUIRED_CI_CHECKS)):
+            raise MapError("canonical map required_checks must be exactly "
+                           f"the {len(REQUIRED_CI_CHECKS)} Required Checks -> L3")
+        static_defined = document.get("static_units_defined")
+        if (not isinstance(static_defined, list) or not static_defined
+                or not all(isinstance(unit, str) and unit
+                           for unit in static_defined)):
+            raise MapError("canonical map 'static_units_defined' must be a "
+                           "non-empty string list -> L3")
+        static_set = set(static_defined)
+        entries = document.get("entries")
+        if not isinstance(entries, list) or not entries:
+            raise MapError("canonical map 'entries' must be a non-empty "
+                           "list -> L3")
+        fallback = document.get("fallback")
+        if not isinstance(fallback, dict):
+            raise MapError("canonical map 'fallback' must be an object -> L3")
+        self._check_entry_shape(entries, fallback, len(entries))
+        if entries[-1].get("id") != fallback.get("id"):
+            raise MapError("canonical fallback must be the last entry "
+                           "(first-match-wins needs it last) -> L3")
+        if fallback.get("match") != "**" or fallback.get("level") != "L3":
+            raise MapError("canonical fallback must be match '**' at L3 "
+                           "-> L3")
+        slots = document.get("api_slots")
+        slot_names = self._check_slots(slots)
+        targets = _makefile_targets()
+        dev_source_to_slot = {}
+        for slot in slots:
+            source = slot.get("dev_source")
+            if source:
+                dev_source_to_slot[source] = slot["name"]
+        rules = []
+        for index, entry in enumerate(entries):
+            rules.extend(self._convert_entry(index, entry, targets, static_set,
+                                             dev_source_to_slot))
+        apis = {}
+        aliases = {}
+        for slot in slots:
+            name = slot["name"]
+            number = slot["slot"]
+            commands = self._convert_tests(slot["tests"], static_set,
+                                           targets, f"api-slot {name}",
+                                           require_commands=True)
+            apis[name] = {
+                "commands": commands,
+                "reason": str(slot.get("reason") or f"canonical slot {name}"),
+            }
+            for alias in (name, str(number), f"{number:X}",
+                          f"{number:02X}", f"{number:02x}",
+                          f"0x{number:X}", f"0x{number:x}",
+                          f"0x{number:02X}", f"${number:02X}"):
+                aliases.setdefault(alias, name)
+        self._api_aliases = aliases
+        return rules, apis
+
+    def _check_entry_shape(self, entries, fallback, fallback_index):
+        for index, entry in enumerate(entries + [fallback]):
+            where = "fallback" if index == fallback_index else f"entry #{index}"
+            if not isinstance(entry, dict):
+                raise MapError(f"canonical {where} must be an object -> L3")
+            for key in ("id", "match_type", "match", "level",
+                        "category", "ci_class", "required_ci",
+                        "tests", "reason"):
+                if key not in entry:
+                    raise MapError(f"canonical {where} "
+                                   f"({entry.get('id')!r}) misses {key!r} -> L3")
+            if not entry.get("id") or not isinstance(entry["id"], str):
+                raise MapError(f"canonical {where} needs a non-empty id -> L3")
+            if entry["match_type"] not in CANONICAL_MATCH_TYPES:
+                raise MapError(
+                    f"canonical {where} has unknown match_type "
+                    f"{entry['match_type']!r} -> L3")
+            match = entry["match"]
+            if entry["match_type"] == "exact-list":
+                if (not isinstance(match, list) or not match
+                        or not all(isinstance(item, str) and item
+                                  for item in match)):
+                    raise MapError(f"canonical {where} exact-list needs a "
+                                   "non-empty string list -> L3")
+            elif not isinstance(match, str) or not match:
+                raise MapError(f"canonical {where} needs a non-empty match "
+                               "pattern -> L3")
+            if entry["level"] not in CANONICAL_LEVELS:
+                raise MapError(f"canonical {where} has unknown level "
+                               f"{entry['level']!r} -> L3")
+            if entry["ci_class"] not in CANONICAL_CI_CLASSES:
+                raise MapError(f"canonical {where} has unknown ci_class "
+                               f"{entry['ci_class']!r} -> L3")
+            if not isinstance(entry["required_ci"], bool):
+                raise MapError(f"canonical {where} required_ci must be a "
+                               "bool -> L3")
+            if (not isinstance(entry["reason"], str)
+                    or not entry["reason"].strip()):
+                raise MapError(f"canonical {where} needs a reason string "
+                               "-> L3")
+            tests = entry["tests"]
+            if not isinstance(tests, dict):
+                raise MapError(f"canonical {where} tests must be an object "
+                               "-> L3")
+            for key in ("host", "integration_scripts", "dev_targets",
+                        "static_units"):
+                if key not in tests or not isinstance(tests[key], list):
+                    raise MapError(f"canonical {where} tests misses list "
+                                   f"{key!r} -> L3")
+        ids = [entry["id"] for entry in entries]
+        if len(set(ids)) != len(ids):
+            raise MapError("canonical entry ids must be unique -> L3")
+
+    def _check_slots(self, slots):
+        if not isinstance(slots, list):
+            raise MapError("canonical 'api_slots' must be a list -> L3")
+        if len(slots) != CANONICAL_API_SLOT_COUNT:
+            raise MapError(
+                f"canonical api_slots has {len(slots)} rows, expected "
+                f"{CANONICAL_API_SLOT_COUNT} -> L3")
+        seen_ids = set()
+        seen_names = set()
+        for slot in slots:
+            if not isinstance(slot, dict):
+                raise MapError("canonical api_slot must be an object -> L3")
+            number = slot.get("slot")
+            name = slot.get("name")
+            if (not isinstance(number, int) or isinstance(number, bool)
+                    or not 0 <= number <= 80):
+                raise MapError(f"canonical api_slot number {number!r} is "
+                               "not a slot 0..80 -> L3")
+            if not name or not isinstance(name, str):
+                raise MapError("canonical api_slot needs a non-empty name "
+                               "-> L3")
+            if number in seen_ids:
+                raise MapError(f"duplicate canonical slot number {number} "
+                               "-> L3")
+            if name in seen_names:
+                raise MapError(f"duplicate canonical slot name {name!r} "
+                               "-> L3")
+            seen_ids.add(number)
+            seen_names.add(name)
+            if slot.get("level") not in CANONICAL_LEVELS:
+                raise MapError(f"canonical slot {name} has unknown level "
+                               f"{slot.get('level')!r} -> L3")
+            source = slot.get("dev_source")
+            if source is not None and not (isinstance(source, str)
+                                           and source):
+                raise MapError(f"canonical slot {name} dev_source must be a "
+                               "path or null -> L3")
+            tests = slot.get("tests")
+            if not isinstance(tests, dict):
+                raise MapError(f"canonical slot {name} tests must be an "
+                               "object -> L3")
+            for key in ("host", "integration_scripts", "dev_targets",
+                        "static_units"):
+                if key not in tests or not isinstance(tests[key], list):
+                    raise MapError(f"canonical slot {name} tests misses list "
+                                   f"{key!r} -> L3")
+        if sorted(seen_ids) != list(range(CANONICAL_API_SLOT_COUNT)):
+            raise MapError("canonical api_slots must cover slots 0..80 "
+                           "exactly once -> L3")
+        return seen_names
+
+    def _convert_entry(self, index, entry, targets, static_set,
+                       dev_source_to_slot):
+        level = entry["level"]
+        reason = entry["reason"]
+        # Entries may list zero commands: an L3 entry with empty tests
+        # means "the evidence is L3 itself" (e.g. CI definitions, site
+        # sources). select() then runs the full local-L3 sequence
+        # fail-closed; a 0-command L0-L2 classification escalates to L3.
+        commands = self._convert_tests(entry["tests"], static_set, targets,
+                                       f"entry {entry['id']}",
+                                       require_commands=False)
+        if level == "L4":
+            # Manual-only opt-in is never auto-selected: escalate fail-closed
+            # to L3 and discard the L4 opt-in commands (validated above) so
+            # L4-classified changes run the full local-L3 sequence --
+            # running the opt-in commands as "L3" would under-test.
+            level = "L3"
+            commands = []
+            reason = ("canonical-L4-escalated-to-L3 (opt-in only, never a "
+                      f"Required substitute): {reason}")
+        match_type = entry["match_type"]
+        if match_type == "exact":
+            patterns = [entry["match"]]
+        elif match_type == "exact-list":
+            seen = set()
+            patterns = []
+            for item in entry["match"]:
+                if item not in seen:
+                    seen.add(item)
+                    patterns.append(item)
+        else:
+            patterns = [entry["match"]]
+        rules = []
+        for pattern in patterns:
+            rules.append(MapRule(
+                pattern=pattern, level=level, commands=list(commands),
+                reason=f"{reason} (canonical entry {entry['id']} "
+                       f"{match_type} {pattern!r} -> {entry['level']})",
+                api=dev_source_to_slot.get(pattern, "")))
+        return rules
+
+    def _convert_tests(self, tests, static_set, targets, owner,
+                       require_commands):
+        commands = []
+        for target in tests["dev_targets"]:
+            if target not in targets:
+                raise MapError(f"{owner}: unknown Makefile target "
+                               f"{target!r} (maps may only reference existing "
+                               "commands) -> L3")
+            commands.append({"make": target})
+        for ref in tests["host"]:
+            commands.append(self._canonical_host_command(ref, owner))
+        for script in tests["integration_scripts"]:
+            commands.append(self._canonical_script_command(script, owner))
+        for unit in tests["static_units"]:
+            if unit not in static_set:
+                raise MapError(f"{owner}: unknown static unit {unit!r} "
+                               "-> L3")
+        if tests["static_units"] and {"make": "check"} not in commands:
+            commands.append({"make": "check"})
+        if not commands and require_commands:
+            raise MapError(f"{owner}: tests must list at least one command "
+                           "(a 0-test selection is never PASS) -> L3")
+        return commands
+
+    def _canonical_host_command(self, ref, owner):
+        if not isinstance(ref, str) or not ref:
+            raise MapError(f"{owner}: bad host ref {ref!r} -> L3")
+        dotted = _DOTTED_HOST_RE.match(ref)
+        if dotted:
+            module = dotted.group(1)
+            if not (ROOT / "tests" / "host" / f"{module}.py").is_file():
+                raise MapError(f"{owner}: host ref {ref!r} has no such test "
+                               "module -> L3")
+            return {"unittest": f"{module}.py", "suite": "host"}
+        if ref.startswith("tests/host/") and ref.endswith(".py"):
+            pattern = ref[len("tests/host/"):]
+            if not pattern or ".." in ref:
+                raise MapError(f"{owner}: bad host ref {ref!r} -> L3")
+            host_dir = ROOT / "tests" / "host"
+            if "*" in pattern or "?" in pattern or "[" in pattern:
+                try:
+                    names = [item.name for item in host_dir.iterdir()
+                             if item.is_file()]
+                except OSError as error:
+                    raise MapError(f"{owner}: cannot list tests/host: "
+                                   f"{error} -> L3") from error
+                if not [name for name in names
+                        if fnmatch.fnmatchcase(name, pattern)]:
+                    raise MapError(f"{owner}: host pattern {ref!r} matches "
+                                   "nothing -> L3")
+            elif not (host_dir / pattern).is_file():
+                raise MapError(f"{owner}: host ref {ref!r} has no such file "
+                               "-> L3")
+            return {"unittest": pattern, "suite": "host"}
+        raise MapError(f"{owner}: bad host ref {ref!r} (dotted "
+                       "tests.host.MOD or slash tests/host/PATTERN.py only) "
+                       "-> L3")
+
+    def _canonical_script_command(self, script, owner):
+        if (not isinstance(script, str) or not script.startswith(
+                "tests/integration/") or not script.endswith(".py")
+                or ".." in script or "*" in script or "?" in script):
+            raise MapError(f"{owner}: bad integration script {script!r} "
+                           "-> L3")
+        target = (ROOT / script).resolve()
+        try:
+            target.relative_to(ROOT.resolve())
+        except ValueError as error:
+            raise MapError(f"{owner}: script {script!r} escapes the "
+                           "repository -> L3") from error
+        if not target.is_file():
+            raise MapError(f"{owner}: script {script!r} is not an existing "
+                           "repository python script -> L3")
+        return {"script": script}
+
+
+# ---------------------------------------------------------------------------
 # Selection.
 # ---------------------------------------------------------------------------
 
@@ -472,9 +872,20 @@ def _l3_selection(reasons, fallback_reason, fingerprint, selected=None):
                      fingerprint=fingerprint)
 
 
-def select(changed, rules, apis, api=None, fingerprint=None):
-    """Classify every change; anything unclassifiable selects L3."""
+def select(changed, rules, apis, api=None, fingerprint=None,
+           match_mode="max"):
+    """Classify every change; anything unclassifiable selects L3.
+
+    match_mode "max" (provisional) takes the highest matching rule level;
+    "first-match" (Task-A canonical) uses entry order, so the first rule
+    matching the path (and the --api tag, when given) wins. Both modes are
+    fail-closed: no match, or an L3 match, selects L3.
+    """
     fingerprint = fingerprint or {}
+    if match_mode not in ("max", "first-match"):
+        return _l3_selection(
+            [f"internal: unknown match_mode {match_mode!r} -> L3"],
+            "internal-match-mode", fingerprint)
     if not list(changed.all_classifiable()) and not changed.untracked:
         return _l3_selection(
             ["empty-change-set: no committed/staged/unstaged/untracked "
@@ -494,9 +905,15 @@ def select(changed, rules, apis, api=None, fingerprint=None):
     selected = []
     reasons = []
     for origin, _status, path in changed.all_classifiable():
-        hits = [rule for rule in rules
-                if fnmatch.fnmatchcase(path, rule.pattern)
-                and (api is None or rule.api == api)]
+        if match_mode == "first-match":
+            first = next((rule for rule in rules
+                          if fnmatch.fnmatchcase(path, rule.pattern)
+                          and (api is None or rule.api == api)), None)
+            hits = [first] if first is not None else []
+        else:
+            hits = [rule for rule in rules
+                    if fnmatch.fnmatchcase(path, rule.pattern)
+                    and (api is None or rule.api == api)]
         if not hits:
             return _l3_selection(
                 reasons + [f"{origin}:{path}: no map rule matches -> L3"],
@@ -517,6 +934,11 @@ def select(changed, rules, apis, api=None, fingerprint=None):
         if command not in deduped:
             deduped.append(command)
     if not deduped:
+        # L3 entries may legitimately list zero commands (their evidence is
+        # L3 itself): run the full local-L3 sequence fail-closed. A 0-command
+        # L0-L2 classification can never run as-is, so it also becomes L3.
+        if level_rank == LEVEL_RANK["L3"]:
+            return _l3_selection(reasons, "map-rule-requires-L3", fingerprint)
         return _l3_selection(
             reasons + ["empty-selection: classification produced zero "
                        "commands; a 0-test run is never PASS -> L3"],
@@ -607,11 +1029,16 @@ def run_selector(repo, base, map_path=None, api=None, fetch=False,
             raise MapError("no impact map supplied (Task-A canonical map "
                            "pending) -> L3")
         rules, apis = active_loader.load(map_path)
+        resolve = getattr(active_loader, "resolve_api", None)
+        if api is not None and callable(resolve):
+            api = resolve(api)
+        match_mode = getattr(active_loader, "match_mode", "max")
     except MapError as error:
         selection = _l3_selection([f"impact-map: {error}"],
                                   "map-missing-or-inconsistent", fingerprint)
         return selection, render(selection)
-    selection = select(changed, rules, apis, api=api, fingerprint=fingerprint)
+    selection = select(changed, rules, apis, api=api,
+                       fingerprint=fingerprint, match_mode=match_mode)
     return selection, render(selection)
 
 
