@@ -338,6 +338,8 @@ def _base_evidence(kind, shard_id):
         "schema": EVIDENCE_SCHEMA,
         "manifest_version": MANIFEST_VERSION,
         "sha": os.environ.get("GITHUB_SHA", "local"),
+        "run_id": os.environ.get("GITHUB_RUN_ID", "local"),
+        "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT", "1"),
         "kind": kind,
         "shard_id": shard_id,
         "toolchain": _tool_pins(),
@@ -538,6 +540,17 @@ def aggregate(evidence_list, live_integration_modules=None, live_host_ids=None):
     shas = {e.get("sha") for e in evidence_list}
     if len(shas) != 1:
         problems.append(f"evidence spans multiple SHAs: {sorted(shas)}")
+    run_ids = {e.get("run_id") for e in evidence_list}
+    if len(run_ids) != 1:
+        problems.append(f"evidence spans multiple/missing run IDs: {sorted(run_ids, key=repr)}")
+    else:
+        me_run = os.environ.get("GITHUB_RUN_ID")
+        if me_run and list(run_ids)[0] != me_run:
+            problems.append("shard evidence is from a different workflow run "
+                            f"(evidence {list(run_ids)[0]!r} vs aggregator {me_run!r})")
+        attempts = {e.get("run_attempt") for e in evidence_list}
+        if len(attempts) != 1:
+            problems.append(f"evidence spans multiple run attempts: {sorted(attempts)}")
     kinds = {}
     for e in evidence_list:
         kinds.setdefault(e.get("kind"), []).append(e.get("shard_id"))

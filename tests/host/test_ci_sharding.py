@@ -21,11 +21,12 @@ def _ok_record(i):
             "duration_s": 0.1}
 
 
-def _evidence(shard_id="rc-0", kind="integration-unittest", n=3, sha="abc123"):
+def _evidence(shard_id="rc-0", kind="integration-unittest", n=3, sha="abc123",
+              run_id="run-1", attempt="1"):
     planned = [f"test_mod.Class.test_{i:02d}" for i in range(n)]
     return {
         "schema": 1, "manifest_version": 1, "sha": sha, "kind": kind,
-        "shard_id": shard_id,
+        "shard_id": shard_id, "run_id": run_id, "run_attempt": attempt,
         "toolchain": {"cc65": "x", "geargrafx": "y"},
         "gate_states": {"dev_rom_present": True},
         "started": "2026-11-27T00:00:00Z",
@@ -35,10 +36,10 @@ def _evidence(shard_id="rc-0", kind="integration-unittest", n=3, sha="abc123"):
     }
 
 
-def _static_evidence(sha="abc123"):
+def _static_evidence(sha="abc123", run_id="run-1", attempt="1"):
     return {
         "schema": 1, "manifest_version": 1, "sha": sha, "kind": "static",
-        "shard_id": "static",
+        "shard_id": "static", "run_id": run_id, "run_attempt": attempt,
         "toolchain": {"cc65": "x", "geargrafx": "y"},
         "gate_states": {},
         "started": "2026-11-27T00:00:00Z",
@@ -48,10 +49,11 @@ def _static_evidence(sha="abc123"):
     }
 
 
-def _direct_evidence(units=("direct:smoke",), sha="abc123"):
+def _direct_evidence(units=("direct:smoke",), sha="abc123",
+                     run_id="run-1", attempt="1"):
     return {
         "schema": 1, "manifest_version": 1, "sha": sha, "kind": "integration-direct",
-        "shard_id": "direct",
+        "shard_id": "direct", "run_id": run_id, "run_attempt": attempt,
         "toolchain": {"cc65": "x", "geargrafx": "y"},
         "gate_states": {},
         "started": "2026-11-27T00:00:00Z",
@@ -73,6 +75,9 @@ class AggregateNegativeTests(unittest.TestCase):
         evs = [_evidence("rc-0", n=2), _evidence("rc-1", n=1),
                  _evidence("rc-2", n=1), _evidence("rc-3", n=1)]
         host = _evidence("host", kind="host-unittest", n=2)
+        for e in evs + [host]:
+            e.setdefault("run_id", "run-1")
+            e.setdefault("run_attempt", "1")
         direct = _direct_evidence(units=tuple(shard.DIRECT_UNITS))
         static = _static_evidence()
         return evs + [host, direct, static]
@@ -307,3 +312,33 @@ def _iter(suite):
             yield from _iter(t)
         else:
             yield t
+
+class RunIdentityNegativeTests(unittest.TestCase):
+    def _base(self):
+        evs = [_evidence("rc-0", n=2), _evidence("rc-1", n=1),
+               _evidence("rc-2", n=1), _evidence("rc-3", n=1)]
+        host = _evidence("host", kind="host-unittest", n=2)
+        for e in evs + [host]:
+            e.setdefault("run_id", "run-1")
+            e.setdefault("run_attempt", "1")
+        direct = _direct_evidence(units=tuple(shard.DIRECT_UNITS))
+        static = _static_evidence()
+        return evs + [host, direct, static]
+
+    def test_mixed_run_ids_red(self):
+        evs = self._base()
+        evs[0]["run_id"] = "run-other"
+        problems = shard.aggregate(evs, live_integration_modules=[],
+                                   live_host_ids=[r["id"] for e in evs
+                                                  if e["shard_id"] == "host"
+                                                  for r in e["executed"]])
+        self.assertTrue(any("run ID" in p for p in problems), problems)
+
+    def test_mixed_attempts_red(self):
+        evs = self._base()
+        evs[1]["run_attempt"] = "2"
+        problems = shard.aggregate(evs, live_integration_modules=[],
+                                   live_host_ids=[r["id"] for e in evs
+                                                  if e["shard_id"] == "host"
+                                                  for r in e["executed"]])
+        self.assertTrue(any("attempt" in p for p in problems), problems)
