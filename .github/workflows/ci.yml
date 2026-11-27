@@ -277,7 +277,12 @@ jobs:
           name: intermediate-shard-rc-3-${{ github.sha }}
           path: .intake-shard-rc-3
       - name: Aggregate shard evidence (manifest match, fail-closed)
-        run: python3 tools/ci_sharding.py aggregate --evidence .intake-shard-host/evidence.json .intake-shard-direct/evidence.json .intake-shard-static/evidence.json .intake-shard-rc-0/evidence.json .intake-shard-rc-1/evidence.json .intake-shard-rc-2/evidence.json .intake-shard-rc-3/evidence.json
+        run: python3 tools/ci_sharding.py aggregate --evidence .intake-shard-host/evidence.json .intake-shard-direct/evidence.json .intake-shard-static/evidence.json .intake-shard-rc-0/evidence.json .intake-shard-rc-1/evidence.json .intake-shard-rc-2/evidence.json .intake-shard-rc-3/evidence.json --smoke-evidence .intake-shard-direct/geargrafx-evidence.json --smoke-rom build/debug/smoke-test-not-bios.pce
+      - name: Restore transferred smoke evidence into the handoff tree (verified above, byte-identical copy)
+        run: |
+          test -f .intake-shard-direct/geargrafx-evidence.json
+          cp .intake-shard-direct/geargrafx-evidence.json build/debug/geargrafx-evidence.json
+          cmp .intake-shard-direct/geargrafx-evidence.json build/debug/geargrafx-evidence.json
       - name: Hand off the test fixture and evidence as an intermediate artifact (unverified here; the guard job checks them)
         run: |
           mkdir -p intermediate
