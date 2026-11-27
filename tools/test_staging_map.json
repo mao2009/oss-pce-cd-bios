@@ -1,0 +1,4194 @@
+{
+  "schema_version": 1,
+  "name": "test-staging-map-v0",
+  "phase": "Phase 1 (table + review; no Makefile/CI/test-body changes)",
+  "base_commit": "2399a50b5e67f25b9efae206e2690984879c8746",
+  "base_desc": "origin/main, Merge PR #851",
+  "local_media": {
+    "rom_dir_present": false,
+    "access": "none",
+    "verdict": "SKIP (no ./rom access; synthetic fixtures only)"
+  },
+  "levels": {
+    "L0": "QUICK: seconds-scale immediate checks on changed files",
+    "L1": "FOCUSED: module/API-scoped host patterns + dev-rom + 1-2 dev integrations (~2 min)",
+    "L2": "IMPACT: related host files + related direct scripts + check (~5 min)",
+    "L3": "FULL: current required regression, unconditional (local L3 + Required CI)",
+    "L4": "EXTENDED: CI-outside opt-in only (reference info, never a Required substitute)"
+  },
+  "ci_classes": {
+    "required-ci": "Test executes in a workflow job backing one of the 6 Required Checks.",
+    "ci-nonrequired": "Test executes in CI (every PR or schedule) but backs no Required Check.",
+    "ci-outside-optin": "A make target exists but no workflow invokes it; explicit local opt-in only.",
+    "push-only": "Workflow runs only on push to main / schedule / dispatch, never on PRs."
+  },
+  "required_checks": [
+    "bios-dev",
+    "guard-bcdbin-core",
+    "guard-bios-dev",
+    "guard-core-harness",
+    "guard-verify",
+    "verify"
+  ],
+  "safety_invariants": {
+    "required_check_count": 6,
+    "required_checks_renamed": false,
+    "jsr_allowed": "0/81",
+    "abi_verified": "0/81",
+    "release_eligible": false,
+    "release_gate": "make release BLOCKED exit 1; dev gate exit 3 + BLOCKED only",
+    "docs_only_fast_path_enabled": false,
+    "commercial_media_access": "none (./rom absent)"
+  },
+  "ci_facts": {
+    "core_harness_jobs_total": 8,
+    "core_harness_test_jobs": [
+      "core-harness",
+      "dev-boot-internal-integration",
+      "experimental-bios-boot-integration",
+      "dev-ipl-boot-integration",
+      "ipl-loader-integration",
+      "dev-bios-ipl-loader-integration",
+      "synthetic-track-select-integration"
+    ],
+    "core_harness_guard_jobs": [
+      "guard-core-harness"
+    ],
+    "core_harness_timeouts_min": {
+      "core-harness": 30,
+      "guard-core-harness": 10,
+      "dev-boot-internal-integration": 30,
+      "experimental-bios-boot-integration": 30,
+      "dev-ipl-boot-integration": 30,
+      "ipl-loader-integration": 30,
+      "dev-bios-ipl-loader-integration": 45,
+      "synthetic-track-select-integration": 30
+    },
+    "integration_direct_units": 21,
+    "integration_unittest_modules": 32,
+    "integration_unittest_count": 715,
+    "host_tests_double_run": true,
+    "host_tests_double_run_detail": "ci/host-tests runs `make test` AND `ci_sharding.py run-host`; ~9m59s each in run 45990514643.",
+    "build_model": "Per-job serial setup+build (redundant across the 8 parallel jobs); tests parallel. Wall-time win, not CPU win.",
+    "wall_vs_cpu": "Reported CI times are runner wall-clock (ubuntu-24.04, cache/toolchain state dependent); runner and attempt differences apply. Local timings are not comparable to CI."
+  },
+  "static_units_defined": [
+    "make-check:contracts",
+    "make-check:check-py",
+    "make-check:c3-static",
+    "make-check:verify-build-diff",
+    "release-compare",
+    "rom-provenance-repro"
+  ],
+  "make_transitive": {
+    "setup": {
+      "expands": [
+        "tools/setup.py all: pinned cc65 71746c8, Geargrafx b49ae82a (debugger build), actionlint 1.7.7"
+      ],
+      "ci_jobs": [
+        {
+          "job": "every CI job (per-job serial setup+build before sharded tests)",
+          "class": "required-ci"
+        }
+      ],
+      "note": "Post-#848 each parallel job runs its own setup+build; builds are per-job serial/redundant, tests are parallel (wall-time win, not CPU win)."
+    },
+    "build": {
+      "expands": [
+        "tools/build.py --mode $(MODE): build/$(MODE)/smoke-test-not-bios.pce (8192 B fixture) + manifest.json"
+      ],
+      "ci_jobs": [
+        {
+          "job": "every CI job (per-job, after setup)",
+          "class": "required-ci"
+        }
+      ],
+      "note": "Incremental; shared input of test/test-real-core/check/release."
+    },
+    "test": {
+      "expands": [
+        "build",
+        "OSS_PCE_REQUIRE_CC65=1 unittest discover tests/host (all 256 files; missing cc65 is FAILURE, never SKIP)"
+      ],
+      "ci_jobs": [
+        {
+          "job": "ci/host-tests",
+          "class": "required-ci"
+        },
+        {
+          "job": "ci/verify-full (fail-closed aggregation, not a rerun)",
+          "class": "required-ci"
+        },
+        {
+          "job": "nightly/build",
+          "class": "push-only"
+        }
+      ],
+      "note": "host-tests runs `make test` AND `ci_sharding.py run-host`: the host suite executes twice (~9m59s each in run 45990514643); the second run emits the evidence manifest."
+    },
+    "host-test": {
+      "expands": [
+        "unittest discover tests/host (no build, cc65 absence is SKIP)"
+      ],
+      "ci_jobs": [],
+      "note": "Local-only, non-required. Never a substitute for `make test`."
+    },
+    "test-real-core": {
+      "expands": [
+        "build",
+        "integration (21 direct units)",
+        "integration-test (32 modules, 715 tests)"
+      ],
+      "ci_jobs": [
+        {
+          "job": "nightly/build",
+          "class": "push-only"
+        }
+      ],
+      "note": "In PR CI this exact target is NOT run; its content runs sharded (integration-direct + rc-0..3). Serial local equivalent is L3."
+    },
+    "integration": {
+      "expands": [
+        "build",
+        "8 direct scripts + 13 sub-make targets in Makefile order (21 units total, parity-checked vs DIRECT_UNITS)",
+        "direct:smoke -> tests/integration/geargrafx_smoke.py",
+        "direct:reference-guard -> tests/integration/geargrafx_reference_guard.py",
+        "direct:reference-guard-issue173 -> tests/integration/geargrafx_reference_guard_issue173.py",
+        "direct:mmio1804-trap -> tests/integration/geargrafx_mmio1804_trap.py",
+        "direct:mmio1804-preblock -> tests/integration/geargrafx_mmio1804_preblock.py",
+        "direct:irq-register -> tests/integration/geargrafx_irq_register.py",
+        "direct:st-bypass -> tests/integration/geargrafx_st_bypass.py",
+        "direct:bcdbin -> tests/integration/geargrafx_bcdbin.py",
+        "direct:block-write-guard -> tests/integration/geargrafx_block_write_guard.py",
+        "direct:block-transfer-matrix -> tests/integration/geargrafx_block_transfer_matrix.py",
+        "direct:block-mid-refusal -> tests/integration/geargrafx_block_midrefusal.py",
+        "direct:stack-access-guard -> tests/integration/geargrafx_stack_access_guard.py",
+        "direct:stack-methods -> tests/integration/geargrafx_stack_methods.py",
+        "direct:stack-methods-compare -> tests/integration/geargrafx_stack_methods_compare.py",
+        "direct:stack-s5 -> tests/integration/geargrafx_stack_s5.py",
+        "direct:stack-s6 -> tests/integration/geargrafx_stack_s6.py",
+        "direct:stack-irq-timing -> tests/integration/geargrafx_stack_irq_timing.py",
+        "direct:stack-mpr-buffer -> tests/integration/geargrafx_stack_mpr_buffer.py",
+        "direct:caller-stack-contract -> tests/integration/geargrafx_caller_stack_contract.py",
+        "direct:st-boundary -> tests/integration/geargrafx_st_boundary.py",
+        "direct:block-preblock -> tests/integration/geargrafx_block_preblock.py"
+      ],
+      "ci_jobs": [
+        {
+          "job": "ci/integration-direct via ci_sharding.py run-direct",
+          "class": "required-ci"
+        }
+      ],
+      "note": "Count is 21 units, not 22 (survey #850 said 22; corrected here against DIRECT_UNITS + Makefile recipe). Per-unit argv pinned by DIRECT_MAKE_TARGETS (smoke uses the custom --rom/--output argv; .py units run as tests/integration/<file>; other units run via their make sub-target)."
+    },
+    "integration-test": {
+      "expands": [
+        "OSS_PCE_REQUIRE_CC65=1 unittest discover tests/integration (32 modules, 715 tests)"
+      ],
+      "ci_jobs": [
+        {
+          "job": "ci/real-core-shard-0..3 via run-shard (weighted split)",
+          "class": "required-ci"
+        }
+      ],
+      "note": "Shard membership is the manifest in tools/ci_sharding.py."
+    },
+    "check": {
+      "expands": [
+        "tools/contracts.py (81 slots, ms)",
+        "tools/check.py (syntax/actions/HuC6280/whitespace)",
+        "tools/c3_static_check.py (BLOCKED/NOT_STATIC/STATIC_OK)",
+        "tools/verify_build_diff.py (Issue #724 audit + GPL gate)"
+      ],
+      "ci_jobs": [
+        {
+          "job": "ci/static-release via run-static",
+          "class": "required-ci"
+        },
+        {
+          "job": "api-source/bios-dev-full",
+          "class": "required-ci"
+        },
+        {
+          "job": "nightly/build",
+          "class": "push-only"
+        }
+      ],
+      "note": "Local full run ~2.5s; L0/L2 may use its sub-units."
+    },
+    "rom-provenance": {
+      "expands": [
+        "tools/rom_provenance.py --reproduce smoke --mode $(MODE) (independent rebuild + cmp + manifest describe, fail-closed)"
+      ],
+      "ci_jobs": [
+        {
+          "job": "ci/static-release via run-static static:repro",
+          "class": "required-ci"
+        },
+        {
+          "job": "ci/verify-full (re-verifies handoff pair)",
+          "class": "required-ci"
+        }
+      ],
+      "note": "Independence (rebuild-then-compare) is required; cache hits are never evidence."
+    },
+    "release": {
+      "expands": [
+        "BLOCKED exit 1 (no releasable BIOS; safety invariant)"
+      ],
+      "ci_jobs": [],
+      "note": "static-release instead runs: build MODE=release + cmp + build.py --verify (release-compare, required-ci). `make release` itself is never run green."
+    },
+    "dev-rom": {
+      "expands": [
+        "tools/build_rom.py --mode $(MODE): 256 KiB DEV ROM (18 override slots + api_unimplemented fallback; abi UNVERIFIED, release_eligible=false)"
+      ],
+      "ci_jobs": [
+        {
+          "job": "api-source/bios-dev-full",
+          "class": "required-ci"
+        },
+        {
+          "job": "core-harness/core-harness",
+          "class": "required-ci"
+        },
+        {
+          "job": "core-harness non-guard jobs",
+          "class": "ci-nonrequired"
+        }
+      ],
+      "note": "~0.9s; prerequisite of every dev-* target."
+    },
+    "dev-test": {
+      "expands": [
+        "dev-rom",
+        "unittest discover tests/host -p test_api*.py",
+        "unittest discover tests/host -p test_ma*.py",
+        "dev-integration"
+      ],
+      "ci_jobs": [
+        {
+          "job": "api-source/bios-dev-full (first step, inline; dev-integration separately)",
+          "class": "required-ci"
+        }
+      ],
+      "note": "Defines the L1 F1 host patterns."
+    },
+    "dev-integration": {
+      "expands": [
+        "dev-rom",
+        "tests/integration/geargrafx_api.py",
+        "tests/integration/dev_getver_multi_input.py",
+        "tests/integration/geargrafx_dev_bcd.py",
+        "tests/integration/geargrafx_dev_ex_setwrt.py",
+        "tests/integration/geargrafx_dev_joysns.py",
+        "tests/integration/geargrafx_dev_joyrep.py",
+        "tests/integration/geargrafx_dev_bgon.py",
+        "dev-bcdbin-sweep (tests/integration/dev_bcdbin_full_sweep.py: full 0..255 x 18-condition EX_BCDBIN sweep)",
+        "tests/integration/geargrafx_dev_mul8u.py",
+        "tests/integration/geargrafx_dev_mul16u.py",
+        "tests/integration/geargrafx_dev_div16s.py",
+        "tests/integration/geargrafx_dev_mul8s.py",
+        "tests/integration/geargrafx_dev_div16u.py",
+        "tests/integration/geargrafx_dev_mul16s.py",
+        "tests/integration/geargrafx_dev_sqrt.py",
+        "tests/integration/geargrafx_dev_sin.py",
+        "tests/integration/geargrafx_dev_ex_rnd.py",
+        "tests/integration/geargrafx_dev_cos.py --full",
+        "tests/integration/geargrafx_dev_sin_cos.py",
+        "dev-sweep (tests/integration/dev_bcd_full_sweep.py: full 0..255 EX_BINBCD sweep)"
+      ],
+      "ci_jobs": [
+        {
+          "job": "api-source/bios-dev-full",
+          "class": "required-ci"
+        }
+      ],
+      "note": "Unconditional in bios-dev-full (no DEV-change gating). Contains both full sweeps (dev-bcdbin-sweep, dev-sweep): they are required CI (L3), never L4."
+    },
+    "dev-bcdbin-sweep": {
+      "expands": [
+        "dev-rom",
+        "tests/integration/dev_bcdbin_full_sweep.py ROM"
+      ],
+      "ci_jobs": [
+        {
+          "job": "api-source/bios-dev-full via dev-integration",
+          "class": "required-ci"
+        }
+      ],
+      "note": "Required CI despite the word 'sweep'."
+    },
+    "dev-sweep": {
+      "expands": [
+        "dev-rom",
+        "tests/integration/dev_bcd_full_sweep.py ROM"
+      ],
+      "ci_jobs": [
+        {
+          "job": "api-source/bios-dev-full via dev-integration",
+          "class": "required-ci"
+        }
+      ],
+      "note": "Required CI despite the word 'sweep'."
+    },
+    "dev-mul16s-sweep": {
+      "expands": [
+        "dev-rom",
+        "tests/integration/geargrafx_dev_mul16s.py --full ROM (65536x6 x2 grid x2 SPs)"
+      ],
+      "ci_jobs": [],
+      "note": "Makefile: 'Not run by CI'. The only sweep-class target outside required CI: L4."
+    },
+    "dev-startup": {
+      "expands": [
+        "dev-rom",
+        "tools/build_startup.py --mode $(MODE)"
+      ],
+      "ci_jobs": [
+        {
+          "job": "api-source/bios-dev-full",
+          "class": "required-ci"
+        }
+      ],
+      "note": "Diagnostic ROM builder (project-owned probes, not BIOS)."
+    },
+    "dev-reset-entry": {
+      "expands": [
+        "dev-rom",
+        "tools/build_reset_entry.py --mode $(MODE)"
+      ],
+      "ci_jobs": [
+        {
+          "job": "api-source/bios-dev-full",
+          "class": "required-ci"
+        }
+      ],
+      "note": "Diagnostic ROM builder (project-owned probes, not BIOS)."
+    },
+    "dev-cd-media-state": {
+      "expands": [
+        "dev-rom",
+        "tools/build_cd_media_state.py --mode $(MODE)"
+      ],
+      "ci_jobs": [
+        {
+          "job": "api-source/bios-dev-full",
+          "class": "required-ci"
+        }
+      ],
+      "note": "Diagnostic ROM builder (project-owned probes, not BIOS)."
+    },
+    "dev-cdread": {
+      "expands": [
+        "dev-rom",
+        "tools/build_cdread.py --mode $(MODE)"
+      ],
+      "ci_jobs": [
+        {
+          "job": "api-source/bios-dev-full",
+          "class": "required-ci"
+        }
+      ],
+      "note": "Diagnostic ROM builder (project-owned probes, not BIOS)."
+    },
+    "dev-cdload-exec": {
+      "expands": [
+        "dev-rom",
+        "tools/build_cdload_exec.py --mode $(MODE)"
+      ],
+      "ci_jobs": [
+        {
+          "job": "api-source/bios-dev-full",
+          "class": "required-ci"
+        }
+      ],
+      "note": "Diagnostic ROM builder (project-owned probes, not BIOS)."
+    },
+    "dev-cdreset": {
+      "expands": [
+        "dev-rom",
+        "tools/build_cdreset.py --mode $(MODE)"
+      ],
+      "ci_jobs": [
+        {
+          "job": "api-source/bios-dev-full",
+          "class": "required-ci"
+        }
+      ],
+      "note": "Diagnostic ROM builder (project-owned probes, not BIOS)."
+    },
+    "dev-cdda": {
+      "expands": [
+        "dev-rom",
+        "tools/build_cdda.py --mode $(MODE)"
+      ],
+      "ci_jobs": [
+        {
+          "job": "api-source/bios-dev-full",
+          "class": "required-ci"
+        }
+      ],
+      "note": "Diagnostic ROM builder (project-owned probes, not BIOS)."
+    },
+    "dev-boot-internal": {
+      "expands": [
+        "dev-rom",
+        "tools/build_dev_boot_internal.py --mode $(MODE)"
+      ],
+      "ci_jobs": [
+        {
+          "job": "core-harness/dev-boot-internal-integration",
+          "class": "ci-nonrequired"
+        }
+      ],
+      "note": "Diagnostic ROM builder (project-owned probes, not BIOS)."
+    },
+    "dev-startup-integration": {
+      "expands": [
+        "dev-startup",
+        "tests/integration/geargrafx_startup.py --mode $(MODE)"
+      ],
+      "ci_jobs": [
+        {
+          "job": "api-source/bios-dev-full",
+          "class": "required-ci"
+        }
+      ],
+      "note": "Cold/warm startup checkpoint (not boot)."
+    },
+    "dev-reset-entry-integration": {
+      "expands": [
+        "dev-reset-entry",
+        "tests/integration/geargrafx_reset_entry.py --mode $(MODE)"
+      ],
+      "ci_jobs": [
+        {
+          "job": "api-source/bios-dev-full",
+          "class": "required-ci"
+        }
+      ],
+      "note": "Issue #143 minimal reset entry."
+    },
+    "dev-cd-media-state-integration": {
+      "expands": [
+        "dev-cd-media-state",
+        "tests/integration/geargrafx_cd_media_state.py --mode $(MODE)"
+      ],
+      "ci_jobs": [
+        {
+          "job": "api-source/bios-dev-full",
+          "class": "required-ci"
+        }
+      ],
+      "note": "Issue #144 media-state observation, disc/no-disc control."
+    },
+    "dev-cdread-integration": {
+      "expands": [
+        "dev-cdread",
+        "tests/integration/geargrafx_cdread.py --mode $(MODE)"
+      ],
+      "ci_jobs": [
+        {
+          "job": "api-source/bios-dev-full",
+          "class": "required-ci"
+        }
+      ],
+      "note": "Guest HuC6280 sector-read diagnostic (not CD_READ)."
+    },
+    "dev-cdload-exec-integration": {
+      "expands": [
+        "dev-cdload-exec",
+        "tests/integration/geargrafx_cdload_exec.py --mode $(MODE)"
+      ],
+      "ci_jobs": [
+        {
+          "job": "api-source/bios-dev-full",
+          "class": "required-ci"
+        }
+      ],
+      "note": "Issues #14/#5 load-and-execute experiment."
+    },
+    "dev-cdreset-integration": {
+      "expands": [
+        "dev-cdreset",
+        "tests/integration/geargrafx_cdreset.py --mode $(MODE)"
+      ],
+      "ci_jobs": [
+        {
+          "job": "api-source/bios-dev-full",
+          "class": "required-ci"
+        }
+      ],
+      "note": "Issue #10 CD_RESET bus-reset observation (not the API)."
+    },
+    "dev-cdda-integration": {
+      "expands": [
+        "dev-cdda",
+        "tests/integration/geargrafx_cdda.py --mode $(MODE)"
+      ],
+      "ci_jobs": [
+        {
+          "job": "api-source/bios-dev-full",
+          "class": "required-ci"
+        }
+      ],
+      "note": "Issue #15 raw-SCSI CD-DA observation (not CD_PLAY)."
+    },
+    "dev-cdda-scenarios-integration": {
+      "expands": [
+        "dev-cdda",
+        "tests/integration/geargrafx_cdda_scenarios.py --mode $(MODE)"
+      ],
+      "ci_jobs": [],
+      "note": "Issue #215 extra scenarios; opt-in, no workflow coverage."
+    },
+    "dev-cdsubq-integration": {
+      "expands": [
+        "dev-cdda",
+        "tests/integration/geargrafx_cdsubq.py --mode $(MODE)"
+      ],
+      "ci_jobs": [],
+      "note": "Issue #261 $DD Q-subchannel observation; opt-in."
+    },
+    "dev-trace-integration": {
+      "expands": [
+        "dev-cdread",
+        "tests/integration/geargrafx_trace.py --mode $(MODE)"
+      ],
+      "ci_jobs": [
+        {
+          "job": "api-source/bios-dev-full",
+          "class": "required-ci"
+        }
+      ],
+      "note": "Issue #6 isolated trace harness."
+    },
+    "dev-frame-tracer-cd-integration": {
+      "expands": [
+        "dev-cdread",
+        "tests/integration/geargrafx_frame_tracer_cd.py --mode $(MODE)"
+      ],
+      "ci_jobs": [
+        {
+          "job": "api-source/bios-dev-full",
+          "class": "required-ci"
+        }
+      ],
+      "note": "Issue #603 metadata-only RAM tracer bridge."
+    },
+    "dev-cd-base-integration": {
+      "expands": [
+        "dev-rom",
+        "tests/integration/geargrafx_cd_base.py --rom ..."
+      ],
+      "ci_jobs": [],
+      "note": "Issue #11 CD_BASE executable-callee probe; opt-in."
+    },
+    "dev-cd-stat-observation-integration": {
+      "expands": [
+        "dev-cd-media-state",
+        "tests/integration/geargrafx_cd_stat_observation.py --mode $(MODE)"
+      ],
+      "ci_jobs": [],
+      "note": "Issue #231 device-layer observation; opt-in."
+    },
+    "dev-cdra-compare": {
+      "expands": [
+        "dev-cdread",
+        "tests/integration/geargrafx_cdra_compare.py --mode $(MODE)"
+      ],
+      "ci_jobs": [],
+      "note": "Read-ahead ON/OFF A/B diagnostic; opt-in."
+    },
+    "dev-g5": {
+      "expands": [
+        "dev-rom",
+        "tools/build_rom.py --mode $(MODE) --profile g5-experimental"
+      ],
+      "ci_jobs": [],
+      "note": "Issue #798 G5 DEV profile image (normal 18 + experimental $02/$03/$33); opt-in builder."
+    },
+    "dev-g5-integration": {
+      "expands": [
+        "dev-rom",
+        "unittest discover tests/integration -p test_dev_g5_profile.py"
+      ],
+      "ci_jobs": [],
+      "note": "Opt-in target; the module itself also runs sharded (rc-1) in required CI."
+    },
+    "dev-boot-internal-integration": {
+      "expands": [
+        "dev-boot-internal",
+        "tests/integration/geargrafx_dev_boot_internal.py --mode $(MODE)"
+      ],
+      "ci_jobs": [
+        {
+          "job": "core-harness/dev-boot-internal-integration",
+          "class": "ci-nonrequired"
+        }
+      ],
+      "note": "Issue #501 DEV-only internal boot path (reset->media check->READ(6)->RAM->jump); cold+warm."
+    },
+    "experimental-bios-boot-integration": {
+      "expands": [
+        "dev-rom (EXPERIMENTAL_CUE-gated builder)",
+        "tests/integration/geargrafx_experimental_track_contract.py --mode $(MODE)"
+      ],
+      "ci_jobs": [
+        {
+          "job": "core-harness/experimental-bios-boot-integration",
+          "class": "ci-nonrequired"
+        }
+      ],
+      "note": "Synthetic-CUE track contract, pinned Geargrafx."
+    },
+    "dev-ipl-boot-integration": {
+      "expands": [
+        "dev-rom",
+        "tests/integration/geargrafx_dev_ipl_boot.py --mode $(MODE)"
+      ],
+      "ci_jobs": [
+        {
+          "job": "core-harness/dev-ipl-boot-integration",
+          "class": "ci-nonrequired"
+        }
+      ],
+      "note": "Issue #668 DEV-only IPL boot from RESET (1 ROM, 2 IPLs)."
+    },
+    "mpr-bank-probe": {
+      "expands": [
+        "tests/integration/geargrafx_mpr_bank_probe.py --mode $(MODE)"
+      ],
+      "ci_jobs": [
+        {
+          "job": "core-harness/ipl-loader-integration",
+          "class": "ci-nonrequired"
+        }
+      ],
+      "note": "Issue #670 Phase 1 MPR2/MPR3 bank + 8 KiB boundary measurement."
+    },
+    "ipl-loader-integration": {
+      "expands": [
+        "tests/integration/geargrafx_ipl_loader.py --mode $(MODE)"
+      ],
+      "ci_jobs": [
+        {
+          "job": "core-harness/ipl-loader-integration",
+          "class": "ci-nonrequired"
+        }
+      ],
+      "note": "Issue #670 Phase 2 DEV-only multi-sector IPL loader."
+    },
+    "dev-bios-ipl-loader-integration": {
+      "expands": [
+        "dev-rom",
+        "tests/integration/geargrafx_dev_bios_ipl_loader.py --mode $(MODE)"
+      ],
+      "ci_jobs": [
+        {
+          "job": "core-harness/dev-bios-ipl-loader-integration (45 min)",
+          "class": "ci-nonrequired"
+        }
+      ],
+      "note": "Issue #682: 22 loader cases in a 256 KiB DEV image via LoadBiosFromBuffer (CAP-checked)."
+    },
+    "dev-synthetic-track-select-integration": {
+      "expands": [
+        "dev-cdread",
+        "tests/integration/geargrafx_synthetic_track_select.py --mode $(MODE)"
+      ],
+      "ci_jobs": [
+        {
+          "job": "core-harness/synthetic-track-select-integration",
+          "class": "ci-nonrequired"
+        }
+      ],
+      "note": "#607 follow-up: host CUE MODE1 selection + guest READ(6)."
+    },
+    "api-unimplemented-integration": {
+      "expands": [
+        "dev-rom",
+        "tests/integration/geargrafx_api_unimplemented.py --mode $(MODE)"
+      ],
+      "ci_jobs": [],
+      "note": "Issue #692 stub-vs-budget detection; pinned-guard-allowlist exclusion keeps it out of CI (needs a main-only change)."
+    },
+    "api-entry-integration": {
+      "expands": [
+        "dev-rom",
+        "tests/integration/geargrafx_api_entry.py --mode $(MODE)"
+      ],
+      "ci_jobs": [],
+      "note": "Issue #635 direct API-entry observation; same exclusion."
+    },
+    "slot02-return-integration": {
+      "expands": [
+        "dev-rom",
+        "tests/integration/geargrafx_slot02_return.py --mode $(MODE)"
+      ],
+      "ci_jobs": [],
+      "note": "Issues #756/#758 slot-RETURNING experiments; same exclusion."
+    },
+    "public-dev-gap-integration": {
+      "expands": [
+        "tests/integration/geargrafx_public_dev_gap.py --mode debug"
+      ],
+      "ci_jobs": [],
+      "note": "Issue #762 PUBLIC/DEV loader-validation gap; same exclusion."
+    },
+    "routine-real-core": {
+      "expands": [
+        "tests/integration/geargrafx_ex_binbcd.py",
+        "tests/integration/geargrafx_ma_mul8s.py",
+        "tests/integration/geargrafx_ma_mul8u.py",
+        "tests/integration/geargrafx_ma_mul16u.py",
+        "tests/integration/geargrafx_ma_div16u.py",
+        "tests/integration/geargrafx_ma_div16s.py",
+        "tests/integration/geargrafx_bcdbin.py"
+      ],
+      "ci_jobs": [],
+      "note": "Issue #330 Linux-pinned routine set (TOOLS_DIR-gated); opt-in."
+    },
+    "irq-postaccept-boundary": {
+      "expands": [
+        "tests/integration/geargrafx_irq_postaccept_boundary.py"
+      ],
+      "ci_jobs": [],
+      "note": "Issue #366 debugger-only IRQ acceptance boundary; opt-in."
+    },
+    "dev-release-gate-blocked": {
+      "expands": [
+        "tools/expect_exit.py 3 '^BLOCKED:' -- tools/build_rom.py --release-gate"
+      ],
+      "ci_jobs": [
+        {
+          "job": "api-source/bios-dev-full",
+          "class": "required-ci"
+        }
+      ],
+      "note": "Incomplete firmware refused (exit 3 + BLOCKED only); make masks exit 3 as 2, hence the wrapper."
+    },
+    "clean": {
+      "expands": [
+        "remove build/"
+      ],
+      "ci_jobs": [],
+      "note": "Evidence-affecting locally (forces rebuild); L3 loops must not clean between select and validate."
+    }
+  },
+  "entries": [
+    {
+      "id": "dev-slot-1E",
+      "match_type": "exact",
+      "match": "src/overrides/slot_1E.s",
+      "level": "L1",
+      "category": "dev-api-impl",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [
+          "tests/integration/dev_getver_multi_input.py",
+          "tests/integration/geargrafx_api.py"
+        ],
+        "dev_targets": [
+          "dev-rom",
+          "dev-integration"
+        ],
+        "static_units": []
+      },
+      "reason": "DEV-implemented API slot $1E EX_GETVER (project-owned override, not a BIOS ABI). Change validates via the slot host pattern, dev-rom rebuild and the slot dev-integration script(s), all executed by the required bios-dev-full job (dev-integration is unconditional)."
+    },
+    {
+      "id": "dev-slot-21",
+      "match_type": "exact",
+      "match": "src/overrides/slot_21.s",
+      "level": "L1",
+      "category": "dev-api-impl",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table",
+          "tests.host.test_api_joysns_dev"
+        ],
+        "integration_scripts": [
+          "tests/integration/geargrafx_dev_joysns.py"
+        ],
+        "dev_targets": [
+          "dev-rom",
+          "dev-integration"
+        ],
+        "static_units": []
+      },
+      "reason": "DEV-implemented API slot $21 EX_JOYSNS (project-owned override, not a BIOS ABI). Change validates via the slot host pattern, dev-rom rebuild and the slot dev-integration script(s), all executed by the required bios-dev-full job (dev-integration is unconditional)."
+    },
+    {
+      "id": "dev-slot-22",
+      "match_type": "exact",
+      "match": "src/overrides/slot_22.s",
+      "level": "L1",
+      "category": "dev-api-impl",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table",
+          "tests.host.test_api_joyrep_dev"
+        ],
+        "integration_scripts": [
+          "tests/integration/geargrafx_dev_joyrep.py"
+        ],
+        "dev_targets": [
+          "dev-rom",
+          "dev-integration"
+        ],
+        "static_units": []
+      },
+      "reason": "DEV-implemented API slot $22 EX_JOYREP (project-owned override, not a BIOS ABI). Change validates via the slot host pattern, dev-rom rebuild and the slot dev-integration script(s), all executed by the required bios-dev-full job (dev-integration is unconditional)."
+    },
+    {
+      "id": "dev-slot-23",
+      "match_type": "exact",
+      "match": "src/overrides/slot_23.s",
+      "level": "L1",
+      "category": "dev-api-impl",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table",
+          "tests.host.test_api_scrsiz_dev"
+        ],
+        "integration_scripts": [
+          "tests/integration/geargrafx_api.py"
+        ],
+        "dev_targets": [
+          "dev-rom",
+          "dev-integration"
+        ],
+        "static_units": []
+      },
+      "reason": "DEV-implemented API slot $23 EX_SCRSIZ (project-owned override, not a BIOS ABI). Change validates via the slot host pattern, dev-rom rebuild and the slot dev-integration script(s), all executed by the required bios-dev-full job (dev-integration is unconditional)."
+    },
+    {
+      "id": "dev-slot-2E",
+      "match_type": "exact",
+      "match": "src/overrides/slot_2E.s",
+      "level": "L1",
+      "category": "dev-api-impl",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [
+          "tests/integration/geargrafx_dev_bgon.py"
+        ],
+        "dev_targets": [
+          "dev-rom",
+          "dev-integration"
+        ],
+        "static_units": []
+      },
+      "reason": "DEV-implemented API slot $2E EX_BGON (project-owned override, not a BIOS ABI). Change validates via the slot host pattern, dev-rom rebuild and the slot dev-integration script(s), all executed by the required bios-dev-full job (dev-integration is unconditional)."
+    },
+    {
+      "id": "dev-slot-3A",
+      "match_type": "exact",
+      "match": "src/overrides/slot_3A.s",
+      "level": "L1",
+      "category": "dev-api-impl",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [
+          "tests/integration/geargrafx_dev_ex_setwrt.py"
+        ],
+        "dev_targets": [
+          "dev-rom",
+          "dev-integration"
+        ],
+        "static_units": []
+      },
+      "reason": "DEV-implemented API slot $3A EX_SETWRT (project-owned override, not a BIOS ABI). Change validates via the slot host pattern, dev-rom rebuild and the slot dev-integration script(s), all executed by the required bios-dev-full job (dev-integration is unconditional)."
+    },
+    {
+      "id": "dev-slot-3C",
+      "match_type": "exact",
+      "match": "src/overrides/slot_3C.s",
+      "level": "L1",
+      "category": "dev-api-impl",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [
+          "tests/integration/geargrafx_dev_bcd.py",
+          "tests/integration/dev_bcd_full_sweep.py"
+        ],
+        "dev_targets": [
+          "dev-rom",
+          "dev-integration",
+          "dev-sweep"
+        ],
+        "static_units": []
+      },
+      "reason": "DEV-implemented API slot $3C EX_BINBCD (project-owned override, not a BIOS ABI). Change validates via the slot host pattern, dev-rom rebuild and the slot dev-integration script(s), all executed by the required bios-dev-full job (dev-integration is unconditional)."
+    },
+    {
+      "id": "dev-slot-3D",
+      "match_type": "exact",
+      "match": "src/overrides/slot_3D.s",
+      "level": "L1",
+      "category": "dev-api-impl",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [
+          "tests/integration/geargrafx_dev_bcd.py",
+          "tests/integration/dev_bcdbin_full_sweep.py"
+        ],
+        "dev_targets": [
+          "dev-rom",
+          "dev-integration",
+          "dev-bcdbin-sweep"
+        ],
+        "static_units": []
+      },
+      "reason": "DEV-implemented API slot $3D EX_BCDBIN (project-owned override, not a BIOS ABI). Change validates via the slot host pattern, dev-rom rebuild and the slot dev-integration script(s), all executed by the required bios-dev-full job (dev-integration is unconditional)."
+    },
+    {
+      "id": "dev-slot-3E",
+      "match_type": "exact",
+      "match": "src/overrides/slot_3E.s",
+      "level": "L1",
+      "category": "dev-api-impl",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [
+          "tests/integration/geargrafx_dev_ex_rnd.py"
+        ],
+        "dev_targets": [
+          "dev-rom",
+          "dev-integration"
+        ],
+        "static_units": []
+      },
+      "reason": "DEV-implemented API slot $3E EX_RND (project-owned override, not a BIOS ABI). Change validates via the slot host pattern, dev-rom rebuild and the slot dev-integration script(s), all executed by the required bios-dev-full job (dev-integration is unconditional)."
+    },
+    {
+      "id": "dev-slot-3F",
+      "match_type": "exact",
+      "match": "src/overrides/slot_3F.s",
+      "level": "L1",
+      "category": "dev-api-impl",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table",
+          "tests.host.test_ma_mul8u_dev"
+        ],
+        "integration_scripts": [
+          "tests/integration/geargrafx_dev_mul8u.py"
+        ],
+        "dev_targets": [
+          "dev-rom",
+          "dev-integration"
+        ],
+        "static_units": []
+      },
+      "reason": "DEV-implemented API slot $3F MA_MUL8U (project-owned override, not a BIOS ABI). Change validates via the slot host pattern, dev-rom rebuild and the slot dev-integration script(s), all executed by the required bios-dev-full job (dev-integration is unconditional)."
+    },
+    {
+      "id": "dev-slot-40",
+      "match_type": "exact",
+      "match": "src/overrides/slot_40.s",
+      "level": "L1",
+      "category": "dev-api-impl",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table",
+          "tests.host.test_ma_mul8s"
+        ],
+        "integration_scripts": [
+          "tests/integration/geargrafx_dev_mul8s.py"
+        ],
+        "dev_targets": [
+          "dev-rom",
+          "dev-integration"
+        ],
+        "static_units": []
+      },
+      "reason": "DEV-implemented API slot $40 MA_MUL8S (project-owned override, not a BIOS ABI). Change validates via the slot host pattern, dev-rom rebuild and the slot dev-integration script(s), all executed by the required bios-dev-full job (dev-integration is unconditional)."
+    },
+    {
+      "id": "dev-slot-41",
+      "match_type": "exact",
+      "match": "src/overrides/slot_41.s",
+      "level": "L1",
+      "category": "dev-api-impl",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table",
+          "tests.host.test_ma_mul16u_dev"
+        ],
+        "integration_scripts": [
+          "tests/integration/geargrafx_dev_mul16u.py"
+        ],
+        "dev_targets": [
+          "dev-rom",
+          "dev-integration"
+        ],
+        "static_units": []
+      },
+      "reason": "DEV-implemented API slot $41 MA_MUL16U (project-owned override, not a BIOS ABI). Change validates via the slot host pattern, dev-rom rebuild and the slot dev-integration script(s), all executed by the required bios-dev-full job (dev-integration is unconditional)."
+    },
+    {
+      "id": "dev-slot-42",
+      "match_type": "exact",
+      "match": "src/overrides/slot_42.s",
+      "level": "L1",
+      "category": "dev-api-impl",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table",
+          "tests.host.test_ma_div16s"
+        ],
+        "integration_scripts": [
+          "tests/integration/geargrafx_dev_div16s.py"
+        ],
+        "dev_targets": [
+          "dev-rom",
+          "dev-integration"
+        ],
+        "static_units": []
+      },
+      "reason": "DEV-implemented API slot $42 MA_DIV16S (project-owned override, not a BIOS ABI). Change validates via the slot host pattern, dev-rom rebuild and the slot dev-integration script(s), all executed by the required bios-dev-full job (dev-integration is unconditional)."
+    },
+    {
+      "id": "dev-slot-43",
+      "match_type": "exact",
+      "match": "src/overrides/slot_43.s",
+      "level": "L1",
+      "category": "dev-api-impl",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table",
+          "tests.host.test_ma_div16u_dev"
+        ],
+        "integration_scripts": [
+          "tests/integration/geargrafx_dev_div16u.py"
+        ],
+        "dev_targets": [
+          "dev-rom",
+          "dev-integration"
+        ],
+        "static_units": []
+      },
+      "reason": "DEV-implemented API slot $43 MA_DIV16U (project-owned override, not a BIOS ABI). Change validates via the slot host pattern, dev-rom rebuild and the slot dev-integration script(s), all executed by the required bios-dev-full job (dev-integration is unconditional)."
+    },
+    {
+      "id": "dev-slot-44",
+      "match_type": "exact",
+      "match": "src/overrides/slot_44.s",
+      "level": "L1",
+      "category": "dev-api-impl",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table",
+          "tests.host.test_ma_sqrt_dev"
+        ],
+        "integration_scripts": [
+          "tests/integration/geargrafx_dev_sqrt.py"
+        ],
+        "dev_targets": [
+          "dev-rom",
+          "dev-integration"
+        ],
+        "static_units": []
+      },
+      "reason": "DEV-implemented API slot $44 MA_SQRT (project-owned override, not a BIOS ABI). Change validates via the slot host pattern, dev-rom rebuild and the slot dev-integration script(s), all executed by the required bios-dev-full job (dev-integration is unconditional)."
+    },
+    {
+      "id": "dev-slot-45",
+      "match_type": "exact",
+      "match": "src/overrides/slot_45.s",
+      "level": "L1",
+      "category": "dev-api-impl",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table",
+          "tests.host.test_ma_sin_dev"
+        ],
+        "integration_scripts": [
+          "tests/integration/geargrafx_dev_sin.py",
+          "tests/integration/geargrafx_dev_sin_cos.py"
+        ],
+        "dev_targets": [
+          "dev-rom",
+          "dev-integration"
+        ],
+        "static_units": []
+      },
+      "reason": "DEV-implemented API slot $45 MA_SIN (project-owned override, not a BIOS ABI). Change validates via the slot host pattern, dev-rom rebuild and the slot dev-integration script(s), all executed by the required bios-dev-full job (dev-integration is unconditional)."
+    },
+    {
+      "id": "dev-slot-46",
+      "match_type": "exact",
+      "match": "src/overrides/slot_46.s",
+      "level": "L1",
+      "category": "dev-api-impl",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table",
+          "tests.host.test_ma_cos_dev"
+        ],
+        "integration_scripts": [
+          "tests/integration/geargrafx_dev_cos.py",
+          "tests/integration/geargrafx_dev_sin_cos.py"
+        ],
+        "dev_targets": [
+          "dev-rom",
+          "dev-integration"
+        ],
+        "static_units": []
+      },
+      "reason": "DEV-implemented API slot $46 MA_COS (project-owned override, not a BIOS ABI). Change validates via the slot host pattern, dev-rom rebuild and the slot dev-integration script(s), all executed by the required bios-dev-full job (dev-integration is unconditional)."
+    },
+    {
+      "id": "dev-slot-4F",
+      "match_type": "exact",
+      "match": "src/overrides/slot_4F.s",
+      "level": "L1",
+      "category": "dev-api-impl",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table",
+          "tests.host.test_ma_mul16s_dev"
+        ],
+        "integration_scripts": [
+          "tests/integration/geargrafx_dev_mul16s.py"
+        ],
+        "dev_targets": [
+          "dev-rom",
+          "dev-integration"
+        ],
+        "static_units": []
+      },
+      "reason": "DEV-implemented API slot $4F MA_MUL16S (project-owned override, not a BIOS ABI). Change validates via the slot host pattern, dev-rom rebuild and the slot dev-integration script(s), all executed by the required bios-dev-full job (dev-integration is unconditional)."
+    },
+    {
+      "id": "math-src-ma_div16s",
+      "match_type": "exact",
+      "match": "src/math/ma_div16s.s",
+      "level": "L1",
+      "category": "dev-api-impl",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table",
+          "tests.host.test_ma_div16s"
+        ],
+        "integration_scripts": [
+          "tests/integration/geargrafx_dev_div16s.py"
+        ],
+        "dev_targets": [
+          "dev-rom",
+          "dev-integration"
+        ],
+        "static_units": []
+      },
+      "reason": "Shared MA multiply/divide source backing DEV slot $42 MA_DIV16S (SQRT/SIN/COS/MUL16S are inline in their slot files). Same L1 validation as the backed slot."
+    },
+    {
+      "id": "math-src-ma_div16u",
+      "match_type": "exact",
+      "match": "src/math/ma_div16u.s",
+      "level": "L1",
+      "category": "dev-api-impl",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table",
+          "tests.host.test_ma_div16u_dev"
+        ],
+        "integration_scripts": [
+          "tests/integration/geargrafx_dev_div16u.py"
+        ],
+        "dev_targets": [
+          "dev-rom",
+          "dev-integration"
+        ],
+        "static_units": []
+      },
+      "reason": "Shared MA multiply/divide source backing DEV slot $43 MA_DIV16U (SQRT/SIN/COS/MUL16S are inline in their slot files). Same L1 validation as the backed slot."
+    },
+    {
+      "id": "math-src-ma_mul16u",
+      "match_type": "exact",
+      "match": "src/math/ma_mul16u.s",
+      "level": "L1",
+      "category": "dev-api-impl",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table",
+          "tests.host.test_ma_mul16u_dev"
+        ],
+        "integration_scripts": [
+          "tests/integration/geargrafx_dev_mul16u.py"
+        ],
+        "dev_targets": [
+          "dev-rom",
+          "dev-integration"
+        ],
+        "static_units": []
+      },
+      "reason": "Shared MA multiply/divide source backing DEV slot $41 MA_MUL16U (SQRT/SIN/COS/MUL16S are inline in their slot files). Same L1 validation as the backed slot."
+    },
+    {
+      "id": "math-src-ma_mul8s",
+      "match_type": "exact",
+      "match": "src/math/ma_mul8s.s",
+      "level": "L1",
+      "category": "dev-api-impl",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table",
+          "tests.host.test_ma_mul8s"
+        ],
+        "integration_scripts": [
+          "tests/integration/geargrafx_dev_mul8s.py"
+        ],
+        "dev_targets": [
+          "dev-rom",
+          "dev-integration"
+        ],
+        "static_units": []
+      },
+      "reason": "Shared MA multiply/divide source backing DEV slot $40 MA_MUL8S (SQRT/SIN/COS/MUL16S are inline in their slot files). Same L1 validation as the backed slot."
+    },
+    {
+      "id": "math-src-ma_mul8u",
+      "match_type": "exact",
+      "match": "src/math/ma_mul8u.s",
+      "level": "L1",
+      "category": "dev-api-impl",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table",
+          "tests.host.test_ma_mul8u_dev"
+        ],
+        "integration_scripts": [
+          "tests/integration/geargrafx_dev_mul8u.py"
+        ],
+        "dev_targets": [
+          "dev-rom",
+          "dev-integration"
+        ],
+        "static_units": []
+      },
+      "reason": "Shared MA multiply/divide source backing DEV slot $3F MA_MUL8U (SQRT/SIN/COS/MUL16S are inline in their slot files). Same L1 validation as the backed slot."
+    },
+    {
+      "id": "src-overrides-future",
+      "match_type": "glob",
+      "match": "src/overrides/*.s",
+      "level": "L3",
+      "category": "shared-code",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [
+          "dev-rom",
+          "dev-integration"
+        ],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Any other src/overrides/slot_XX.s (new API implementation) is unclassified by the v0 table and fails closed to L3; the 18 known slots above keep L1."
+    },
+    {
+      "id": "src-probes",
+      "match_type": "glob",
+      "match": "src/*.s",
+      "level": "L3",
+      "category": "shared-code",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [],
+        "integration_scripts": [],
+        "dev_targets": [
+          "dev-rom",
+          "dev-integration",
+          "test-real-core"
+        ],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Non-override guest sources (boot/reset/startup/CD probes, G5 glue, experiment ROMs): shared diagnostic surface, no per-file selection; L3."
+    },
+    {
+      "id": "src-linker",
+      "match_type": "glob",
+      "match": "src/*.cfg",
+      "level": "L3",
+      "category": "build-infra",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [],
+        "integration_scripts": [],
+        "dev_targets": [
+          "build",
+          "test-real-core"
+        ],
+        "static_units": [
+          "make-check:verify-build-diff"
+        ]
+      },
+      "reason": "Linker scripts (bank0.cfg, payload cfg): memory layout change affects every ROM; L3 with the build-diff audit."
+    },
+    {
+      "id": "host-api-pattern",
+      "match_type": "glob",
+      "match": "tests/host/test_api*.py",
+      "level": "L1",
+      "category": "host",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [
+          "tests/host/test_api*.py"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [
+          "dev-rom",
+          "dev-test",
+          "test"
+        ],
+        "static_units": []
+      },
+      "reason": "API host-test pattern: identical to the dev-test selection (test_api*.py) executed by required bios-dev-full plus required host-tests; L1 for API-scoped changes."
+    },
+    {
+      "id": "host-ma-pattern",
+      "match_type": "glob",
+      "match": "tests/host/test_ma*.py",
+      "level": "L1",
+      "category": "host",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [
+          "tests/host/test_ma*.py"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [
+          "dev-rom",
+          "dev-test",
+          "test"
+        ],
+        "static_units": []
+      },
+      "reason": "MA math host-test pattern: identical to the dev-test selection (test_ma*.py); L1 for MA-scoped changes."
+    },
+    {
+      "id": "host-diag-test_cd_media_state",
+      "match_type": "exact",
+      "match": "tests/host/test_cd_media_state.py",
+      "level": "L2",
+      "category": "dev-diagnostic",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [
+          "tests.host.test_cd_media_state"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [
+          "dev-cd-media-state",
+          "dev-cd-media-state-integration"
+        ],
+        "static_units": []
+      },
+      "reason": "Host half of a bios-dev-full diagnostic pair (dev-cd-media-state + dev-cd-media-state-integration); L2 impact scope, both halves in required CI."
+    },
+    {
+      "id": "host-diag-test_cdda_verify",
+      "match_type": "exact",
+      "match": "tests/host/test_cdda_verify.py",
+      "level": "L2",
+      "category": "dev-diagnostic",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [
+          "tests.host.test_cdda_verify"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [
+          "dev-cdda",
+          "dev-cdda-integration"
+        ],
+        "static_units": []
+      },
+      "reason": "Host half of a bios-dev-full diagnostic pair (dev-cdda + dev-cdda-integration); L2 impact scope, both halves in required CI."
+    },
+    {
+      "id": "host-diag-test_cdimage",
+      "match_type": "exact",
+      "match": "tests/host/test_cdimage.py",
+      "level": "L2",
+      "category": "dev-diagnostic",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [
+          "tests.host.test_cdimage"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [
+          "dev-cdread",
+          "dev-cdread-integration"
+        ],
+        "static_units": []
+      },
+      "reason": "Host half of a bios-dev-full diagnostic pair (dev-cdread + dev-cdread-integration); L2 impact scope, both halves in required CI."
+    },
+    {
+      "id": "host-diag-test_cdload_exec",
+      "match_type": "exact",
+      "match": "tests/host/test_cdload_exec.py",
+      "level": "L2",
+      "category": "dev-diagnostic",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [
+          "tests.host.test_cdload_exec"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [
+          "dev-cdload-exec",
+          "dev-cdload-exec-integration"
+        ],
+        "static_units": []
+      },
+      "reason": "Host half of a bios-dev-full diagnostic pair (dev-cdload-exec + dev-cdload-exec-integration); L2 impact scope, both halves in required CI."
+    },
+    {
+      "id": "host-diag-test_cdread",
+      "match_type": "exact",
+      "match": "tests/host/test_cdread.py",
+      "level": "L2",
+      "category": "dev-diagnostic",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [
+          "tests.host.test_cdread"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [
+          "dev-cdread",
+          "dev-cdread-integration"
+        ],
+        "static_units": []
+      },
+      "reason": "Host half of a bios-dev-full diagnostic pair (dev-cdread + dev-cdread-integration); L2 impact scope, both halves in required CI."
+    },
+    {
+      "id": "host-diag-test_cdreset_bus",
+      "match_type": "exact",
+      "match": "tests/host/test_cdreset_bus.py",
+      "level": "L2",
+      "category": "dev-diagnostic",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [
+          "tests.host.test_cdreset_bus"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [
+          "dev-cdreset",
+          "dev-cdreset-integration"
+        ],
+        "static_units": []
+      },
+      "reason": "Host half of a bios-dev-full diagnostic pair (dev-cdreset + dev-cdreset-integration); L2 impact scope, both halves in required CI."
+    },
+    {
+      "id": "host-diag-test_reset_entry",
+      "match_type": "exact",
+      "match": "tests/host/test_reset_entry.py",
+      "level": "L2",
+      "category": "dev-diagnostic",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [
+          "tests.host.test_reset_entry"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [
+          "dev-reset-entry",
+          "dev-reset-entry-integration"
+        ],
+        "static_units": []
+      },
+      "reason": "Host half of a bios-dev-full diagnostic pair (dev-reset-entry + dev-reset-entry-integration); L2 impact scope, both halves in required CI."
+    },
+    {
+      "id": "host-diag-test_startup",
+      "match_type": "exact",
+      "match": "tests/host/test_startup.py",
+      "level": "L2",
+      "category": "dev-diagnostic",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [
+          "tests.host.test_startup"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [
+          "dev-startup",
+          "dev-startup-integration"
+        ],
+        "static_units": []
+      },
+      "reason": "Host half of a bios-dev-full diagnostic pair (dev-startup + dev-startup-integration); L2 impact scope, both halves in required CI."
+    },
+    {
+      "id": "host-safety-gates",
+      "match_type": "exact-list",
+      "match": [
+        "tests/host/test_365_st_boundary_record.py",
+        "tests/host/test_367_device_write_audit.py",
+        "tests/host/test_367_matrix_runner.py",
+        "tests/host/test_367_midrefusal.py",
+        "tests/host/test_717_peek_failclosed.py",
+        "tests/host/test_718_huc6280_adt_fixtures.py",
+        "tests/host/test_719_wram_deny_allow.py",
+        "tests/host/test_720_mutation_gaps.py",
+        "tests/host/test_721_transferend_noresume.py",
+        "tests/host/test_722_five_xfer.py",
+        "tests/host/test_723_coldwarm_observer.py",
+        "tests/host/test_724_build_diff_audit.py",
+        "tests/host/test_725_failclosed.py",
+        "tests/host/test_725_p10_failclosed.py",
+        "tests/host/test_726_367_evidence.py",
+        "tests/host/test_737_h45_preblock.py",
+        "tests/host/test_744_norange_mutant.py",
+        "tests/host/test_cd_boot_loader_mutations.py"
+      ],
+      "level": "L3",
+      "category": "safety-gate",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [
+          "tests/host/test_71*.py",
+          "tests/host/test_72*.py",
+          "tests/host/test_365*.py",
+          "tests/host/test_367*.py",
+          "tests/host/test_737*.py",
+          "tests.host.test_cd_boot_loader_mutations",
+          "tests.host.test_744_norange_mutant"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [
+          "test",
+          "check"
+        ],
+        "static_units": []
+      },
+      "reason": "Fail-closed safety invariants (PEEK deny/allow, transfer refusal, observer, build-diff audit), ST-boundary/matrix records and host mutation-gap tests: gating logic itself, always L3."
+    },
+    {
+      "id": "host-guard-contracts",
+      "match_type": "exact-list",
+      "match": [
+        "tests/host/test_api_commercial_media.py",
+        "tests/host/test_api_halt_classify.py",
+        "tests/host/test_api_release_gate.py",
+        "tests/host/test_artifact_guard.py",
+        "tests/host/test_artifact_guard_bypass_r16.py",
+        "tests/host/test_artifact_guard_exact_r8.py",
+        "tests/host/test_artifact_guard_pin_r11.py",
+        "tests/host/test_artifact_guard_repo.py",
+        "tests/host/test_artifact_guard_run_write_r15.py",
+        "tests/host/test_artifact_guard_scope_r10.py",
+        "tests/host/test_artifact_guard_scope_r12.py",
+        "tests/host/test_artifact_guard_scope_r14.py",
+        "tests/host/test_artifact_guard_sign_r3.py",
+        "tests/host/test_artifact_guard_sign_r6.py",
+        "tests/host/test_artifact_guard_sign_r7.py",
+        "tests/host/test_cc65_gate.py",
+        "tests/host/test_ci_sharding.py",
+        "tests/host/test_provenance_guard.py",
+        "tests/host/test_rom_provenance.py"
+      ],
+      "level": "L3",
+      "category": "safety-gate",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [
+          "tests/host/test_artifact_guard*.py",
+          "tests.host.test_provenance_guard",
+          "tests/host/test_rom_provenance*.py",
+          "tests.host.test_ci_sharding",
+          "tests.host.test_cc65_gate",
+          "tests.host.test_api_commercial_media",
+          "tests.host.test_api_release_gate",
+          "tests.host.test_api_halt_classify"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [
+          "test",
+          "check"
+        ],
+        "static_units": []
+      },
+      "reason": "Guard/provenance/sharding/cc65-gate/commercial-media/release-gate contracts: policy definition files, always L3."
+    },
+    {
+      "id": "host-rest",
+      "match_type": "glob",
+      "match": "tests/host/test_*.py",
+      "level": "L3",
+      "category": "host",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [
+          "tests/host/test_*.py"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [
+          "test",
+          "check"
+        ],
+        "static_units": []
+      },
+      "reason": "Default for any other host test file: run the file itself, then full L3 (test-file changes are selection-logic-adjacent)."
+    },
+    {
+      "id": "host-support",
+      "match_type": "glob",
+      "match": "tests/host/*",
+      "level": "L3",
+      "category": "fixture",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [],
+        "integration_scripts": [],
+        "dev_targets": [
+          "test",
+          "check"
+        ],
+        "static_units": []
+      },
+      "reason": "Host support files (payload fixtures, C++ probe sources): shared inputs, L3."
+    },
+    {
+      "id": "integration-direct-required",
+      "match_type": "exact-list",
+      "match": [
+        "tests/integration/geargrafx_bcdbin.py",
+        "tests/integration/geargrafx_block_midrefusal.py",
+        "tests/integration/geargrafx_block_preblock.py",
+        "tests/integration/geargrafx_block_transfer_matrix.py",
+        "tests/integration/geargrafx_block_write_guard.py",
+        "tests/integration/geargrafx_caller_stack_contract.py",
+        "tests/integration/geargrafx_irq_register.py",
+        "tests/integration/geargrafx_mmio1804_preblock.py",
+        "tests/integration/geargrafx_mmio1804_trap.py",
+        "tests/integration/geargrafx_reference_guard.py",
+        "tests/integration/geargrafx_reference_guard_issue173.py",
+        "tests/integration/geargrafx_smoke.py",
+        "tests/integration/geargrafx_st_boundary.py",
+        "tests/integration/geargrafx_st_bypass.py",
+        "tests/integration/geargrafx_stack_access_guard.py",
+        "tests/integration/geargrafx_stack_irq_timing.py",
+        "tests/integration/geargrafx_stack_methods.py",
+        "tests/integration/geargrafx_stack_methods_compare.py",
+        "tests/integration/geargrafx_stack_mpr_buffer.py",
+        "tests/integration/geargrafx_stack_s5.py",
+        "tests/integration/geargrafx_stack_s6.py"
+      ],
+      "level": "L3",
+      "category": "direct-integration",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [],
+        "integration_scripts": [
+          "tests/integration/geargrafx_bcdbin.py",
+          "tests/integration/geargrafx_block_midrefusal.py",
+          "tests/integration/geargrafx_block_preblock.py",
+          "tests/integration/geargrafx_block_transfer_matrix.py",
+          "tests/integration/geargrafx_block_write_guard.py",
+          "tests/integration/geargrafx_caller_stack_contract.py",
+          "tests/integration/geargrafx_irq_register.py",
+          "tests/integration/geargrafx_mmio1804_preblock.py",
+          "tests/integration/geargrafx_mmio1804_trap.py",
+          "tests/integration/geargrafx_reference_guard.py",
+          "tests/integration/geargrafx_reference_guard_issue173.py",
+          "tests/integration/geargrafx_smoke.py",
+          "tests/integration/geargrafx_st_boundary.py",
+          "tests/integration/geargrafx_st_bypass.py",
+          "tests/integration/geargrafx_stack_access_guard.py",
+          "tests/integration/geargrafx_stack_irq_timing.py",
+          "tests/integration/geargrafx_stack_methods.py",
+          "tests/integration/geargrafx_stack_methods_compare.py",
+          "tests/integration/geargrafx_stack_mpr_buffer.py",
+          "tests/integration/geargrafx_stack_s5.py",
+          "tests/integration/geargrafx_stack_s6.py"
+        ],
+        "dev_targets": [
+          "integration",
+          "test-real-core"
+        ],
+        "static_units": []
+      },
+      "reason": "The 21 `make integration` direct-script units (Makefile order, parity-checked by tools/ci_sharding.py against the required integration-direct job). Script changes re-run via run-direct plus L3.",
+      "units": [
+        "direct:smoke",
+        "direct:reference-guard",
+        "direct:reference-guard-issue173",
+        "direct:mmio1804-trap",
+        "direct:mmio1804-preblock",
+        "direct:irq-register",
+        "direct:st-bypass",
+        "direct:bcdbin",
+        "direct:block-write-guard",
+        "direct:block-transfer-matrix",
+        "direct:block-mid-refusal",
+        "direct:stack-access-guard",
+        "direct:stack-methods",
+        "direct:stack-methods-compare",
+        "direct:stack-s5",
+        "direct:stack-s6",
+        "direct:stack-irq-timing",
+        "direct:stack-mpr-buffer",
+        "direct:caller-stack-contract",
+        "direct:st-boundary",
+        "direct:block-preblock"
+      ]
+    },
+    {
+      "id": "integration-unittest-sharded",
+      "match_type": "exact-list",
+      "match": [
+        "tests/integration/test_apicall_capacity.py",
+        "tests/integration/test_apicall_vdc_snapshot.py",
+        "tests/integration/test_build_core.py",
+        "tests/integration/test_cd_base_proto_v1.py",
+        "tests/integration/test_cd_read_link_v1.py",
+        "tests/integration/test_debugger_setup.py",
+        "tests/integration/test_dev_g5_profile.py",
+        "tests/integration/test_ex_bcdbin_real_core.py",
+        "tests/integration/test_ex_dspoff_real_core.py",
+        "tests/integration/test_g5_2base.py",
+        "tests/integration/test_g5_cdread_commercial.py",
+        "tests/integration/test_g5_chain_7api_24_36.py",
+        "tests/integration/test_g5_dotmod_24.py",
+        "tests/integration/test_g5_expD_next_probe.py",
+        "tests/integration/test_g5_integrated_chain.py",
+        "tests/integration/test_g5_irqon_2c.py",
+        "tests/integration/test_g5_memopen_4a.py",
+        "tests/integration/test_g5_progress.py",
+        "tests/integration/test_g5_rcroff_2b.py",
+        "tests/integration/test_g5_satclr_36.py",
+        "tests/integration/test_g5_scrmod_25.py",
+        "tests/integration/test_g5_sprdma_35.py",
+        "tests/integration/test_geargrafx_frame_tracer_synthetic_cd.py",
+        "tests/integration/test_getver_observation_real_core.py",
+        "tests/integration/test_ipl_loader_g5_4a_793.py",
+        "tests/integration/test_ipl_loader_g5_800.py",
+        "tests/integration/test_irq_366_entry_execbp.py",
+        "tests/integration/test_matched_selection_realcore.py",
+        "tests/integration/test_mpr1_tam_irq.py",
+        "tests/integration/test_run_input_guest_real_core.py",
+        "tests/integration/test_unified_link_realcore.py",
+        "tests/integration/test_unified_realcore.py"
+      ],
+      "level": "L3",
+      "category": "real-core",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [],
+        "integration_scripts": [],
+        "dev_targets": [
+          "integration-test",
+          "test-real-core"
+        ],
+        "static_units": []
+      },
+      "reason": "The 32 tests/integration unittest modules sharded rc-0..rc-3 by measured wall time (manifest in tools/ci_sharding.py, fail-closed aggregation in required verify-full). Module changes re-run via run-shard plus L3.",
+      "shards": {
+        "test_apicall_capacity": "rc-0",
+        "test_apicall_vdc_snapshot": "rc-0",
+        "test_build_core": "rc-3",
+        "test_cd_base_proto_v1": "rc-2",
+        "test_cd_read_link_v1": "rc-2",
+        "test_debugger_setup": "rc-2",
+        "test_dev_g5_profile": "rc-1",
+        "test_ex_bcdbin_real_core": "rc-0",
+        "test_ex_dspoff_real_core": "rc-3",
+        "test_g5_2base": "rc-0",
+        "test_g5_cdread_commercial": "rc-0",
+        "test_g5_chain_7api_24_36": "rc-3",
+        "test_g5_dotmod_24": "rc-2",
+        "test_g5_expD_next_probe": "rc-0",
+        "test_g5_integrated_chain": "rc-2",
+        "test_g5_irqon_2c": "rc-1",
+        "test_g5_memopen_4a": "rc-0",
+        "test_g5_progress": "rc-1",
+        "test_g5_rcroff_2b": "rc-3",
+        "test_g5_satclr_36": "rc-1",
+        "test_g5_scrmod_25": "rc-2",
+        "test_g5_sprdma_35": "rc-3",
+        "test_geargrafx_frame_tracer_synthetic_cd": "rc-2",
+        "test_getver_observation_real_core": "rc-2",
+        "test_ipl_loader_g5_4a_793": "rc-3",
+        "test_ipl_loader_g5_800": "rc-3",
+        "test_irq_366_entry_execbp": "rc-2",
+        "test_matched_selection_realcore": "rc-1",
+        "test_mpr1_tam_irq": "rc-1",
+        "test_run_input_guest_real_core": "rc-1",
+        "test_unified_link_realcore": "rc-1",
+        "test_unified_realcore": "rc-1"
+      }
+    },
+    {
+      "id": "integration-dev-required",
+      "match_type": "exact-list",
+      "match": [
+        "tests/integration/dev_bcd_full_sweep.py",
+        "tests/integration/dev_bcdbin_full_sweep.py",
+        "tests/integration/dev_getver_multi_input.py",
+        "tests/integration/geargrafx_api.py",
+        "tests/integration/geargrafx_cd_media_state.py",
+        "tests/integration/geargrafx_cdda.py",
+        "tests/integration/geargrafx_cdload_exec.py",
+        "tests/integration/geargrafx_cdread.py",
+        "tests/integration/geargrafx_cdreset.py",
+        "tests/integration/geargrafx_dev_bcd.py",
+        "tests/integration/geargrafx_dev_bgon.py",
+        "tests/integration/geargrafx_dev_cos.py",
+        "tests/integration/geargrafx_dev_div16s.py",
+        "tests/integration/geargrafx_dev_div16u.py",
+        "tests/integration/geargrafx_dev_ex_rnd.py",
+        "tests/integration/geargrafx_dev_ex_setwrt.py",
+        "tests/integration/geargrafx_dev_joyrep.py",
+        "tests/integration/geargrafx_dev_joysns.py",
+        "tests/integration/geargrafx_dev_mul16s.py",
+        "tests/integration/geargrafx_dev_mul16u.py",
+        "tests/integration/geargrafx_dev_mul8s.py",
+        "tests/integration/geargrafx_dev_mul8u.py",
+        "tests/integration/geargrafx_dev_sin.py",
+        "tests/integration/geargrafx_dev_sin_cos.py",
+        "tests/integration/geargrafx_dev_sqrt.py",
+        "tests/integration/geargrafx_frame_tracer_cd.py",
+        "tests/integration/geargrafx_reset_entry.py",
+        "tests/integration/geargrafx_startup.py",
+        "tests/integration/geargrafx_trace.py"
+      ],
+      "level": "L3",
+      "category": "dev-diagnostic",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [],
+        "integration_scripts": [
+          "tests/integration/dev_bcd_full_sweep.py",
+          "tests/integration/dev_bcdbin_full_sweep.py",
+          "tests/integration/dev_getver_multi_input.py",
+          "tests/integration/geargrafx_api.py",
+          "tests/integration/geargrafx_cd_media_state.py",
+          "tests/integration/geargrafx_cdda.py",
+          "tests/integration/geargrafx_cdload_exec.py",
+          "tests/integration/geargrafx_cdread.py",
+          "tests/integration/geargrafx_cdreset.py",
+          "tests/integration/geargrafx_dev_bcd.py",
+          "tests/integration/geargrafx_dev_bgon.py",
+          "tests/integration/geargrafx_dev_cos.py",
+          "tests/integration/geargrafx_dev_div16s.py",
+          "tests/integration/geargrafx_dev_div16u.py",
+          "tests/integration/geargrafx_dev_ex_rnd.py",
+          "tests/integration/geargrafx_dev_ex_setwrt.py",
+          "tests/integration/geargrafx_dev_joyrep.py",
+          "tests/integration/geargrafx_dev_joysns.py",
+          "tests/integration/geargrafx_dev_mul16s.py",
+          "tests/integration/geargrafx_dev_mul16u.py",
+          "tests/integration/geargrafx_dev_mul8s.py",
+          "tests/integration/geargrafx_dev_mul8u.py",
+          "tests/integration/geargrafx_dev_sin.py",
+          "tests/integration/geargrafx_dev_sin_cos.py",
+          "tests/integration/geargrafx_dev_sqrt.py",
+          "tests/integration/geargrafx_frame_tracer_cd.py",
+          "tests/integration/geargrafx_reset_entry.py",
+          "tests/integration/geargrafx_startup.py",
+          "tests/integration/geargrafx_trace.py"
+        ],
+        "dev_targets": [
+          "dev-rom",
+          "dev-integration",
+          "dev-test",
+          "dev-startup-integration",
+          "dev-reset-entry-integration",
+          "dev-cd-media-state-integration",
+          "dev-cdread-integration",
+          "dev-cdload-exec-integration",
+          "dev-cdreset-integration",
+          "dev-cdda-integration",
+          "dev-trace-integration",
+          "dev-frame-tracer-cd-integration"
+        ],
+        "static_units": []
+      },
+      "reason": "DEV diagnostic scripts executed by required bios-dev-full (dev-integration incl. dev-bcdbin-sweep/dev-sweep, startup/reset/media-state/cdread/cdload-exec/cdreset/cdda pairs, trace harnesses). Script changes re-run their dev target plus L3."
+    },
+    {
+      "id": "integration-ci-nonrequired",
+      "match_type": "exact-list",
+      "match": [
+        "tests/integration/geargrafx_dev_bios_ipl_loader.py",
+        "tests/integration/geargrafx_dev_boot_internal.py",
+        "tests/integration/geargrafx_dev_ipl_boot.py",
+        "tests/integration/geargrafx_experimental_track_contract.py",
+        "tests/integration/geargrafx_ipl_loader.py",
+        "tests/integration/geargrafx_mpr_bank_probe.py",
+        "tests/integration/geargrafx_synthetic_track_select.py"
+      ],
+      "level": "L3",
+      "category": "real-core",
+      "ci_class": "ci-nonrequired",
+      "required_ci": false,
+      "tests": {
+        "host": [],
+        "integration_scripts": [
+          "tests/integration/geargrafx_dev_bios_ipl_loader.py",
+          "tests/integration/geargrafx_dev_boot_internal.py",
+          "tests/integration/geargrafx_dev_ipl_boot.py",
+          "tests/integration/geargrafx_experimental_track_contract.py",
+          "tests/integration/geargrafx_ipl_loader.py",
+          "tests/integration/geargrafx_mpr_bank_probe.py",
+          "tests/integration/geargrafx_synthetic_track_select.py"
+        ],
+        "dev_targets": [
+          "dev-boot-internal-integration",
+          "experimental-bios-boot-integration",
+          "dev-ipl-boot-integration",
+          "mpr-bank-probe",
+          "ipl-loader-integration",
+          "dev-bios-ipl-loader-integration",
+          "dev-synthetic-track-select-integration"
+        ],
+        "static_units": []
+      },
+      "reason": "Scripts run by core-harness.yml non-guard jobs on every PR (30 min each; dev-bios-ipl-loader 45 min) but backing no Required Check. Change validates via its job plus L3; never a Required substitute."
+    },
+    {
+      "id": "integration-optin",
+      "match_type": "exact-list",
+      "match": [
+        "tests/integration/geargrafx_api_entry.py",
+        "tests/integration/geargrafx_api_unimplemented.py",
+        "tests/integration/geargrafx_cd_base.py",
+        "tests/integration/geargrafx_cd_stat_observation.py",
+        "tests/integration/geargrafx_cdda_scenarios.py",
+        "tests/integration/geargrafx_cdra_compare.py",
+        "tests/integration/geargrafx_cdsubq.py",
+        "tests/integration/geargrafx_ex_binbcd.py",
+        "tests/integration/geargrafx_irq_postaccept_boundary.py",
+        "tests/integration/geargrafx_ma_div16s.py",
+        "tests/integration/geargrafx_ma_div16u.py",
+        "tests/integration/geargrafx_ma_mul16u.py",
+        "tests/integration/geargrafx_ma_mul8s.py",
+        "tests/integration/geargrafx_ma_mul8u.py",
+        "tests/integration/geargrafx_public_dev_gap.py",
+        "tests/integration/geargrafx_slot02_return.py"
+      ],
+      "level": "L4",
+      "category": "real-core",
+      "ci_class": "ci-outside-optin",
+      "required_ci": false,
+      "tests": {
+        "host": [],
+        "integration_scripts": [
+          "tests/integration/geargrafx_api_entry.py",
+          "tests/integration/geargrafx_api_unimplemented.py",
+          "tests/integration/geargrafx_cd_base.py",
+          "tests/integration/geargrafx_cd_stat_observation.py",
+          "tests/integration/geargrafx_cdda_scenarios.py",
+          "tests/integration/geargrafx_cdra_compare.py",
+          "tests/integration/geargrafx_cdsubq.py",
+          "tests/integration/geargrafx_ex_binbcd.py",
+          "tests/integration/geargrafx_irq_postaccept_boundary.py",
+          "tests/integration/geargrafx_ma_div16s.py",
+          "tests/integration/geargrafx_ma_div16u.py",
+          "tests/integration/geargrafx_ma_mul16u.py",
+          "tests/integration/geargrafx_ma_mul8s.py",
+          "tests/integration/geargrafx_ma_mul8u.py",
+          "tests/integration/geargrafx_public_dev_gap.py",
+          "tests/integration/geargrafx_slot02_return.py"
+        ],
+        "dev_targets": [
+          "api-unimplemented-integration",
+          "api-entry-integration",
+          "slot02-return-integration",
+          "public-dev-gap-integration",
+          "irq-postaccept-boundary",
+          "routine-real-core",
+          "dev-cdra-compare",
+          "dev-cd-base-integration",
+          "dev-cdda-scenarios-integration",
+          "dev-cdsubq-integration",
+          "dev-cd-stat-observation-integration",
+          "dev-mul16s-sweep"
+        ],
+        "static_units": []
+      },
+      "reason": "Explicit opt-in only: no workflow invokes these targets (Makefile comments or pinned-guard-allowlist exclusion). Not run by CI; L4 extended validation, never a Required substitute. geargrafx_dev_mul16s --full (dev-mul16s-sweep) is covered here while the default sweep stays in the required dev-integration row."
+    },
+    {
+      "id": "integration-support",
+      "match_type": "glob",
+      "match": "tests/integration/*",
+      "level": "L3",
+      "category": "fixture",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [],
+        "integration_scripts": [],
+        "dev_targets": [
+          "test",
+          "test-real-core"
+        ],
+        "static_units": []
+      },
+      "reason": "Integration support files (C++ probes, patches/, shims, and dev helper modules imported by required host tests such as geargrafx_dev_scrsiz/dev_cr): shared inputs across the host and real-core gates, L3."
+    },
+    {
+      "id": "tests-fixtures",
+      "match_type": "glob",
+      "match": "tests/fixtures/*",
+      "level": "L3",
+      "category": "fixture",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [],
+        "integration_scripts": [],
+        "dev_targets": [
+          "test",
+          "test-real-core"
+        ],
+        "static_units": []
+      },
+      "reason": "Shared test fixtures incl. the core-harness plugin case: L3."
+    },
+    {
+      "id": "tools-selection-logic",
+      "match_type": "exact-list",
+      "match": [
+        "tools/artifact_guard.py",
+        "tools/artifact_guard_run_allowlist.json",
+        "tools/ci_sharding.py",
+        "tools/provenance_guard.py"
+      ],
+      "level": "L3",
+      "category": "selection-logic",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [
+          "tests.host.test_ci_sharding",
+          "tests.host.test_artifact_guard",
+          "tests.host.test_provenance_guard"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [
+          "test",
+          "check"
+        ],
+        "static_units": []
+      },
+      "reason": "Test-selection and trust-boundary logic itself (sharding manifest, artifact guard + run allowlist, provenance guard): change forces L3."
+    },
+    {
+      "id": "tools-contract-static",
+      "match_type": "exact-list",
+      "match": [
+        "tools/c3_static_check.py",
+        "tools/check.py",
+        "tools/contracts.py",
+        "tools/verify_build_diff.py"
+      ],
+      "level": "L3",
+      "category": "static",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts",
+          "make-check:check-py",
+          "make-check:c3-static",
+          "make-check:verify-build-diff"
+        ]
+      },
+      "reason": "The four `make check` units (contracts 81-slot table, syntax/actions/HuC6280/whitespace, C3 tri-state, build-diff audit incl. GPL gate)."
+    },
+    {
+      "id": "tools-gates",
+      "match_type": "exact-list",
+      "match": [
+        "tools/expect_exit.py",
+        "tools/reference_jsr_gate.py",
+        "tools/release_makefile_guard.py"
+      ],
+      "level": "L3",
+      "category": "safety-gate",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [],
+        "integration_scripts": [],
+        "dev_targets": [
+          "check"
+        ],
+        "static_units": []
+      },
+      "reason": "Safety gates (reference-JSR execution gate 0/81, release Makefile guard, exit-code wrapper for the BLOCKED release gates)."
+    },
+    {
+      "id": "tools-buildsys",
+      "match_type": "exact-list",
+      "match": [
+        "tools/build.py",
+        "tools/build_cd_media_state.py",
+        "tools/build_cdda.py",
+        "tools/build_cdload_exec.py",
+        "tools/build_cdread.py",
+        "tools/build_cdreset.py",
+        "tools/build_dev_boot_internal.py",
+        "tools/build_dev_g5.py",
+        "tools/build_dev_ipl_loader_bios.py",
+        "tools/build_experimental_bios_boot.py",
+        "tools/build_ipl_boot.py",
+        "tools/build_ipl_loader_g5.py",
+        "tools/build_ipl_loader_g5_2base.py",
+        "tools/build_ipl_loader_g5_4a.py",
+        "tools/build_reset_entry.py",
+        "tools/build_rom.py",
+        "tools/build_slot02_return_loader.py",
+        "tools/build_startup.py",
+        "tools/rom_provenance.py",
+        "tools/setup.py"
+      ],
+      "level": "L3",
+      "category": "build-infra",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [],
+        "integration_scripts": [],
+        "dev_targets": [
+          "setup",
+          "build",
+          "dev-rom",
+          "rom-provenance"
+        ],
+        "static_units": [
+          "release-compare",
+          "rom-provenance-repro"
+        ]
+      },
+      "reason": "Build/provenance toolchain (HuCARD + 7 DEV/probe ROM builders, setup, rom_provenance reproduce/verify): shared build inputs, L3."
+    },
+    {
+      "id": "tools-rest",
+      "match_type": "glob",
+      "match": "tools/*",
+      "level": "L3",
+      "category": "build-infra",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [],
+        "integration_scripts": [],
+        "dev_targets": [
+          "check"
+        ],
+        "static_units": []
+      },
+      "reason": "Default for any other tool (models, judges, ledger helpers, nightly helpers): shared code, L3."
+    },
+    {
+      "id": "spec-contracts",
+      "match_type": "glob",
+      "match": "spec/*.json",
+      "level": "L3",
+      "category": "shared-code",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Contract/spec ledgers (81 API slots, DEV ledger, C3 contracts, JSR gate, measurement points): consumed by contracts.py and the ROM table generator; any slot edit is L3."
+    },
+    {
+      "id": "makefile",
+      "match_type": "exact",
+      "match": "Makefile",
+      "level": "L3",
+      "category": "build-infra",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [],
+        "integration_scripts": [],
+        "dev_targets": [
+          "test",
+          "test-real-core",
+          "check"
+        ],
+        "static_units": []
+      },
+      "reason": "Build orchestration incl. transitive target expansion (see make_transitive): selection-affecting shared code, always L3."
+    },
+    {
+      "id": "workflow-nightly",
+      "match_type": "exact",
+      "match": ".github/workflows/nightly.yml",
+      "level": "L3",
+      "category": "ci-workflow",
+      "ci_class": "push-only",
+      "required_ci": false,
+      "tests": {
+        "host": [],
+        "integration_scripts": [],
+        "dev_targets": [
+          "test",
+          "test-real-core",
+          "check"
+        ],
+        "static_units": []
+      },
+      "reason": "Change-aware nightly (plan/build/guard-nightly): schedule + workflow_dispatch on main only, no PR trigger; push-only."
+    },
+    {
+      "id": "workflow-pages",
+      "match_type": "exact",
+      "match": ".github/workflows/pages.yml",
+      "level": "L3",
+      "category": "ci-workflow",
+      "ci_class": "ci-nonrequired",
+      "required_ci": false,
+      "tests": {
+        "host": [],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": []
+      },
+      "reason": "Site publication (validate/build/deploy): outside the test evidence boundary entirely."
+    },
+    {
+      "id": "workflows-required",
+      "match_type": "glob",
+      "match": ".github/workflows/*.yml",
+      "level": "L3",
+      "category": "ci-workflow",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": []
+      },
+      "reason": "CI definition for the Required pipeline (ci, api-source, core-bcdbin, core-harness): any edit revalidates via full CI itself; Required Check names are never renamed."
+    },
+    {
+      "id": "docs-all",
+      "match_type": "glob",
+      "match": "docs/**",
+      "level": "L3",
+      "category": "docs",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [
+          "test",
+          "check"
+        ],
+        "static_units": []
+      },
+      "reason": "Docs are L3: the docs-only fast path stays disabled because the host suite reads many docs/*.md files, so doc edits still run full CI."
+    },
+    {
+      "id": "root-docs",
+      "match_type": "exact-list",
+      "match": [
+        "AGENTS.md",
+        "CONTRIBUTING.md",
+        "README.md",
+        "readme.jp.md"
+      ],
+      "level": "L3",
+      "category": "docs",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [],
+        "integration_scripts": [],
+        "dev_targets": [
+          "test",
+          "check"
+        ],
+        "static_units": []
+      },
+      "reason": "Project policy/developer procedure (provenance, evidence boundaries, per-task full-regression loop): L3."
+    },
+    {
+      "id": "root-meta",
+      "match_type": "exact-list",
+      "match": [
+        ".gitattributes",
+        ".gitignore",
+        "LICENSE"
+      ],
+      "level": "L3",
+      "category": "docs",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [],
+        "integration_scripts": [],
+        "dev_targets": [
+          "check"
+        ],
+        "static_units": []
+      },
+      "reason": "License/ignore/attribute metadata: validated by check.py whitespace/schema units; L3 default."
+    },
+    {
+      "id": "site-pub",
+      "match_type": "glob",
+      "match": "site/*",
+      "level": "L3",
+      "category": "docs",
+      "ci_class": "ci-nonrequired",
+      "required_ci": false,
+      "tests": {
+        "host": [],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": []
+      },
+      "reason": "Published site sources (pages workflow, not test evidence)."
+    },
+    {
+      "id": "assets",
+      "match_type": "glob",
+      "match": "assets/*",
+      "level": "L3",
+      "category": "docs",
+      "ci_class": "ci-nonrequired",
+      "required_ci": false,
+      "tests": {
+        "host": [],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": []
+      },
+      "reason": "README/site artwork: no test coverage, CI-nonRequired at most."
+    },
+    {
+      "id": "scripts-infra",
+      "match_type": "glob",
+      "match": "scripts/*",
+      "level": "L3",
+      "category": "build-infra",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [],
+        "integration_scripts": [],
+        "dev_targets": [
+          "setup",
+          "build"
+        ],
+        "static_units": []
+      },
+      "reason": "Setup helpers (setup-geargrafx.sh): toolchain inputs, L3."
+    },
+    {
+      "id": "claude-config",
+      "match_type": "glob",
+      "match": ".claude/*",
+      "level": "L3",
+      "category": "build-infra",
+      "ci_class": "ci-outside-optin",
+      "required_ci": false,
+      "tests": {
+        "host": [],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": []
+      },
+      "reason": "Agent hooks/settings: local-only guard rails, no CI coverage."
+    },
+    {
+      "id": "fallback-unclassified",
+      "match_type": "glob",
+      "match": "**",
+      "level": "L3",
+      "category": "shared-code",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [],
+        "integration_scripts": [],
+        "dev_targets": [
+          "test",
+          "test-real-core",
+          "check"
+        ],
+        "static_units": []
+      },
+      "reason": "Fail-closed catch-all: anything not matched above (new files, new dirs) classifies L3 with full required validation. Unknown is never L0/L1/L2."
+    }
+  ],
+  "fallback": {
+    "id": "fallback-unclassified",
+    "match_type": "glob",
+    "match": "**",
+    "level": "L3",
+    "category": "shared-code",
+    "ci_class": "required-ci",
+    "required_ci": true,
+    "tests": {
+      "host": [],
+      "integration_scripts": [],
+      "dev_targets": [
+        "test",
+        "test-real-core",
+        "check"
+      ],
+      "static_units": []
+    },
+    "reason": "Fail-closed catch-all: anything not matched above (new files, new dirs) classifies L3 with full required validation. Unknown is never L0/L1/L2."
+  },
+  "api_slots": [
+    {
+      "slot": 0,
+      "name": "CD_BOOT",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $00 CD_BOOT: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 1,
+      "name": "CD_RESET",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $01 CD_RESET: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 2,
+      "name": "CD_BASE",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $02 CD_BASE: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 3,
+      "name": "CD_READ",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $03 CD_READ: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 4,
+      "name": "CD_SEEK",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $04 CD_SEEK: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 5,
+      "name": "CD_EXEC",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $05 CD_EXEC: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 6,
+      "name": "CD_PLAY",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $06 CD_PLAY: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 7,
+      "name": "CD_SEARCH",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $07 CD_SEARCH: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 8,
+      "name": "CD_PAUSE",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $08 CD_PAUSE: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 9,
+      "name": "CD_STAT",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $09 CD_STAT: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 10,
+      "name": "CD_SUBQ",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $0A CD_SUBQ: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 11,
+      "name": "CD_DINFO",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $0B CD_DINFO: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 12,
+      "name": "CD_CONTNTS",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $0C CD_CONTNTS: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 13,
+      "name": "CD_SUBRQ / CD_SUBRD",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $0D CD_SUBRQ / CD_SUBRD: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 14,
+      "name": "CD_PCMRD",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $0E CD_PCMRD: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 15,
+      "name": "CD_FADE",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $0F CD_FADE: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 16,
+      "name": "AD_RESET",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $10 AD_RESET: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 17,
+      "name": "AD_TRANS",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $11 AD_TRANS: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 18,
+      "name": "AD_READ",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $12 AD_READ: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 19,
+      "name": "AD_WRITE",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $13 AD_WRITE: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 20,
+      "name": "AD_PLAY",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $14 AD_PLAY: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 21,
+      "name": "AD_CPLAY",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $15 AD_CPLAY: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 22,
+      "name": "AD_STOP",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $16 AD_STOP: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 23,
+      "name": "AD_STAT",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $17 AD_STAT: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 24,
+      "name": "BM_FORMAT",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $18 BM_FORMAT: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 25,
+      "name": "BM_FREE",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $19 BM_FREE: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 26,
+      "name": "BM_READ",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $1A BM_READ: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 27,
+      "name": "BM_WRITE",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $1B BM_WRITE: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 28,
+      "name": "BM_DELETE",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $1C BM_DELETE: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 29,
+      "name": "BM_FILES",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $1D BM_FILES: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 30,
+      "name": "EX_GETVER",
+      "dev_implemented": true,
+      "dev_source": "src/overrides/slot_1E.s",
+      "level": "L1",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [
+          "tests/integration/dev_getver_multi_input.py",
+          "tests/integration/geargrafx_api.py"
+        ],
+        "dev_targets": [
+          "dev-rom",
+          "dev-integration"
+        ],
+        "static_units": []
+      },
+      "reason": "DEV-implemented slot $1E EX_GETVER: L1 via slot host pattern + dev-rom + slot dev-integration script(s)."
+    },
+    {
+      "slot": 31,
+      "name": "EX_SETVEC",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $1F EX_SETVEC: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 32,
+      "name": "EX_GETFNT",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $20 EX_GETFNT: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 33,
+      "name": "EX_JOYSNS",
+      "dev_implemented": true,
+      "dev_source": "src/overrides/slot_21.s",
+      "level": "L1",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table",
+          "tests.host.test_api_joysns_dev"
+        ],
+        "integration_scripts": [
+          "tests/integration/geargrafx_dev_joysns.py"
+        ],
+        "dev_targets": [
+          "dev-rom",
+          "dev-integration"
+        ],
+        "static_units": []
+      },
+      "reason": "DEV-implemented slot $21 EX_JOYSNS: L1 via slot host pattern + dev-rom + slot dev-integration script(s)."
+    },
+    {
+      "slot": 34,
+      "name": "EX_JOYREP",
+      "dev_implemented": true,
+      "dev_source": "src/overrides/slot_22.s",
+      "level": "L1",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table",
+          "tests.host.test_api_joyrep_dev"
+        ],
+        "integration_scripts": [
+          "tests/integration/geargrafx_dev_joyrep.py"
+        ],
+        "dev_targets": [
+          "dev-rom",
+          "dev-integration"
+        ],
+        "static_units": []
+      },
+      "reason": "DEV-implemented slot $22 EX_JOYREP: L1 via slot host pattern + dev-rom + slot dev-integration script(s)."
+    },
+    {
+      "slot": 35,
+      "name": "EX_SCRSIZ",
+      "dev_implemented": true,
+      "dev_source": "src/overrides/slot_23.s",
+      "level": "L1",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table",
+          "tests.host.test_api_scrsiz_dev"
+        ],
+        "integration_scripts": [
+          "tests/integration/geargrafx_api.py"
+        ],
+        "dev_targets": [
+          "dev-rom",
+          "dev-integration"
+        ],
+        "static_units": []
+      },
+      "reason": "DEV-implemented slot $23 EX_SCRSIZ: L1 via slot host pattern + dev-rom + slot dev-integration script(s)."
+    },
+    {
+      "slot": 36,
+      "name": "EX_DOTMOD",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $24 EX_DOTMOD: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 37,
+      "name": "EX_SCRMOD",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $25 EX_SCRMOD: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 38,
+      "name": "EX_IMODE",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $26 EX_IMODE: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 39,
+      "name": "EX_VMODE",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $27 EX_VMODE: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 40,
+      "name": "EX_HMODE",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $28 EX_HMODE: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 41,
+      "name": "EX_VSYNC",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $29 EX_VSYNC: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 42,
+      "name": "EX_RCRON",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $2A EX_RCRON: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 43,
+      "name": "EX_RCROFF",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $2B EX_RCROFF: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 44,
+      "name": "EX_IRQON",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $2C EX_IRQON: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 45,
+      "name": "EX_IRQOFF",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $2D EX_IRQOFF: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 46,
+      "name": "EX_BGON",
+      "dev_implemented": true,
+      "dev_source": "src/overrides/slot_2E.s",
+      "level": "L1",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [
+          "tests/integration/geargrafx_dev_bgon.py"
+        ],
+        "dev_targets": [
+          "dev-rom",
+          "dev-integration"
+        ],
+        "static_units": []
+      },
+      "reason": "DEV-implemented slot $2E EX_BGON: L1 via slot host pattern + dev-rom + slot dev-integration script(s)."
+    },
+    {
+      "slot": 47,
+      "name": "EX_BGOFF",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $2F EX_BGOFF: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 48,
+      "name": "EX_SPRON",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $30 EX_SPRON: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 49,
+      "name": "EX_SPROFF",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $31 EX_SPROFF: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 50,
+      "name": "EX_DSPON",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $32 EX_DSPON: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 51,
+      "name": "EX_DSPOFF",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $33 EX_DSPOFF: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 52,
+      "name": "EX_DMAMOD",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $34 EX_DMAMOD: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 53,
+      "name": "EX_SPRDMA",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $35 EX_SPRDMA: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 54,
+      "name": "EX_SATCLR",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $36 EX_SATCLR: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 55,
+      "name": "EX_SPRPUT",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $37 EX_SPRPUT: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 56,
+      "name": "EX_SETRCR",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $38 EX_SETRCR: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 57,
+      "name": "EX_SETRED",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $39 EX_SETRED: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 58,
+      "name": "EX_SETWRT",
+      "dev_implemented": true,
+      "dev_source": "src/overrides/slot_3A.s",
+      "level": "L1",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [
+          "tests/integration/geargrafx_dev_ex_setwrt.py"
+        ],
+        "dev_targets": [
+          "dev-rom",
+          "dev-integration"
+        ],
+        "static_units": []
+      },
+      "reason": "DEV-implemented slot $3A EX_SETWRT: L1 via slot host pattern + dev-rom + slot dev-integration script(s)."
+    },
+    {
+      "slot": 59,
+      "name": "EX_SETDMA",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $3B EX_SETDMA: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 60,
+      "name": "EX_BINBCD",
+      "dev_implemented": true,
+      "dev_source": "src/overrides/slot_3C.s",
+      "level": "L1",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [
+          "tests/integration/geargrafx_dev_bcd.py",
+          "tests/integration/dev_bcd_full_sweep.py"
+        ],
+        "dev_targets": [
+          "dev-rom",
+          "dev-integration",
+          "dev-sweep"
+        ],
+        "static_units": []
+      },
+      "reason": "DEV-implemented slot $3C EX_BINBCD: L1 via slot host pattern + dev-rom + slot dev-integration script(s)."
+    },
+    {
+      "slot": 61,
+      "name": "EX_BCDBIN",
+      "dev_implemented": true,
+      "dev_source": "src/overrides/slot_3D.s",
+      "level": "L1",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [
+          "tests/integration/geargrafx_dev_bcd.py",
+          "tests/integration/dev_bcdbin_full_sweep.py"
+        ],
+        "dev_targets": [
+          "dev-rom",
+          "dev-integration",
+          "dev-bcdbin-sweep"
+        ],
+        "static_units": []
+      },
+      "reason": "DEV-implemented slot $3D EX_BCDBIN: L1 via slot host pattern + dev-rom + slot dev-integration script(s)."
+    },
+    {
+      "slot": 62,
+      "name": "EX_RND",
+      "dev_implemented": true,
+      "dev_source": "src/overrides/slot_3E.s",
+      "level": "L1",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [
+          "tests/integration/geargrafx_dev_ex_rnd.py"
+        ],
+        "dev_targets": [
+          "dev-rom",
+          "dev-integration"
+        ],
+        "static_units": []
+      },
+      "reason": "DEV-implemented slot $3E EX_RND: L1 via slot host pattern + dev-rom + slot dev-integration script(s)."
+    },
+    {
+      "slot": 63,
+      "name": "MA_MUL8U",
+      "dev_implemented": true,
+      "dev_source": "src/overrides/slot_3F.s",
+      "level": "L1",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table",
+          "tests.host.test_ma_mul8u_dev"
+        ],
+        "integration_scripts": [
+          "tests/integration/geargrafx_dev_mul8u.py"
+        ],
+        "dev_targets": [
+          "dev-rom",
+          "dev-integration"
+        ],
+        "static_units": []
+      },
+      "reason": "DEV-implemented slot $3F MA_MUL8U: L1 via slot host pattern + dev-rom + slot dev-integration script(s)."
+    },
+    {
+      "slot": 64,
+      "name": "MA_MUL8S",
+      "dev_implemented": true,
+      "dev_source": "src/overrides/slot_40.s",
+      "level": "L1",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table",
+          "tests.host.test_ma_mul8s"
+        ],
+        "integration_scripts": [
+          "tests/integration/geargrafx_dev_mul8s.py"
+        ],
+        "dev_targets": [
+          "dev-rom",
+          "dev-integration"
+        ],
+        "static_units": []
+      },
+      "reason": "DEV-implemented slot $40 MA_MUL8S: L1 via slot host pattern + dev-rom + slot dev-integration script(s)."
+    },
+    {
+      "slot": 65,
+      "name": "MA_MUL16U",
+      "dev_implemented": true,
+      "dev_source": "src/overrides/slot_41.s",
+      "level": "L1",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table",
+          "tests.host.test_ma_mul16u_dev"
+        ],
+        "integration_scripts": [
+          "tests/integration/geargrafx_dev_mul16u.py"
+        ],
+        "dev_targets": [
+          "dev-rom",
+          "dev-integration"
+        ],
+        "static_units": []
+      },
+      "reason": "DEV-implemented slot $41 MA_MUL16U: L1 via slot host pattern + dev-rom + slot dev-integration script(s)."
+    },
+    {
+      "slot": 66,
+      "name": "MA_DIV16S",
+      "dev_implemented": true,
+      "dev_source": "src/overrides/slot_42.s",
+      "level": "L1",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table",
+          "tests.host.test_ma_div16s"
+        ],
+        "integration_scripts": [
+          "tests/integration/geargrafx_dev_div16s.py"
+        ],
+        "dev_targets": [
+          "dev-rom",
+          "dev-integration"
+        ],
+        "static_units": []
+      },
+      "reason": "DEV-implemented slot $42 MA_DIV16S: L1 via slot host pattern + dev-rom + slot dev-integration script(s)."
+    },
+    {
+      "slot": 67,
+      "name": "MA_DIV16U",
+      "dev_implemented": true,
+      "dev_source": "src/overrides/slot_43.s",
+      "level": "L1",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table",
+          "tests.host.test_ma_div16u_dev"
+        ],
+        "integration_scripts": [
+          "tests/integration/geargrafx_dev_div16u.py"
+        ],
+        "dev_targets": [
+          "dev-rom",
+          "dev-integration"
+        ],
+        "static_units": []
+      },
+      "reason": "DEV-implemented slot $43 MA_DIV16U: L1 via slot host pattern + dev-rom + slot dev-integration script(s)."
+    },
+    {
+      "slot": 68,
+      "name": "MA_SQRT",
+      "dev_implemented": true,
+      "dev_source": "src/overrides/slot_44.s",
+      "level": "L1",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table",
+          "tests.host.test_ma_sqrt_dev"
+        ],
+        "integration_scripts": [
+          "tests/integration/geargrafx_dev_sqrt.py"
+        ],
+        "dev_targets": [
+          "dev-rom",
+          "dev-integration"
+        ],
+        "static_units": []
+      },
+      "reason": "DEV-implemented slot $44 MA_SQRT: L1 via slot host pattern + dev-rom + slot dev-integration script(s)."
+    },
+    {
+      "slot": 69,
+      "name": "MA_SIN",
+      "dev_implemented": true,
+      "dev_source": "src/overrides/slot_45.s",
+      "level": "L1",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table",
+          "tests.host.test_ma_sin_dev"
+        ],
+        "integration_scripts": [
+          "tests/integration/geargrafx_dev_sin.py",
+          "tests/integration/geargrafx_dev_sin_cos.py"
+        ],
+        "dev_targets": [
+          "dev-rom",
+          "dev-integration"
+        ],
+        "static_units": []
+      },
+      "reason": "DEV-implemented slot $45 MA_SIN: L1 via slot host pattern + dev-rom + slot dev-integration script(s)."
+    },
+    {
+      "slot": 70,
+      "name": "MA_COS",
+      "dev_implemented": true,
+      "dev_source": "src/overrides/slot_46.s",
+      "level": "L1",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table",
+          "tests.host.test_ma_cos_dev"
+        ],
+        "integration_scripts": [
+          "tests/integration/geargrafx_dev_cos.py",
+          "tests/integration/geargrafx_dev_sin_cos.py"
+        ],
+        "dev_targets": [
+          "dev-rom",
+          "dev-integration"
+        ],
+        "static_units": []
+      },
+      "reason": "DEV-implemented slot $46 MA_COS: L1 via slot host pattern + dev-rom + slot dev-integration script(s)."
+    },
+    {
+      "slot": 71,
+      "name": "MA_ATNI",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $47 MA_ATNI: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 72,
+      "name": "PSG_BIOS",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $48 PSG_BIOS: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 73,
+      "name": "GRP_BIOS",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $49 GRP_BIOS: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 74,
+      "name": "KEY_BIOS / EX_MEMOPEN",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $4A KEY_BIOS / EX_MEMOPEN: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 75,
+      "name": "PSG_DRIVE / PSG_DRIVER",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $4B PSG_DRIVE / PSG_DRIVER: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 76,
+      "name": "EX_COLORC / EX_COLORCMD",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $4C EX_COLORC / EX_COLORCMD: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 77,
+      "name": "AD_STREAM_START",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $4D AD_STREAM_START: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 78,
+      "name": "AD_STREAM_POLL",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $4E AD_STREAM_POLL: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    },
+    {
+      "slot": 79,
+      "name": "MA_MUL16S",
+      "dev_implemented": true,
+      "dev_source": "src/overrides/slot_4F.s",
+      "level": "L1",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table",
+          "tests.host.test_ma_mul16s_dev"
+        ],
+        "integration_scripts": [
+          "tests/integration/geargrafx_dev_mul16s.py"
+        ],
+        "dev_targets": [
+          "dev-rom",
+          "dev-integration"
+        ],
+        "static_units": []
+      },
+      "reason": "DEV-implemented slot $4F MA_MUL16S: L1 via slot host pattern + dev-rom + slot dev-integration script(s)."
+    },
+    {
+      "slot": 80,
+      "name": "MA_DIV8U / MA_CBASIS",
+      "dev_implemented": false,
+      "dev_source": null,
+      "level": "L3",
+      "tests": {
+        "host": [
+          "tests.host.test_api_contracts",
+          "tests.host.test_api_table"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [],
+        "static_units": [
+          "make-check:contracts"
+        ]
+      },
+      "reason": "Unimplemented slot $50 MA_DIV8U / MA_CBASIS: contract-table coverage only (api_contracts + api_table + contracts.py); any behavioral expectation change is L3."
+    }
+  ]
+}
