@@ -150,7 +150,6 @@ SMOKE_EVIDENCE_NAME = "geargrafx-evidence.json"
 # file). The static evidence records its digest (MAJOR 1: handoff parity) so
 # the aggregator can bind the verified tree to the published handoff tree.
 STATIC_VERIFIED_ROM = os.path.join("build", "debug", "smoke-test-not-bios.pce")
-STATIC_HANDOFF_MANIFEST = os.path.join("build", "debug", "manifest.json")
 
 DIRECT_MAKE_TARGETS = {
     "direct:smoke": None,  # custom argv, handled below
