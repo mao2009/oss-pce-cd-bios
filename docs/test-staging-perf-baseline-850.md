@@ -58,18 +58,43 @@ Survey-era references reused unchanged (not this-baseline measured):
 host full LOCAL `make test` 309.7 s (5939 tests); direct-script smoke 0.27 s,
 st-bypass 4.0 s, st-boundary 4.7 s; `make build` (incremental, cached) 0.07 s.
 
-## 3. Wall vs CPU vs runner-minutes (do not conflate)
+## 3. Wall vs CPU vs runner-usage vs billing (do not conflate)
 
-- **Wall time** = `elapsed=` above: what a developer waits. Single-core-bound
-  units (`cpu=` ≈ 100 %) have CPU time ≈ wall time.
-- **CPU time** = wall × `cpu%`. All light units are ≈1 core; no parallelism
-  credit applies. `cpu=104 %` (M7) reflects brief multi-process overlap
-  (ROM rebuilds in tmp dirs), not a parallel speedup.
-- **Runner-minutes** = billable CI cost = Σ wall × job-parallelism. The CI
-  comparisons in §4 are wall-clock per run; runner-minutes are strictly
-  larger under #848 parallelism (up to 7 concurrent jobs). Quote wall and
-  parallelism separately; never present a parallel wall reduction as a CPU
-  reduction — the test set is identical (no test omitted).
+- **Wall time** = elapsed time a developer waits. Local units above use the
+  timed wrapper's `elapsed=`. CI run-wall below is
+  (`run updated_at` − `run_started_at`/first-job-start) as reported by the
+  Runs/Jobs API; the ≈29 m / ≈12.5 m / ≈14.5 m figures are **reused as
+  reported** (reference), not re-derived here.
+- **CPU time** = wall × `cpu%`. Local light units are ≈1 core
+  (`cpu=` ≈ 100 % ⇒ CPU time ≈ wall time for that unit). `cpu=104 %` (M7)
+  reflects brief multi-process overlap (ROM rebuilds in tmp dirs), not a
+  parallel speedup. **CI CPU time is unmeasured** (no per-step CPU % in the
+  Jobs API) — never quote it.
+- **Runner-usage (observed, this session)** = Σ per-job
+  (`completed_at` − `started_at`) from `gh api .../actions/runs/<id>/jobs`,
+  computed this session (method recorded; raw timestamps in §4). This is a
+  usage approximation, **not billing**:
+  - serial `45941187061`: Σ ≈ **1775 s (≈29.6 min)** — dominated by the
+    single `verify-full` job (1752 s); scope 6 s + verify 5 s +
+    guard-verify 12 s.
+  - parallel-init `45990514643`: Σ ≈ **2785 s (≈46.4 min)** (host-tests
+    599 s; integration-direct 498 s; shards 241/348/455/413 s;
+    static-release 104 s; verify-full 107 s; scope 5 s; guard-verify 11 s;
+    verify 4 s).
+  - safety-fixed `46011185730`: Σ ≈ **2461 s (≈41.0 min)** (host-tests
+    505 s; integration-direct 517 s; shards 238/238/332/387 s;
+    static-release 102 s; verify-full 106 s; scope 11 s; provenance 12 s;
+    guard-verify 10 s; verify 3 s).
+- **Billing is unknown / unmeasured.** GitHub bills with per-job rounding,
+  per-OS multipliers, and minimums that this Σ does not model; no billing
+  API was queried. Do not present Σ job-wall as an invoice figure.
+- **Reading (observed instance only, not a law):** in *these three runs*,
+  summed job-wall was higher under parallelism (29.6 → 46.4 / 41.0 min)
+  while run-wall was lower (≈29 m → ≈12.5 m / ≈14.5 m). Parallelism does
+  not *necessarily* raise total compute in general — that depends on setup
+  duplication, caching, and scheduling. The wall reduction below is a
+  latency finding on an identical test set (no test omitted); it is not a
+  compute saving and must never be described as a test-set reduction.
 
 ## 4. CI comparison: old-serial vs parallel-init vs safety-fixed
 
@@ -78,17 +103,30 @@ Required names; differences are orchestration, not coverage. SHA/run/attempt
 binding is enforced by `verify-full` (#848 mechanism): an old HEAD's result
 must never be claimed for a new HEAD.
 
-| Run | Wall | SHA / run / attempt binding |
-| --- | --- | --- |
-| old serial baseline | **≈29 m 09 s** wall (run `45941187061`; dispersion noted: 23 m 30 s variant reported elsewhere). Breakdown: setup ≈1 m 20 s; host ≈3 m 51 s (5935 tests); real-core ≈23 m 50 s (715 unittest = 982.107 s + direct-script group) | run `45941187061` (pre-#848 serial `verify-full` body; SHA/attempt per that run's manifest) |
-| parallel-init (#848) | **≈12 m 33 s** wall (run `45990514643`: host 9 m 59 s / integration-direct 8 m 18 s / shards 4–7 m / static-release 1 m 44 s / verify-full aggregation 1 m 47 s). ≈57 % wall reduction, identical test set and Required names | run `45990514643` |
-| safety-fixed | **≈14 m 32 s** wall (run `46011185730`; per-job breakdown not available in this worktree — recorded as reported, not decomposed) | run `46011185730` |
+Evidence status used below: **measured** = observed this session via
+read-only `gh api` (value + method recorded); **reused** = already-collected
+or as-reported value retained verbatim as reference; **estimated** =
+arithmetic/inference over measured values; **unconfirmed** = cited without
+in-worktree provenance; **unmeasured** = no data (never quote as a number).
+Run-wall figures (≈29 m / ≈12.5 m / ≈14.5 m) are **reused as reported**;
+SHA / attempt / event / branch / workflow / job timestamps are **measured**
+this session; percentages are **estimated**; billing/CI-CPU are
+**unmeasured**; the 23 m 30 s serial variant is **unconfirmed**.
 
-Reading: #848 parallelism cut wall ≈57 % (29 m → 12.5 m) with zero test
+| Run | Wall (reused as reported) | SHA / run / attempt binding (measured this session) |
+| --- | --- | --- |
+| old serial baseline | **≈29 m 09 s** run-wall (reused as reported; dispersion noted: 23 m 30 s variant reported elsewhere — **unconfirmed**, no run id/SHA in this worktree). Reused breakdown: setup ≈1 m 20 s; host ≈3 m 51 s (5935 tests); real-core ≈23 m 50 s (715 unittest = 982.107 s + direct-script group) | **measured** via Runs API: run `45941187061` (run_number 2528), `run_attempt: 2`, HEAD SHA `145b182e808e49dc50ee922062186618ce8bd249`, branch `agent/g5-rcroff-2b-20261127`, event `pull_request`, workflow `.github/workflows/ci.yml`, conclusion `success`. Command/conditions: CI workflow dispatch (not a single shell command); pre-#848 serial `verify-full` body; measured job timestamps: `verify-full` 05:14:53→05:44:05Z (1752 s), scope/verify/guard-verify ≈6/5/12 s; Σ job-wall ≈1775 s (method §3) |
+| parallel-init (#848) | **≈12 m 33 s** run-wall (reused as reported: host 9 m 59 s / integration-direct 8 m 18 s / shards 4–7 m / static-release 1 m 44 s / verify-full aggregation 1 m 47 s). ≈57 % wall reduction (**estimated**), identical test set and Required names | **measured** via Runs API: run `45990514643` (run_number 2547), `run_attempt: 1`, HEAD SHA `fb1699c36e9995dbf27540ebab1cf44e209498cd`, branch `agent/846-ci-parallel-sharding`, event `pull_request`, workflow `.github/workflows/ci.yml`, conclusion `success`. Command/conditions: CI workflow dispatch; #848 sharded body; measured job timestamps 11:26:39→11:39:09Z (see §3 per-job list); Σ job-wall ≈2785 s (method §3) |
+| safety-fixed | **≈14 m 32 s** run-wall (reused as reported) | **measured** via Runs API: run `46011185730` (run_number 2550), `run_attempt: 1`, HEAD SHA `2392014f9cac9d00da449633a139470f168fd288`, branch `agent/846-ci-parallel-sharding`, event `pull_request`, workflow `.github/workflows/ci.yml`, conclusion `success`. Command/conditions: CI workflow dispatch; safety-fixed sharded body + `provenance` job. Per-job breakdown **measured** this session (Jobs API, previously recorded as unavailable): scope 11 s; provenance 12 s; host-tests 505 s (13:58:16→14:06:41Z); integration-direct 517 s (13:58:36→14:07:13Z); real-core-shards 387/238/332/238 s; static-release 102 s; verify-full 106 s; guard-verify 10 s; verify 3 s; Σ job-wall ≈2461 s (method §3) |
+
+Reading (wall finding retained; compute claim corrected): #848 parallelism cut run-wall ≈57 % (**estimated**: 29 m → 12.5 m) with zero test
 omission; the safety-fixed run is ≈2 m longer wall than parallel-init (≈14.5 m
-vs ≈12.5 m) while remaining ≈50 % below serial. Runner-minutes necessarily
-rose under parallelism (concurrent jobs); wall savings are latency savings,
-not compute savings.
+vs ≈12.5 m) while remaining ≈50 % below serial (**estimated**). In *these
+three runs* summed job-wall was higher under parallelism (29.6 → 46.4 /
+41.0 min, **measured** Σ per §3 method) while run-wall fell — an observed
+latency-vs-usage tradeoff in this instance, not proof that parallelism must
+raise compute. Billing remains **unmeasured** (§3); wall savings are latency
+savings, not compute savings and not a test-set reduction.
 
 ## 5. Repro steps (each < 60 s; heavy units intentionally excluded)
 
@@ -111,16 +149,24 @@ contracts.py 0.108 s PASS; `test_api_contracts` 0.103 s OK (13 tests);
 
 ## 6. Timeout cause (recorded, not retried)
 
-- The 16-file G5 subset (M12) hit the 1500 s command timeout and was killed
-  (exit 143). Root cause measured: `test_g5_2base.py` **alone** costs
-  ≈125 s wall (M11, 27 tests OK), so any subset aggregating several G5-class
-  real-core files cannot fit interactive budgets; the subset composition was
-  never going to fit and was correctly abandoned, not worked around.
+- **Measured facts:** the 16-file G5 subset (M12) hit the 1500 s command
+  timeout and was killed (exit 143) — **measured** (this-baseline wrapper
+  outcome); `test_g5_2base.py` **alone** costs ≈125 s wall (M11: 124.82 s
+  `elapsed=` / 124.716 s unittest, 27 tests OK) — **measured**.
+- **Estimate (not a proven root cause):** the subset composition was *likely*
+  too heavy for interactive budgets, with `test_g5_2base.py`-class files as
+  the plausible dominant cost — **estimated**. No per-file timing inside the
+  timed-out subset run was recorded, so the 125 s single-file number does
+  **not** prove the 1500 s timeout's composition-level cause; the
+  contribution breakdown of the killed run is **unmeasured**. The subset was
+  abandoned without workaround (a scheduling decision), which the estimate
+  supports but does not compel.
 - `block-transfer-matrix` (M13) was operator-aborted before producing a
-  this-baseline number (survey-era 40.0 s retained as reference only).
-- Consequence for staging: L2 (≤5 m) must never blindly include the G5 group
-  or the heavy mutation matrix; those units stay L3. This is selection, not
-  omission — L3 still runs everything (§7).
+  this-baseline number (survey-era 40.0 s retained as **reused** reference
+  only) — **unmeasured** this baseline.
+- Consequence for staging (selection, not omission): L2 (≤5 m) must never
+  blindly include the G5 group or the heavy mutation matrix; those units
+  stay L3. L3 still runs everything (§7).
 
 ## 7. L0/L1/L2 feasibility WITHOUT omitting tests
 
@@ -132,7 +178,7 @@ only.
 - **L0 (≤30 s): FEASIBLE.** Worst-case full light path M5 (`make check`
   2.78–4.14 s) + M3 (`dev-rom` 0.90–1.27 s) + one host file M2 (0.09–0.10 s)
   ≈ **< 6 s wall**, ~5× inside budget. File-scoped subsets (Q1–Q5 per survey
-  §2) are strictly cheaper.
+  §2) execute fewer tests and are therefore cheaper by construction.
 - **L1 (≤2 m = 120 s): FEASIBLE for 1–2 target APIs.** Single-API example:
   M3 (0.9 s) + M6 (`MA_MUL8U` 4.84 s) + M9 (`test_api*` 4.6–5.8 s) ≈ **≈12 s
   wall**. Combined host patterns M7+M8 ≈ 36 s wall still leave 84 s headroom
@@ -197,9 +243,12 @@ No file was modified.
 - **Base:** `main` ← **Head:** `agent/test-staging-perf-20261128` (base `2399a50b`)
 - **Scope:** adds `docs/test-staging-perf-baseline-850.md` only. No build, CI,
   Required-Check, test-body, or tooling changes.
-- **Depends-on (Task-A map):** blocked on / sequenced after Task-A mapping
-  work for issue-number / milestone linkage; this PR makes no product,
-  architecture, or scope decision and proposes no Phase 4 implementation.
+- **Depends-on (Task-A map):** none required. This docs-only PR has **no
+  technical dependency** on #856 or Task-A mapping work; it is independently
+  reviewable and mergeable on its own evidence. Any sequencing after Task-A
+  mapping for issue-number / milestone linkage is administrative convenience
+  only, not a prerequisite — this PR makes no product, architecture, or
+  scope decision and proposes no Phase 4 implementation.
 - **Do NOT merge or close** per task authority; review only.
 - **Evidence:** §2 table (already-collected M1–M13) + §5 light GREEN reruns +
   `make check` exit 0 + `git diff --check` clean.
