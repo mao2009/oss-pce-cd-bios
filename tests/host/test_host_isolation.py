@@ -98,6 +98,14 @@ def dag_problems(workflow_text):
         problems.append("verify-full must need provenance")
     if 'test "${{ needs.provenance.result }}" = "success"' not in text:
         problems.append("verify-full must require provenance success (not skip/cancel)")
+    full = text[text.index("  verify-full:"):]
+    req = full.find("Require all sharded gates to succeed")
+    setup = full.find("run: make setup")
+    build = full.find("run: make build")
+    if req < 0:
+        problems.append("verify-full must evaluate all gates explicitly")
+    elif setup < 0 or build < 0 or not (req < setup < build):
+        problems.append("verify-full must evaluate gates before setup/build")
     return problems
 
 
@@ -346,6 +354,22 @@ class ProvenanceDagTests(unittest.TestCase):
                         count=1)
         self.assertIn("provenance prerequisite job is missing",
                       dag_problems(text))
+
+    def test_verify_full_builds_before_gates_red(self):
+        # The gate evaluation must precede setup/build in verify-full, so a
+        # rejected change is never built there either (serial boundary parity).
+        text = self._text()
+        full = text[text.index("  verify-full:"):]
+        req_start = full.index(
+            "      - name: Require all sharded gates to succeed")
+        req_end = full.index("      - name: Prepare pinned tools from source")
+        req_block = full[req_start:req_end]
+        self.assertIn('needs.provenance.result', req_block)
+        # Negative: move the whole gate step after setup+build.
+        build_end = full.index("      - name: Download shard evidence (host)")
+        moved = full[:req_start] + full[req_end:build_end] + req_block + full[build_end:]
+        self.assertIn("verify-full must evaluate gates before setup/build",
+                      dag_problems(text.replace(full, moved)))
 
 
 if __name__ == "__main__":

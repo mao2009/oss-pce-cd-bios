@@ -244,10 +244,6 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Prepare pinned tools from source
-        run: make setup
-      - name: Build original HuCARD fixture
-        run: make build
       - name: Require all sharded gates to succeed (fail-closed aggregation)
         run: |
           test "${{ needs.scope.result }}" = "success"
@@ -259,6 +255,10 @@ jobs:
           test "${{ needs.real-core-shard-1.result }}" = "success"
           test "${{ needs.real-core-shard-2.result }}" = "success"
           test "${{ needs.real-core-shard-3.result }}" = "success"
+      - name: Prepare pinned tools from source
+        run: make setup
+      - name: Build original HuCARD fixture
+        run: make build
       - name: Download shard evidence (host)
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
