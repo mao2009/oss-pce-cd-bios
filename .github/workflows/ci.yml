@@ -30,18 +30,18 @@ jobs:
           # the full CI, so every required check is produced by the full jobs. Re-enabling needs that proof.
           echo "docs_only=false" >> "$GITHUB_OUTPUT"
           echo "docs-only fast path is disabled; full CI runs"
-  verify-full:
+  provenance:
+    # Changed-content provenance guard runs BEFORE any worker builds, tests,
+    # or uploads (pre-execution boundary parity with the former serial
+    # verify-full). All seven workers require this job to succeed; a
+    # failure, cancellation, or skip never permits worker execution.
     needs: scope
-    if: needs.scope.outputs.docs_only != 'true'
     runs-on: ubuntu-24.04
-    # 60 min: the required real-core matrix (incl. G5 CD_BASE/CD_READ suites)
-    # needed ~22 min on hosted runners (20 min timed out with zero failures),
-    # then ~29 min after G5 $2C/$2B suite growth (run 45941187061: setup ~1m20s,
-    # host ~3m51s / 5935 tests, real-core ~23m50s / 715 tests), and a docs-only
-    # PR run hit 30m15s and was killed with zero test failures (issue #845).
-    # Owner-approved infra budget (not a product/test change, not a verdict
-    # relaxation). Revisit after the #846 parallelization lands.
-    timeout-minutes: 60
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -51,26 +51,260 @@ jobs:
         run: |
           GH_TOKEN="${{ github.token }}" python3 tools/provenance_guard.py
           python3 -m unittest discover -s tests/host -p 'test_provenance_guard.py' -v
+  # Sharded verification (Issue #846): the same tests as the former serial
+  # verify-full, distributed over parallel jobs and re-aggregated fail-closed
+  # below. Every new job runs pinned setup/build, records evidence to
+  # intermediate/shard-<id>/, and uploads it as intermediate-shard-<id>-*.
+  # The `verify` / `guard-verify` Required Check names and the intermediate
+  # handoff shape are unchanged.
+  host-tests:
+    needs: [scope, provenance]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
       - name: Prepare pinned tools from source
         run: make setup
       - name: Build original HuCARD fixture
         run: make build
       - name: Host tests (no Geargrafx needed)
         run: make test
-      - name: Real Geargrafx tests (required, fail-closed; Issue #398)
-        run: make test-real-core
-      - name: Static checks including Actions validation
-        run: make check
-      - name: Verify release-mode fixture
+      - name: Record host evidence (shard manifest match, fail-closed)
+        run: python3 tools/ci_sharding.py run-host --evidence-out intermediate/shard-host/evidence.json
+      - name: Upload host shard evidence (intermediate)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: intermediate-shard-host-${{ github.sha }}
+          path: intermediate/shard-host/
+          if-no-files-found: error
+          retention-days: 1
+  integration-direct:
+    needs: [scope, provenance]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Prepare pinned tools from source
+        run: make setup
+      - name: Build original HuCARD fixture
+        run: make build
+      - name: Direct integration units with evidence (fail-closed)
+        run: python3 tools/ci_sharding.py run-direct --evidence-out intermediate/shard-direct/evidence.json
+      - name: Upload direct-units shard evidence (intermediate)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: intermediate-shard-direct-${{ github.sha }}
+          path: intermediate/shard-direct/
+          if-no-files-found: error
+          retention-days: 1
+  real-core-shard-0:
+    needs: [scope, provenance]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Prepare pinned tools from source
+        run: make setup
+      - name: Build original HuCARD fixture
+        run: make build
+      - name: Real-core shard 0 with evidence (fail-closed)
+        run: python3 tools/ci_sharding.py run-shard --shard rc-0 --evidence-out intermediate/shard-rc-0/evidence.json
+      - name: Upload real-core shard 0 evidence (intermediate)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: intermediate-shard-rc-0-${{ github.sha }}
+          path: intermediate/shard-rc-0/
+          if-no-files-found: error
+          retention-days: 1
+  real-core-shard-1:
+    needs: [scope, provenance]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Prepare pinned tools from source
+        run: make setup
+      - name: Build original HuCARD fixture
+        run: make build
+      - name: Real-core shard 1 with evidence (fail-closed)
+        run: python3 tools/ci_sharding.py run-shard --shard rc-1 --evidence-out intermediate/shard-rc-1/evidence.json
+      - name: Upload real-core shard 1 evidence (intermediate)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: intermediate-shard-rc-1-${{ github.sha }}
+          path: intermediate/shard-rc-1/
+          if-no-files-found: error
+          retention-days: 1
+  real-core-shard-2:
+    needs: [scope, provenance]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Prepare pinned tools from source
+        run: make setup
+      - name: Build original HuCARD fixture
+        run: make build
+      - name: Real-core shard 2 with evidence (fail-closed)
+        run: python3 tools/ci_sharding.py run-shard --shard rc-2 --evidence-out intermediate/shard-rc-2/evidence.json
+      - name: Upload real-core shard 2 evidence (intermediate)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: intermediate-shard-rc-2-${{ github.sha }}
+          path: intermediate/shard-rc-2/
+          if-no-files-found: error
+          retention-days: 1
+  real-core-shard-3:
+    needs: [scope, provenance]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Prepare pinned tools from source
+        run: make setup
+      - name: Build original HuCARD fixture
+        run: make build
+      - name: Real-core shard 3 with evidence (fail-closed)
+        run: python3 tools/ci_sharding.py run-shard --shard rc-3 --evidence-out intermediate/shard-rc-3/evidence.json
+      - name: Upload real-core shard 3 evidence (intermediate)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: intermediate-shard-rc-3-${{ github.sha }}
+          path: intermediate/shard-rc-3/
+          if-no-files-found: error
+          retention-days: 1
+  static-release:
+    needs: [scope, provenance]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Prepare pinned tools from source
+        run: make setup
+      - name: Build original HuCARD fixture
+        run: make build
+      - name: Static, release and reproducibility units with evidence (fail-closed)
+        run: python3 tools/ci_sharding.py run-static --evidence-out intermediate/shard-static/evidence.json
+      - name: Upload static shard evidence (intermediate)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: intermediate-shard-static-${{ github.sha }}
+          path: intermediate/shard-static/
+          if-no-files-found: error
+          retention-days: 1
+  verify-full:
+    needs: [scope, provenance, host-tests, integration-direct, static-release, real-core-shard-0, real-core-shard-1, real-core-shard-2, real-core-shard-3]
+    if: always() && needs.scope.outputs.docs_only != 'true'
+    runs-on: ubuntu-24.04
+    # 60 min: aggregate gate over the sharded matrix (Issue #846). Shards carry
+    # the test time now (~8-12 min wall); this job only rebuilds, downloads and
+    # validates evidence, then hands off the identical intermediate artifact.
+    # Owner-approved infra budget (not a product/test change, not a verdict
+    # relaxation). Former serial layout needed ~22 min, then ~29 min after G5
+    # $2C/$2B suite growth (run 45941187061); a docs-only PR run hit 30m15s and
+    # was killed with zero test failures (issue #845).
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require all sharded gates to succeed (fail-closed aggregation)
         run: |
-          make build MODE=release
-          cmp build/debug/smoke-test-not-bios.pce build/release/smoke-test-not-bios.pce
+          test "${{ needs.scope.result }}" = "success"
+          test "${{ needs.provenance.result }}" = "success"
+          test "${{ needs.host-tests.result }}" = "success"
+          test "${{ needs.integration-direct.result }}" = "success"
+          test "${{ needs.static-release.result }}" = "success"
+          test "${{ needs.real-core-shard-0.result }}" = "success"
+          test "${{ needs.real-core-shard-1.result }}" = "success"
+          test "${{ needs.real-core-shard-2.result }}" = "success"
+          test "${{ needs.real-core-shard-3.result }}" = "success"
+      - name: Prepare pinned tools from source
+        run: make setup
+      - name: Build original HuCARD fixture
+        run: make build
+      - name: Download shard evidence (host)
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: intermediate-shard-host-${{ github.sha }}
+          path: .intake-shard-host
+      - name: Download shard evidence (direct)
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: intermediate-shard-direct-${{ github.sha }}
+          path: .intake-shard-direct
+      - name: Download shard evidence (static)
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: intermediate-shard-static-${{ github.sha }}
+          path: .intake-shard-static
+      - name: Download shard evidence (rc-0)
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: intermediate-shard-rc-0-${{ github.sha }}
+          path: .intake-shard-rc-0
+      - name: Download shard evidence (rc-1)
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: intermediate-shard-rc-1-${{ github.sha }}
+          path: .intake-shard-rc-1
+      - name: Download shard evidence (rc-2)
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: intermediate-shard-rc-2-${{ github.sha }}
+          path: .intake-shard-rc-2
+      - name: Download shard evidence (rc-3)
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: intermediate-shard-rc-3-${{ github.sha }}
+          path: .intake-shard-rc-3
+      - name: Aggregate shard evidence (manifest match, fail-closed)
+        run: python3 tools/ci_sharding.py aggregate --evidence .intake-shard-host/evidence.json .intake-shard-direct/evidence.json .intake-shard-static/evidence.json .intake-shard-rc-0/evidence.json .intake-shard-rc-1/evidence.json .intake-shard-rc-2/evidence.json .intake-shard-rc-3/evidence.json --smoke-evidence .intake-shard-direct/geargrafx-evidence.json --smoke-rom build/debug/smoke-test-not-bios.pce --static-rom build/debug/smoke-test-not-bios.pce
+      - name: Verify the exact handoff ROM and manifest (release/provenance parity)
+        run: |
           python3 tools/build.py --verify build/debug/smoke-test-not-bios.pce
-      - name: Same-input rebuild and provenance record (Issue #335; fail-closed, stops before the handoff)
-        run: |
-          python3 tools/rom_provenance.py --reproduce smoke --mode debug
-          cmp build/debug/smoke-test-not-bios.pce build/rom-provenance/a/smoke-test-not-bios.pce
           python3 tools/rom_provenance.py --rom build/debug/smoke-test-not-bios.pce --manifest build/debug/manifest.json
+      - name: Restore transferred smoke evidence into the handoff tree (verified above, byte-identical copy)
+        run: |
+          test -f .intake-shard-direct/geargrafx-evidence.json
+          cp .intake-shard-direct/geargrafx-evidence.json build/debug/geargrafx-evidence.json
+          cmp .intake-shard-direct/geargrafx-evidence.json build/debug/geargrafx-evidence.json
       - name: Hand off the test fixture and evidence as an intermediate artifact (unverified here; the guard job checks them)
         run: |
           mkdir -p intermediate
