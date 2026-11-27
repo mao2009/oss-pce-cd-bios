@@ -9,12 +9,13 @@ coverage. They also pin the safety invariants the map must not change
 docs-only fast path disabled).
 
 Local commercial media (./rom/) is never accessed: the media test below
-asserts ./rom absence and PASSES (never SKIP; synthetic fixtures only).
+is media-presence-independent and PASSES (never SKIP; synthetic fixtures
+only) without asserting on live ./rom existence, listing, or bytes.
 """
 import fnmatch
 import json
-import os
 import re
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -47,6 +48,26 @@ SKIP_DIRS = {".git", "build", "intermediate", "__pycache__"}
 SKIP_PREFIXES = (".intake", ".trusted-main")
 
 
+def is_scanned_tracked_path(rel):
+    """Shared filter for tracked-index enumeration (synthetic-testable).
+
+    Pure function of the relative path: never touches the filesystem or
+    real media. Returns False for the forbidden ./rom/ media area and
+    for the pre-existing SKIP_DIRS / SKIP_PREFIXES / bytecode skips
+    (directory components mirror the historical worktree-walk pruning).
+    """
+    if rel == "rom" or rel.startswith("rom/"):
+        return False
+    head, _, base = rel.rpartition("/")
+    if base.endswith((".pyc", ".pyo")):
+        return False
+    if head:
+        for part in head.split("/"):
+            if part in SKIP_DIRS or part.startswith(SKIP_PREFIXES):
+                return False
+    return True
+
+
 def load_map():
     assert MAP_PATH.is_file(), (
         "staging map missing: tools/test_staging_map.json (Phase 1 v0 artifact)")
@@ -65,18 +86,16 @@ def makefile_targets():
 
 
 def repo_files():
-    out = []
-    for dirpath, dirnames, filenames in os.walk(ROOT):
-        dirnames[:] = [d for d in dirnames
-                       if d not in SKIP_DIRS
-                       and not d.startswith(SKIP_PREFIXES)
-                       and not d.startswith(".intake")
-                       and d != ".trusted-main"]
-        for fn in filenames:
-            if fn.endswith((".pyc", ".pyo")):
-                continue
-            rel = os.path.relpath(os.path.join(dirpath, fn), ROOT)
-            out.append(rel)
+    # Tracked-files-only enumeration (Issue #854 review): `git ls-files`
+    # lists the versioned index, so untracked/private worktree content --
+    # notably optional ./rom/ commercial media -- is never scanned and
+    # PASS/FAIL cannot depend on media presence. rom/ is additionally
+    # excluded belt-and-braces via is_scanned_tracked_path; real media
+    # is never touched (no existence check, listing, or read).
+    proc = subprocess.run(["git", "ls-files", "-z"], cwd=ROOT,
+                          stdout=subprocess.PIPE, check=True)
+    out = [p for p in proc.stdout.decode("utf-8").split("\0")
+           if p and is_scanned_tracked_path(p)]
     return sorted(out)
 
 
@@ -310,20 +329,99 @@ class MapSafetyTest(unittest.TestCase):
             self.assertFalse(rec["release_eligible"])
 
     def test_no_rom_access(self):
-        # Fail-closed PASS (never SKIP): needs no ./rom input, so an
-        # unconditional assertion is strictly stronger than SKIP and keeps
-        # shard-aggregation allowlists untouched (no unlisted-SKIP). If
-        # ./rom ever appears, this FAILS instead of silently skipping.
-        rom = ROOT / "rom"
-        self.assertFalse(rom.exists(),
-                         "./rom must be absent; map tests never read commercial media")
+        # Media-presence-independent PASS (never SKIP): asserts only on
+        # committed artifacts and enumeration hygiene -- never on live
+        # ./rom existence, listing, or bytes -- so environments
+        # legitimately holding media get the same result as clean ones.
+        # Shard-aggregation allowlists stay untouched (no unlisted-SKIP).
         m = load_map()
-        self.assertFalse(m["local_media"]["rom_dir_present"],
-                         "map local_media must record rom absent")
         self.assertEqual(m["local_media"]["access"], "none",
                          "map local_media must record no access")
         self.assertTrue(m["local_media"]["verdict"].startswith("PASS"),
                         "map local_media verdict must record PASS (never SKIP)")
+        leaked = [f for f in repo_files()
+                  if f == "rom" or f.startswith("rom/")]
+        self.assertEqual(leaked, [],
+                         f"enumeration leaked forbidden media area: {leaked[:5]}")
+
+    def test_enumeration_never_scans_forbidden_area_synthetic(self):
+        # Synthetic-fixture proof (no ./rom access of any kind: nothing
+        # created, listed, or read under ./rom): the shared tracked-path
+        # filter excludes the forbidden media area while keeping normal
+        # tracked paths, and the live enumeration contains no rom/ entry
+        # and no untracked worktree content.
+        self.assertFalse(is_scanned_tracked_path("rom"))
+        self.assertFalse(is_scanned_tracked_path("rom/disc-image.iso"))
+        self.assertFalse(is_scanned_tracked_path("rom/sub/dir/track02.bin"))
+        self.assertTrue(is_scanned_tracked_path("src/overrides/slot_1E.s"))
+        self.assertTrue(is_scanned_tracked_path("tests/host/test_api_table.py"))
+        self.assertTrue(is_scanned_tracked_path("tools/test_staging_map.json"))
+        # Pre-existing SKIP semantics preserved (allowlist unchanged).
+        self.assertFalse(is_scanned_tracked_path("build/output.pce"))
+        self.assertFalse(is_scanned_tracked_path("intermediate/x.tmp"))
+        self.assertFalse(is_scanned_tracked_path("a.pyc"))
+        live = repo_files()
+        self.assertEqual([f for f in live
+                          if f == "rom" or f.startswith("rom/")], [])
+        # Tracked-index source (not a worktree walk): a synthetic
+        # untracked file outside the forbidden area must not leak in.
+        probe = ROOT / "synthetic_untracked_probe.tmp"
+        try:
+            probe.write_text(
+                "synthetic enumeration probe (untracked, must be invisible)\n",
+                encoding="utf-8")
+            self.assertNotIn("synthetic_untracked_probe.tmp", repo_files())
+        finally:
+            probe.unlink(missing_ok=True)
+
+
+class MapSafetyOrderTest(unittest.TestCase):
+    # Exact-match safety rules that must win the first-match-wins
+    # contract against any broader glob (Issue #854 review).
+    SAFETY_EXACT_IDS = ("host-safety-gates", "host-guard-contracts")
+
+    def test_safety_exact_rules_win_first_match(self):
+        # Every safety exact-list path must classify to its own safety
+        # entry (L3), never shadowed by an earlier broader glob. Scoped
+        # to safety rules only; non-safety overlaps are out of scope.
+        m = load_map()
+        entries = m["entries"]
+        safety = {}
+        for e in entries:
+            if e["id"] in self.SAFETY_EXACT_IDS:
+                self.assertEqual(e["match_type"], "exact-list",
+                                 f"entry {e['id']} must stay exact-list")
+                for p in e["match"]:
+                    self.assertNotIn(p, safety,
+                                     f"safety path {p} listed twice")
+                    safety[p] = e["id"]
+        self.assertTrue(safety, "no safety exact-list paths found")
+        for rel in sorted(safety):
+            owner = safety[rel]
+            first = classify(entries, rel)
+            self.assertIsNotNone(first, f"safety path uncovered: {rel}")
+            self.assertEqual(first["id"], owner,
+                             f"safety path {rel} shadowed by {first['id']} "
+                             f"(must first-match {owner})")
+            self.assertEqual(first["level"], "L3",
+                             f"safety path {rel} must stay L3, got {first['level']}")
+
+    def test_api_safety_trio_is_l3(self):
+        # Regression pin (Issue #854 review): the three test_api* safety
+        # files shadowed by the host-api-pattern L1 glob must classify
+        # L3 via host-guard-contracts now that the exact-match safety
+        # rule precedes the pattern.
+        m = load_map()
+        for rel in ("tests/host/test_api_commercial_media.py",
+                    "tests/host/test_api_halt_classify.py",
+                    "tests/host/test_api_release_gate.py"):
+            e = classify(m["entries"], rel)
+            self.assertIsNotNone(e, f"uncovered: {rel}")
+            self.assertEqual(e["id"], "host-guard-contracts",
+                             f"{rel} must classify via host-guard-contracts, "
+                             f"got {e['id']}")
+            self.assertEqual(e["level"], "L3",
+                             f"{rel} must stay L3, got {e['level']}")
 
 
 if __name__ == "__main__":

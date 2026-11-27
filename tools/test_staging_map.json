@@ -1422,6 +1422,54 @@
       "reason": "Linker scripts (bank0.cfg, payload cfg): memory layout change affects every ROM; L3 with the build-diff audit."
     },
     {
+      "id": "host-guard-contracts",
+      "match_type": "exact-list",
+      "match": [
+        "tests/host/test_api_commercial_media.py",
+        "tests/host/test_api_halt_classify.py",
+        "tests/host/test_api_release_gate.py",
+        "tests/host/test_artifact_guard.py",
+        "tests/host/test_artifact_guard_bypass_r16.py",
+        "tests/host/test_artifact_guard_exact_r8.py",
+        "tests/host/test_artifact_guard_pin_r11.py",
+        "tests/host/test_artifact_guard_repo.py",
+        "tests/host/test_artifact_guard_run_write_r15.py",
+        "tests/host/test_artifact_guard_scope_r10.py",
+        "tests/host/test_artifact_guard_scope_r12.py",
+        "tests/host/test_artifact_guard_scope_r14.py",
+        "tests/host/test_artifact_guard_sign_r3.py",
+        "tests/host/test_artifact_guard_sign_r6.py",
+        "tests/host/test_artifact_guard_sign_r7.py",
+        "tests/host/test_cc65_gate.py",
+        "tests/host/test_ci_sharding.py",
+        "tests/host/test_provenance_guard.py",
+        "tests/host/test_rom_provenance.py"
+      ],
+      "level": "L3",
+      "category": "safety-gate",
+      "ci_class": "required-ci",
+      "required_ci": true,
+      "tests": {
+        "host": [
+          "tests/host/test_artifact_guard*.py",
+          "tests.host.test_provenance_guard",
+          "tests/host/test_rom_provenance*.py",
+          "tests.host.test_ci_sharding",
+          "tests.host.test_cc65_gate",
+          "tests.host.test_api_commercial_media",
+          "tests.host.test_api_release_gate",
+          "tests.host.test_api_halt_classify"
+        ],
+        "integration_scripts": [],
+        "dev_targets": [
+          "test",
+          "check"
+        ],
+        "static_units": []
+      },
+      "reason": "Guard/provenance/sharding/cc65-gate/commercial-media/release-gate contracts: policy definition files, always L3."
+    },
+    {
       "id": "host-api-pattern",
       "match_type": "glob",
       "match": "tests/host/test_api*.py",
@@ -1678,54 +1726,6 @@
         "static_units": []
       },
       "reason": "Fail-closed safety invariants (PEEK deny/allow, transfer refusal, observer, build-diff audit), ST-boundary/matrix records and host mutation-gap tests: gating logic itself, always L3."
-    },
-    {
-      "id": "host-guard-contracts",
-      "match_type": "exact-list",
-      "match": [
-        "tests/host/test_api_commercial_media.py",
-        "tests/host/test_api_halt_classify.py",
-        "tests/host/test_api_release_gate.py",
-        "tests/host/test_artifact_guard.py",
-        "tests/host/test_artifact_guard_bypass_r16.py",
-        "tests/host/test_artifact_guard_exact_r8.py",
-        "tests/host/test_artifact_guard_pin_r11.py",
-        "tests/host/test_artifact_guard_repo.py",
-        "tests/host/test_artifact_guard_run_write_r15.py",
-        "tests/host/test_artifact_guard_scope_r10.py",
-        "tests/host/test_artifact_guard_scope_r12.py",
-        "tests/host/test_artifact_guard_scope_r14.py",
-        "tests/host/test_artifact_guard_sign_r3.py",
-        "tests/host/test_artifact_guard_sign_r6.py",
-        "tests/host/test_artifact_guard_sign_r7.py",
-        "tests/host/test_cc65_gate.py",
-        "tests/host/test_ci_sharding.py",
-        "tests/host/test_provenance_guard.py",
-        "tests/host/test_rom_provenance.py"
-      ],
-      "level": "L3",
-      "category": "safety-gate",
-      "ci_class": "required-ci",
-      "required_ci": true,
-      "tests": {
-        "host": [
-          "tests/host/test_artifact_guard*.py",
-          "tests.host.test_provenance_guard",
-          "tests/host/test_rom_provenance*.py",
-          "tests.host.test_ci_sharding",
-          "tests.host.test_cc65_gate",
-          "tests.host.test_api_commercial_media",
-          "tests.host.test_api_release_gate",
-          "tests.host.test_api_halt_classify"
-        ],
-        "integration_scripts": [],
-        "dev_targets": [
-          "test",
-          "check"
-        ],
-        "static_units": []
-      },
-      "reason": "Guard/provenance/sharding/cc65-gate/commercial-media/release-gate contracts: policy definition files, always L3."
     },
     {
       "id": "host-rest",
