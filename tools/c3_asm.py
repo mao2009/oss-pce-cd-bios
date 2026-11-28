@@ -42,6 +42,10 @@ class Line:
     segment: str
     conditional: bool
     ifs: tuple = ()         # active conditional headers (innermost last), e.g. ("NEED_CR33",)
+    cifs: tuple = ()        # active conditional stack (innermost last):
+                            # (kind, operand, block_id, branch_id) per level, e.g.
+                            # ((".ifdef", "NEED_CR33", 0, 0),). block_id is unique per opened
+                            # block; branch_id starts at 0 and increments on .else / .elseif.
     directive: str = ""    # lower case directive (".word", ".segment" ...) or ""
     text: str = ""
 
@@ -183,6 +187,8 @@ def parse(path, root=None):
     src = Source(rel)
     segment, depth = "CODE", 0
     istack = []   # active conditional headers (the .ifdef/.if operand text)
+    cistack = []  # active conditional stack: (kind, operand, block_id, branch_id) per level
+    next_block = 0  # unique id per opened conditional block (never reused)
     raw_lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     # first pass: constants (NAME = expr), in order; unresolved ones stay unknown. A constant assigned inside a
     # conditional block (.if / .ifdef / .ifndef ...) depends on the build (e.g. a -D option), so it is NOT
@@ -229,7 +235,8 @@ def parse(path, root=None):
             src.labels[m.group(1)] = segment
             body = m.group(2).strip()
         if not body:
-            src.lines.append(Line(rel, number_, labels, "", "", segment, depth > 0, tuple(istack), text=raw))
+            src.lines.append(Line(rel, number_, labels, "", "", segment, depth > 0, tuple(istack),
+                                      tuple(cistack), text=raw))
             continue
         parts = re.split(r"\s+", body, maxsplit=1)   # any whitespace (space or TAB) ends the statement word
         word, rest = parts[0], (parts[1] if len(parts) > 1 else "")
@@ -240,12 +247,19 @@ def parse(path, root=None):
             elif word_l in CONDITIONAL_OPEN:
                 depth += 1
                 istack.append(rest.strip())
+                cistack.append((word_l, rest.strip(), next_block, 0))
+                next_block += 1
             elif word_l in (".else", ".elseif"):
                 pass   # still conditional under the same header
+                if cistack:   # a new branch of the same block: same kind/operand/block, next branch
+                    kind, operand, block, branch = cistack[-1]
+                    cistack[-1] = (kind, operand, block, branch + 1)
             elif word_l == ".endif":
                 depth = max(0, depth - 1)
                 if istack:
                     istack.pop()
+                if cistack:
+                    cistack.pop()
             elif word_l == ".segment":
                 segment = rest.strip().strip('"')
             elif word_l in SEGMENT_SHORTCUTS:
@@ -253,11 +267,11 @@ def parse(path, root=None):
             elif word_l == ".include":
                 src.includes.append(rest.strip().strip('"'))
             src.lines.append(Line(rel, number_, labels, "", rest.strip(), segment, depth > 0, tuple(istack),
-                                  word_l, raw))
+                                  tuple(cistack), word_l, raw))
             continue
         if word_l in MNEMONICS:
             src.lines.append(Line(rel, number_, labels, word_l, rest.strip(), segment, depth > 0, tuple(istack),
-                                  text=raw))
+                                  tuple(cistack), text=raw))
             continue
         src.unsupported.append((number_, f"unrecognised statement {word!r} (macro invocation or unknown mnemonic)"))
     return src

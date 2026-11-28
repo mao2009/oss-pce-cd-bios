@@ -197,6 +197,22 @@ def _windows(source, report):
     return out
 
 
+NEG_KINDS = {".ifndef", ".ifnblank"}   # conditional kinds whose taken branch means "variant absent"
+
+
+def _mentions(operand, variant):
+    """Variant symbol mentioned as a whole word in a conditional operand."""
+    return re.search(r"(?<![A-Za-z0-9_])" + re.escape(variant) + r"(?![A-Za-z0-9_])", operand or "") is not None
+
+
+def _starter_ok(entry, variant):
+    """Affirmative branch opener for `variant`: a non-negative kind (.ifdef / .if / ...) mentioning the
+    variant, on branch 0. An .else / .elseif branch (branch_id > 0) of `.ifdef V` is the V-absent path,
+    so it must not claim a V window; likewise a `.ifndef V` block must not claim one."""
+    kind, operand, _block, branch = entry
+    return branch == 0 and kind not in NEG_KINDS and _mentions(operand, variant)
+
+
 def _shared_tail_windows(path, source, mmio, report):
     """Conditional-unit MPR0 windows closed through one shared tail label.
 
@@ -206,10 +222,14 @@ def _shared_tail_windows(path, source, mmio, report):
     span or the tail span. Anything else (missing SEI, CLI / PLP / TXS or another MPR0 TAM inside a span, a
     branch / call / return / label inside a span, an access outside every span, a missing variant or an
     undeclared section window) is a FAIL, never a skip. The tail span is scanned head-inclusive (its first
-    instruction counts), and any unresolvable conditional structure is a FAIL: a conditional instruction or a
-    .else / .elseif branch inside a claimed span, or span instructions outside the declared variant section
-    (each build would take a different path through the window). Returns the covered [(start, end)] line
-    spans, or None when the declaration itself is unusable.
+    instruction counts). Conditional structure is fail-closed on the cifs stack (kind, operand, block_id,
+    branch_id per conditional level): SEI, set-up and closing BRA must share one identical cifs whose
+    variant opener is affirmative (an .ifdef / .if-style header mentioning the variant, on branch 0: a
+    `.ifndef V` block or an .else / .elseif branch must not claim a V window), every other instruction of
+    the span must carry that same cifs (no nested conditional, no .endif reopen, no branch change inside),
+    and no directive may sit inside a claimed span. A conditional tail-label definition, a conditional tail
+    instruction, or any directive inside the tail span is likewise unresolvable. Returns the covered
+    [(start, end)] line spans, or None when the declaration itself is unusable.
     """
     tail = mmio.get("shared_tail")
     variants = mmio.get("variants", [])
@@ -223,6 +243,11 @@ def _shared_tail_windows(path, source, mmio, report):
         report.add("CI-3.02", FAIL, path, f"shared tail label {tail!r}: expected exactly one definition, "
                    f"found {len(tail_defs)}")
         return None
+    if tail_defs[0].cifs or tail_defs[0].ifs or tail_defs[0].conditional:
+        report.add("CI-3.02", FAIL, where(tail_defs[0]), f"shared tail label {tail!r} is defined inside a "
+                   "conditional block, so a build without that branch has no tail to close through "
+                   "(unresolvable conditional structure: the tail label must be unconditional)")
+        return None
     tail_no = tail_defs[0].number
     restore = [k for k, ln in enumerate(ins) if ln.mnemonic == "tam" and _op(source, ln).value == 0x01
                and ln.number > tail_no and not _is_set_ff(source, ins, k)]
@@ -232,19 +257,19 @@ def _shared_tail_windows(path, source, mmio, report):
         return None
     j = restore[0]
     tail_idx = next(k for k in range(len(ins)) if ins[k].number >= tail_no)
-    else_lines = [ln for ln in source.lines if ln.directive in (".else", ".elseif")]
     tail_ok = True
-    tail_cond = next((x for x in ins[tail_idx:j + 1] if x.conditional or x.ifs), None)
+    tail_cond = next((x for x in ins[tail_idx:j + 1] if x.conditional or x.ifs or x.cifs), None)
     if tail_cond is not None:
         report.add("CI-3.02", FAIL, where(tail_cond), f"shared tail {tail!r} has an unresolvable conditional "
                    "structure: an instruction of the tail span sits inside a conditional block, so the tail "
                    "assembles differently per build (the tail must be unconditional)")
         tail_ok = False
-    tail_else = next((ln for ln in else_lines if ins[tail_idx].number <= ln.number <= ins[j].number), None)
-    if tail_else is not None:
-        report.add("CI-3.02", FAIL, where(tail_else), f"shared tail {tail!r} has an unresolvable conditional "
-                   "structure: a .else/.elseif branch sits inside the tail span, so each build takes a "
-                   "different path through the window")
+    tail_dir = next((ln for ln in source.lines if ln.directive
+                       and ins[tail_idx].number < ln.number < ins[j].number), None)
+    if tail_dir is not None:
+        report.add("CI-3.02", FAIL, where(tail_dir), f"shared tail {tail!r} has an unresolvable conditional "
+                   f"structure: directive {tail_dir.directive} sits inside the tail span, so each build "
+                   "assembles a different path through the window (the tail span must be directive-free)")
         tail_ok = False
     tail_break = next((x for x in ins[tail_idx:j] if x.mnemonic in WINDOW_BREAKERS or
                        (x.mnemonic == "tam" and ((_op(source, x).value or 0x01) & 0x01)) or
@@ -257,19 +282,33 @@ def _shared_tail_windows(path, source, mmio, report):
         tail_ok = False
     sets = [i for i in range(len(ins)) if _is_set_ff(source, ins, i) and ins[i].number < tail_no]
     by_variant = {}
+    mentioned = set()
     for i in sets:
-        if len(ins[i].ifs) != 1 or ins[i].ifs[0] not in variants or ins[i - 1].ifs != ins[i].ifs:
+        c = ins[i].cifs
+        if not c or ins[i - 1].cifs != c:
             report.add("CI-3.02", FAIL, where(ins[i]), "MPR0 window set-up outside a declared variant section "
                        f"({sorted(variants)}): every conditional-unit window must open inside exactly one variant")
             continue
-        by_variant.setdefault(ins[i].ifs[0], []).append(i)
-    for missing in sorted(set(variants) - set(by_variant)):
+        mentioned.update(v for v in variants for _e in c if _mentions(_e[1], v))
+        bad = sorted({v for v in variants for _e in c if _mentions(_e[1], v) and not _starter_ok(_e, v)})
+        good = sorted({v for v in variants for _e in c if _starter_ok(_e, v)})
+        if bad:
+            report.add("CI-3.02", FAIL, where(ins[i]), f"MPR0 window set-up claims variant {bad[0]!r} from a "
+                       "non-affirmative conditional branch (a `.ifndef V` block or an .else / .elseif branch "
+                       "is the V-absent path: unresolvable conditional structure)")
+            continue
+        if len(good) != 1:
+            report.add("CI-3.02", FAIL, where(ins[i]), "MPR0 window set-up outside a declared variant section "
+                       f"({sorted(variants)}): every conditional-unit window must open inside exactly one variant")
+            continue
+        by_variant.setdefault(good[0], []).append(i)
+    for missing in sorted(set(variants) - set(by_variant) - mentioned):
         report.add("CI-3.02", FAIL, path, f"declared variant {missing!r} opens no MPR0 window (stale declaration)")
     spans = []
     for variant in sorted(by_variant):
         for i in by_variant[variant]:
             _, start, _ = _routine_of(source, ins[i])
-            seis = [k for k in range(start, i) if ins[k].mnemonic == "sei" and ins[k].ifs == ins[i].ifs]
+            seis = [k for k in range(start, i) if ins[k].mnemonic == "sei" and ins[k].cifs == ins[i].cifs]
             if not seis or not _straight(source, ins, seis[-1], i) or any(
                     x.mnemonic in ("cli", "plp", "rti", "txs") for x in ins[seis[-1]:i]):
                 report.add("CI-3.02", FAIL, where(ins[i]), "MPR0 -> hardware page without an SEI of the same "
@@ -277,7 +316,7 @@ def _shared_tail_windows(path, source, mmio, report):
                 continue
             s = seis[-1]
             closes = [k for k in range(i + 1, len(ins)) if ins[k].number < tail_no
-                      and ins[k].ifs == ins[i].ifs and ins[k].mnemonic == "bra" and _target(ins[k]) == tail]
+                      and ins[k].cifs == ins[i].cifs and ins[k].mnemonic == "bra" and _target(ins[k]) == tail]
             if not closes:
                 report.add("CI-3.02", FAIL, where(ins[i]), f"variant {variant!r} window never closes through "
                            f"BRA {tail}")
@@ -293,17 +332,19 @@ def _shared_tail_windows(path, source, mmio, report):
                            "straight-line run up to its closing BRA (label, branch, call, return, CLI / PLP / TXS "
                            "or another MPR0 TAM inside)")
                 continue
-            span_ifs_bad = next((x for x in ins[s:b + 1] if x.ifs != ins[i].ifs), None)
-            if span_ifs_bad is not None:
-                report.add("CI-3.02", FAIL, where(span_ifs_bad), f"variant {variant!r} window has an unresolvable "
-                           "conditional structure: every instruction from SEI to the closing BRA must sit in the "
-                           "declared variant section")
+            span_cifs_bad = next((x for x in ins[s:b + 1] if x.cifs != ins[i].cifs), None)
+            if span_cifs_bad is not None:
+                report.add("CI-3.02", FAIL, where(span_cifs_bad), f"variant {variant!r} window has an unresolvable "
+                           "conditional structure: every instruction from SEI to the closing BRA must share the "
+                           "same conditional block and branch (no nested conditional, no .endif reopen, no "
+                           ".else / .elseif branch change inside the span)")
                 continue
-            span_else = next((ln for ln in else_lines if ins[s].number <= ln.number <= ins[b].number), None)
-            if span_else is not None:
-                report.add("CI-3.02", FAIL, where(span_else), f"variant {variant!r} window has an unresolvable "
-                           "conditional structure: a .else/.elseif branch sits inside the window span, so each "
-                           "build takes a different path through the window")
+            span_dir = next((ln for ln in source.lines if ln.directive
+                               and ins[s].number < ln.number < ins[b].number), None)
+            if span_dir is not None:
+                report.add("CI-3.02", FAIL, where(span_dir), f"variant {variant!r} window has an unresolvable "
+                           f"conditional structure: directive {span_dir.directive} sits inside the window span, "
+                           "so each build assembles a different path through the window")
                 continue
             if not tail_ok:
                 continue

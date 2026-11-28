@@ -500,6 +500,35 @@ class SharedTailTests(unittest.TestCase):
         self.assert_shared_fail(SHARED_HEALTHY.replace("head_a:\n    php\n    sei\n",
                                                          "head_a:\n    php\n.ifdef EXTRA\n    sei\n.endif\n"))
 
+    def test_ifndef_opener_cannot_claim_variant(self):   # polarity: a `.ifndef VAR_A` block is the VAR_A-absent
+        self.assert_shared_fail(SHARED_HEALTHY.replace(".ifdef VAR_A\nhead_a:", ".ifndef VAR_A\nhead_a:"))  # path
+
+    def test_endif_reopen_breaks_span_identity(self):   # same operand, new block: SEI and set-up no longer share it
+        self.assert_shared_fail(SHARED_HEALTHY.replace("head_a:\n    php\n    sei\n",
+                                                         "head_a:\n    php\n    sei\n.endif\n.ifdef VAR_A\n"))
+
+    def test_if_ifdef_reopen_mismatch(self):   # same operand text, different kinds/blocks: still a reopen
+        self.assert_shared_fail(SHARED_HEALTHY.replace(".ifdef VAR_A\nhead_a:", ".if VAR_A\nhead_a:").replace(
+            "head_a:\n    php\n    sei\n", "head_a:\n    php\n    sei\n.endif\n.ifdef VAR_A\n"))
+
+    def test_pre_sei_else_branch_cannot_claim_variant(self):   # window in the .else (VAR_A-absent) branch
+        self.assert_shared_fail(SHARED_HEALTHY.replace(".ifdef VAR_A\nhead_a:\n    php\n    sei\n",
+                                                         ".ifdef VAR_A\nhead_a:\n    php\n.else\n    sei\n"))
+
+    def test_pre_sei_elseif_branch_cannot_claim_variant(self):   # window past .elseif: same absent-branch rule
+        self.assert_shared_fail(SHARED_HEALTHY.replace(".ifdef VAR_A\nhead_a:\n    php\n    sei\n",
+                                                         ".ifdef VAR_A\nhead_a:\n    php\n.elseif VAR_A\n"
+                                                         "    sei\n"))
+
+    def test_conditional_tail_label_is_unresolvable(self):   # the label exists only in VAR_A builds
+        self.assert_shared_fail(SHARED_HEALTHY.replace("shared_tail:\n    pla\n",
+                                                         ".ifdef VAR_A\nshared_tail:\n.endif\n    pla\n"))
+
+    def test_outside_span_conditional_parcel_still_accepted(self):   # unrelated parcel after the tail: healthy
+        report = run_shared(SHARED_HEALTHY + ".ifdef EXTRA\nextra_pin:\n    nop\n    rts\n.endif\n")
+        self.assertNotIn(C.FAIL, by_rule(report, "CI-3.02"), report.findings)
+        self.assertIn(C.OK, by_rule(report, "CI-3.02"))
+
 
 if __name__ == "__main__":
     unittest.main()
