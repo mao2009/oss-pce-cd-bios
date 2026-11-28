@@ -88,6 +88,21 @@ def makefile_targets():
     return targets
 
 
+def _git_env_isolated():
+    """Explicit env for git subprocesses: every GIT_* entry removed.
+
+    git resolves the repo via GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE /
+    GIT_COMMON_DIR / GIT_NAMESPACE / GIT_OBJECT_DIRECTORY (and other GIT_*
+    discovery/config vars) ahead of cwd, so a hostile parent env would
+    redirect `git init/add/ls-files` run with cwd=synthetic-tmp onto an
+    external repo (victim HEAD move / stray commit / index mutation).
+    Passing this env to EVERY git subprocess keeps each synthetic fixture
+    self-contained; production callers benefit identically.
+    """
+    return {k: v for k, v in os.environ.items()
+            if not k.startswith("GIT_")}
+
+
 def repo_files(root=ROOT):
     # Tracked-files-only enumeration (Issue #854 review): `git ls-files`
     # lists the versioned index, so untracked/private worktree content --
@@ -99,7 +114,8 @@ def repo_files(root=ROOT):
     # tracked-index enumeration inside an isolated temp repo; production
     # callers always use the default (real worktree index).
     proc = subprocess.run(["git", "ls-files", "-z"], cwd=root,
-                          stdout=subprocess.PIPE, check=True)
+                          stdout=subprocess.PIPE, check=True,
+                          env=_git_env_isolated())
     out = [p for p in proc.stdout.decode("utf-8").split("\0")
            if p and is_scanned_tracked_path(p)]
     return sorted(out)
@@ -369,34 +385,28 @@ class MapSafetyTest(unittest.TestCase):
         live = repo_files()
         self.assertEqual([f for f in live
                           if f == "rom" or f.startswith("rom/")], [])
-        # Tracked-index source (not a worktree walk): proven inside an
-        # isolated synthetic temp repo, never the real worktree. The
-        # pre-fix body wrote a fixed-name probe unconditionally into
-        # ROOT (write_text + unlink), which would clobber a colliding
-        # same-name file or follow a same-name symlink onto its target
-        # and was shared across parallel runs. This body therefore:
-        # (a) writes nothing under ROOT (legacy fixed path guarded
-        # byte-identical below); (b) uses per-run unique probe names
-        # (pid + uuid4); (c) creates exclusively (x-mode/O_EXCL: refuse
-        # instead of clobbering when the path exists, symlink included);
-        # (d) removes only files it created itself. No ./rom access of
-        # any kind (nothing created, listed, or read under ./rom).
-        legacy = ROOT / "synthetic_untracked_probe.tmp"
-        legacy_exists = os.path.lexists(legacy)
-        legacy_link = os.readlink(legacy) if legacy.is_symlink() else None
-        legacy_bytes = (legacy.read_bytes()
-                        if legacy.is_file() and not legacy.is_symlink()
-                        else None)
+        # Tracked-index source (not a worktree walk): proven SOLELY inside
+        # isolated synthetic temp repos, never the real worktree. Writes
+        # nothing under ROOT and performs no existence/content/symlink
+        # check against any live-tree fixed path. Per-run unique probe
+        # names (pid + uuid4) are created exclusively (x-mode/O_EXCL:
+        # refuse instead of clobbering, symlink included); only
+        # self-created files are removed. All git subprocesses (init /
+        # add / ls-files) run with an explicit env stripping every GIT_*
+        # local-discovery var, so a hostile parent GIT_DIR/GIT_WORK_TREE/
+        # GIT_INDEX_FILE/GIT_COMMON_DIR cannot redirect the fixture onto
+        # an external repo. `git add` suffices for the index enumeration;
+        # no commit is created in the fixture. No ./rom access of any
+        # kind (nothing created, listed, or read under ./rom).
         with tempfile.TemporaryDirectory(
                 prefix="staging-map-enum-proof-") as tmp:
             troot = Path(tmp)
-            subprocess.run(["git", "init", "-q"], cwd=troot, check=True)
+            subprocess.run(["git", "init", "-q"], cwd=troot, check=True,
+                           env=_git_env_isolated())
             (troot / "tracked.txt").write_text("tracked\n", encoding="utf-8")
             subprocess.run(["git", "add", "tracked.txt"],
-                           cwd=troot, check=True)
-            subprocess.run(["git", "-c", "user.email=t@t", "-c",
-                            "user.name=t", "commit", "-qm", "init"],
-                           cwd=troot, check=True)
+                           cwd=troot, check=True,
+                           env=_git_env_isolated())
             # Parallel-safe unique names: pid + uuid4, distinct per run.
             tag = f"{os.getpid()}.{uuid.uuid4().hex}"
             probe_name = f"synthetic_untracked_probe.{tag}.tmp"
@@ -427,7 +437,8 @@ class MapSafetyTest(unittest.TestCase):
             self.assertEqual(os.readlink(link), str(sentinel))
             self.assertEqual(sentinel.read_bytes(), sentinel_before)
             # Untracked probe invisible to the tracked-index enumeration
-            # while the committed file is listed (proof is not vacuous).
+            # while the staged file is listed (proof is not vacuous; no
+            # commit is needed: `git add` already populates the index).
             probe = troot / probe_name
             created = False
             try:
@@ -441,12 +452,98 @@ class MapSafetyTest(unittest.TestCase):
             finally:
                 if created:
                     probe.unlink(missing_ok=True)
-        # Legacy fixed path untouched: the destructive vector is gone.
-        self.assertEqual(os.path.lexists(legacy), legacy_exists)
-        if legacy_bytes is not None:
-            self.assertEqual(legacy.read_bytes(), legacy_bytes)
-        if legacy_link is not None:
-            self.assertEqual(os.readlink(legacy), legacy_link)
+            # External-repo isolation under hostile GIT_*: a second
+            # synthetic repo (victim) must keep the same HEAD, index,
+            # tracked files, and config while the fixture runs with a
+            # hostile parent env. repo_files() re-sanitizes internally,
+            # so its enumeration stays fixture-local (tracked-only).
+            with tempfile.TemporaryDirectory(
+                    prefix="staging-map-victim-") as vtmp:
+                victim_repo = Path(vtmp)
+                iso = _git_env_isolated()
+                subprocess.run(["git", "init", "-q"], cwd=victim_repo,
+                               check=True, env=iso)
+                (victim_repo / "victim.txt").write_text(
+                    "victim DATA - must survive\n", encoding="utf-8")
+                subprocess.run(["git", "add", "victim.txt"],
+                               cwd=victim_repo, check=True, env=iso)
+                subprocess.run(["git", "-c", "user.email=t@t", "-c",
+                                "user.name=t", "commit", "-qm", "init"],
+                               cwd=victim_repo, check=True, env=iso)
+                head_proc = subprocess.run(
+                    ["git", "rev-parse", "HEAD"], cwd=victim_repo,
+                    stdout=subprocess.PIPE, check=True, env=iso)
+                victim_head = head_proc.stdout.decode("utf-8").strip()
+                count_proc = subprocess.run(
+                    ["git", "rev-list", "--count", "HEAD"],
+                    cwd=victim_repo, stdout=subprocess.PIPE,
+                    check=True, env=iso)
+                victim_count = count_proc.stdout.decode("utf-8").strip()
+                files_proc = subprocess.run(
+                    ["git", "ls-files", "-z"], cwd=victim_repo,
+                    stdout=subprocess.PIPE, check=True, env=iso)
+                victim_files = sorted(
+                    p for p in files_proc.stdout.decode("utf-8").split("\0")
+                    if p)
+                victim_index = (victim_repo / ".git" / "index").read_bytes()
+                victim_content = (victim_repo / "victim.txt").read_bytes()
+                victim_config = (victim_repo / ".git" / "config").read_bytes()
+                hostile_keys = ("GIT_DIR", "GIT_WORK_TREE",
+                                "GIT_INDEX_FILE", "GIT_COMMON_DIR")
+                saved = {k: os.environ.get(k) for k in hostile_keys}
+                os.environ["GIT_DIR"] = str(victim_repo / ".git")
+                os.environ["GIT_WORK_TREE"] = str(troot)
+                os.environ["GIT_INDEX_FILE"] = str(victim_repo / ".git" / "index")
+                os.environ["GIT_COMMON_DIR"] = str(victim_repo / ".git")
+                try:
+                    with tempfile.TemporaryDirectory(
+                            prefix="staging-map-fixture2-") as ftmp:
+                        froot = Path(ftmp)
+                        subprocess.run(
+                            ["git", "init", "-q"], cwd=froot,
+                            check=True, env=_git_env_isolated())
+                        (froot / "tracked2.txt").write_text(
+                            "tracked2\n", encoding="utf-8")
+                        subprocess.run(["git", "add", "tracked2.txt"],
+                                       cwd=froot, check=True,
+                                       env=_git_env_isolated())
+                        listed2 = repo_files(froot)
+                        self.assertIn("tracked2.txt", listed2)
+                        self.assertNotIn("victim.txt", listed2)
+                        listed_t = repo_files(troot)
+                        self.assertIn("tracked.txt", listed_t)
+                        self.assertNotIn("victim.txt", listed_t)
+                        self.assertNotIn(probe_name, listed_t)
+                finally:
+                    for k, v in saved.items():
+                        if v is None:
+                            os.environ.pop(k, None)
+                        else:
+                            os.environ[k] = v
+                after_head = subprocess.run(
+                    ["git", "rev-parse", "HEAD"], cwd=victim_repo,
+                    stdout=subprocess.PIPE, check=True,
+                    env=_git_env_isolated()).stdout.decode("utf-8").strip()
+                after_count = subprocess.run(
+                    ["git", "rev-list", "--count", "HEAD"],
+                    cwd=victim_repo, stdout=subprocess.PIPE,
+                    check=True,
+                    env=_git_env_isolated()).stdout.decode("utf-8").strip()
+                after_files = sorted(
+                    p for p in subprocess.run(
+                        ["git", "ls-files", "-z"], cwd=victim_repo,
+                        stdout=subprocess.PIPE, check=True,
+                        env=_git_env_isolated()
+                    ).stdout.decode("utf-8").split("\0") if p)
+                self.assertEqual(after_head, victim_head)
+                self.assertEqual(after_count, victim_count)
+                self.assertEqual(after_files, victim_files)
+                self.assertEqual((victim_repo / ".git" / "index").read_bytes(),
+                                 victim_index)
+                self.assertEqual((victim_repo / "victim.txt").read_bytes(),
+                                 victim_content)
+                self.assertEqual((victim_repo / ".git" / "config").read_bytes(),
+                                 victim_config)
 
 
 class MapSafetyOrderTest(unittest.TestCase):
