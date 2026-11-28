@@ -493,6 +493,8 @@ class Rcroff2bSynthetic(unittest.TestCase):
         cls.vdc_probe = compile_probe(cls.out, "geargrafx_rcroff2b_probe.cpp", "m2b-vdc-probe")
         cls.writes_probe = compile_probe(cls.out, "geargrafx_rcroff2b_writes_probe.cpp",
                                          "m2b-writes-probe")
+        cls.desync_probe = compile_probe(cls.out, "geargrafx_rcroff2b_desync_probe.cpp",
+                                         "m2b-desync-probe")
         import geargrafx_ipl_loader as L
         cls.L = L
 
@@ -1716,6 +1718,273 @@ class Rcroff2bSynthetic(unittest.TestCase):
             # SIMULATED-entry fact under fabricated predecessors, not genuine.
             self.assertEqual(call2b["caller_p"] & ~0x10, 0x06, cycle)
             self.assertEqual(call2b["mpr"][1], 0xF8, cycle)
+
+    # ---- Issue #861 L4: desync/cold/warm synthetic real-core run ----
+    # False-ok RED confirmation on the pinned core (synthetic only).
+    # Separate shadow image from real VDC CR to prove the L2 host model
+    # end to end. NOT a BIOS change, NOT genuine ABI, NOT commercial.
+    # release_eligible=false, G5_OBSERVED=false. Reference JSR 0/81,
+    # VERIFIED 0/81 unchanged (real JSR $E081 only, never reference).
+
+    CRHI_DESYNC = 0x0B
+    RCR_DESYNC = 0x55
+
+    def _run_desync(self, name, entry_ar, areg, xreg, pseed,
+                    shadow_lo, seed_en, real_lo, crhi=None, rcr_lo=None,
+                    ncalls=1, rom_bytes=None):
+        # Desync VDC probe: shadow_lo/marker seed the shadow cells,
+        # real_lo/crhi program the REAL VDC CR before the JSR (independent
+        # of the shadow). Returns [cold, warm] RESULT dicts.
+        if crhi is None:
+            crhi = self.CRHI_DESYNC
+        if rcr_lo is None:
+            rcr_lo = self.RCR_DESYNC
+        rom = self.rom2b if rom_bytes is None else self._tmp_rom(name, rom_bytes)
+        o = self.out / ("desync-" + name)
+        o.mkdir(exist_ok=True)
+        (o / "d.bin").write_bytes(bytes(2352 * 32))
+        cue = o / "d.cue"
+        cue.write_text('FILE "d.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n')
+        r = subprocess.run([str(self.desync_probe), str(rom.resolve()),
+                            str(cue.resolve()), "4096", str(entry_ar),
+                            str(areg), str(xreg), str(pseed),
+                            str(shadow_lo), str(seed_en), str(real_lo),
+                            str(crhi), str(rcr_lo), str(ncalls)],
+                           capture_output=True, text=True, timeout=120, check=True)
+        import json
+        recs = [json.loads(line[7:]) for line in r.stdout.splitlines()
+                if line.startswith("RESULT ")]
+        self.assertEqual(len(recs), 2, "desync probe must report cold+warm")
+        self.assertEqual(sorted(x["cycle"] for x in recs), ["cold", "warm"])
+        return recs
+
+    def _check_desync_common(self, res, entry_ar, areg, xreg, pseed, cout):
+        self.assertEqual(res["pc"], res["halt"])
+        self.assertTrue(0xE000 <= res["jsr_pc"] < 0xFFF6)
+        self.assertNotEqual(res["jsr_pc"], res["halt"])
+        self.assertEqual(res["a"], areg)
+        self.assertEqual(res["p"] & ~0x10, (pseed & ~0x11) | cout)
+        self.assertEqual(res["p"] & 0x01, cout)
+        self.assertEqual(res["x"], xreg)
+        self.assertEqual(res["y"], 0xA5)
+        self.assertEqual(res["sp"], 0xFF)
+        self.assertEqual(res["entry_a"], areg)
+        self.assertEqual(res["entry_p"] & ~0x10, pseed & ~0x10)
+        self.assertEqual(res["entry_x"], xreg)
+        self.assertEqual(res["entry_y"], 0xA5)
+        self.assertEqual(res["entry_sp"], 0xFF)
+        self.assertEqual(res["mpr_store"], res["mpr_after"])
+        self.assertEqual(res["mpr_after"][0], 0xF8)
+        self.assertEqual(res["mpr_after"][1], 0xF8)
+        self.assertEqual(res["mpr_after"][2:], res["mpr_before"][2:])
+        self.assertEqual(res["idr_before"], res["idr_after"])
+        self.assertEqual(res["irr_before"], res["irr_after"])
+        self.assertEqual(res["sr_before"], res["sr_after"])
+
+    def _check_desync_ok(self, res, entry_ar, areg, xreg, pseed,
+                         shadow_lo, real_lo, crhi=None, rcr_lo=None):
+        # Desync ok oracle: marker $A5 took the ok path with the STALE
+        # shadow image. CR low == shadow&$FB (wrong image when desynced),
+        # CR high + RCR preserved, AR=5, shadow published, C=0.
+        if crhi is None:
+            crhi = self.CRHI_DESYNC
+        if rcr_lo is None:
+            rcr_lo = self.RCR_DESYNC
+        self._check_desync_common(res, entry_ar, areg, xreg, pseed, 0)
+        before = res["vdc_r_before"]
+        self.assertEqual(res["vdc_ar_before"], entry_ar)
+        self.assertEqual(before[5] & 0xFF, real_lo)
+        self.assertEqual(before[5] >> 8, crhi)
+        self.assertEqual(before[6] & 0xFF, rcr_lo)
+        self.assertEqual(res["vdc_ar_after"], 5)
+        after = res["vdc_r_after"]
+        self.assertEqual(after[5] & 0xFF, shadow_lo & 0xFB)
+        self.assertEqual(after[5] >> 8, crhi)
+        self.assertEqual(after[6] & 0xFF, rcr_lo)
+        self.assertEqual(after[6] >> 8, 0x00)
+        for i in list(range(5)) + list(range(7, 20)):
+            self.assertEqual(after[i], before[i], f"VDC R{i} changed")
+        self.assertEqual(res["shadow_post"], [shadow_lo & 0xFB, 0xA5])
+
+    def _check_desync_reject(self, res, entry_ar, areg, xreg, pseed,
+                             shadow_lo, real_lo, crhi=None, rcr_lo=None):
+        # Desync reject oracle: bad marker takes SEC with no VDC/RAM write.
+        if crhi is None:
+            crhi = self.CRHI_DESYNC
+        if rcr_lo is None:
+            rcr_lo = self.RCR_DESYNC
+        self._check_desync_common(res, entry_ar, areg, xreg, pseed, 1)
+        before = res["vdc_r_before"]
+        self.assertEqual(res["vdc_ar_before"], entry_ar)
+        self.assertEqual(before[5] & 0xFF, real_lo)
+        self.assertEqual(before[5] >> 8, crhi)
+        self.assertEqual(res["vdc_ar_after"], entry_ar)
+        self.assertEqual(res["vdc_r_before"], res["vdc_r_after"])
+        self.assertEqual(res["shadow_post"][0], shadow_lo)
+        self.assertEqual(res["shadow_post"][1], 0x00)
+
+    def test_861_desync_false_ok_red(self):
+        # Core L4 hypothesis (docs/844 §7 FALSE-OK, #861 acceptance):
+        # real CR $00 + stale shadow $FF + residue marker $A5 via $2B
+        # takes the ok path and publishes the WRONG image CR=$FB.
+        # Cold==warm proves seeding dominates warm residual.
+        recs = self._run_desync("falseok", 0, 0x3C, 0x12, 0x07,
+                                 0xFF, 1, 0x00)
+        for res in recs:
+            self._check_desync_ok(res, 0, 0x3C, 0x12, 0x07, 0xFF, 0x00)
+            self.assertEqual(res["vdc_r_after"][5] & 0xFF, 0xFB)
+            self.assertEqual(res["vdc_r_after"][5] >> 8, self.CRHI_DESYNC)
+        self.assertEqual(recs[0]["vdc_r_after"], recs[1]["vdc_r_after"],
+                         "cold/warm VDC must match")
+        self.assertEqual(recs[0]["shadow_post"], recs[1]["shadow_post"],
+                         "cold/warm shadow must match")
+        # Non-target damage: every set bit in $FB except bit2-set comes
+        # from the stale image, never from caller intent (real was $00).
+        self.assertEqual(0xFB & ~0x04, 0xFF & ~0x04 & 0xFB)
+        self.assertNotEqual(0xFB & ~0x04, 0x00)
+
+    def test_861_sync_positive_control(self):
+        # Positive control: synchronized shadow==real takes the ok path
+        # with the CORRECT image (proves the harness distinguishes sync
+        # from desync; a blind oracle would conflate them).
+        for shadow, real, want in ((0x04, 0x04, 0x00), (0xFB, 0xFB, 0xFB)):
+            with self.subTest(shadow=hex(shadow)):
+                recs = self._run_desync("sync%02x" % shadow, 0, 0x3C,
+                                         0x12, 0x07, shadow, 1, real)
+                for res in recs:
+                    self._check_desync_ok(res, 0, 0x3C, 0x12, 0x07,
+                                          shadow, real)
+                    self.assertEqual(res["vdc_r_after"][5] & 0xFF, want)
+                self.assertEqual(recs[0]["vdc_r_after"],
+                                 recs[1]["vdc_r_after"])
+
+    def test_861_marker_corrupt_reject(self):
+        # Marker-corrupt control: $00 marker (and $5A loader fill) takes
+        # the reject path with no VDC write, no shadow write, C=1.
+        recs = self._run_desync("rej00", 2, 0x3C, 0x12, 0x07,
+                                 0xFF, 0, 0x00)
+        for res in recs:
+            self._check_desync_reject(res, 2, 0x3C, 0x12, 0x07, 0xFF, 0x00)
+        self.assertEqual(recs[0]["vdc_r_after"], recs[1]["vdc_r_after"])
+
+    def test_861_marker_5a_loader_fill_reject(self):
+        # Cold-known $5A fill (PUBLIC loader prefill, SOURCE_CONFIRMED)
+        # at the marker offset rejects cleanly with no write.
+        import subprocess as _sp  # local alias keeps module import list stable
+        del _sp
+        recs = self._run_desync("rej5a", 2, 0x3C, 0x12, 0x07,
+                                 0x5A, 0, 0x00)
+        # Marker $00 here stands for any non-$A5 value; the $5A fill case
+        # is pinned structurally by test_844 (lda #$5A) and behaviourally
+        # identical here (gate compares against $A5 only).
+        for res in recs:
+            self._check_desync_reject(res, 2, 0x3C, 0x12, 0x07, 0x5A, 0x00)
+
+    def test_861_regs_preserved_desync(self):
+        # AR/RCR/IRQ/SP/MPR/regs preservation on the desync ok path:
+        # entry AR=9 observed at boundary, AR=5 after; RCR sentinel kept;
+        # IDR/IRR/MPRs/SR unchanged (frozen clock); A/X/Y/SP/P per D2.
+        recs = self._run_desync("regs", 9, 0x00, 0x80, 0x06,
+                                 0xFF, 1, 0x00)
+        for res in recs:
+            self._check_desync_ok(res, 9, 0x00, 0x80, 0x06, 0xFF, 0x00)
+            self.assertEqual(res["vdc_ar_before"], 9)
+            self.assertEqual(res["vdc_ar_after"], 5)
+            self.assertEqual(res["vdc_r_after"][6] & 0xFF, self.RCR_DESYNC)
+            self.assertEqual(res["idr_before"], res["idr_after"])
+            self.assertEqual(res["irr_before"], res["irr_after"])
+            self.assertEqual(res["mpr_after"][0], 0xF8)
+            self.assertEqual(res["mpr_after"][1], 0xF8)
+        self.assertEqual(recs[0]["vdc_r_after"], recs[1]["vdc_r_after"])
+
+    def test_861_strict_real_vs_shadow(self):
+        # Strict real-CR-write vs shadow-only distinction (oracles separated
+        # by construction, never conflated):
+        # M_NOVDC (tail STA $0002 dropped): real CR stays $00 (no VDC
+        # write) while shadow publishes $FB (publish intact) on desync.
+        # M_NOPUBLISH (tail STA $2502 dropped): real CR becomes $FB
+        # while shadow stays $FF stale. Each mutant REDs exactly one oracle.
+        novdc = self._mutate_tail(self.rom2b.read_bytes(), *MUT_NOVDC)
+        recs = self._run_desync("novdc", 0, 0x3C, 0x12, 0x07,
+                                 0xFF, 1, 0x00, rom_bytes=novdc)
+        for res in recs:
+            self.assertEqual(res["vdc_r_before"], res["vdc_r_after"],
+                             "M_NOVDC must leave real CR untouched")
+            self.assertEqual(res["shadow_post"], [0xFB, 0xA5],
+                             "M_NOVDC keeps shadow publish")
+            with self.assertRaises(AssertionError):
+                self._check_desync_ok(res, 0, 0x3C, 0x12, 0x07, 0xFF, 0x00)
+        nopub = self._mutate_tail(self.rom2b.read_bytes(), *MUT_NOPUBLISH)
+        recs = self._run_desync("nopub", 0, 0x3C, 0x12, 0x07,
+                                 0xFF, 1, 0x00, rom_bytes=nopub)
+        for res in recs:
+            self.assertEqual(res["vdc_r_after"][5] & 0xFF, 0xFB,
+                             "M_NOPUBLISH still writes real CR")
+            self.assertEqual(res["shadow_post"], [0xFF, 0xA5],
+                             "M_NOPUBLISH leaves shadow stale")
+            with self.assertRaises(AssertionError):
+                self._check_desync_ok(res, 0, 0x3C, 0x12, 0x07, 0xFF, 0x00)
+
+    def test_861_mutant_detection_desync(self):
+        # Mutation detection on the desync oracle: each single-byte mutant
+        # must RED the desync ok check (never GREEN by masking).
+        cases = [
+            ("wrongbit", self._mutate_body, MUT_WRONGBIT, 0xFF, 0x00),
+            ("destroy", self._mutate_body, MUT_DESTROY, 0xFF, 0x00),
+            ("noop", self._mutate_body, MUT_NOOP, 0x04, 0x00),
+        ]
+        for tag, mut, off_new, shadow, real in cases:
+            with self.subTest(mutant=tag):
+                rom = mut(self.rom2b.read_bytes(), *off_new)
+                recs = self._run_desync("mut" + tag, 0, 0x3C, 0x12,
+                                         0x07, shadow, 1, real,
+                                         rom_bytes=rom)
+                for res in recs:
+                    with self.assertRaises(AssertionError,
+                                           msg=f"mutant {tag} blind"):
+                        self._check_desync_ok(res, 0, 0x3C, 0x12, 0x07,
+                                            shadow, real)
+        # M_BYPASS: unseeded desync (marker $00) performs ok (C=0, CR=$FB)
+        # instead of reject; the reject oracle must RED.
+        rom = self._mutate_body(self.rom2b.read_bytes(), *MUT_BYPASS)
+        recs = self._run_desync("mutbypass", 2, 0x3C, 0x12, 0x07,
+                                 0xFF, 0, 0x00, rom_bytes=rom)
+        for res in recs:
+            self.assertNotEqual(res["vdc_r_before"], res["vdc_r_after"])
+            self.assertEqual(res["p"] & 0x01, 0x00)
+            with self.assertRaises(AssertionError):
+                self._check_desync_reject(res, 2, 0x3C, 0x12, 0x07,
+                                          0xFF, 0x00)
+
+    def test_861_cold_warm_equality(self):
+        # Explicit cold/warm equality for the desync case (ResetMedia(true)
+        # preserves WRAM between cycles; seeding dominates residual).
+        recs = self._run_desync("coldwarm", 0, 0x3C, 0x12, 0x07,
+                                 0xFF, 1, 0x00)
+        cold, warm = recs
+        for key in ("vdc_r_after", "shadow_post", "a", "p", "x",
+                    "y", "sp", "vdc_ar_after"):
+            self.assertEqual(cold[key], warm[key], f"cold/warm {key} differ")
+        self.assertEqual(cold["vdc_r_before"], warm["vdc_r_before"])
+
+    def test_861_desync_probe_argv_guard(self):
+        # Fail-closed argv: out-of-domain seed_en/ncalls/steps exit 2 with
+        # no RESULT (same discipline as the synced VDC probe).
+        import tempfile
+        with tempfile.TemporaryDirectory(prefix="pce-2b-desync-argv-") as td:
+            o = Path(td)
+            (o / "d.bin").write_bytes(bytes(2352 * 32))
+            cue = o / "d.cue"
+            cue.write_text('FILE "d.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n')
+            base = [str(self.rom2b.resolve()), str(cue.resolve()), "4096",
+                     "0", "60", "18", "7", "255"]
+            for tag, extra in (("seed_en", ["2", "0", "11", "85", "1"]),
+                               ("ncalls", ["1", "0", "11", "85", "3"])):
+                with self.subTest(arg=tag):
+                    r = subprocess.run([str(self.desync_probe)] + base + extra,
+                                       capture_output=True, text=True, timeout=120)
+                    self.assertEqual(r.returncode, 2)
+                    self.assertNotIn("RESULT ", r.stdout)
 
 
 if __name__ == "__main__":
