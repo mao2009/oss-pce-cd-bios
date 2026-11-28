@@ -241,9 +241,16 @@ def _7api_prefix_ok(rec, exp_slots, exp_pcs):
     return True
 
 
-def classify_7api_mutant_run(rec, api_unimplemented_pc, exp_slots, exp_pcs, target_slot):
+def classify_7api_mutant_run(rec, api_unimplemented_pc, exp_slots, exp_pcs, target_slot,
+                           clean_halt_pc):
     """Classify a completed wiring-mutant probe record. Never raises:
-    every malformed input maps to HARNESS_FAILURE."""
+    every malformed input maps to HARNESS_FAILURE.
+
+    clean_halt_pc is the verified payload-halt address (parsed from the
+    chain labels file). MUTANT_SURVIVED requires both cycles to show a
+    confirmed halt exactly at clean_halt_pc with cold/warm pc equality
+    plus the full 6-call prefix; any cd_halt_ok-both run failing
+    confirmation/pc/prefix is HARNESS_FAILURE, never SURVIVED."""
     try:
         _7api_run_shape_ok(rec)
     except AssertionError:
@@ -254,8 +261,15 @@ def classify_7api_mutant_run(rec, api_unimplemented_pc, exp_slots, exp_pcs, targ
         runs = {r["cycle"]: r for r in rec["RUN"]}
         reasons = (runs["cold"]["reason"], runs["warm"]["reason"])
         if all(x == "cd_halt_ok" for x in reasons):
-            if _7api_prefix_ok(rec, FULL_PREFIX_SLOTS, FULL_PREFIX_PCS):
-                return MUTANT_SURVIVED
+            cold_run = runs["cold"]
+            warm_run = runs["warm"]
+            if cold_run.get("halt_confirmed") is True and \
+                    warm_run.get("halt_confirmed") is True:
+                if cold_run.get("pc") == clean_halt_pc and \
+                        warm_run.get("pc") == clean_halt_pc:
+                    if cold_run.get("pc") == warm_run.get("pc"):
+                        if _7api_prefix_ok(rec, FULL_PREFIX_SLOTS, FULL_PREFIX_PCS):
+                            return MUTANT_SURVIVED
             return HARNESS_FAILURE
         for cycle in ("cold", "warm"):
             run = runs[cycle]
@@ -509,7 +523,8 @@ class Chain7Api2436Synthetic(unittest.TestCase):
         info2 = self.L.info_sector(2, 2, 0x3000, 0x3000, [0, 1, 2, 3, 4], 0,
                                    sum(body2) & 0xFFFF)
         cue2 = self.L.make_disc(o, self.L.case_disc({"n": 2, "iplblk": 2}, body2, info2))
-        return Eentry.run_probe(self.probe, rom_path, cue2, lab, BUDGET, "synthetic")
+        rec = Eentry.run_probe(self.probe, rom_path, cue2, lab, BUDGET, "synthetic")
+        return rec, halt
 
     def _prove_7api_wiring_mutant(self, slot):
         exp = self.rom.read_bytes()
@@ -530,9 +545,10 @@ class Chain7Api2436Synthetic(unittest.TestCase):
         # confused with RTS observation).
         mut_path = self.out / "mut24.pce"
         mut_path.write_bytes(self._prove_7api_wiring_mutant(0x24))
-        rec = self._run_chain_on_rom(mut_path, "mut24")
+        rec, clean_halt = self._run_chain_on_rom(mut_path, "mut24")
         label = classify_7api_mutant_run(rec, self.labels["api_unimplemented"],
-                                         PREFIX_24_SLOTS, PREFIX_24_PCS, 0x24)
+                                         PREFIX_24_SLOTS, PREFIX_24_PCS, 0x24,
+                                         clean_halt)
         self.assertEqual(label, MUTANT_DETECTED,
                          f"$24 wiring-missing classified as {label} (must be MUTANT_DETECTED)")
 
@@ -542,9 +558,10 @@ class Chain7Api2436Synthetic(unittest.TestCase):
         # cycles) with the exact 6-call prefix.
         mut_path = self.out / "mut36.pce"
         mut_path.write_bytes(self._prove_7api_wiring_mutant(0x36))
-        rec = self._run_chain_on_rom(mut_path, "mut36")
+        rec, clean_halt = self._run_chain_on_rom(mut_path, "mut36")
         label = classify_7api_mutant_run(rec, self.labels["api_unimplemented"],
-                                         PREFIX_36_SLOTS, PREFIX_36_PCS, 0x36)
+                                         PREFIX_36_SLOTS, PREFIX_36_PCS, 0x36,
+                                         clean_halt)
         self.assertEqual(label, MUTANT_DETECTED,
                          f"$36 wiring-missing classified as {label} (must be MUTANT_DETECTED)")
 
@@ -555,6 +572,7 @@ class Chain7MutantOracleUnitTests(unittest.TestCase):
     while the genuine stub-trap record must. No fixtures, no real core."""
 
     PC = 0xE123  # stand-in verified api_unimplemented halt pc
+    CLEAN_PC = 0x305A  # stand-in verified clean-halt pc (distinct from PC)
 
     def _run(self, cycle, reason, x, pc=None, halt=True, buf=True, trunc=False,
              ret_trunc=False):
@@ -584,7 +602,7 @@ class Chain7MutantOracleUnitTests(unittest.TestCase):
 
     def _classify24(self, rec):
         return classify_7api_mutant_run(rec, self.PC, PREFIX_24_SLOTS,
-                                       PREFIX_24_PCS, 0x24)
+                                       PREFIX_24_PCS, 0x24, self.CLEAN_PC)
 
     def _check_negative(self, rec, expected):
         # The strict oracle must not credit the anomaly ...
@@ -600,7 +618,7 @@ class Chain7MutantOracleUnitTests(unittest.TestCase):
     def test_oracle_positive_control_36(self):
         rec = self._good_rec(0x36)
         label = classify_7api_mutant_run(rec, self.PC, PREFIX_36_SLOTS,
-                                         PREFIX_36_PCS, 0x36)
+                                         PREFIX_36_PCS, 0x36, self.CLEAN_PC)
         self.assertEqual(label, MUTANT_DETECTED)
         self.assertTrue(old_validator_passes(rec))
 
@@ -714,17 +732,71 @@ class Chain7MutantOracleUnitTests(unittest.TestCase):
         rec["RUN"] = "cold,warm"
         self._check_negative(rec, HARNESS_FAILURE)
 
-    def test_oracle_survival_is_distinct(self):
-        # A clean-halt with the full 6-call prefix is MUTANT_SURVIVED, not
-        # detection: the one anomaly the old check also withholds (it fails
-        # its own assertNotIn), proving the labels discriminate.
-        rec = {"RUN": [self._run("cold", "cd_halt_ok", 0x31),
-                        self._run("warm", "cd_halt_ok", 0x31)],
+    def _clean_rec(self):
+        """Valid survival shape: both cd_halt_ok, both confirmed, both
+        pc == CLEAN_PC, full 6-call prefix."""
+        rec = {"RUN": [self._run("cold", "cd_halt_ok", 0x31, pc=self.CLEAN_PC),
+                        self._run("warm", "cd_halt_ok", 0x31, pc=self.CLEAN_PC)],
                "APICALL": []}
         for cycle in ("cold", "warm"):
             for slot, pc in zip(FULL_PREFIX_SLOTS, FULL_PREFIX_PCS):
                 rec["APICALL"].append(self._call(cycle, slot, pc))
+        return rec
+
+    def test_oracle_survival_is_distinct(self):
+        # A clean-halt with the full 6-call prefix is MUTANT_SURVIVED, not
+        # detection: the one anomaly the old check also withholds (it fails
+        # its own assertNotIn), proving the labels discriminate.
+        rec = self._clean_rec()
         self.assertEqual(self._classify24(rec), MUTANT_SURVIVED)
+        self.assertFalse(old_validator_passes(rec))
+
+    def test_oracle_survival_verified_halt_positive(self):
+        # F1-P: valid survival shape stays MUTANT_SURVIVED under the
+        # verified clean-halt gate; the old check withholds it as before.
+        rec = self._clean_rec()
+        self.assertEqual(self._classify24(rec), MUTANT_SURVIVED)
+        self.assertFalse(old_validator_passes(rec))
+
+    def test_oracle_survival_rejects_unconfirmed_both(self):
+        # F1-N1: both cycles unconfirmed -> malformed clean-halt.
+        rec = self._clean_rec()
+        for r in rec["RUN"]:
+            r["halt_confirmed"] = False
+        self.assertEqual(self._classify24(rec), HARNESS_FAILURE)
+        self.assertFalse(old_validator_passes(rec))
+
+    def test_oracle_survival_rejects_unconfirmed_cold_only(self):
+        # F1-N2: per-cycle gate; one unconfirmed cycle is enough to refuse
+        # SURVIVED even though reasons + prefix + pcs are otherwise valid.
+        rec = self._clean_rec()
+        rec["RUN"][0]["halt_confirmed"] = False
+        self.assertEqual(self._classify24(rec), HARNESS_FAILURE)
+        self.assertFalse(old_validator_passes(rec))
+
+    def test_oracle_survival_rejects_wrong_pc(self):
+        # F1-N3: both halt elsewhere (equal but != CLEAN_PC) -> refuse.
+        rec = self._clean_rec()
+        for r in rec["RUN"]:
+            r["pc"] = 0x1000
+        self.assertEqual(self._classify24(rec), HARNESS_FAILURE)
+        self.assertFalse(old_validator_passes(rec))
+
+    def test_oracle_survival_rejects_divergent_pc(self):
+        # F1-N4: cold CLEAN_PC but warm CLEAN_PC+1 -> cross-cycle gate.
+        rec = self._clean_rec()
+        rec["RUN"][1]["pc"] = self.CLEAN_PC + 1
+        self.assertEqual(self._classify24(rec), HARNESS_FAILURE)
+        self.assertFalse(old_validator_passes(rec))
+
+    def test_oracle_survival_rejects_prefix_violation(self):
+        # F1-N5: valid halt shape but order-swapped APICALL prefix.
+        rec = self._clean_rec()
+        cold = [c for c in rec["APICALL"] if c["cycle"] == "cold"]
+        cold[0], cold[1] = cold[1], cold[0]
+        rec["APICALL"] = cold + [c for c in rec["APICALL"]
+                                if c["cycle"] == "warm"]
+        self.assertEqual(self._classify24(rec), HARNESS_FAILURE)
         self.assertFalse(old_validator_passes(rec))
 
     def _rom_fixture(self, slot):
