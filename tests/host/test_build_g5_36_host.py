@@ -15,6 +15,15 @@ ROOT = Path(__file__).resolve().parents[2]
 B1_BODY = bytes((0x08, 0x48, 0xDA, 0x5A, 0x7A, 0xFA, 0x68, 0x28, 0x60))
 
 
+def redirect_operand_changed(diff, slot):
+    """Per-entry redirect rule: at least one JMP operand byte changed.
+    A legal redirect may share its low or high byte with the stub target,
+    so requiring both bytes to differ false-fails. Pure-host predicate
+    (no ROM build, no core) shared by the 16-variant regression and the
+    F2 operand-rule unit tests below."""
+    return (3 * slot + 1 in diff) or (3 * slot + 2 in diff)
+
+
 class BuildSatclr36HostTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -335,14 +344,20 @@ class BuildSatclr36HostTests(unittest.TestCase):
                     self.assertEqual(len(windows), 11 + 3 * sum(v == "experimental" for v in combo))
                     diff = {i for i in range(0x1000) if data[i] != normal[i]}
                     self.assertLessEqual(diff, windows)
+                    # $02 fallback sequence: all 5 bytes must change (kept).
                     must_change = [slot02 - 0xE000 + i for i in range(5)]
-                    must_change += [3 * s + 1 for s in (0x33, 0x03)]
-                    must_change += [3 * s + 2 for s in (0x33, 0x03)]
-                    for (slot, _, _, _, _, _), val in zip(slots, combo):
-                        if val == "experimental":
-                            must_change += [3 * slot + 1, 3 * slot + 2]
                     for at in must_change:
                         self.assertIn(at, diff)
+                    # Per-redirect entries: at least one operand byte (a
+                    # legal redirect may share its low or high byte with
+                    # the stub target, so both-bytes-differ false-fails).
+                    for s in (0x33, 0x03):
+                        self.assertTrue(redirect_operand_changed(diff, s),
+                                        f"redirect ${s:02X} changed no operand byte")
+                    for (slot, _, _, _, _, _), val in zip(slots, combo):
+                        if val == "experimental":
+                            self.assertTrue(redirect_operand_changed(diff, slot),
+                                            f"redirect ${slot:02X} changed no operand byte")
                     # Vector area: this build's irq_stub x4 + reset (SEI entry).
                     vec = [struct.unpack("<H", data[o:o + 2])[0] for o in range(0x1FF6, 0x2000, 2)]
                     self.assertEqual(vec[:4], [syms["irq_stub"]] * 4)
@@ -355,6 +370,48 @@ class BuildSatclr36HostTests(unittest.TestCase):
         self.assertEqual(default_sha,
                          "3d7e14093de3b10eb8c73bafa2dd3946b12ebeec9dfc0dd5ae0d164d0b657034",
                          "all-stub default differs from pinned baseline")
+
+    def test_redirect_operand_change_one_byte_match(self):
+        # F2-P: legal redirect sharing one operand byte (stub $1234 ->
+        # exp $1256: high byte 0x12 unchanged, only low 0x34->0x56 differs).
+        # Exact 3-byte JMP gate passes; new at-least-one rule passes; the
+        # old both-bytes rule false-fails (demonstrates the fix).
+        slot = 0x33
+        self.assertEqual((0x4C, 0x56, 0x12), (0x4C, 0x56, 0x12))
+        diff = {3 * slot + 1}
+        self.assertTrue(redirect_operand_changed(diff, slot))
+        self.assertFalse((3 * slot + 1 in diff) and (3 * slot + 2 in diff),
+                         "old both-bytes rule should false-fail this triple")
+
+    def test_redirect_operand_change_unchanged_fails(self):
+        # F2-N1: unchanged redirect (0/2 operand bytes in diff) fails both
+        # the old and the new rule; the exact-target gate would also fail.
+        slot = 0x33
+        diff = set()
+        self.assertFalse(redirect_operand_changed(diff, slot))
+        self.assertFalse((3 * slot + 1 in diff) and (3 * slot + 2 in diff))
+
+    def test_redirect_operand_change_wrong_target_fails(self):
+        # F2-N2: operand bytes changed but to the wrong target; the exact
+        # 3-byte JMP gate rejects before the operand rule matters.
+        slot = 0x03
+        actual = (0x4C, 0x99, 0x99)
+        expected = (0x4C, 0x56, 0x12)
+        self.assertNotEqual(actual, expected,
+                            "wrong target must fail the exact 3-byte gate")
+        diff = {3 * slot + 1, 3 * slot + 2}
+        self.assertTrue(redirect_operand_changed(diff, slot))
+        self.assertNotEqual(actual, expected)
+
+    def test_redirect_operand_change_stray_diff_fails(self):
+        # F2-N3: legal target + stray out-of-window edit; the windows
+        # superset gate rejects even though the operand rule passes.
+        slot = 0x33
+        windows = {3 * slot + 1, 3 * slot + 2}
+        diff = {3 * slot + 1, 0x0500}
+        self.assertTrue(redirect_operand_changed(diff, slot))
+        self.assertFalse(diff <= windows,
+                         "stray out-of-window diff must fail the superset gate")
 
 
 if __name__ == "__main__":
