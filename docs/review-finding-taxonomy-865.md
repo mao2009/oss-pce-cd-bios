@@ -53,6 +53,12 @@ kind X-1 (CI-green-but-undetected, §3).
 
 ### 1.4 Follow-up status observed (read-only, `--stat` only — NOT verified fixes)
 
+> Observation-time record: observed at taxonomy-doc HEAD `0c3004b4`
+> (2026-11-28 08:41 +0900; base `83cf842c`). This section describes branch
+> states as seen at that time and is NOT re-verified here — do not treat it
+> as the latest state of PRs #856/#857/#858. Check each PR for its current
+> HEAD before acting.
+
 - PR #856 branch has a post-review commit `3dad5dad` ("resolve Wave1 review
   blockers (media-safe enumeration, safety-rule ordering)") touching exactly
   the two reviewed files. Whether F-856-1/2 are truly fixed needs **re-review
@@ -206,15 +212,28 @@ kind X-1 (CI-green-but-undetected, §3).
   collide with decimal (`"10"`, `"20"`); `--api` floors at L1 without
   enforcing the canonical slot's own level.
 - **Why existing tests missed it:** alias tests (if any) used unambiguous
-  spellings; no collision-pair (`"10"` decimal-16 vs `0x10`) or unknown-form
+  spellings; no collision-pair (`"10"` decimal 10 ($0A) vs `"0x10"`/`"$10"`
+  decimal 16 ($10)) or unknown-form
   case; slot-level enforcement untested.
 - **Other places:** any multi-spelling identifier (API `$NN` vs decimal vs
   `0xNN` across `tools/api_*`, slot ledgers, CALLER_LEDGER refs; issue #744
   21-bit LBA boundary handling shows the same family — one value, several
   spellings, boundary must be exact).
 - **Mechanical detectability:** high — collision-pair table test
-  (`"10"`→decimal-16 only, bare hex rejected, `$/0x` explicit); unknown-form
+  (correct expectations: `"10"`→decimal 10 ($0A) only; `"0x10"`/`"$10"`→
+  decimal 16 ($10); bare-hex `"3F"` invalid→L3 fallback; bare hex rejected,
+  `$/0x` explicit); unknown-form
   → L3; per-slot `--api` run asserts slot level, not just ≥L1.
+
+  Expectation table (canonical per #857 current HEAD — `"10"` is decimal 10,
+  never decimal 16):
+
+  | Spelling | Meaning | Disposition |
+  | --- | --- | --- |
+  | `10` | decimal 10 ($0A) | accepted as slot 10 |
+  | `0x10` | decimal 16 ($10) | accepted as slot 16 |
+  | `$10` | decimal 16 ($10) | accepted as slot 16 |
+  | `3F` (bare hex, no `$`/`0x`) | invalid | rejected → L3 fallback |
 - **Best test method:** host-only `unittest` parameterized over
   spellings × APIs (reuse boundary-mutant style from
   `test_api_744_ipl_sel_boundary.py` / `test_744_ipl_21bit_lba.py`).
@@ -297,7 +316,20 @@ Deliberately **not** reused/duplicated: the in-PR tests
 import from those PR-only modules, so Task D stays independent and
 mergeable regardless of those PRs' fate.
 
-## 5. Child-issue drafts (DRAFTS ONLY — do NOT create yet)
+## 5. Child-issue drafts (HISTORICAL SNAPSHOT — already created as #867–#873)
+
+> Currency note (added post-review `6095313602`): §5 below is the historical
+> draft snapshot as written at doc HEAD `0c3004b4` (2026-11-28 08:41 +0900,
+> when drafts were still unfiled — hence the original "DRAFTS ONLY" label).
+> The drafts have since been created and are now the live tracking issues:
+> CD-1 → #867, CD-2 → #868, CD-3 → #869, CD-4 → #870, CD-5 → #871,
+> CD-6 → #872, CD-7 → #873 (all created 2026-11-28T00:10Z, after this doc's
+> commit). The draft texts below are preserved verbatim for provenance; the
+> live scope/acceptance state lives in those issues, not here. No new child
+> issues are opened by this doc. RED/mutation-in-children rule (§7, X-1)
+> still applies — detection proofs belong to the child implementations.
+>
+> Original header preserved: Child-issue drafts (DRAFTS ONLY — do NOT create yet).
 
 ### CD-1 (D-1): media-safe enumeration + env-independent verdicts
 
@@ -345,7 +377,9 @@ mergeable regardless of those PRs' fate.
 ### CD-6 (D-6): identifier-spelling disambiguation + slot-level enforcement
 
 > Title: `test(#865/D-6): API identifier alias + slot-level regression (bare-hex ban, collision pairs)`
-> Scope: NEW host-only parameterized test: `"10"`→decimal-16 only, bare hex
+> Scope: NEW host-only parameterized test: `"10"`→decimal 10 ($0A) only;
+> `"0x10"`/`"$10"`→decimal 16 ($10); bare-hex `"3F"` invalid→L3 fallback;
+> bare hex
 > rejected, `$/0x` explicit, unknown→L3; per-slot `--api` run enforces the
 > slot's own level. RED→GREEN vs F-857-4. Accept: K-6 (a)–(c).
 
@@ -359,6 +393,12 @@ mergeable regardless of those PRs' fate.
 > (re-review `0dc05b2a`). Accept: K-7 (a)–(c).
 
 ## 6. Urgent safety report
+
+> Observation-time record: this section was written at doc HEAD `0c3004b4`
+> (2026-11-28 08:41 +0900) against PR states observed then (#856/#857/#858
+> HEADs as listed in §1.1/§1.4). It is NOT a live status of those PRs —
+> in-PR fix commits and any later HEADs need their own PR re-reviews before
+> merge. See §1.4 currency note.
 
 **No NEW critical safety problem discovered.** No CRITICAL finding beyond the
 already-reported MAJOR/MERGE_BLOCKERs (which remain tracked in their own PRs
