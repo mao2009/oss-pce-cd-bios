@@ -198,6 +198,10 @@ def _windows(source, report):
 
 
 NEG_KINDS = {".ifndef", ".ifnblank"}   # conditional kinds whose taken branch means "variant absent"
+# Negation/comparison fragments that make an `.if`-kind operand non-affirmative
+# even when it textually mentions the variant (#875). Plain `.if VAR_A` /
+# `.ifdef VAR_A` have none of these and stay accepted.
+_NEGATED_OPERAND_RE = re.compile(r"!|=|<|>|\.not\b", re.IGNORECASE)
 
 
 def _mentions(operand, variant):
@@ -208,9 +212,13 @@ def _mentions(operand, variant):
 def _starter_ok(entry, variant):
     """Affirmative branch opener for `variant`: a non-negative kind (.ifdef / .if / ...) mentioning the
     variant, on branch 0. An .else / .elseif branch (branch_id > 0) of `.ifdef V` is the V-absent path,
-    so it must not claim a V window; likewise a `.ifndef V` block must not claim one."""
+    so it must not claim a V window; likewise a `.ifndef V` block must not claim one. A `.if`-kind
+    operand containing negation or comparison (`!`, `=`, `<>`, `.not`, etc.) is the variant-absent
+    path and must not claim a window; the restrict is operand-level only so plain `.ifdef` / `.ifconst` /
+    `.if VAR_A` plain-symbol headers stay accepted."""
     kind, operand, _block, branch = entry
-    return branch == 0 and kind not in NEG_KINDS and _mentions(operand, variant)
+    return (branch == 0 and kind not in NEG_KINDS and _mentions(operand, variant)
+            and not _NEGATED_OPERAND_RE.search(operand or ""))
 
 
 def _shared_tail_windows(path, source, mmio, report):
