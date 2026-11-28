@@ -39,34 +39,36 @@ All paths below are at investigation HEAD (`tests/integration/geargrafx_dev_mul1
 - `check()` reports kind `mpr` only from positive evidence: non-empty `mprchg` lines, `summary.mpr_changes > 0`, a `loaded`-vs-`final` MPR diff on indices `(0,2,3,4,5,6,7)` (MPR1 excluded — the guest legitimately sets `MPR1=$F8`), or a failed absolute `MPR1/MPR7` check. Kind `halt` is reported when the probe exhausts its budget (`max = 366*1000+5000 = 371000` steps for the 366-entry reduced table) without reaching the halt PC.
 - The verdict (`main().do_mutant`) is `if not errs or not (set(errs) & required)` with `required={'mpr'}` for T5. Normal T5 outcome is `errs == {'halt','mpr'}` (hang **plus** MPR evidence). The CI failure `seen: ['halt']` means the run hung as designed but produced **zero** MPR evidence of any kind.
 
-## 3. Prime mechanism: time-seeded power-on MPR randomization masks the T5 write (1/255)
+## 3. Candidate mechanism: time-seeded power-on MPR randomization can mask the T5 write (theoretical 1/255 under nonzero-uniform assumption)
+
+The failing first-CI attempt logged no MPR values, so the power-on `MPR2` value at that time is UNKNOWN and the natural cause of the first-CI failure is UNDETERMINED. What the PoC in Sec. 6 shows is a reproducible failure mechanism under a forced condition, not a settled natural cause.
 
 Pinned Geargrafx core (`src/memory.cpp`, `src/geargrafx_core.cpp`, `src/random.h`):
 
 - `GeargrafxCore::Init` seeds `m_random` with `(u32)time(NULL)` — a new, wall-clock-dependent seed per probe process.
-- `Memory::Reset` sets `m_mpr[7] = 0x00` deterministically but fills `m_mpr[0..6]` with random **non-zero** bytes (`do { Next8Bit(); } while (== 0x00)`), i.e. uniform over `1..255`.
+- `Memory::Reset` sets `m_mpr[7] = 0x00` deterministically but fills `m_mpr[0..6]` with random **non-zero** bytes (`do { Next8Bit(); } while (== 0x00)`), i.e. code reads as uniform over `1..255` (nonzero-uniform assumption used for the theoretical rate below; the actual distribution was not measured).
 - Nothing in the mul16s probe, test driver, or tools pins these values (`SetResetValues` is never called on this path).
 
-Consequence for T5: the payload writes `MPR2 := $F8`. If the power-on roll already left `MPR2 == $F8` (probability **1/255 ≈ 0.4%** per T5 probe execution):
+Consequence for T5: the payload writes `MPR2 := $F8`. If the power-on roll already left `MPR2 == $F8` (theoretical probability **1/255 ≈ 0.4%** per T5 probe execution **under the nonzero-uniform assumption only; the measured natural rate is UNKNOWN**):
 
 1. the TAM is a same-value write → `mpr_changes` stays `0`, no `MPRCHG` line;
 2. `final.MPR2 == loaded.MPR2 == $F8` → the `loaded`-vs-`final` diff path stays silent (MPR1/MPR7 absolute checks still pass);
 3. the designed hang still yields kind `halt`;
 4. verdict computes `{'halt'} ∩ {'mpr'} = ∅` → exactly `was NOT rejected as ['mpr'] (seen: ['halt'])`.
 
-No other mutant is sensitive to this: M1–M10 expect value/trace verdicts; T1–T4/T6–T10 are observed via value-agnostic CPU-address breakpoints (a same-value store or a write-and-restore still trips the breakpoint flag), and none of them touches MPRs. Default/control runs never expect `mpr`, and the routine/guest never touch MPR2, so a `$F8` roll is invisible there too — consistent with the failed CI run passing everything except T5.
+On the reviewed oracle paths, no other mutant shows the same value-sensitivity: M1–M10 expect value/trace verdicts; T1–T4/T6–T10 are observed via value-agnostic CPU-address breakpoints (a same-value store or a write-and-restore still trips the breakpoint flag), and none of them touches MPRs. Default/control runs never expect `mpr`, and the routine/guest never touch MPR2, so a `$F8` roll produced no visible effect there in the observed runs — consistent with the failed CI run passing everything except T5 (first-CI MPR values remain UNKNOWN).
 
 ## 4. Hypotheses tested
 
 | Hypothesis | Method | Result |
 |---|---|---|
-| Halt-vs-MPR observation order | Code review + local T5 trace: TAM fires at step ~808 of a 371000-step budget; MPR is polled after every single-stepped instruction | Rejected as cause: ordering gives MPR ample opportunity; normal runs show both `halt` and `mpr` |
+| Halt-vs-MPR observation order | Code review + local T5 trace: TAM fires at step ~808 of a 371000-step budget; MPR is polled after every single-stepped instruction | Not needed to explain the observed PoC on this evidence scope: ordering gives MPR ample opportunity; normal runs show both `halt` and `mpr` |
 | Budget/timeout boundary | Compared budgets: T5 exhausts `max` (371000) **by design** in both pass and fail shapes; `records: 0` in both | Not discriminative; T5 always ends in budget exhaustion |
 | Cold/warm init state | The mul16s probe performs a single boot per run; no cold/warm phases exist on this path | N/A to this test |
-| Pinned core state transitions / CD media | Media `IsReady` is a synchronous bool set at `LoadMedia`; synthetic media bytes are fixed; ROM SHA identical across attempts and local rebuild | Ruled out for this path (unlike the BCDBIN sweep's documented unchecked-P-bit path dependence, which concerns P, not MPR) |
+| Pinned core state transitions / CD media | Media `IsReady` is a synchronous bool set at `LoadMedia`; synthetic media bytes are fixed; ROM SHA identical across attempts and local rebuild | No evidence for this path in the reviewed code/logs on the observed PoC scope (unlike the BCDBIN sweep's documented unchecked-P-bit path dependence, which concerns P, not MPR); not excluded generally |
 | Parallel-load / tmpfile / ROM-generation races | Review: per-thread unique `g{n}`/`run{index}` files, per-run ROM copies, shared trampoline address but disjoint payloads; plus serial PoC below reproduces without any parallelism | Not needed to explain; no evidence of collision |
-| Mutant reachability / window coverage | Verified locally: JMP at `$E777` → trampoline `$E0F3`, TAM at `$E0F6` inside window `$E0F3-$E8FE`; normal runs record `MPRCHG {pc 57590 ($E0F6), mpr 2}` | Reachable and covered; fails only when the write is value-identical |
-| Power-on MPR2 == `$F8` collision | Empirical MPR variance + forced-condition PoC (Sec. 5–6) | **Confirmed mechanism; exact CI signature regenerated** |
+| Mutant reachability / window coverage | Verified locally: JMP at `$E777` → trampoline `$E0F3`, TAM at `$E0F6` inside window `$E0F3-$E8FE`; normal runs record `MPRCHG {pc 57590 ($E0F6), mpr 2}` | Reachable and covered; observed to produce `halt`-only under the forced same-value condition in the PoC (natural-case exclusivity not established) |
+| Power-on MPR2 == `$F8` collision | Empirical MPR variance + forced-condition PoC (Sec. 5–6) | **Reproducible mechanism under the forced condition; exact CI signature regenerated in the PoC; first-CI natural cause UNDETERMINED** |
 
 ## 5. Bounded repeats (same fixture/condition)
 
@@ -74,7 +76,7 @@ Environment: local worktree at `672be798`, `TOOLS_DIR` with pinned cc65/Geargraf
 
 - Full `geargrafx_dev_mul16s.py` (18 default runs + control + 20 mutants), 7 iterations: **7/7 PASS** (`20/20` mutants each time).
 - T5-only driver (same reduced 366-entry table, `c=$40`, same patches/window): 3 iterations: **3/3** `errs == ['halt','mpr']`. Loaded (power-on) MPRs varied every run, confirming nondeterminism, e.g. MPR2 ∈ `{13, 238, 43}` with MPR7 always `0`; normal T5 record: `mpr_changes: 1` at `pc $E0F6 (mpr 2)`, `steps: 371000`, `records: 0`, hang `pc $14ED`.
-- Total: 10 bounded real-core iterations (7 full + 3 focused). The natural 1/255 collision was **not** observed locally — expected (P ≈ 3.9% over 10 trials).
+- Total: 10 bounded real-core iterations (7 full + 3 focused). Zero natural occurrences were observed locally (0/10). Under the nonzero-uniform assumption **plus an independence assumption**, the theoretical chance of ≥1 collision in 10 trials is 1-(254/255)^10 ≈ 3.85%; the `time(NULL)` seed can correlate closely-spaced trials so independence is unverified, and the measured natural rate is UNKNOWN.
 
 ## 6. Controlled-condition reproduction (PoC, `/tmp`-only, not merged)
 
@@ -92,15 +94,15 @@ The regenerated message is character-identical to the CI failure. (Hang PC diffe
 
 ## 7. Verdict
 
-- **Signature REPRODUCED via controlled condition delta**: power-on `MPR2 == $F8` (possible on every run with P = 1/255 given the pinned core's `time(NULL)`-seeded `Memory::Reset`) deterministically converts the normal T5 verdict `['halt','mpr']` into the exact CI failure `['halt']`.
+- **Same signature reproduced under the forced condition**: with power-on `MPR2` forced to `$F8`, the PoC run produced the exact CI failure verdict `['halt']` from the normal T5 verdict `['halt','mpr']` (observed PoC scope only; generalization beyond the forced condition not established). The 1/255 figure is a theoretical value under the nonzero-uniform assumption, not a measured rate. The first-CI power-on `MPR2` value is UNKNOWN, so the first-CI natural cause is UNDETERMINED.
 - **Natural occurrence NOT observed** in 10 bounded local iterations; per the task contract this is therefore recorded without a production/test-expectation change: **no fix is made here** (no `halt` allowance, no strictness reduction, no mutant deletion/skip, no budget bump, no gate change, no #882/#857 touch).
-- Strictly, the natural flake remains a measured 1/255-per-execution event rather than a live-caught one; the mechanism above is the overwhelmingly supported explanation (exact-signature PoC + code-grounded inevitability + variance evidence), but no repo behavior was altered on its basis.
+- Strictly, the natural flake remains an unobserved event in 10 bounded local trials (0/10 natural occurrences); the PoC evidences a reproducible failure mechanism (exact-signature reproduction under the forced condition plus observed MPR variance in normal runs), but the measured natural rate is UNKNOWN and no repo behavior was altered on this basis.
 
 ## 8. Open items (for owner)
 
-1. Decide the harness strategy for value-sensitive MPR oracles under randomized power-on state. Options (not implemented here): (a) pin MPR reset values for this probe via `SetResetValues` so `MPR2 != $F8` deterministically — note blast radius (all MPR observations on this path assume randomization); (b) add a value-agnostic MPR-write watch (e.g. extend the breakpoint harness to TAM/TMA), making T5 robust like the trace mutants; (c) keep randomization and accept ~1/255 T5 flakes with a documented rerun policy (NOT recommended: masks signal). Any of these needs owner review plus RED→GREEN demonstration; (a)/(b) must prove no weakening of the `mpr` oracle.
+1. Decide the harness strategy for value-sensitive MPR oracles under randomized power-on state. Options (not implemented here): (a) pin MPR reset values for this probe via `SetResetValues` so `MPR2 != $F8` deterministically — note blast radius (all MPR observations on this path assume randomization); (b) add a value-agnostic MPR-write watch (e.g. extend the breakpoint harness to TAM writes, which transfer A to an MPR; TMA reads, which transfer an MPR to A, are the converse direction and do not observe MPR writes), making T5 robust like the trace mutants; (c) keep randomization and accept theoretical ~1/255 (nonzero-uniform assumption only; measured rate UNKNOWN) T5 flakes with a documented rerun policy (NOT recommended: masks signal). Any of these needs owner review plus RED→GREEN demonstration; (a)/(b) must prove no weakening of the `mpr` oracle.
 2. Diagnostic-only improvement (no gate change): log the T5 `first`/pc/steps and loaded/final MPRs in the driver output or evidence JSON so the next occurrence is classifiable from the log alone (the failing CI line carried none of this).
-3. Consider recording per-mutant `mpr_changes`/MPR vectors in `geargrafx-dev-mul16s-evidence.json` (already records kinds; vectors would let a future flake be confirmed as the Sec. 3 collision post-hoc).
+3. Consider recording per-mutant `mpr_changes`/MPR vectors in `geargrafx-dev-mul16s-evidence.json` (already records kinds; vectors would let a future flake be checked against the Sec. 3 candidate mechanism post-hoc).
 4. If a natural recurrence appears, capture the full probe stdout (`MPRCHG`/`SUMMARY`/`OBS`) for that mutant run before rerunning.
 
 ## 9. Compliance notes
