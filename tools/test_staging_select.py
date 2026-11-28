@@ -172,6 +172,59 @@ class Selection:
 # Git input collection (Issue #852 acceptance inputs).
 # ---------------------------------------------------------------------------
 
+# Repo-local git binding (Issue #852, review 6096132688 B-1). Every git
+# subprocess below runs through _run_git with BOTH an explicit
+# ``git -C <repo>`` binding AND a sanitized environment: the repo-binding
+# variables below are stripped so a hostile caller environment (exported
+# GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE/GIT_COMMON_DIR pointing at another
+# checkout, a ceiling/discovery override, or a namespace/prefix redirect)
+# can never rebind HEAD/BASE/merge-base resolution, committed/staged/
+# unstaged diffs, untracked listing, blob/index regular-file checks, blob
+# fetches, fingerprint hashing, or the explicit --fetch update target to
+# the wrong repository. Binding therefore holds even under a hostile env
+# (no refusal dance needed: isolation is total, -C + cwd + clean env).
+# Non-binding GIT_* (author/committer/config) are left untouched: the
+# read-only subcommands used here never need them, and stripping them
+# would only break callers' commit plumbing.
+_GIT_REPO_BINDING_VARS = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_NAMESPACE",
+    "GIT_CEILING_DIRECTORIES",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+    "GIT_PREFIX",
+)
+
+
+def _git_env_for_repo():
+    """Sanitized environment for one bound git invocation (no repo bind)."""
+    env = dict(os.environ)
+    for var in _GIT_REPO_BINDING_VARS:
+        env.pop(var, None)
+    return env
+
+
+def _run_git(repo, *args):
+    """Run one git subcommand bound to ``repo`` (sanitized env, -C + cwd).
+
+    Covers EVERY git subprocess path: HEAD/BASE/merge-base resolution,
+    committed/staged/unstaged diffs, untracked listing, explicit --fetch,
+    ls-tree/ls-files regular-file checks, and show blob/index fetches.
+    Raises GitError on execution failure; a nonzero exit is returned on
+    the CompletedProcess for the caller to interpret (regular-file
+    checks treat it as non-regular, the runner treats it as git-exit).
+    """
+    try:
+        return subprocess.run(
+            ["git", "-C", str(repo), *args], cwd=str(repo),
+            capture_output=True, text=False, timeout=120,
+            env=_git_env_for_repo())
+    except (OSError, subprocess.SubprocessError) as error:
+        raise GitError("git-execution", str(error)) from error
+
+
 def _real_runner(repo, *args):
     # Binary capture + strict UTF-8 decode (never text mode): universal-
     # newline translation would silently rewrite filenames containing CR
@@ -181,12 +234,11 @@ def _real_runner(repo, *args):
     # failure raises GitError (callers escalate to L3) instead of
     # misidentifying the path. Exit text is decoded lossily for the
     # message only (never parsed as a path).
-    try:
-        proc = subprocess.run(
-            ["git", *args], cwd=repo, capture_output=True, text=False,
-            timeout=120)
-    except (OSError, subprocess.SubprocessError) as error:
-        raise GitError("git-execution", str(error)) from error
+    # Repo binding: delegated to _run_git (explicit -C + cwd AND a
+    # sanitized env), so GIT_DIR/WORK_TREE/INDEX_FILE/COMMON_DIR (or
+    # ceiling/discovery/namespace/prefix) overrides in the caller env can
+    # never redirect this call at another checkout's objects.
+    proc = _run_git(repo, *args)
     if proc.returncode != 0:
         raise GitError("git-exit",
                        f"git {' '.join(args)} exited {proc.returncode}: "
@@ -1230,10 +1282,8 @@ def _read_bytes_strict(path, repo=None):
 def _git_blob_is_regular(repo, spec, path):
     """True only if the git object at spec is a regular blob (no read)."""
     try:
-        proc = subprocess.run(
-            ["git", "-C", str(repo), "ls-tree", spec, "--", path],
-            capture_output=True, timeout=120)
-    except (OSError, subprocess.SubprocessError):
+        proc = _run_git(repo, "ls-tree", spec, "--", path)
+    except GitError:
         return False
     if proc.returncode != 0:
         return False
@@ -1252,10 +1302,8 @@ def _git_blob_is_regular(repo, spec, path):
 def _git_staged_is_regular(repo, path):
     """True only if the index entry is a regular blob (no read)."""
     try:
-        proc = subprocess.run(
-            ["git", "-C", str(repo), "ls-files", "-s", "--", path],
-            capture_output=True, timeout=120)
-    except (OSError, subprocess.SubprocessError):
+        proc = _run_git(repo, "ls-files", "-s", "--", path)
+    except GitError:
         return False
     if proc.returncode != 0:
         return False
@@ -1296,18 +1344,14 @@ def _input_content_hash(repo, origin, status, path):
                 # anything else unconfirmable refuses reuse instead of
                 # hashing link text or failing open.
                 return "unknown"
-            proc = subprocess.run(
-                ["git", "-C", str(repo), "show", f"HEAD:{path}"],
-                capture_output=True, timeout=120)
+            proc = _run_git(repo, "show", f"HEAD:{path}")
             if proc.returncode != 0:
                 return "unknown"
             return hashlib.sha256(proc.stdout).hexdigest()
         if origin == "staged":
             if not _git_staged_is_regular(repo, path):
                 return "unknown"
-            proc = subprocess.run(
-                ["git", "-C", str(repo), "show", f":{path}"],
-                capture_output=True, timeout=120)
+            proc = _run_git(repo, "show", f":{path}")
             if proc.returncode != 0:
                 return "unknown"
             return hashlib.sha256(proc.stdout).hexdigest()
@@ -1339,7 +1383,7 @@ def _input_content_hash(repo, origin, status, path):
                 return "unknown"
             return "deleted"
         return hashlib.sha256(target.read_bytes()).hexdigest()
-    except (OSError, subprocess.SubprocessError, ValueError):
+    except (GitError, OSError, subprocess.SubprocessError, ValueError):
         return "unknown"
 
 
@@ -1385,6 +1429,91 @@ def _map_identity(map_path, repo=None):
     if not isinstance(base_commit, str) or not _HEX40_RE.match(base_commit):
         return digest, f"{name}/v{schema}@unidentified"
     return digest, f"{name}/v{schema}@{base_commit}"
+
+
+def _normal_cli_map_target(repo, map_path):
+    """Resolve the normal-CLI map input to a repo-bound path (ZERO reads).
+
+    Issue #852, review 6096132688 B-2: the normal CLI path used to
+    fingerprint (read) the map BEFORE the loader's containment check, so
+    an absolute --map from another checkout was opened twice (initial
+    fingerprint plus finalise re-generation, plus once more on the
+    GitError path) before being refused. This gate unifies
+    containment/lexical/symlink refusal BEFORE the first read of any map
+    input on the normal CLI path -- the default repo-bound map, a
+    relative --map, an absolute --map, and the GitError-path raw
+    --map alike. It performs only lexical checks plus lstat-style
+    ``is_symlink`` probes (never ``read_bytes``): a refused spec raises
+    MapError with zero read-API calls (spy-proven), the caller reports
+    full L3 with an ``unknown`` map identity (reuse refused), and no
+    traceback escapes. The explicit synthetic-loader lane (an explicit
+    ``loader=`` argument) bypasses this gate deliberately: temp-only
+    fixtures outside any repo stay loadable there and never mix into the
+    normal path.
+    """
+    try:
+        base_resolved = Path(repo).resolve()
+    except (OSError, ValueError) as error:
+        raise MapError(f"normal-CLI map repo {repo!r} is not resolvable: "
+                       f"{error} -> L3") from error
+    if map_path is None:
+        return str(Path(repo) / "tools" / "test_staging_map.json")
+    if _map_spec_refused_pre_read(map_path):
+        raise MapError(
+            f"normal-CLI --map {map_path!r} refused pre-read "
+            "(empty, NUL, '..' escape, or forbidden-area spec) -> L3")
+    if isinstance(map_path, os.PathLike):
+        try:
+            given = os.fspath(map_path)
+        except (OSError, ValueError, TypeError) as error:
+            raise MapError(f"normal-CLI --map {map_path!r} is not a "
+                           f"usable spec: {error} -> L3") from error
+    else:
+        given = map_path
+    if isinstance(given, bytes):
+        try:
+            given = os.fsdecode(given)
+        except (OSError, ValueError, UnicodeError) as error:
+            raise MapError(f"normal-CLI --map {map_path!r} is not a "
+                           f"usable spec: {error} -> L3") from error
+    if not isinstance(given, str) or not given:
+        raise MapError(f"normal-CLI --map {map_path!r} is not a usable "
+                       "spec -> L3")
+    candidate = Path(given)
+    relative = not candidate.is_absolute()
+    if relative:
+        candidate = base_resolved / candidate
+    try:
+        if candidate.is_symlink():
+            raise MapError(f"normal-CLI --map {map_path!r} is a symlink "
+                           "(refused fail-closed) -> L3")
+        if _path_has_symlink_parent(candidate):
+            raise MapError(
+                f"normal-CLI --map {map_path!r} traverses a symlink "
+                "(refused fail-closed) -> L3")
+        resolved = candidate.resolve()
+    except MapError:
+        raise
+    except (OSError, ValueError) as error:
+        raise MapError(f"normal-CLI --map {map_path!r} is not resolvable: "
+                       f"{error} -> L3") from error
+    try:
+        inside = (resolved == base_resolved
+                  or base_resolved in resolved.parents)
+    except (OSError, ValueError):
+        inside = False
+    if not inside:
+        raise MapError(
+            f"normal-CLI --map {map_path!r} is outside the bound repo "
+            f"{repo}: cross-repo mixing refused fail-closed "
+            "-> L3 (bind target repo+map+ledger+Makefile+dependencies "
+            "consistently; use a repo-relative --map or the repo-bound "
+            "default)")
+    if relative:
+        # Same repo-relative spelling the CLI path always used (the gate
+        # verified the resolved location above; the loader re-verifies).
+        return str(Path(repo) / given)
+    return str(candidate)
 
 
 def _resolve_pinned_tool_path(tools_root, revision, name, binary):
@@ -1993,8 +2122,12 @@ def run_selector(repo, base, map_path=None, api=None, fetch=False,
     --map is either repo-relative (resolved inside ``repo``) or absolute
     inside ``repo`` -- an absolute --map from another checkout is refused
     fail-closed (cross-repo mixing), never mixed with this repo's
-    ledger/Makefile/diff/pins. Pass an explicit loader only for isolated
-    synthetic-test fixtures. The returned fingerprint is finalised with
+    ledger/Makefile/diff/pins. The refusal happens in
+    _normal_cli_map_target BEFORE the first map read, so the fingerprint,
+    the loader, the finalise re-generation, and the GitError path all see
+    zero bytes of a foreign map (rejected identity is unknown, reuse
+    refused). Pass an explicit loader only for isolated synthetic-test
+    fixtures. The returned fingerprint is finalised with
     the map identity, API choice, level, and command set so reuse
     comparisons cover content plus selection plus conditions.
     """
@@ -2023,8 +2156,18 @@ def run_selector(repo, base, map_path=None, api=None, fetch=False,
         changed = collect_changes(repo, base, runner=runner, fetch=fetch)
     except GitError as error:
         changed = ChangedInputs(head="unknown", base=base)
+        if loader is None:
+            # Normal CLI: the same pre-read gate as the main path, so the
+            # GitError-path raw --map is never opened either (B-2). A
+            # refused spec fingerprints as unknown (reuse refused).
+            try:
+                gated = _normal_cli_map_target(repo, map_path)
+            except MapError:
+                gated = None
+        else:
+            gated = map_path
         fingerprint = evidence_fingerprint(
-            repo, changed, mode=mode, map_path=map_path, api=api,
+            repo, changed, mode=mode, map_path=gated, api=api,
             level="L3", commands=None)
         selection = _l3_selection(
             [f"input-collection failed ({error.kind}): {error.detail}"],
@@ -2032,7 +2175,25 @@ def run_selector(repo, base, map_path=None, api=None, fetch=False,
         return selection, render(selection)
     explicit_loader = loader is not None
     active_loader = loader if explicit_loader else CanonicalJsonMapLoader(repo=repo)
-    if map_path is not None:
+    if not explicit_loader:
+        # Normal CLI gate (B-2): containment/lexical/symlink refusal
+        # BEFORE the first read of any map input (the fingerprint below
+        # is that first read). A refused --map yields full L3 with an
+        # unknown map identity (reuse refused) and zero read-API calls;
+        # the finalise re-generation below then re-reads only the
+        # repo-bound map that passed this gate. Explicit synthetic-test
+        # loaders bypass the gate (isolated temp-fixture boundary).
+        try:
+            resolved_map = _normal_cli_map_target(repo, map_path)
+        except MapError as gate_error:
+            fingerprint = evidence_fingerprint(
+                repo, changed, mode=mode, map_path=None, api=api,
+                level="L3", commands=None)
+            selection = _l3_selection(
+                [f"impact-map: {gate_error}"],
+                "map-missing-or-inconsistent", fingerprint)
+            return selection, render(selection)
+    elif map_path is not None:
         given = Path(map_path)
         if given.is_absolute():
             # Explicit absolute --map: authorized external test-only

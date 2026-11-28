@@ -471,7 +471,7 @@ CANONICAL_PIN = "2ab14d08fc9fbdc704da1b1f07c96501850b542e"
 # identical). Pin updated here. If the branch moves again this pin fails
 # and a later wave finalises it against the merge (no checkout, no
 # tracked copy, no ./rom).
-REAL_MAP_HEAD_PIN = "aa03c061a2c221df3ca1c852c9a2fd007d3b5ee5"
+REAL_MAP_HEAD_PIN = "f21e7aa3426cc38999b2f019b3d51acb7a4e5c1d"
 
 
 def canonical_tests(host=(), scripts=(), targets=(), static=()):
@@ -2615,6 +2615,247 @@ class Wave3B4BindingTests(unittest.TestCase):
         # CLI default is always <repo>/tools/test_staging_map.json, never
         # a silent fallback to this checkout's files.
         self.assertFalse(hasattr(SEL, "DEFAULT_CANONICAL_MAP"))
+
+
+# ---------------------------------------------------------------------------
+# Review 6096132688 (PR #857 Wave1): B-1 git-env binding, B-2 map pre-read.
+#
+# All fixtures are synthetic temp dirs + sentinel bytes only (no ./rom,
+# no real checkouts, no network). Read-uncalled proofs spy on
+# Path.read_bytes; env proofs spy on the env kwarg of subprocess.run.
+# ---------------------------------------------------------------------------
+
+
+class Review6096132688B1GitEnvTests(unittest.TestCase):
+    """B-1: a hostile GIT_* env can never rebind any git subprocess path.
+
+    _run_git (used by _real_runner AND the ls-tree/ls-files/show regular-
+    file checks AND fingerprint hashing) strips every repo-binding variable
+    and binds with explicit ``git -C <repo>`` + cwd, so HEAD/BASE/
+    merge-base, all diffs, untracked listing, blob/index fetches, and the
+    explicit --fetch update target stay on the target repo. Proven on two
+    synthetic repos with the target call run under the OTHER repo's
+    GIT_DIR/WORK_TREE.
+    """
+    BINDING_VARS = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE",
+                    "GIT_COMMON_DIR", "GIT_NAMESPACE",
+                    "GIT_CEILING_DIRECTORIES",
+                    "GIT_DISCOVERY_ACROSS_FILESYSTEM", "GIT_PREFIX")
+
+    def make_pair(self):
+        repo_a = make_repo("only-in-A.s")
+        repo_b = make_repo("only-in-B.s")
+        return repo_a, repo_b
+
+    def hostile_env(self, other):
+        return {"GIT_DIR": str(Path(other) / ".git"),
+                "GIT_WORK_TREE": str(other)}
+
+    def test_hostile_git_dir_cannot_rebind_head(self):
+        repo_a, repo_b = self.make_pair()
+        head_a = git(repo_a, "rev-parse", "HEAD").strip()
+        head_b = git(repo_b, "rev-parse", "HEAD").strip()
+        self.assertNotEqual(head_a, head_b)
+        with unittest.mock.patch.dict(os.environ,
+                                      self.hostile_env(repo_b)):
+            self.assertEqual(SEL._real_runner(str(repo_a), "rev-parse",
+                                              "HEAD").strip(), head_a)
+
+    def test_hostile_env_cannot_mix_diffs_or_drop_changes(self):
+        repo_a, repo_b = self.make_pair()
+        write_file(repo_a, "only-in-A.s", "CHANGED-A\n")
+        git(repo_a, "commit", "-qam", "change A")
+        with unittest.mock.patch.dict(os.environ,
+                                      self.hostile_env(repo_b)):
+            changed = SEL.collect_changes(str(repo_a), "vbase")
+        # A's change survives; B's content never mixes in.
+        self.assertEqual(changed.committed, [("M", "only-in-A.s")])
+        self.assertEqual(changed.head,
+                         git(repo_a, "rev-parse", "HEAD").strip())
+        self.assertNotEqual(
+            changed.head, git(repo_b, "rev-parse", "HEAD").strip())
+
+    def test_every_git_call_uses_sanitized_env(self):
+        repo_a, repo_b = self.make_pair()
+        write_file(repo_a, "only-in-A.s", "committed\n")
+        git(repo_a, "commit", "-qam", "change")
+        write_file(repo_a, "staged.s", "staged\n")
+        git(repo_a, "add", "staged.s")
+        write_file(repo_a, "untracked.s", "untracked\n")
+        seen = []
+        real_run = subprocess.run
+
+        def spy_run(argv, *args, **kwargs):
+            if (isinstance(argv, list) and len(argv) > 2
+                    and argv[0] == "git" and argv[1] == "-C"):
+                env = kwargs.get("env", {})
+                seen.append({var: env.get(var)
+                             for var in self.BINDING_VARS})
+            return real_run(argv, *args, **kwargs)
+
+        with unittest.mock.patch.dict(os.environ,
+                                      self.hostile_env(repo_b)):
+            with unittest.mock.patch.object(subprocess, "run", spy_run):
+                changed = SEL.collect_changes(str(repo_a), "vbase")
+                SEL.evidence_fingerprint(
+                    str(repo_a), changed, map_path=None, level="L3",
+                    commands=[{"make": "check"}])
+                SEL._git_blob_is_regular(str(repo_a), "HEAD",
+                                         "only-in-A.s")
+                SEL._git_staged_is_regular(str(repo_a), "staged.s")
+        # Every git subprocess path ran (diffs, listing, blob/index
+        # checks, blob fetches) and none carried a binding variable.
+        self.assertGreaterEqual(len(seen), 8)
+        for leaked in seen:
+            self.assertEqual(
+                leaked, {var: None for var in self.BINDING_VARS})
+        self.assertEqual(changed.committed, [("M", "only-in-A.s")])
+
+    def test_fetch_binds_to_target_origin_under_hostile_env(self):
+        remote = Path(tempfile.mkdtemp(prefix="r6096132688-")) / "r.git"
+        proc = subprocess.run(["git", "init", "-q", "--bare",
+                               str(remote)], capture_output=True,
+                              timeout=120)
+        self.assertEqual(proc.returncode, 0, proc.stderr[-500:])
+        repo_a, repo_b = self.make_pair()
+        git(repo_a, "remote", "add", "origin", str(remote))
+        git(repo_a, "push", "-q", "origin", "HEAD:refs/heads/main")
+        # Repo B has no origin at all: pre-fix binding would fetch B
+        # (failure / wrong target); post-fix binding fetches A's origin.
+        with unittest.mock.patch.dict(os.environ,
+                                      self.hostile_env(repo_b)):
+            SEL.attempt_fetch(str(repo_a), "main")
+        fetched = git(repo_a, "rev-parse", "FETCH_HEAD").strip()
+        pushed = git(repo_a, "rev-parse", "HEAD").strip()
+        self.assertTrue(fetched.startswith(pushed))
+
+
+class Review6096132688B2MapPrereadTests(Wave2B4RepoConsistencyTests):
+    """B-2: the normal CLI path refuses a foreign map BEFORE any read.
+
+    _normal_cli_map_target unifies containment/lexical/symlink refusal
+    ahead of fingerprint generation on every normal-CLI map input (the
+    default map, a relative --map, an absolute --map, and the GitError-
+    path raw --map). A refused map fingerprints as unknown (reuse
+    refused) with full L3 and no traceback; read spies prove zero bytes
+    of the foreign map are opened on any path (initial fingerprint,
+    loader, finalise re-generation, GitError path). The explicit
+    synthetic-loader lane (temp-only fixtures) is unchanged.
+    """
+    def test_cross_repo_map_zero_reads_all_normal_paths(self):
+        repo_a, base_a = self.make_consistent_repo(self.SLOT_A)
+        repo_b, _base_b = self.make_consistent_repo(self.SLOT_B)
+        map_b = str(Path(repo_b) / "tools" / "test_staging_map.json")
+        reads = []
+        real_read = Path.read_bytes
+
+        def spy(self, *args, **kwargs):
+            reads.append(str(self))
+            return real_read(self, *args, **kwargs)
+
+        Path.read_bytes = spy
+        try:
+            selection, _ = SEL.run_selector(str(repo_a), base_a,
+                                            map_path=map_b)
+        finally:
+            Path.read_bytes = real_read
+        # Full L3, cross-repo reason, zero foreign bytes on EVERY read
+        # path (fingerprint + loader + finalise re-generation combined).
+        assert_full_l3(self, selection, "map-missing-or-inconsistent")
+        self.assertTrue(
+            any("cross-repo" in reason for reason in selection.reasons))
+        self.assertEqual([path for path in reads if path == map_b], [])
+        self.assertEqual(selection.fingerprint["map_sha256"], "unknown")
+        self.assertEqual(selection.fingerprint["map_id"], "unknown")
+        self.assertFalse(SEL.evidence_reusable(selection.fingerprint,
+                                               selection.fingerprint))
+        # GitError path: the raw foreign --map is never opened either.
+        reads_git = []
+        Path.read_bytes = spy_git = (
+            lambda self, *args, **kwargs:
+            (reads_git.append(str(self)),
+             real_read(self, *args, **kwargs))[1])
+        try:
+            selection_git, _ = SEL.run_selector(
+                str(repo_a), "refs/heads/does-not-exist-xyz",
+                map_path=map_b)
+        finally:
+            Path.read_bytes = real_read
+        self.assertEqual(selection_git.level, "L3")
+        self.assertTrue(selection_git.fallback)
+        self.assertEqual(
+            [path for path in reads_git if path == map_b], [])
+        self.assertEqual(selection_git.fingerprint["map_sha256"],
+                         "unknown")
+        # Home-repo E2E still selects L1 (no over-refusal).
+        home, _ = SEL.run_selector(str(repo_a), base_a,
+                                   map_path=str(
+                                       Path(repo_a) / "tools" /
+                                       "test_staging_map.json"),
+                                   api=self.SLOT_A)
+        self.assertEqual(home.level, "L1")
+        self.assertFalse(home.fallback)
+
+    def test_gate_refuses_dotdot_and_symlink_specs_pre_read(self):
+        repo_a, base_a = self.make_consistent_repo(self.SLOT_A)
+        # ".." escape via the normal CLI: L3, zero reads.
+        reads = []
+        real_read = Path.read_bytes
+
+        def spy(self, *args, **kwargs):
+            reads.append(str(self))
+            return real_read(self, *args, **kwargs)
+
+        Path.read_bytes = spy
+        try:
+            selection, _ = SEL.run_selector(str(repo_a), base_a,
+                                            map_path="../outside.json")
+        finally:
+            Path.read_bytes = real_read
+        assert_full_l3(self, selection, "map-missing-or-inconsistent")
+        # Zero foreign reads: every byte opened (e.g. the home repo's own
+        # toolchain pins) stays inside the bound repo; the refused spec
+        # is never resolved to a read. The gate raises before the
+        # fingerprint, so the map identity is unknown (reuse refused).
+        bound = str(Path(repo_a).resolve())
+        self.assertEqual(
+            [path for path in reads
+             if not path.startswith(bound + "/") and path != bound], [])
+        self.assertEqual(selection.fingerprint["map_sha256"], "unknown")
+        # Symlink final component via the gate directly: refused with
+        # zero read-API calls.
+        target = Path(repo_a) / "tools" / "test_staging_map.json"
+        link = Path(repo_a) / "tools" / "link-map.json"
+        try:
+            link.symlink_to(target)
+        except OSError as error:
+            self.skipTest(f"symlink unavailable: {error}")
+        reads_link = []
+        Path.read_bytes = spy_link = (
+            lambda self, *args, **kwargs:
+            (reads_link.append(str(self)),
+             real_read(self, *args, **kwargs))[1])
+        try:
+            with self.assertRaises(SEL.MapError):
+                SEL._normal_cli_map_target(str(repo_a),
+                                           "tools/link-map.json")
+        finally:
+            Path.read_bytes = real_read
+        self.assertEqual(reads_link, [])
+
+    def test_explicit_synthetic_lane_unchanged(self):
+        # Temp-only fixtures with an explicit loader bypass the normal-CLI
+        # gate and never mix into the normal path (existing boundary kept).
+        repo = make_repo("src/overrides/slot_3F.s")
+        write_file(repo, "src/overrides/slot_3F.s", "changed\n")
+        git(repo, "commit", "-qam", "change")
+        map_path = write_map(repo, provisional_map(
+            [l1_rule("src/overrides/*.s")]))
+        selection, _ = SEL.run_selector(
+            str(repo), "vbase", map_path=map_path,
+            loader=SEL.ProvisionalJsonMapLoader())
+        self.assertEqual(selection.level, "L1")
+        self.assertFalse(selection.fallback)
 
 
 if __name__ == "__main__": unittest.main()
