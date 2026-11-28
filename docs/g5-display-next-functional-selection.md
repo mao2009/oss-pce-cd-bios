@@ -84,12 +84,18 @@ test gaps / deps。
   いずれかの機能実装が誤動作すれば下流観測（`$2C`/`$2B` ExpF/ExpG 比較）が汚染される。
   機能化は単独 API ごとに独立検証（RAM-diff・VDC-diff・chain cold/warm）してから
  統合する順序が必須。
-- **Title-blocking**: 4 API の真正表示初期化はタイトル到達の debt として残存する
-  （B1 は SIMULATED 通過であり表示を初期化しない）。ただし B1 通過自体は
-  商用パス観測を `$2C`/`$2B` まで進めており、title 未到達（G5_OBSERVED=false）の
-  主因は 4 API の真正 debt＋下流 API 群の UNKNOWN である。機能実装の誤りは
-  表示破壊（中リスク）〜VRAM/DMA 破壊（高リスク）の回帰を招くため、
-  grounds なき実装は title に近づけない（遠ざける）。
+- **Title-blocking**: 分類分離（cause determination なし）。
+  SOURCE_CONFIRMED: B1 は entry-state preservation のみで表示初期化を
+  何も実装しない（STA 0、MMIO/RAM 無書込みの in-tree 実測）。4 API の
+  真正契約は未確定のまま（`api_contracts.json` 全 HYPOTHESIS、reference JSR
+  全拒否）。表示 debt 4 件は残存する。UNKNOWN: 実際の title blocker
+  （どの API が必須か、商用表示失敗の原因）は未確定のまま
+  （G5_OBSERVED=false）。本書は原因特定・per-API necessity の確定・
+  ABI 昇格を行わない。HYPOTHESIS（blocking 可能性。実装根拠にしない）:
+  4 API の真正 debt および下流 API 群の UNKNOWN が title 未到達に
+  関与し得る。機能実装の誤りは表示破壊（中リスク）〜VRAM/DMA 破壊
+  （高リスク）の回帰を招き得るため、grounds なき実装は行わない
+  （title に近づけない）。
 
 ### 3.2 API 別差分（missing 側の具体的内容）
 
@@ -102,7 +108,7 @@ test gaps / deps。
 
 ## 4. 4-API 比較表（implemented vs missing の分離）
 
-凡例: ◎=機能実装を ground できる水準 / ○=部分的（hint のみ） / ×=なし。
+凡例: ◎=機能実装を ground できる水準 / ○=部分的（hint のみ） / △=HW 位置等の事実のみ（BIOS 契約の根拠にならない） / ×=なし。
 D1=真正機能契約の実装 / D2-機能=限定機能 experimental / D2-B1=B1 型 scaffold（機能なし、維持）。
 
 | API | B1 実装 (implemented) | 公開記述の具体性 | 独立根拠 | 入力確度 | HW 操作確度 | shadow 確度 | 検証可能性 | 規模 | 回帰リスク | G5 診断価値 | 判定 |
@@ -154,7 +160,7 @@ forbids（推測追加の禁止）に抵触するため行わない。
 - abnormal: 未初期化 shadow／域外 MPR1・SP → fail-closed（無書込み・C=1 または
   harness 拒否）。商用 WRAM は観測しない。
 - boundary: 値域端（最小/最大/端+1 拒否）、T=1 域外、AR 残置規律。
-- mutation: bit 反転・書込み先 Sullivan（別レジスタ書込み mutant は RED）、
+- mutation: bit 反転・書込み先すり替え wrong-target（別レジスタ書込み mutant は RED）、
   成功値固定 mutant は RED（oracle は seed 由来）。
 
 ### `$24`（→ Issue #46）Unblock 条件
@@ -187,10 +193,26 @@ in-tree に SAT/DMA 先例がないため、window 規律（MPR0=`$FF`＋SEI＋r
 ## 7. 残存リスクと FOLLOW_UP
 
 - 表示 debt 4 件は残存する（B1 のまま）。G5 タイトル到達には後続の真正実装が
-  要るが、本書時点では grounds がないため着手しない。
-- `$2C`/`$2B` D2-機能は reject 経路が商用期待値（game が shadow を seed しない
-  ため）。ExpG 比較の解釈は構造観測に留め、NEXT 到達のみで機能成功としない
-  （先行文書 §5.4 の規律を継承）。
+  要り得る（HYPOTHESIS。実際の blocker・per-API necessity は UNKNOWN のため
+  原因確定しない）が、本書時点では grounds がないため着手しない。
+- `$2C`/`$2B` CR-family gate の解釈規律（条件付き期待。商用断定なし）。
+  SOURCE_CONFIRMED（`src/ex_cr_family.s`）: gate は `$2503==$A5` のみを見て
+  分岐する（`lda $2503 / cmp #$A5 / bne cr_reject`）。loader BUF
+  `$2200–$29FF` は staging 転送で `$2502`/`$2503` を覆い、sector バイトが
+  そのまま載る。よって (a) marker`!=$A5` → reject（条件付き期待） /
+  (b) marker`==$A5` → ok-path に進み得る（game の seed なしでも sector 残留
+  `$A5` で ok-path 可） / (c) (b)＋shadow desync → false-ok リスク
+  （stale image publish）。(b)(c) の synthetic 再現は未 merge の SHA-pinned
+  synthetic-only 証拠の引用のみ: #876 L4（branch
+  `agent/861-crshadow-desync-20261128` evidence `2e55117e`: desync shadow＋
+  `$A5` で wrong-image publish RED）＋ #878 L5（branch
+  `agent/862-loader-ownership-20261128` evidence `cc7c6ebd`: last-sector-wins
+  で IPLJMP 時に最終 sector バイトが `$2502`/`$2503` に残る）。いずれも pinned
+  Geargrafx `b49ae82a`・cc65 `71746c8`（`tools/dependencies.json` 既 pin、
+  新規 dep なし）上の synthetic media＋synthetic core のみ。商用の marker 値・
+  sync 状態・実際分岐は UNKNOWN/UNOBSERVED（商用観測なし、`./rom/` 非接触を
+  維持）。false-ok の商用発生は主張しない。ExpG 比較の解釈は構造観測に留め、
+  NEXT 到達のみで機能成功としない（先行文書 §5.4 の規律を継承）。
 - FOLLOW_UP: 各 API の unblock 監視は既存 Issue #47/#46/#64/#63 で継続する。
   新規公開資料の出現時は当該 Issue の契約文書（docs/47・46・64・63）に
   S-record を追加し、本書 §4 表の再評価を行う。本書自体の更新は不要
