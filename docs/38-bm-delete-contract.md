@@ -281,7 +281,10 @@ VERIFIED（真正 BIOS の確認）は 0 件。`release_eligible=false`。
        exact `bool/int/str/bytes` の異常値（例: `formatted=1`、`capacity="2048"`）は snapshot-able 異常として
        入力同一スナップショットを返す（T18）。スカラ型の許可リストは可変物のエイリアス共有を防ぐためであり、
        値の正当性（bool 性・正数・範囲・終端一致）は監査層が判定する。exact-type 判定は当該層の
-       key 参照・反復より先に行うため subclass の special method は実行されない。
+       格納済み key の反復＋`type(key) is str` 判定は当該層の membership/subscript より先に行うため、
+       非 str key・str subclass key・同ハッシュ衝突 key の special method（`__hash__`/`__eq__` 等）は
+       実行されない。exact-str の正常画像と exact-str の余分 key は gate を通過する（余分 key は
+       許容し、必須 key の有無で判定する）。
     1. `audit_image(image)`: 下記 CLEAN 不変条件を満たさなければ `CORRUPTED`＋入力同一スナップショット。
        `mock_delete` は呼ばない。画像は不変（N5）。`formatted == false` は監査対象外であり、
        `mock_delete` が `(NOT_FORMATTED, 同一画像)` を返す正常系（N2）と区別する。

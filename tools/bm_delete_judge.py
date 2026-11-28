@@ -65,21 +65,27 @@ def _empty_image():
 def _is_snapshotable(image):
     """Structure gate: True iff _snapshot(image) cannot alias or fail. Explicit checks only (no try/except).
 
-    Covers exact-dict image, required keys, exact-list entries, and each entry being an exact
-    dict with exact bytes/bytearray name+data. Scalar snapshotability: formatted/capacity/end
-    must each satisfy type(value) in (bool, int, str, bytes) (exact immutable, so _snapshot's
-    by-reference scalar copy cannot alias caller-mutable subclass state). Subclasses
-    (int/str/bytes/dict/list/bytearray subclasses, incl. mutable attrs or raising
-    special methods) are un-snapshotable and fail closed even though some would fail
-    _clean_errors without raising. Exact-type checks run before any key access/iteration
-    on that level, so subclass special methods (__contains__/__getitem__/__iter__/__len__/
-    __eq__ etc.) never run and the gate never raises. Scalar value sanity (bool-ness,
-    positivity, range, end consistency) is snapshot-safe and left to _clean_errors,
-    which runs before any _snapshot call. The gate never mutates its input and performs
-    no I/O.
+    Covers exact-dict image, stored keys exactly str, required keys, exact-list entries,
+    and each entry being an exact dict with exactly-str keys plus exact bytes/bytearray
+    name+data. Scalar snapshotability: formatted/capacity/end must each satisfy
+    type(value) in (bool, int, str, bytes) (exact immutable, so _snapshot's by-reference
+    scalar copy cannot alias caller-mutable subclass state). Subclasses (int/str/bytes/
+    dict/list/bytearray subclasses, incl. mutable attrs or raising special methods) and
+    non-str stored keys (incl. str subclasses and same-hash colliding keys) are
+    un-snapshotable and fail closed even though some would fail _clean_errors without
+    raising. Stored-key iteration with a type(key) is str check runs before any
+    membership/subscript on that level, so subclass/colliding-key special methods
+    (__contains__/__getitem__/__hash__/__eq__ etc.) never run and the gate never raises.
+    Scalar value sanity (bool-ness, positivity, range, end consistency) is snapshot-safe
+    and left to _clean_errors, which runs before any _snapshot call. The gate never
+    mutates its input and performs no I/O. Extra exact-str keys are kept (accepted;
+    required-key presence is what the gate checks).
     """
     if type(image) is not dict:
         return False
+    for _k in image:
+        if type(_k) is not str:
+            return False
     if "entries" not in image or "formatted" not in image or "capacity" not in image or "end" not in image:
         return False
     if type(image["formatted"]) not in (bool, int, str, bytes):
@@ -93,6 +99,9 @@ def _is_snapshotable(image):
     for entry in image["entries"]:
         if type(entry) is not dict:
             return False
+        for _k in entry:
+            if type(_k) is not str:
+                return False
         if "name" not in entry or "data" not in entry:
             return False
         if type(entry["name"]) not in (bytes, bytearray):

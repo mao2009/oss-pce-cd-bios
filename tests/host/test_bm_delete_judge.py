@@ -799,5 +799,238 @@ class BmDeleteExactNameGateTest(unittest.TestCase):
         self.assertEqual([bytes(e["data"]) for e in mid["entries"]], [b"a", b"ccc"])
 
 
+class _EvilStrKey(str):
+    """Stored-key evil: same value/hash as the required key; any membership compare raises."""
+    def __eq__(self, other):
+        raise RuntimeError("_EvilStrKey __eq__ must never run")
+    def __ne__(self, other):
+        raise RuntimeError("_EvilStrKey __ne__ must never run")
+    __hash__ = str.__hash__
+
+
+class _SpyStrKey(str):
+    """Stored-key spy: counts hash/eq/bytes invocations; the gate must call none of them."""
+    def __new__(cls, value):
+        obj = str.__new__(cls, value)
+        obj.hash_calls = 0
+        obj.eq_calls = 0
+        obj.bytes_calls = 0
+        return obj
+    def __hash__(self):
+        self.hash_calls += 1
+        return str.__hash__(self)
+    def __eq__(self, other):
+        self.eq_calls += 1
+        return str.__eq__(self, other)
+    def __ne__(self, other):
+        self.eq_calls += 1
+        return str.__ne__(self, other)
+    def __bytes__(self):
+        self.bytes_calls += 1
+        return str.__bytes__(self) if hasattr(str, "__bytes__") else bytes(str(self), "utf-8")
+
+
+class _SameHashKey:
+    """Non-str stored key colliding with hash(target); any membership compare raises."""
+    def __init__(self, target):
+        self._target = target
+        self.hash_calls = 0
+        self.eq_calls = 0
+    def __hash__(self):
+        self.hash_calls += 1
+        return hash(self._target)
+    def __eq__(self, other):
+        self.eq_calls += 1
+        raise RuntimeError("_SameHashKey __eq__ must never run")
+    def __ne__(self, other):
+        self.eq_calls += 1
+        raise RuntimeError("_SameHashKey __ne__ must never run")
+
+
+def _swap_top_key(base, target, new_key):
+    """Return a fresh image dict with the `target` top-level key replaced by `new_key`."""
+    out = {}
+    for k, v in base.items():
+        out[new_key if k == target else k] = v
+    return out
+
+
+def _swap_entry_key(entry, target, new_key):
+    """Return a fresh entry dict with the `target` entry key replaced by `new_key`."""
+    out = {}
+    for k, v in entry.items():
+        out[new_key if k == target else k] = v
+    return out
+
+
+class BmDeleteBadKeyGateTest(unittest.TestCase):
+    """Issue #38 Wave2 blocker: stored-key iteration before membership (top + entry level).
+
+    type(key) is str runs before any membership/subscript on that level, so evil or
+    colliding stored keys never reach __hash__/__eq__ and the gate never raises:
+    CORRUPTED + fresh EMPTY wins (even over REFUSED on doubly-bad calls), mock_delete
+    is never called, inputs are never mutated. Exact-str keys pass normally and extra
+    exact-str keys are kept (accepted). Synthetic images only; no I/O.
+    """
+
+    EMPTY = {"entries": [], "formatted": False, "capacity": 0, "end": 0}
+    TOP_KEYS = ("entries", "formatted", "capacity", "end")
+    ENTRY_KEYS = ("name", "data")
+
+    def _base(self):
+        return bj._snapshot(_image([(N_A, b"a")]))
+
+    def _assert_fresh_empty(self, out):
+        self.assertEqual(out, self.EMPTY)
+        self.assertIsNot(out, self.EMPTY)
+
+    def _assert_identity_keys(self, broken, keys_before, vals_before):
+        after_keys = list(broken.keys())
+        after_vals = list(broken.values())
+        self.assertEqual(len(after_keys), len(keys_before))
+        for a, b in zip(after_keys, keys_before):
+            self.assertIs(a, b)
+        self.assertEqual(len(after_vals), len(vals_before))
+        for a, b in zip(after_vals, vals_before):
+            self.assertIs(a, b)
+
+    def test_top_level_bad_keys_corrupted_empty(self):
+        # 4-row table: each required top-level key replaced by an evil same-value str key.
+        for target in self.TOP_KEYS:
+            with self.subTest(key=target):
+                base = self._base()
+                broken = _swap_top_key(base, target, _EvilStrKey(target))
+                keys_before = list(broken.keys())
+                vals_before = list(broken.values())
+                outcome, out = bj.judge(broken, N_A)  # must not raise
+                self.assertEqual(outcome, bj.CORRUPTED)
+                self._assert_fresh_empty(out)
+                self.assertFalse(bj._is_snapshotable(broken))
+                self._assert_identity_keys(broken, keys_before, vals_before)
+
+    def test_entry_internal_bad_keys_corrupted_empty(self):
+        # 2-row table: each required entry key replaced by an evil same-value str key.
+        for target in self.ENTRY_KEYS:
+            with self.subTest(key=target):
+                base = self._base()
+                evil_entry = _swap_entry_key(base["entries"][0], target, _EvilStrKey(target))
+                broken = dict(base, entries=[evil_entry])
+                entry_keys_before = list(broken["entries"][0].keys())
+                outcome, out = bj.judge(broken, N_A)  # must not raise
+                self.assertEqual(outcome, bj.CORRUPTED)
+                self._assert_fresh_empty(out)
+                self.assertFalse(bj._is_snapshotable(broken))
+                after_keys = list(broken["entries"][0].keys())
+                self.assertEqual(len(after_keys), len(entry_keys_before))
+                for a, b in zip(after_keys, entry_keys_before):
+                    self.assertIs(a, b)
+
+    def test_colliding_same_hash_key_corrupted_empty(self):
+        # Non-str key with hash("entries"): old membership compare would raise; gate rejects first.
+        base = self._base()
+        colliding = _SameHashKey("entries")
+        broken = _swap_top_key(base, "entries", colliding)
+        keys_before = list(broken.keys())
+        outcome, out = bj.judge(broken, N_A)  # must not raise
+        self.assertEqual(outcome, bj.CORRUPTED)
+        self._assert_fresh_empty(out)
+        self.assertFalse(bj._is_snapshotable(broken))
+        after_keys = list(broken.keys())
+        self.assertEqual(len(after_keys), len(keys_before))
+        for a, b in zip(after_keys, keys_before):
+            self.assertIs(a, b)
+
+    def test_non_invocation_spy_hash_eq_bytes_never_called(self):
+        # Counting str-subclass keys: reset after construction, then gate must call nothing.
+        from unittest import mock as utm
+        with utm.patch.object(bj, "mock_delete", side_effect=AssertionError("must not call")) as spy:
+            for target in self.TOP_KEYS + ("extra",):
+                with self.subTest(key=target):
+                    base = self._base()
+                    if target == "extra":
+                        probe = _SpyStrKey("note")
+                        broken = dict(base)
+                        broken[probe] = "x"
+                    else:
+                        probe = _SpyStrKey(target)
+                        broken = _swap_top_key(base, target, probe)
+                    probe.hash_calls = 0
+                    probe.eq_calls = 0
+                    probe.bytes_calls = 0
+                    outcome, out = bj.judge(broken, N_A)  # must not raise
+                    self.assertEqual(probe.hash_calls, 0)
+                    self.assertEqual(probe.eq_calls, 0)
+                    self.assertEqual(probe.bytes_calls, 0)
+                    if target == "extra":
+                        # Extra exact-value key is still a str subclass: rejected, never compared.
+                        self.assertEqual(outcome, bj.CORRUPTED)
+                        self._assert_fresh_empty(out)
+                    else:
+                        self.assertEqual(outcome, bj.CORRUPTED)
+                        self._assert_fresh_empty(out)
+            self.assertEqual(spy.call_count, 0)
+
+    def test_doubly_bad_key_corrupted_wins_over_refused(self):
+        base = self._base()
+        broken_top = _swap_top_key(base, "entries", _EvilStrKey("entries"))
+        evil_entry = _swap_entry_key(base["entries"][0], "name", _EvilStrKey("name"))
+        broken_entry = dict(base, entries=[evil_entry])
+        colliding = _swap_top_key(base, "capacity", _SameHashKey("capacity"))
+        for label, broken in (("top", broken_top), ("entry", broken_entry), ("colliding", colliding)):
+            for bad_name in (b"", b"short", "FILE_A", None, 1234):
+                with self.subTest(image=label, bad_name=repr(bad_name)[:20]):
+                    outcome, out = bj.judge(broken, bad_name)  # must not raise
+                    self.assertEqual(outcome, bj.CORRUPTED)
+                    self._assert_fresh_empty(out)
+
+    def test_bad_key_never_calls_mock_delete(self):
+        import copy
+        from unittest import mock as utm
+        base = self._base()
+        clean_entry = copy.deepcopy(base["entries"][0])
+        abnormals = [
+            _swap_top_key(base, "entries", _EvilStrKey("entries")),
+            _swap_top_key(base, "formatted", _EvilStrKey("formatted")),
+            _swap_top_key(base, "capacity", _EvilStrKey("capacity")),
+            _swap_top_key(base, "end", _EvilStrKey("end")),
+            dict(base, entries=[_swap_entry_key(clean_entry, "name", _EvilStrKey("name"))]),
+            dict(base, entries=[_swap_entry_key(clean_entry, "data", _EvilStrKey("data"))]),
+            _swap_top_key(base, "entries", _SameHashKey("entries")),
+        ]
+        self.assertEqual(len(abnormals), 7)
+        with utm.patch.object(bj, "mock_delete", side_effect=AssertionError("must not call")) as spy:
+            for idx, broken in enumerate(abnormals):
+                with self.subTest(case=idx):
+                    outcome, out = bj.judge(broken, N_A)  # must not raise
+                    self.assertEqual(outcome, bj.CORRUPTED)
+                    self._assert_fresh_empty(out)
+            self.assertEqual(spy.call_count, 0)
+
+    def test_cross_return_fresh_and_no_aliasing(self):
+        base = self._base()
+        broken = _swap_top_key(base, "end", _EvilStrKey("end"))
+        _, first = bj.judge(broken, N_A)
+        _, second = bj.judge(broken, N_A)
+        self.assertEqual(first, second)
+        self.assertIsNot(first, second)
+        self.assertEqual(first, self.EMPTY)
+        # Mutating one return must not affect the next.
+        first["entries"].append({"name": N_A, "data": b"x"})
+        first["capacity"] = 9999
+        _, third = bj.judge(broken, N_A)
+        self.assertEqual(third, self.EMPTY)
+
+    def test_exact_str_acceptance_and_extra_key_kept(self):
+        base = self._base()
+        self.assertTrue(bj._is_snapshotable(base))
+        self.assertEqual(bj.judge(base, N_A)[0], bj.OK)
+        # Extra exact-str key is kept (accepted): gate passes, delete proceeds normally.
+        extra = dict(base, note="x")
+        self.assertTrue(bj._is_snapshotable(extra))
+        outcome, out = bj.judge(extra, N_A)
+        self.assertEqual(outcome, bj.OK)
+        self.assertEqual(out["entries"], [])
+
+
 if __name__ == "__main__":
     unittest.main()
