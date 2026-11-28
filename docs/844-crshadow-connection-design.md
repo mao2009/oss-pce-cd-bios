@@ -131,8 +131,12 @@ Separation rows (mutant ROMs, same argv as C4a): `M_NOVDC` must RED the VDC
 oracle (`vdc_r_before==vdc_r_after`) while shadow stays GREEN
 (`shadow_post==[$FB,$A5]`); `M_NOPUBLISH` must RED the shadow oracle
 (`shadow_post==[$FF,$A5]`) while VDC stays GREEN (`CR==$FB`). Head mutants
-`M_WRONGBIT`/`M_DESTROY`/`M_NOOP`/`M_BYPASS` must each RED the matching
-oracle on both cycles. Fail-closed argv: out-of-domain marker/ncalls/steps
+`M_WRONGBIT`/`M_DESTROY`/`M_NOOP` must each RED the C4a desync oracle on
+both cycles; `M_BYPASS` (BNE->BEQ gate inversion) REDs both oracles: the
+$A5 side REDs C4a (reject `CR=$00/shadow=$FF/C=1/AR=9` instead of
+false-ok `CR=$FB/shadow=$FB/C=0/AR=5`) and the non-$A5 side REDs the
+reject oracle (false-ok `CR=$FB/shadow=$FB/C=0/AR=5` instead of reject).
+Fail-closed argv: out-of-domain marker/ncalls/steps
 refused with no RESULT.
 
 C4a vs C4b discipline (SOURCE_CONFIRMED arithmetic on the `$FB` mask):

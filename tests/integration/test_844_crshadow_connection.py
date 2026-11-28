@@ -71,7 +71,9 @@ def model_2b_mutant(kind, shadow_lo, marker, real_lo, entry_ar=0):
         if marker != MARKER_OK:
             return ("reject", real_lo, shadow_lo, 1, entry_ar)
         return ("ok", shadow_lo, shadow_lo, 0, AR_OK)
-    if kind == "bypass":  # BNE -> BEQ (unseeded falls into the ok path)
+    if kind == "bypass":  # BNE 0xD0 -> BEQ 0xF0 (branch sense inverted)
+        if marker == MARKER_OK:
+            return ("reject", real_lo, shadow_lo, 1, entry_ar)
         published = shadow_lo & MASK_2B
         return ("ok", published, published, 0, AR_OK)
     if kind == "novdc":  # tail STA $0002 dropped: shadow publishes, no VDC write
@@ -235,17 +237,42 @@ class ConnectionOracleTests(unittest.TestCase):
     def test_head_mutants_red_desync_oracle(self):
         # Each single-byte head mutant must RED the C4a desync oracle (never
         # GREEN by masking). Expected-correct reference: ("ok", $FB, $FB, 0, 5).
-        for kind in ("wrongbit", "destroy", "noop", "bypass"):
+        for kind in ("wrongbit", "destroy", "noop"):
             with self.subTest(mutant=kind):
                 got = model_2b_mutant(kind, 0xFF, MARKER_OK, 0x00)
-                if kind == "bypass":
-                    # Bypass performs ok even unseeded: the reject oracle REDs.
-                    rej = model_2b_mutant(kind, 0xFF, 0x00, 0x00)
-                    self.assertEqual(rej[0], "ok")
-                    self.assertEqual(rej[3], 0)
-                else:
-                    self.assertNotEqual(got, ("ok", 0xFB, 0xFB, 0, AR_OK),
+                self.assertNotEqual(got, ("ok", 0xFB, 0xFB, 0, AR_OK),
                                         f"mutant {kind} must not look correct")
+        # M_BYPASS (head BNE 0xD0 -> BEQ 0xF0, MUT_BYPASS) inverts the
+        # gate: the $A5 side REDs the C4a desync oracle (reject instead
+        # of false-ok) and the non-$A5 side REDs the reject oracle
+        # (false-ok instead of reject). Both sides diverge from normal.
+        with self.subTest(mutant="bypass"):
+            got_a5 = model_2b_mutant("bypass", 0xFF, MARKER_OK, 0x00)
+            self.assertNotEqual(got_a5, ("ok", 0xFB, 0xFB, 0, AR_OK),
+                                "bypass $A5 side must not look correct")
+            self.assertNotEqual(got_a5, model_2b(0xFF, MARKER_OK, 0x00),
+                                "bypass $A5 side must diverge from false-ok")
+            rej = model_2b_mutant("bypass", 0xFF, 0x00, 0x00)
+            self.assertEqual(rej[0], "ok")
+            self.assertEqual(rej[3], 0)
+            self.assertNotEqual(rej, model_2b(0xFF, 0x00, 0x00),
+                                "bypass non-$A5 side must diverge from reject")
+
+    def test_bypass_both_branches_pinned_independent(self):
+        # Independent fixed expectations for the BEQ-inverted gate
+        # (MUT_BYPASS test_g5_rcroff_2b.py:418 head BNE 0xD0 -> BEQ 0xF0).
+        # $A5 side rejects with nothing written; non-$A5 sides fall
+        # into the ok path and publish shadow&$FB.
+        self.assertEqual(model_2b_mutant("bypass", 0xFF, MARKER_OK, 0x00,
+                                         entry_ar=9),
+                         ("reject", 0x00, 0xFF, 1, 9))
+        self.assertEqual(model_2b_mutant("bypass", 0xFF, 0x00, 0x00,
+                                         entry_ar=9),
+                         ("ok", 0xFB, 0xFB, 0, AR_OK))
+        # Loader-fill marker $5A takes the same non-$A5 branch as $00.
+        self.assertEqual(model_2b_mutant("bypass", 0xFF, 0x5A, 0x00,
+                                         entry_ar=9),
+                         ("ok", 0xFB, 0xFB, 0, AR_OK))
 
     def test_positive_control_via_post_staging_intentional_seed(self):
         # Model-level verification only (no core run, no loader transfer):
