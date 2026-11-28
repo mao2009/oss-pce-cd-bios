@@ -14,10 +14,13 @@ only) without asserting on live ./rom existence, listing, or bytes.
 """
 import fnmatch
 import json
+import os
 import re
 import subprocess
 import sys
+import tempfile
 import unittest
+import uuid
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -85,14 +88,17 @@ def makefile_targets():
     return targets
 
 
-def repo_files():
+def repo_files(root=ROOT):
     # Tracked-files-only enumeration (Issue #854 review): `git ls-files`
     # lists the versioned index, so untracked/private worktree content --
     # notably optional ./rom/ commercial media -- is never scanned and
     # PASS/FAIL cannot depend on media presence. rom/ is additionally
     # excluded belt-and-braces via is_scanned_tracked_path; real media
-    # is never touched (no existence check, listing, or read).
-    proc = subprocess.run(["git", "ls-files", "-z"], cwd=ROOT,
+    # is never touched (no existence check, listing, or read). The root
+    # parameter exists only so the synthetic test below can run the same
+    # tracked-index enumeration inside an isolated temp repo; production
+    # callers always use the default (real worktree index).
+    proc = subprocess.run(["git", "ls-files", "-z"], cwd=root,
                           stdout=subprocess.PIPE, check=True)
     out = [p for p in proc.stdout.decode("utf-8").split("\0")
            if p and is_scanned_tracked_path(p)]
@@ -363,16 +369,84 @@ class MapSafetyTest(unittest.TestCase):
         live = repo_files()
         self.assertEqual([f for f in live
                           if f == "rom" or f.startswith("rom/")], [])
-        # Tracked-index source (not a worktree walk): a synthetic
-        # untracked file outside the forbidden area must not leak in.
-        probe = ROOT / "synthetic_untracked_probe.tmp"
-        try:
-            probe.write_text(
-                "synthetic enumeration probe (untracked, must be invisible)\n",
-                encoding="utf-8")
-            self.assertNotIn("synthetic_untracked_probe.tmp", repo_files())
-        finally:
-            probe.unlink(missing_ok=True)
+        # Tracked-index source (not a worktree walk): proven inside an
+        # isolated synthetic temp repo, never the real worktree. The
+        # pre-fix body wrote a fixed-name probe unconditionally into
+        # ROOT (write_text + unlink), which would clobber a colliding
+        # same-name file or follow a same-name symlink onto its target
+        # and was shared across parallel runs. This body therefore:
+        # (a) writes nothing under ROOT (legacy fixed path guarded
+        # byte-identical below); (b) uses per-run unique probe names
+        # (pid + uuid4); (c) creates exclusively (x-mode/O_EXCL: refuse
+        # instead of clobbering when the path exists, symlink included);
+        # (d) removes only files it created itself. No ./rom access of
+        # any kind (nothing created, listed, or read under ./rom).
+        legacy = ROOT / "synthetic_untracked_probe.tmp"
+        legacy_exists = os.path.lexists(legacy)
+        legacy_link = os.readlink(legacy) if legacy.is_symlink() else None
+        legacy_bytes = (legacy.read_bytes()
+                        if legacy.is_file() and not legacy.is_symlink()
+                        else None)
+        with tempfile.TemporaryDirectory(
+                prefix="staging-map-enum-proof-") as tmp:
+            troot = Path(tmp)
+            subprocess.run(["git", "init", "-q"], cwd=troot, check=True)
+            (troot / "tracked.txt").write_text("tracked\n", encoding="utf-8")
+            subprocess.run(["git", "add", "tracked.txt"],
+                           cwd=troot, check=True)
+            subprocess.run(["git", "-c", "user.email=t@t", "-c",
+                            "user.name=t", "commit", "-qm", "init"],
+                           cwd=troot, check=True)
+            # Parallel-safe unique names: pid + uuid4, distinct per run.
+            tag = f"{os.getpid()}.{uuid.uuid4().hex}"
+            probe_name = f"synthetic_untracked_probe.{tag}.tmp"
+            tag2 = f"{os.getpid()}.{uuid.uuid4().hex}"
+            probe_name2 = f"synthetic_untracked_probe.{tag2}.tmp"
+            self.assertNotEqual(probe_name, probe_name2)
+            self.assertIn(str(os.getpid()), probe_name)
+            # Same-name regular file preserved: exclusive creation must
+            # refuse (FileExistsError) and leave the bytes intact.
+            victim = troot / probe_name2
+            victim.write_text("PRECIOUS synthetic content - must survive\n",
+                              encoding="utf-8")
+            victim_before = victim.read_bytes()
+            with self.assertRaises(FileExistsError):
+                open(victim, "x", encoding="utf-8").close()
+            self.assertEqual(victim.read_bytes(), victim_before)
+            victim.unlink()
+            # Symlink-to-sentinel preserved: exclusive creation must
+            # refuse at the link path; link and target bytes unchanged.
+            sentinel = troot / f"sentinel_target.{tag}.bin"
+            sentinel.write_bytes(b"SENTINEL-BYTES-42")
+            sentinel_before = sentinel.read_bytes()
+            link = troot / f"link_probe.{tag}.tmp"
+            link.symlink_to(sentinel)
+            with self.assertRaises(FileExistsError):
+                open(link, "x", encoding="utf-8").close()
+            self.assertTrue(link.is_symlink())
+            self.assertEqual(os.readlink(link), str(sentinel))
+            self.assertEqual(sentinel.read_bytes(), sentinel_before)
+            # Untracked probe invisible to the tracked-index enumeration
+            # while the committed file is listed (proof is not vacuous).
+            probe = troot / probe_name
+            created = False
+            try:
+                with open(probe, "x", encoding="utf-8") as fh:
+                    fh.write("synthetic enumeration probe "
+                             "(untracked, must be invisible)\n")
+                created = True
+                listed = repo_files(troot)
+                self.assertIn("tracked.txt", listed)
+                self.assertNotIn(probe_name, listed)
+            finally:
+                if created:
+                    probe.unlink(missing_ok=True)
+        # Legacy fixed path untouched: the destructive vector is gone.
+        self.assertEqual(os.path.lexists(legacy), legacy_exists)
+        if legacy_bytes is not None:
+            self.assertEqual(legacy.read_bytes(), legacy_bytes)
+        if legacy_link is not None:
+            self.assertEqual(os.readlink(legacy), legacy_link)
 
 
 class MapSafetyOrderTest(unittest.TestCase):
