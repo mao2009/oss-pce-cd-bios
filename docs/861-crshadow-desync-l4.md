@@ -51,13 +51,21 @@ written by any head/tail; reject writes nothing. Full pins in
 
 - New probe `tests/integration/geargrafx_rcroff2b_desync_probe.cpp` (test tool
   only, never linked into any BIOS/ROM): separates the shadow image from the
-  real VDC CR value. Guest seeds `$2502=shadow_lo` + `$2503=(seed_en?$A5:$00)`,
+  real VDC CR value. Guest seeds `$2502=shadow_lo` + `$2503=marker` (explicit
+  byte argv; the retired `seed_en?$A5:$00` encoding could never seed `$5A`,
+  so the old `$5A` test exercised marker `$00` while the fixed-`$00` reject
+  oracle could not tell — blind spot fixed per review 6096579529),
   then programs the REAL VDC CR low=`real_lo` (independent of the shadow) +
   high=`crhi` + RCR=`rcr_lo` sentinel through the window BEFORE the JSR, so
   sync vs desync is constructed, never inferred. Snapshots VDC `R[0..19]`+AR+SR
   +MPRs+IDR/IRR at the real call boundary (`PC==jsr_pc`) and after the halt.
+  At the boundary the probe also records observed pre-JSR WRAM
+  `wram_pre=[$2502,$2503]` (must equal the argv seeds when seeding
+  dominates); `shadow_pre`/`real_pre` in RESULT remain the argv echoes for
+  oracle derivation, `wram_pre` is the observed counterpart.
   Runs cold then warm (`ResetMedia(true)` between, RAM preserved like the
-  return probe) and reports one `RESULT` per cycle with `cycle/shadow_pre/real_pre`.
+  return probe) and reports one `RESULT` per cycle with
+  `cycle/shadow_pre/real_pre/wram_pre` (echoes + observed pre-JSR WRAM).
   Frozen clock (`dummy_clock`), `GetState` reads only (no destructive VDC read).
 - New cases in the existing module `tests/integration/test_g5_rcroff_2b.py`
   (`Rcroff2bSynthetic`, already in CI shard `rc-3`; no sharding change):
@@ -72,7 +80,10 @@ written by any head/tail; reject writes nothing. Full pins in
   `71746c829e77f74c2b601a7d16821170c2610df3` (builder refuses unpinned
   toolchain), synthetic 32-sector zero-filled CUE media built in-test,
   256 KiB ROM (`0x40000` size guard in probe), guest fits before `$FFF6`
-  (probe refuses otherwise), `BUDGET=20M` steps, `SP=$FF`, `MPR1=$F8`,
+  (probe refuses otherwise), return-probe `BUDGET=20M` steps (host-side
+  APICALL harness) vs desync/VDC probe `steps=4096` instructions per cycle
+  (in-guest argv, fail-closed guards cover out-of-domain values),
+  `SP=$FF`, `MPR1=$F8`,
   `entry_ar/areg/xreg/pseed` fixed per case (recorded in RESULT).
 - No `src/` edit. No commercial media. No `./rom/` access of any form.
 
@@ -88,9 +99,14 @@ written by any head/tail; reject writes nothing. Full pins in
 - **Sync positive control GREEN**: shadow==real `$04/$04` → `$00`;
   `$FB/$FB` → `$FB`; `C=0`, `AR=5`. Proves the harness distinguishes sync
   from desync (a blind oracle would conflate them).
-- **Marker-corrupt rejects**: marker `$00` (and `$5A` loader-fill stand-in;
-  gate compares against `$A5` only, structurally pinned by `lda #$5A` in the
-  loader) → `CR/RCR/AR` unchanged, shadow untouched, `C=1`, on both cycles.
+- **Marker-corrupt rejects (measured, synthetic)**: ACTUAL marker `$00` and
+  ACTUAL marker `$5A` bytes each reject → `CR/RCR/AR` unchanged, shadow
+  untouched, `C=1`, on both cycles. The `$5A` case seeds `$2502=$5A` +
+  `$2503=$5A` (loader-BUF-fill shape) and is observed on the pinned core
+  (not a `$00` stand-in: the old stand-in is retired). The loader connection
+  itself (`lda #$5A` prefill) stays structural SOURCE_CONFIRMED; whether any
+  commercial disc ever presents `$5A` at the marker offset is
+  UNOBSERVED/UNKNOWN. Gate compares against `$A5` only.
 - **Non-target damage explicit**: `$FB & ~$04 != 0` with real `$00` proves
   stale-image bits 0,1,3–7 were set by the ok path.
 - **Regs preserved**: entry `AR=9` at boundary → `AR=5` after; RCR `$55`
@@ -112,9 +128,10 @@ written by any head/tail; reject writes nothing. Full pins in
 ## 4. Limits (what this does NOT prove)
 
 - Synthetic only: desync values are constructed by the synthetic guest
-  (`shadow_pre`/`real_pre` in RESULT). No commercial disc was read, no
-  commercial WRAM was acquired, no `./rom/` access occurred. Whether any real
-  disc places `$A5` at the marker offset with a desynced shadow is
+  (`shadow_pre`/`real_pre` argv echoes + observed `wram_pre` at the call
+  boundary in RESULT). No commercial disc was read, no commercial WRAM was
+  acquired, no `./rom/` access occurred. Whether any real disc places `$A5`
+  at the marker offset with a desynced shadow is
   **UNKNOWN/UNOBSERVED** — never claimed as occurrence.
 - Loader-staging interaction (L5) not run here: this probe constructs the
   desync directly; it does not drive `read_sector` against synthetic media

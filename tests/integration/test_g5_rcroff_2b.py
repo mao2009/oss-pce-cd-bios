@@ -1730,11 +1730,12 @@ class Rcroff2bSynthetic(unittest.TestCase):
     RCR_DESYNC = 0x55
 
     def _run_desync(self, name, entry_ar, areg, xreg, pseed,
-                    shadow_lo, seed_en, real_lo, crhi=None, rcr_lo=None,
+                    shadow_lo, marker, real_lo, crhi=None, rcr_lo=None,
                     ncalls=1, rom_bytes=None):
-        # Desync VDC probe: shadow_lo/marker seed the shadow cells,
-        # real_lo/crhi program the REAL VDC CR before the JSR (independent
-        # of the shadow). Returns [cold, warm] RESULT dicts.
+        # Desync VDC probe: shadow_lo/marker seed the shadow cells
+        # ($2502/$2503 explicit bytes), real_lo/crhi program the REAL
+        # VDC CR before the JSR (independent of the shadow).
+        # Returns [cold, warm] RESULT dicts.
         if crhi is None:
             crhi = self.CRHI_DESYNC
         if rcr_lo is None:
@@ -1748,7 +1749,7 @@ class Rcroff2bSynthetic(unittest.TestCase):
         r = subprocess.run([str(self.desync_probe), str(rom.resolve()),
                             str(cue.resolve()), "4096", str(entry_ar),
                             str(areg), str(xreg), str(pseed),
-                            str(shadow_lo), str(seed_en), str(real_lo),
+                            str(shadow_lo), str(marker), str(real_lo),
                             str(crhi), str(rcr_lo), str(ncalls)],
                            capture_output=True, text=True, timeout=120, check=True)
         import json
@@ -1782,10 +1783,14 @@ class Rcroff2bSynthetic(unittest.TestCase):
         self.assertEqual(res["sr_before"], res["sr_after"])
 
     def _check_desync_ok(self, res, entry_ar, areg, xreg, pseed,
-                         shadow_lo, real_lo, crhi=None, rcr_lo=None):
+                         shadow_lo, real_lo, crhi=None, rcr_lo=None,
+                         marker=0xA5):
         # Desync ok oracle: marker $A5 took the ok path with the STALE
         # shadow image. CR low == shadow&$FB (wrong image when desynced),
         # CR high + RCR preserved, AR=5, shadow published, C=0.
+        # shadow_pre is the argv echo, wram_pre is the observed pre-JSR
+        # WRAM ($2502/$2503 at the call boundary); both must equal the
+        # seeds (proves seeding dominated residual).
         if crhi is None:
             crhi = self.CRHI_DESYNC
         if rcr_lo is None:
@@ -1804,11 +1809,19 @@ class Rcroff2bSynthetic(unittest.TestCase):
         self.assertEqual(after[6] >> 8, 0x00)
         for i in list(range(5)) + list(range(7, 20)):
             self.assertEqual(after[i], before[i], f"VDC R{i} changed")
-        self.assertEqual(res["shadow_post"], [shadow_lo & 0xFB, 0xA5])
+        self.assertEqual(res["shadow_pre"], [shadow_lo, marker])
+        self.assertEqual(res["wram_pre"], [shadow_lo, marker])
+        self.assertEqual(res["shadow_post"], [shadow_lo & 0xFB, marker])
+        self.assertEqual(marker, 0xA5)
 
     def _check_desync_reject(self, res, entry_ar, areg, xreg, pseed,
-                             shadow_lo, real_lo, crhi=None, rcr_lo=None):
-        # Desync reject oracle: bad marker takes SEC with no VDC/RAM write.
+                             shadow_lo, real_lo, crhi=None, rcr_lo=None,
+                             marker=0x00):
+        # Desync reject oracle: bad marker (anything != $A5) takes SEC
+        # with no VDC/RAM write. The oracle compares against the ACTUAL
+        # seeded marker, never a fixed $00 (the old fixed-$00 oracle was
+        # blind to a $5A-vs-$00 confusion). shadow_pre is the argv echo,
+        # wram_pre the observed pre-JSR WRAM; both must equal the seeds.
         if crhi is None:
             crhi = self.CRHI_DESYNC
         if rcr_lo is None:
@@ -1820,8 +1833,10 @@ class Rcroff2bSynthetic(unittest.TestCase):
         self.assertEqual(before[5] >> 8, crhi)
         self.assertEqual(res["vdc_ar_after"], entry_ar)
         self.assertEqual(res["vdc_r_before"], res["vdc_r_after"])
-        self.assertEqual(res["shadow_post"][0], shadow_lo)
-        self.assertEqual(res["shadow_post"][1], 0x00)
+        self.assertNotEqual(marker, 0xA5)
+        self.assertEqual(res["shadow_pre"], [shadow_lo, marker])
+        self.assertEqual(res["wram_pre"], [shadow_lo, marker])
+        self.assertEqual(res["shadow_post"], [shadow_lo, marker])
 
     def test_861_desync_false_ok_red(self):
         # Core L4 hypothesis (docs/844 §7 FALSE-OK, #861 acceptance):
@@ -1829,7 +1844,7 @@ class Rcroff2bSynthetic(unittest.TestCase):
         # takes the ok path and publishes the WRONG image CR=$FB.
         # Cold==warm proves seeding dominates warm residual.
         recs = self._run_desync("falseok", 0, 0x3C, 0x12, 0x07,
-                                 0xFF, 1, 0x00)
+                                 0xFF, 0xA5, 0x00)
         for res in recs:
             self._check_desync_ok(res, 0, 0x3C, 0x12, 0x07, 0xFF, 0x00)
             self.assertEqual(res["vdc_r_after"][5] & 0xFF, 0xFB)
@@ -1850,7 +1865,7 @@ class Rcroff2bSynthetic(unittest.TestCase):
         for shadow, real, want in ((0x04, 0x04, 0x00), (0xFB, 0xFB, 0xFB)):
             with self.subTest(shadow=hex(shadow)):
                 recs = self._run_desync("sync%02x" % shadow, 0, 0x3C,
-                                         0x12, 0x07, shadow, 1, real)
+                                         0x12, 0x07, shadow, 0xA5, real)
                 for res in recs:
                     self._check_desync_ok(res, 0, 0x3C, 0x12, 0x07,
                                           shadow, real)
@@ -1859,12 +1874,14 @@ class Rcroff2bSynthetic(unittest.TestCase):
                                  recs[1]["vdc_r_after"])
 
     def test_861_marker_corrupt_reject(self):
-        # Marker-corrupt control: $00 marker (and $5A loader fill) takes
-        # the reject path with no VDC write, no shadow write, C=1.
+        # Marker-corrupt control: ACTUAL $00 marker takes the reject path
+        # with no VDC write, no shadow write, C=1. ($5A loader fill is
+        # covered independently by test_861_marker_5a_loader_fill_reject.)
         recs = self._run_desync("rej00", 2, 0x3C, 0x12, 0x07,
-                                 0xFF, 0, 0x00)
+                                 0xFF, 0x00, 0x00)
         for res in recs:
-            self._check_desync_reject(res, 2, 0x3C, 0x12, 0x07, 0xFF, 0x00)
+            self._check_desync_reject(res, 2, 0x3C, 0x12, 0x07, 0xFF, 0x00,
+                                      marker=0x00)
         self.assertEqual(recs[0]["vdc_r_after"], recs[1]["vdc_r_after"])
 
     def test_861_marker_5a_loader_fill_reject(self):
@@ -1873,19 +1890,21 @@ class Rcroff2bSynthetic(unittest.TestCase):
         import subprocess as _sp  # local alias keeps module import list stable
         del _sp
         recs = self._run_desync("rej5a", 2, 0x3C, 0x12, 0x07,
-                                 0x5A, 0, 0x00)
-        # Marker $00 here stands for any non-$A5 value; the $5A fill case
-        # is pinned structurally by test_844 (lda #$5A) and behaviourally
-        # identical here (gate compares against $A5 only).
+                                 0x5A, 0x5A, 0x00)
+        # Marker $5A is the ACTUAL seeded byte here (old revision passed
+        # seed_en=0 and therefore exercised marker $00 while the name
+        # claimed $5A; the fixed-$00 reject oracle could not tell). The
+        # gate compares against $A5 only, so any non-$A5 marker rejects.
         for res in recs:
-            self._check_desync_reject(res, 2, 0x3C, 0x12, 0x07, 0x5A, 0x00)
+            self._check_desync_reject(res, 2, 0x3C, 0x12, 0x07, 0x5A, 0x00,
+                                      marker=0x5A)
 
     def test_861_regs_preserved_desync(self):
         # AR/RCR/IRQ/SP/MPR/regs preservation on the desync ok path:
         # entry AR=9 observed at boundary, AR=5 after; RCR sentinel kept;
         # IDR/IRR/MPRs/SR unchanged (frozen clock); A/X/Y/SP/P per D2.
         recs = self._run_desync("regs", 9, 0x00, 0x80, 0x06,
-                                 0xFF, 1, 0x00)
+                                 0xFF, 0xA5, 0x00)
         for res in recs:
             self._check_desync_ok(res, 9, 0x00, 0x80, 0x06, 0xFF, 0x00)
             self.assertEqual(res["vdc_ar_before"], 9)
@@ -1906,7 +1925,7 @@ class Rcroff2bSynthetic(unittest.TestCase):
         # while shadow stays $FF stale. Each mutant REDs exactly one oracle.
         novdc = self._mutate_tail(self.rom2b.read_bytes(), *MUT_NOVDC)
         recs = self._run_desync("novdc", 0, 0x3C, 0x12, 0x07,
-                                 0xFF, 1, 0x00, rom_bytes=novdc)
+                                 0xFF, 0xA5, 0x00, rom_bytes=novdc)
         for res in recs:
             self.assertEqual(res["vdc_r_before"], res["vdc_r_after"],
                              "M_NOVDC must leave real CR untouched")
@@ -1916,7 +1935,7 @@ class Rcroff2bSynthetic(unittest.TestCase):
                 self._check_desync_ok(res, 0, 0x3C, 0x12, 0x07, 0xFF, 0x00)
         nopub = self._mutate_tail(self.rom2b.read_bytes(), *MUT_NOPUBLISH)
         recs = self._run_desync("nopub", 0, 0x3C, 0x12, 0x07,
-                                 0xFF, 1, 0x00, rom_bytes=nopub)
+                                 0xFF, 0xA5, 0x00, rom_bytes=nopub)
         for res in recs:
             self.assertEqual(res["vdc_r_after"][5] & 0xFF, 0xFB,
                              "M_NOPUBLISH still writes real CR")
@@ -1937,7 +1956,7 @@ class Rcroff2bSynthetic(unittest.TestCase):
             with self.subTest(mutant=tag):
                 rom = mut(self.rom2b.read_bytes(), *off_new)
                 recs = self._run_desync("mut" + tag, 0, 0x3C, 0x12,
-                                         0x07, shadow, 1, real,
+                                         0x07, shadow, 0xA5, real,
                                          rom_bytes=rom)
                 for res in recs:
                     with self.assertRaises(AssertionError,
@@ -1948,19 +1967,19 @@ class Rcroff2bSynthetic(unittest.TestCase):
         # instead of reject; the reject oracle must RED.
         rom = self._mutate_body(self.rom2b.read_bytes(), *MUT_BYPASS)
         recs = self._run_desync("mutbypass", 2, 0x3C, 0x12, 0x07,
-                                 0xFF, 0, 0x00, rom_bytes=rom)
+                                 0xFF, 0x00, 0x00, rom_bytes=rom)
         for res in recs:
             self.assertNotEqual(res["vdc_r_before"], res["vdc_r_after"])
             self.assertEqual(res["p"] & 0x01, 0x00)
             with self.assertRaises(AssertionError):
                 self._check_desync_reject(res, 2, 0x3C, 0x12, 0x07,
-                                          0xFF, 0x00)
+                                          0xFF, 0x00, marker=0x00)
 
     def test_861_cold_warm_equality(self):
         # Explicit cold/warm equality for the desync case (ResetMedia(true)
         # preserves WRAM between cycles; seeding dominates residual).
         recs = self._run_desync("coldwarm", 0, 0x3C, 0x12, 0x07,
-                                 0xFF, 1, 0x00)
+                                 0xFF, 0xA5, 0x00)
         cold, warm = recs
         for key in ("vdc_r_after", "shadow_post", "a", "p", "x",
                     "y", "sp", "vdc_ar_after"):
@@ -1968,8 +1987,10 @@ class Rcroff2bSynthetic(unittest.TestCase):
         self.assertEqual(cold["vdc_r_before"], warm["vdc_r_before"])
 
     def test_861_desync_probe_argv_guard(self):
-        # Fail-closed argv: out-of-domain seed_en/ncalls/steps exit 2 with
-        # no RESULT (same discipline as the synced VDC probe).
+        # Fail-closed argv: out-of-domain marker/ncalls/steps exit 2 with
+        # no RESULT. marker is the explicit $2503 byte (0..255), so 256
+        # is refused while 0/90/165 are all valid rejects/oks (covered by
+        # the $00/$5A/$A5 cases above, never by this guard).
         import tempfile
         with tempfile.TemporaryDirectory(prefix="pce-2b-desync-argv-") as td:
             o = Path(td)
@@ -1978,8 +1999,8 @@ class Rcroff2bSynthetic(unittest.TestCase):
             cue.write_text('FILE "d.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n')
             base = [str(self.rom2b.resolve()), str(cue.resolve()), "4096",
                      "0", "60", "18", "7", "255"]
-            for tag, extra in (("seed_en", ["2", "0", "11", "85", "1"]),
-                               ("ncalls", ["1", "0", "11", "85", "3"])):
+            for tag, extra in (("marker", ["256", "0", "11", "85", "1"]),
+                               ("ncalls", ["165", "0", "11", "85", "3"])):
                 with self.subTest(arg=tag):
                     r = subprocess.run([str(self.desync_probe)] + base + extra,
                                        capture_output=True, text=True, timeout=120)

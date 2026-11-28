@@ -4,14 +4,17 @@
 //
 // Purpose: separate the shadow image from the real VDC CR value to confirm
 // the L2 host-model false-ok end to end on the pinned real core:
-//   shadow $2502 = shadow_lo, marker $2503 = (seed_en ? $A5 : $00),
+//   shadow $2502 = shadow_lo, marker $2503 = marker (explicit byte),
 //   real VDC CR low = real_lo (programmed through the window BEFORE the JSR,
 //   independent of the shadow), CR high = crhi, RCR = rcr_lo sentinel.
 // The $2B body reads ONLY the shadow; the gate checks ONLY the marker.
 // Desync case (hypothesis, not fudged): real $00 + shadow $FF + marker $A5
 // must take the ok path and publish the WRONG image CR=$FB (stale $FF & $FB).
 //
-// argv: rom cue steps entry_ar areg xreg pseed shadow_lo seed_en real_lo crhi rcr_lo ncalls
+// argv: rom cue steps entry_ar areg xreg pseed shadow_lo marker real_lo crhi rcr_lo ncalls
+// marker is the explicit $2503 seed byte (0..255); the old seed_en?0xA5:0x00
+// encoding is retired because it could never seed $5A (blind spot: the $5A
+// loader-fill test passed seed_en=0 and therefore exercised marker $00).
 // Guest (patched at reset vector, HuCARD-style): SEI/CLD, MPR1=$F8,
 // seed shadow, SP=$FF, MPR0=$FF window programs real CR/RCR/AR, restore
 // MPR0=$F8, entry regs, JSR $E081 (ncalls 1..2), record into $2200, halt.
@@ -52,15 +55,14 @@ int main(int argc, char** argv) {
     if (errno != 0 || end == argv[3] || !end || *end != '\0' || steps < 1 || steps > 65536) {
         fprintf(stderr, "steps\n"); return 2;
     }
-    long entry_ar = 0, areg = 0, xreg = 0, pseed = 0, shadow_lo = 0, seed_en = 0;
+    long entry_ar = 0, areg = 0, xreg = 0, pseed = 0, shadow_lo = 0, marker = 0;
     long real_lo = 0, crhi = 0, rcr_lo = 0, ncalls = 0;
     if (!parse_u8_arg(argv[4], &entry_ar)) { fprintf(stderr, "entry_ar\n"); return 2; }
     if (!parse_u8_arg(argv[5], &areg)) { fprintf(stderr, "areg\n"); return 2; }
     if (!parse_u8_arg(argv[6], &xreg)) { fprintf(stderr, "xreg\n"); return 2; }
     if (!parse_u8_arg(argv[7], &pseed)) { fprintf(stderr, "pseed\n"); return 2; }
     if (!parse_u8_arg(argv[8], &shadow_lo)) { fprintf(stderr, "shadow_lo\n"); return 2; }
-    if (!parse_u8_arg(argv[9], &seed_en)) { fprintf(stderr, "seed_en\n"); return 2; }
-    if (seed_en != 0 && seed_en != 1) { fprintf(stderr, "seed_en domain\n"); return 2; }
+    if (!parse_u8_arg(argv[9], &marker)) { fprintf(stderr, "marker\n"); return 2; }
     if (!parse_u8_arg(argv[10], &real_lo)) { fprintf(stderr, "real_lo\n"); return 2; }
     if (!parse_u8_arg(argv[11], &crhi)) { fprintf(stderr, "crhi\n"); return 2; }
     if (!parse_u8_arg(argv[12], &rcr_lo)) { fprintf(stderr, "rcr_lo\n"); return 2; }
@@ -79,8 +81,8 @@ int main(int argc, char** argv) {
         0xA9, 0xF8, 0x53, 0x02,               // MPR1 = $F8 (work RAM)
         0xA9, (u8)(shadow_lo & 0xFF),
         0x8D, 0x02, 0x25,                     // $2502 = shadow_lo (shadow image, may differ from real CR)
-        0xA9, (u8)(seed_en ? 0xA5 : 0x00),
-        0x8D, 0x03, 0x25,                     // $2503 = $A5 iff seeded (else $00)
+        0xA9, (u8)(marker & 0xFF),
+        0x8D, 0x03, 0x25,                     // $2503 = marker (explicit; $A5 ok, else reject)
         0xA2, 0xFF, 0x9A,                     // SP = $FF
         0xA9, 0xFF, 0x53, 0x01,               // MPR0 = $FF (I/O window)
         0xA9, 0x05,                           // select VDC R05 (CR)
@@ -167,6 +169,10 @@ int main(int argc, char** argv) {
             if (++run_steps >= steps) { fprintf(stderr, "jsr never reached (%s)\n", cycle); exit(2); }
         }
         if (cpu->GetState()->PC->GetValue() != jsr_pc) { fprintf(stderr, "jsr never reached (%s)\n", cycle); exit(2); }
+        // Observed pre-JSR WRAM seeds (what the guest actually left at the
+        // call boundary; must equal the argv seeds when seeding dominates).
+        unsigned wram_pre_lo = mem->GetWorkingRAM()[0x502];
+        unsigned wram_pre_hi = mem->GetWorkingRAM()[0x503];
         for (int i = 0; i < 20; i++) vdc_r_before[i] = vs->R[i];
         vdc_ar_before = *vs->AR;
         sr_before = *vs->SR;
@@ -195,8 +201,9 @@ int main(int argc, char** argv) {
         std::printf("\"mpr_store\":[%u,%u,%u,%u,%u,%u,%u,%u],", wram[5], wram[6], wram[7], wram[8],
             wram[9], wram[10], wram[11], wram[12]);
         std::printf("\"shadow_post\":[%u,%u],", wram[13], wram[14]);
-        std::printf("\"shadow_pre\":[%u,%u],\"real_pre\":[%u,%u],", (unsigned)shadow_lo, (unsigned)(seed_en ? 0xA5 : 0x00),
+        std::printf("\"shadow_pre\":[%u,%u],\"real_pre\":[%u,%u],", (unsigned)shadow_lo, (unsigned)marker,
             (unsigned)real_lo, (unsigned)crhi);
+        std::printf("\"wram_pre\":[%u,%u],", wram_pre_lo, wram_pre_hi);
         std::printf("\"mpr_before\":[%u,%u,%u,%u,%u,%u,%u,%u],", mpr_before[0], mpr_before[1],
             mpr_before[2], mpr_before[3], mpr_before[4], mpr_before[5], mpr_before[6], mpr_before[7]);
         std::printf("\"mpr_after\":[%u,%u,%u,%u,%u,%u,%u,%u],", mpr_after[0], mpr_after[1],
