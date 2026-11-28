@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -343,10 +344,19 @@ class PolicyTests(unittest.TestCase):
 
 class EvidenceTests(unittest.TestCase):
     def fingerprint(self, **overrides):
-        base = {"head": "h" * 40, "base": "b" * 40,
-                "inputs_sha256": "i" * 64, "python": "3.12.3",
+        base = {"head": "a" * 40, "base": "b" * 40,
+                "inputs_sha256": "c" * 64,
+                "map_sha256": "d" * 64,
+                "map_id": "test-staging-map-v0/v1@" + "e" * 40,
+                "selector": SEL.SELECTOR_ID,
+                "api": "none", "level": "L1",
+                "commands_sha256": "f" * 64,
+                "python": "3.12.3",
                 "platform": "linux", "toolchain": "{\"cc65\": \"abc\"}",
-                "mode": "debug", "env": {}}
+                "mode": "debug",
+                "env": {"MODE": "debug",
+                        SEL.REQUIRE_CC65_ENV: "",
+                        "TOOLS_DIR_sha256": "unset"}}
         base.update(overrides)
         return base
 
@@ -358,9 +368,16 @@ class EvidenceTests(unittest.TestCase):
         stored = self.fingerprint()
         mutations = [
             {"head": "0" * 40}, {"base": "0" * 40},
-            {"inputs_sha256": "0" * 64}, {"python": "3.11.0"},
+            {"inputs_sha256": "0" * 64},
+            {"map_sha256": "0" * 64},
+            {"map_id": "test-staging-map-v0/v1@" + "0" * 40},
+            {"selector": "other-selector"},
+            {"api": "MA_MUL8U"}, {"level": "L3"},
+            {"commands_sha256": "0" * 64}, {"python": "3.11.0"},
             {"platform": "other"}, {"toolchain": "{\"cc65\": \"zzz\"}"},
-            {"mode": "release"}, {"env": {"X": "1"}},
+            {"mode": "release"}, {"env": {"MODE": "release",
+                                            SEL.REQUIRE_CC65_ENV: "",
+                                            "TOOLS_DIR_sha256": "unset"}},
         ]
         for mutation in mutations:
             with self.subTest(mutation=mutation):
@@ -442,9 +459,12 @@ CANONICAL_PIN = "2ab14d08fc9fbdc704da1b1f07c96501850b542e"
 
 # Interim Wave1 pin of the Task-A branch HEAD used read-only by
 # CanonicalDefaultTests.test_cli_end_to_end_with_real_canonical_map.
-# Recorded 2026-11-28; if the branch moves this pin fails and Wave3
-# finalises it against the merge (no checkout, no tracked copy, no ./rom).
-REAL_MAP_HEAD_PIN = "3dad5dad8ed4c546dc95cbaf9c2527e13af65d69"
+# Recorded 2026-11-28 as 3dad5dad (doc-fix-only, schema stable); branch
+# moved to 71ad00ab (doc-only local_media/commercial_media_access wording,
+# schema unchanged) and the pin is updated here. If the branch moves again
+# this pin fails and Wave3 finalises it against the merge (no checkout,
+# no tracked copy, no ./rom).
+REAL_MAP_HEAD_PIN = "71ad00abbcba90678ba6fcc03481e68030d0deef"
 
 
 def canonical_tests(host=(), scripts=(), targets=(), static=()):
@@ -1229,6 +1249,410 @@ class ApiAliasLevelTests(unittest.TestCase):
                          "CD_SUBRQ / CD_SUBRD")
         self.assertEqual(loader.resolve_api("CD_SUBRD"),
                          "CD_SUBRQ / CD_SUBRD")
+
+
+class B1SymlinkTraversalTests(unittest.TestCase):
+    """B-1: symlink/.. traversal, outside access, non-regular fail-closed.
+
+    Synthetic tmp repos + sentinel files only (no ./rom). The sentinel
+    content is never read: tests spy on Path.read_bytes and assert the
+    sentinel is never opened, not just that the output is unknown.
+    """
+    def test_untracked_symlink_to_outside_sentinel_not_read(self):
+        repo = make_repo("f.s")
+        sentinel_dir = Path(tempfile.mkdtemp(prefix="b1-sentinel-"))
+        sentinel = sentinel_dir / "secret.bin"
+        sentinel.write_text("SENTINEL-BYTES\n")
+        link = Path(repo) / "link.s"
+        link.symlink_to(sentinel)
+        reads = []
+        real_read = Path.read_bytes
+
+        def spy(self, *args, **kwargs):
+            if str(self) == str(sentinel) or str(self) == str(link):
+                reads.append(str(self))
+            return real_read(self, *args, **kwargs)
+        orig = Path.read_bytes
+        Path.read_bytes = spy
+        try:
+            hashed = SEL._input_content_hash(
+                str(repo), "untracked", "??", "link.s")
+        finally:
+            Path.read_bytes = orig
+        self.assertEqual(hashed, "unknown")
+        self.assertEqual(reads, [],
+                         f"sentinel/link was read: {reads}")
+        changed = SEL.ChangedInputs(head="h" * 40, base="vbase",
+                                    untracked=["link.s"])
+        fingerprint = SEL.evidence_fingerprint(
+            str(repo), changed, map_path=str(repo / "does-not-exist.json"))
+        self.assertEqual(fingerprint["inputs_sha256"], "unknown")
+        self.assertFalse(SEL.evidence_reusable(fingerprint, fingerprint))
+
+    def test_dotdot_and_absolute_refused_without_read(self):
+        repo = make_repo("f.s")
+        for bad in ("../outside.s", "a/../../b.s", "/abs/path.s",
+                    "", "a//b.s", "a/./b.s"):
+            with self.subTest(bad=bad):
+                reads = []
+                real_read = Path.read_bytes
+                orig = Path.read_bytes
+                Path.read_bytes = lambda self, *a, **k: (
+                    reads.append(str(self)), real_read(self, *a, **k))[1]
+                try:
+                    self.assertEqual(
+                        SEL._input_content_hash(
+                            str(repo), "untracked", "??", bad), "unknown")
+                finally:
+                    Path.read_bytes = orig
+                self.assertEqual(reads, [])
+
+    def test_forbidden_top_refused_pre_read(self):
+        repo = make_repo("f.s")
+        # Direct forbidden spec: no git/FS read occurs, marker unknown.
+        self.assertEqual(
+            SEL._input_content_hash(str(repo), "committed", "M",
+                                    "rom/secret.bin"), "unknown")
+        self.assertEqual(
+            SEL._input_content_hash(str(repo), "untracked", "??",
+                                    "rom/secret.bin"), "unknown")
+
+    def test_non_regular_files_refused(self):
+        repo = make_repo("f.s")
+        target_dir = Path(repo) / "adir"
+        target_dir.mkdir()
+        self.assertEqual(
+            SEL._input_content_hash(str(repo), "untracked", "??",
+                                    "adir"), "unknown")
+        fifo = Path(repo) / "pipe.fifo"
+        try:
+            os.mkfifo(str(fifo))
+            self.assertEqual(
+                SEL._input_content_hash(str(repo), "untracked", "??",
+                                        "pipe.fifo"), "unknown")
+        except (OSError, AttributeError):
+            pass
+
+    def test_map_symlink_refused_on_both_read_sites(self):
+        repo = make_repo("f.s")
+        real_map = write_map(repo, provisional_map(
+            [l1_rule("src/**")]))
+        link_path = str(Path(real_map).parent / "link-map.json")
+        try:
+            os.symlink(real_map, link_path)
+        except OSError as error:
+            self.skipTest(f"symlink unavailable: {error}")
+        # Site 1: _map_identity must not read the link target.
+        reads = []
+        real_read = Path.read_bytes
+        orig = Path.read_bytes
+
+        def spy(self, *args, **kwargs):
+            if str(self) == real_map:
+                reads.append(str(self))
+            return real_read(self, *args, **kwargs)
+        Path.read_bytes = spy
+        try:
+            sha, mid = SEL._map_identity(link_path)
+        finally:
+            Path.read_bytes = orig
+        self.assertEqual((sha, mid), ("unknown", "unknown"))
+        self.assertEqual(reads, [])
+        # Site 2: loader.load must raise MapError (fail-closed L3).
+        with self.assertRaises(SEL.MapError):
+            SEL.ProvisionalJsonMapLoader().load(link_path)
+        with self.assertRaises(SEL.MapError):
+            SEL.CanonicalJsonMapLoader().load(link_path)
+        selection, _ = SEL.run_selector(
+            str(repo), "vbase", map_path=link_path,
+            loader=SEL.ProvisionalJsonMapLoader())
+        assert_full_l3(self, selection, "map-missing-or-inconsistent")
+
+
+class B2EvidenceHardeningTests(unittest.TestCase):
+    """B-2: evidence_reusable prefer-refuse-on-incomplete + CLI env."""
+    def full(self, **overrides):
+        base = {"head": "a" * 40, "base": "b" * 40,
+                "inputs_sha256": "c" * 64, "map_sha256": "d" * 64,
+                "map_id": "test-staging-map-v0/v1@" + "e" * 40,
+                "selector": SEL.SELECTOR_ID, "api": "none",
+                "level": "L1", "commands_sha256": "f" * 64,
+                "python": "3.12.3", "platform": "linux",
+                "toolchain": "{\"cc65\": \"abc\"}",
+                "mode": "debug",
+                "env": {"MODE": "debug", SEL.REQUIRE_CC65_ENV: "",
+                        "TOOLS_DIR_sha256": "unset"}}
+        base.update(overrides)
+        return base
+
+    def test_empty_vs_empty_refuses(self):
+        self.assertFalse(SEL.evidence_reusable({}, {}))
+
+    def test_both_sides_missing_key_refuses(self):
+        stored = self.full()
+        del stored["toolchain"]
+        current = self.full()
+        del current["toolchain"]
+        self.assertFalse(SEL.evidence_reusable(stored, current))
+
+    def test_none_empty_bad_type_refuses(self):
+        good = self.full()
+        for bad_key, bad_value in [
+                ("head", None), ("base", ""),
+                ("inputs_sha256", None), ("map_sha256", ""),
+                ("map_id", None), ("selector", ""),
+                ("api", None), ("level", ""),
+                ("commands_sha256", None), ("python", ""),
+                ("platform", None), ("toolchain", ""),
+                ("mode", None), ("env", None),
+                ("env", "not-a-dict"),
+                ("env", {"__malformed__": "x"}),
+                ("toolchain", {"not": "a-string"}),
+                ("head", 12345)]:
+            with self.subTest(bad=(bad_key, bad_value)):
+                stored = self.full(**{bad_key: bad_value})
+                self.assertFalse(SEL.evidence_reusable(stored, good))
+                self.assertFalse(SEL.evidence_reusable(good, stored))
+
+    def test_unconfirmable_tool_identity_refuses_even_when_equal(self):
+        stored = self.full(toolchain="unknown")
+        current = self.full(toolchain="unknown")
+        self.assertFalse(SEL.evidence_reusable(stored, current))
+        stored = self.full(head="unknown")
+        self.assertFalse(SEL.evidence_reusable(stored, stored))
+        stored = self.full(head="manual")
+        self.assertFalse(SEL.evidence_reusable(stored, stored))
+
+    def test_real_cli_env_diff_refuses(self):
+        repo = make_repo("f.s")
+        write_file(repo, "f.s", "x\n")
+        git(repo, "add", "f.s")
+        changed = SEL.collect_changes(str(repo), "vbase")
+        map_path = write_map(repo, provisional_map([l1_rule("src/**")]))
+        with unittest.mock.patch.dict(os.environ, {"TOOLS_DIR": "/tmp/tools-a",
+                                                   SEL.REQUIRE_CC65_ENV: "1"},
+                                      clear=False):
+            first = SEL.evidence_fingerprint(
+                str(repo), changed, map_path=map_path, level="L1",
+                commands=[{"make": "check"}])
+        with unittest.mock.patch.dict(os.environ, {"TOOLS_DIR": "/tmp/tools-b",
+                                                   SEL.REQUIRE_CC65_ENV: "1"},
+                                      clear=False):
+            second = SEL.evidence_fingerprint(
+                str(repo), changed, map_path=map_path, level="L1",
+                commands=[{"make": "check"}])
+        self.assertNotEqual(first["env"], second["env"])
+        self.assertFalse(SEL.evidence_reusable(first, second))
+        # No raw TOOLS_DIR path leaks into the fingerprint.
+        for fingerprint in (first, second):
+            self.assertNotIn("/tmp/tools-a", json.dumps(fingerprint))
+            self.assertNotIn("/tmp/tools-b", json.dumps(fingerprint))
+
+    def test_normal_full_match_and_mismatch(self):
+        stored = self.full()
+        self.assertTrue(SEL.evidence_reusable(stored, self.full()))
+        self.assertFalse(SEL.evidence_reusable(
+            stored, self.full(level="L3")))
+        self.assertFalse(SEL.evidence_reusable(
+            stored, self.full(commands_sha256="0" * 64)))
+
+
+class B3MalformedFailClosedTests(unittest.TestCase):
+    """B-3: element-type validation at the boundary, no over-broad except."""
+    def assert_map_error(self, document):
+        map_path = write_map(None, document)
+        with self.assertRaises(SEL.MapError):
+            SEL.CanonicalJsonMapLoader().load(map_path)
+
+    def test_required_checks_element_object_is_map_error(self):
+        document = canonical_doc(
+            required_checks=sorted(SEL.REQUIRED_CI_CHECKS)[:-1] + [{"x": 1}])
+        self.assert_map_error(document)
+
+    def test_dev_targets_element_object_is_map_error(self):
+        entries = [canonical_entry(
+            "bad-target", "exact", "src/overrides/slot_3F.s", "L1",
+            {"host": [], "integration_scripts": [],
+             "dev_targets": [{"make": "check"}], "static_units": []}),
+            canonical_fallback_entry()]
+        self.assert_map_error(canonical_doc(entries=entries))
+
+    def test_other_list_bad_types_are_map_error(self):
+        for key, bad_value in [
+                ("host", [{"ref": 1}]),
+                ("integration_scripts", [{"script": 1}]),
+                ("static_units", [{"unit": 1}]),
+                ("host", [""]), ("dev_targets", [""])]:
+            with self.subTest(key=key, bad=bad_value):
+                tests = canonical_tests()
+                tests[key] = bad_value
+                entries = [canonical_entry(
+                    "bad", "exact", "src/overrides/slot_3F.s", "L1",
+                    tests), canonical_fallback_entry()]
+                self.assert_map_error(canonical_doc(entries=entries))
+
+    def test_required_field_bad_types_are_map_error(self):
+        bad = canonical_l1_entry()
+        for key, bad_value in [("category", {"x": 1}),
+                               ("required_ci", "yes"),
+                               ("reason", {"x": 1}),
+                               ("level", {"x": 1})]:
+            with self.subTest(key=key):
+                entry = dict(bad, **{key: bad_value})
+                self.assert_map_error(canonical_doc(
+                    entries=[entry, canonical_fallback_entry()]))
+
+    def test_cli_e2e_malformed_map_no_traceback_full_l3(self):
+        repo = make_repo("src/overrides/slot_3F.s")
+        write_file(repo, "src/overrides/slot_3F.s", "changed\n")
+        git(repo, "commit", "-qam", "change")
+        malformed = canonical_doc()
+        malformed["required_checks"] = [{"not": "a-string"}]
+        map_path = write_map(repo, malformed)
+        cli = [sys.executable, str(ROOT / "tools" / "test_staging_select.py"),
+               "--repo", str(repo), "--base", "vbase",
+               "--map", map_path, "--json"]
+        proc = subprocess.run(cli, capture_output=True, text=True, timeout=120)
+        self.assertEqual(proc.returncode, 0, proc.stderr[-2000:])
+        self.assertNotIn("Traceback", proc.stdout + proc.stderr)
+        payload = json.loads(proc.stdout)
+        self.assertEqual(payload["level"], "L3")
+        self.assertTrue(payload["fallback"])
+        self.assertEqual(payload["fallback_reason"],
+                         "map-missing-or-inconsistent")
+        self.assertFalse(payload["partial"])
+        self.assertEqual(payload["unselected"], [])
+        self.assertEqual([tuple(cmd["argv"]) for cmd in payload["selected"]],
+                         [tuple(argv) for argv in full_l3_argvs()])
+        fingerprint = payload["fingerprint"]
+        self.assertEqual(fingerprint["level"], "L3")
+        stored = dict(fingerprint)
+        self.assertFalse(SEL.evidence_reusable(stored, dict(fingerprint)))
+
+
+class B4RuleApiIntegrityTests(unittest.TestCase):
+    """B-4: exact vs glob, first-match-before-API, never lower."""
+    def test_preceding_l3_not_skipped_by_api(self):
+        changed = SEL.ChangedInputs(
+            head="h" * 40, base="vbase", committed=[("M", "f.s")])
+        rules = [SEL.MapRule(pattern="*.s", level="L3",
+                             commands=[{"make": "check"}],
+                             reason="safety L3", api=""),
+                 SEL.MapRule(pattern="f.s", level="L1",
+                             commands=[{"make": "dev-rom"}],
+                             reason="later L1", api="SLOT_X", literal=True)]
+        apis = {"SLOT_X": {"commands": [{"make": "dev-rom"}],
+                             "reason": "slot", "level": "L1"}}
+        selection = SEL.select(changed, rules, apis, api="SLOT_X",
+                               fingerprint={}, match_mode="first-match")
+        assert_full_l3(self, selection, "api-first-match-mismatch")
+
+    def test_exact_with_metachars_is_literal(self):
+        rules = [SEL.MapRule(pattern="file[1].s", level="L1",
+                             commands=[{"make": "check"}],
+                             reason="exact", literal=True)]
+        hit = SEL.ChangedInputs(
+            head="h" * 40, base="vbase", committed=[("M", "file[1].s")])
+        self.assertEqual(
+            SEL.select(hit, rules, {}, fingerprint={}).level, "L1")
+        miss = SEL.ChangedInputs(
+            head="h" * 40, base="vbase", committed=[("M", "file1.s")])
+        self.assertEqual(
+            SEL.select(miss, rules, {}, fingerprint={}).level, "L3")
+
+    def test_exact_list_per_element_literal(self):
+        repo = make_repo("src/overrides/slot_3F.s")
+        write_file(repo, "src/overrides/slot_3F.s", "changed\n")
+        git(repo, "commit", "-qam", "change")
+        entry = canonical_entry(
+            "fixture-list", "exact-list",
+            ["src/overrides/slot_3F.s", "docs/a[1].md"], "L1",
+            canonical_tests(targets=["dev-rom"]), reason="list")
+        document = canonical_doc(
+            entries=[entry, canonical_fallback_entry()])
+        map_path = write_map(repo, document)
+        selection, _ = SEL.run_selector(
+            str(repo), "vbase", map_path=map_path,
+            loader=SEL.CanonicalJsonMapLoader())
+        self.assertEqual(selection.level, "L1")
+        # A glob-looking sibling must not match the literal list element.
+        repo2 = make_repo("docs/a1.md")
+        write_file(repo2, "docs/a1.md", "changed\n")
+        git(repo2, "commit", "-qam", "change")
+        selection2, _ = SEL.run_selector(
+            str(repo2), "vbase", map_path=map_path,
+            loader=SEL.CanonicalJsonMapLoader())
+        self.assertEqual(selection2.level, "L3")
+
+    def test_multi_change_api_mismatch_is_l3(self):
+        changed = SEL.ChangedInputs(
+            head="h" * 40, base="vbase",
+            committed=[("M", "a.s"), ("M", "b.s")])
+        rules = [SEL.MapRule(pattern="a.s", level="L1",
+                             commands=[{"make": "dev-rom"}],
+                             reason="a", api="SLOT_X", literal=True),
+                 SEL.MapRule(pattern="b.s", level="L1",
+                             commands=[{"make": "check"}],
+                             reason="b", api="", literal=True)]
+        apis = {"SLOT_X": {"commands": [{"make": "dev-rom"}],
+                             "reason": "slot", "level": "L1"}}
+        selection = SEL.select(changed, rules, apis, api="SLOT_X",
+                               fingerprint={}, match_mode="first-match")
+        self.assertEqual(selection.level, "L3")
+
+    def test_api_never_lowers_level_or_commands(self):
+        changed = SEL.ChangedInputs(
+            head="h" * 40, base="vbase", committed=[("M", "f.s")])
+        rules = [SEL.MapRule(pattern="f.s", level="L1",
+                             commands=[{"make": "dev-rom"}],
+                             reason="fixture", api="SLOT_X", literal=True)]
+        apis = {"SLOT_X": {"commands": [{"make": "dev-rom"}],
+                             "reason": "slot", "level": "L3"}}
+        selection = SEL.select(changed, rules, apis, api="SLOT_X",
+                               fingerprint={}, match_mode="first-match")
+        assert_full_l3(self, selection, "api-slot-requires-L3")
+
+
+class B5DisplayExecEquivalenceTests(unittest.TestCase):
+    """B-5: displayed command == executed argv via shlex.join."""
+    def test_shlex_roundtrip_cases(self):
+        import shlex as shlex_module
+        cases = [
+            ["make", "test"],
+            ["python3", "tests/integration/foo bar.py", "a*b"],
+            ["python3", "-m", "unittest", "discover", "-p",
+             "name with spaces.py"],
+            ["python3", "script.py", "a;b", "c$d", "e`f`",
+             "g|h", "i&j", "k(l)", "l;m"],
+        ]
+        for argv in cases:
+            with self.subTest(argv=argv):
+                selection = SEL.Selection(
+                    level="L1", selected=[{"argv": argv, "env": {
+                        SEL.REQUIRE_CC65_ENV: "1"}}],
+                    unselected=[], reasons=["r"], fallback=False,
+                    fallback_reason="none", partial=True, fingerprint={})
+                report = SEL.render(selection)
+                line = next(line for line in report.splitlines()
+                            if line.startswith("  env "))
+                displayed = line.split(" -- ", 1)[1]
+                self.assertEqual(displayed, shlex_module.join(argv))
+                self.assertEqual(shlex_module.split(displayed), argv)
+
+    def test_selected_unselected_display_and_cc65_kept(self):
+        selected = {"argv": ["python3", "a b.py"],
+                    "env": {SEL.REQUIRE_CC65_ENV: "1"}}
+        unselected = {"argv": ["make", "my target"],
+                      "env": {SEL.REQUIRE_CC65_ENV: "1"}}
+        selection = SEL.Selection(
+            level="L1", selected=[selected], unselected=[unselected],
+            reasons=["r"], fallback=False, fallback_reason="none",
+            partial=True, fingerprint={})
+        report = SEL.render(selection)
+        self.assertIn("-- python3 'a b.py'", report)
+        self.assertIn("(not run at this level) make 'my target'", report)
+        for command in selection.selected + selection.unselected:
+            self.assertEqual(command["env"], {SEL.REQUIRE_CC65_ENV: "1"})
 
 
 if __name__ == "__main__":

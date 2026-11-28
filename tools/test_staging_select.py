@@ -43,6 +43,7 @@ import json
 import os
 import platform
 import re
+import shlex
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -307,6 +308,9 @@ class MapRule:
     commands: list
     reason: str
     api: str = ""
+    # Canonical exact/exact-list entries match literally; only glob
+    # entries use fnmatch. Provisional rules are always glob (legacy).
+    literal: bool = False
 
 
 class ProvisionalJsonMapLoader(MapLoader):
@@ -327,12 +331,13 @@ class ProvisionalJsonMapLoader(MapLoader):
     """
 
     def load(self, path):
-        raw_path = Path(path)
-        if not raw_path.is_file():
+        try:
+            raw = _read_bytes_strict(path)
+        except OSError:
             raise MapError(f"impact map is missing: {path}")
         try:
-            document = json.loads(raw_path.read_text())
-        except (OSError, ValueError) as error:
+            document = json.loads(raw.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError) as error:
             raise MapError(f"impact map is not valid JSON: {error}") from error
         if not isinstance(document, dict):
             raise MapError("impact map root must be an object")
@@ -407,12 +412,20 @@ class ProvisionalJsonMapLoader(MapLoader):
         if kind == "script":
             if not isinstance(value, str) or not value:
                 raise MapError("script command needs a path string")
-            target = (ROOT / value).resolve()
+            raw_target = ROOT / value
+            try:
+                if raw_target.is_symlink():
+                    raise MapError(f"script {value!r} is a symlink "
+                                   "(refused fail-closed) -> L3")
+                target = raw_target.resolve()
+            except OSError as error:
+                raise MapError(f"script {value!r} is unreadable: {error} "
+                               "-> L3") from error
             try:
                 target.relative_to(ROOT.resolve())
             except ValueError as error:
                 raise MapError(f"script {value!r} escapes the repository") from error
-            if target.suffix != ".py" or not target.is_file():
+            if target.is_symlink() or target.suffix != ".py" or not target.is_file():
                 raise MapError(f"script {value!r} is not an existing "
                                "repository python script")
             return {"script": value}
@@ -453,8 +466,12 @@ _DOTTED_HOST_RE = re.compile(r"^tests\.host\.([A-Za-z_][A-Za-z0-9_]*)$")
 
 def _makefile_targets():
     """Parse live Makefile targets (a map may only reference real ones)."""
+    candidate = ROOT / "Makefile"
     try:
-        text = (ROOT / "Makefile").read_text(encoding="utf-8")
+        if candidate.is_symlink() or not candidate.is_file():
+            raise MapError("cannot read Makefile for target validation: "
+                           "refused symlink/non-regular Makefile -> L3")
+        text = candidate.read_text(encoding="utf-8")
     except OSError as error:
         raise MapError("cannot read Makefile for target validation: "
                        f"{error}") from error
@@ -527,12 +544,13 @@ class CanonicalJsonMapLoader(MapLoader):
         return self._api_aliases.get(str(api), str(api))
 
     def load(self, path):
-        raw_path = Path(path)
-        if not raw_path.is_file():
+        try:
+            raw = _read_bytes_strict(path)
+        except OSError:
             raise MapError(f"canonical map is missing: {path}")
         try:
-            document = json.loads(raw_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as error:
+            document = json.loads(raw.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError) as error:
             raise MapError(f"canonical map is not valid JSON: {error}") from error
         if not isinstance(document, dict):
             raise MapError("canonical map root must be an object")
@@ -557,6 +575,8 @@ class CanonicalJsonMapLoader(MapLoader):
                            "fingerprint -> L3")
         required = document.get("required_checks")
         if (not isinstance(required, list)
+                or not all(isinstance(item, str) and item
+                           for item in required)
                 or set(required) != set(REQUIRED_CI_CHECKS)):
             raise MapError("canonical map required_checks must be exactly "
                            f"the {len(REQUIRED_CI_CHECKS)} Required Checks -> L3")
@@ -661,6 +681,10 @@ class CanonicalJsonMapLoader(MapLoader):
             if entry["level"] not in CANONICAL_LEVELS:
                 raise MapError(f"canonical {where} has unknown level "
                                f"{entry['level']!r} -> L3")
+            if (not isinstance(entry.get("category"), str)
+                    or not entry["category"].strip()):
+                raise MapError(f"canonical {where} needs a category string "
+                               "-> L3")
             if entry["ci_class"] not in CANONICAL_CI_CLASSES:
                 raise MapError(f"canonical {where} has unknown ci_class "
                                f"{entry['ci_class']!r} -> L3")
@@ -680,6 +704,11 @@ class CanonicalJsonMapLoader(MapLoader):
                 if key not in tests or not isinstance(tests[key], list):
                     raise MapError(f"canonical {where} tests misses list "
                                    f"{key!r} -> L3")
+                for item in tests[key]:
+                    if not isinstance(item, str) or not item:
+                        raise MapError(
+                            f"canonical {where} tests[{key!r}] holds a "
+                            f"non-string entry {item!r} -> L3")
         ids = [entry["id"] for entry in entries]
         if len(set(ids)) != len(ids):
             raise MapError("canonical entry ids must be unique -> L3")
@@ -693,8 +722,11 @@ class CanonicalJsonMapLoader(MapLoader):
         """
         ledger_path = ROOT / "spec" / "api_slots.json"
         try:
-            ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as error:
+            if ledger_path.is_symlink() or not ledger_path.is_file():
+                raise MapError(f"canonical slot ledger {ledger_path} is "
+                               "a symlink/non-regular file -> L3")
+            ledger = json.loads(ledger_path.read_bytes().decode("utf-8"))
+        except (OSError, ValueError, UnicodeDecodeError) as error:
             raise MapError(f"canonical slot ledger {ledger_path} is "
                            f"missing or not valid JSON: {error} -> L3") from error
         raw = ledger.get("slots") if isinstance(ledger, dict) else None
@@ -766,6 +798,11 @@ class CanonicalJsonMapLoader(MapLoader):
                 if key not in tests or not isinstance(tests[key], list):
                     raise MapError(f"canonical slot ${number:02X} tests "
                                    f"misses list {key!r} -> L3")
+                for item in tests[key]:
+                    if not isinstance(item, str) or not item:
+                        raise MapError(
+                            f"canonical slot ${number:02X} tests[{key!r}] "
+                            f"holds a non-string entry {item!r} -> L3")
         if sorted(seen_ids) != list(range(CANONICAL_API_SLOT_COUNT)):
             raise MapError("canonical api_slots must cover slots 0..80 "
                            "exactly once -> L3")
@@ -793,6 +830,7 @@ class CanonicalJsonMapLoader(MapLoader):
         match_type = entry["match_type"]
         if match_type == "exact":
             patterns = [entry["match"]]
+            literal = True
         elif match_type == "exact-list":
             seen = set()
             patterns = []
@@ -800,21 +838,26 @@ class CanonicalJsonMapLoader(MapLoader):
                 if item not in seen:
                     seen.add(item)
                     patterns.append(item)
+            literal = True
         else:
             patterns = [entry["match"]]
+            literal = False
         rules = []
         for pattern in patterns:
             rules.append(MapRule(
                 pattern=pattern, level=level, commands=list(commands),
                 reason=f"{reason} (canonical entry {entry['id']} "
                        f"{match_type} {pattern!r} -> {entry['level']})",
-                api=dev_source_to_slot.get(pattern, "")))
+                api=dev_source_to_slot.get(pattern, ""), literal=literal))
         return rules
 
     def _convert_tests(self, tests, static_set, targets, owner,
                        require_commands):
         commands = []
         for target in tests["dev_targets"]:
+            if not isinstance(target, str) or not target:
+                raise MapError(f"{owner}: bad dev target {target!r} "
+                               "(must be a non-empty string) -> L3")
             if target not in targets:
                 raise MapError(f"{owner}: unknown Makefile target "
                                f"{target!r} (maps may only reference existing "
@@ -825,6 +868,9 @@ class CanonicalJsonMapLoader(MapLoader):
         for script in tests["integration_scripts"]:
             commands.append(self._canonical_script_command(script, owner))
         for unit in tests["static_units"]:
+            if not isinstance(unit, str) or not unit:
+                raise MapError(f"{owner}: bad static unit {unit!r} "
+                               "(must be a non-empty string) -> L3")
             if unit not in static_set:
                 raise MapError(f"{owner}: unknown static unit {unit!r} "
                                "-> L3")
@@ -875,13 +921,21 @@ class CanonicalJsonMapLoader(MapLoader):
                 or ".." in script or "*" in script or "?" in script):
             raise MapError(f"{owner}: bad integration script {script!r} "
                            "-> L3")
-        target = (ROOT / script).resolve()
+        raw_target = ROOT / script
+        try:
+            if raw_target.is_symlink():
+                raise MapError(f"{owner}: script {script!r} is a symlink "
+                               "(refused fail-closed) -> L3")
+            target = raw_target.resolve()
+        except OSError as error:
+            raise MapError(f"{owner}: script {script!r} is unreadable: "
+                           f"{error} -> L3") from error
         try:
             target.relative_to(ROOT.resolve())
         except ValueError as error:
             raise MapError(f"{owner}: script {script!r} escapes the "
                            "repository -> L3") from error
-        if not target.is_file():
+        if target.is_symlink() or not target.is_file():
             raise MapError(f"{owner}: script {script!r} is not an existing "
                            "repository python script -> L3")
         return {"script": script}
@@ -916,9 +970,10 @@ def _with_required_env(command):
 
 
 # Selector identity stamped into every fingerprint. Bumped whenever the
-# selection semantics change (L3 set, alias rules, api-level handling),
-# so results from an older selector never reuse against a newer one.
-SELECTOR_ID = "test_staging_select/l3full-no-barehex-v1"
+# selection semantics change (L3 set, alias rules, api-level handling,
+# exact-vs-glob matching, first-match-before-API narrowing), so results
+# from an older selector never reuse against a newer one.
+SELECTOR_ID = "test_staging_select/l3full-no-barehex-v2"
 
 # Top-level input paths that must never be content-hashed (private
 # reference inputs, not fixtures). A change touching them still classifies
@@ -930,6 +985,127 @@ FORBIDDEN_INPUT_TOPS = frozenset({"rom"})
 # the L4 opt-in placeholder head; anything unidentifiable refuses.
 _UNIDENTIFIABLE = ("unknown", "manual")
 
+# Allowlisted CLI-effective environment captured into the fingerprint.
+# No blanket os.environ dump (no secrets, no absolute paths): only the
+# mode, the cc65 gate, and a hash of TOOLS_DIR (identity, not the path).
+# Any change in these conditions changes the fingerprint so old evidence
+# never reuses under new conditions.
+_EFFECTIVE_ENV_KEYS = ("MODE", REQUIRE_CC65_ENV)
+
+
+def _lexical_input_ok(path):
+    """Lexical pre-check for a repo-relative input path (no read)."""
+    if not isinstance(path, str) or not path:
+        return False
+    if Path(path).is_absolute():
+        return False
+    parts = path.replace("\\", "/").split("/")
+    if not parts or any(part in ("", ".", "..") for part in parts):
+        return False
+    return True
+
+
+def _worktree_target_safe(repo, rel_path):
+    """Resolve a worktree input to a safe regular file, or None.
+
+    Fail-closed: lexical failure, forbidden top, any symlink on the
+    path (including the final component), a resolved location outside
+    the repository, or a non-regular file all return None WITHOUT
+    reading any bytes. Callers map None to "unknown" (refuse reuse).
+    """
+    if not _lexical_input_ok(rel_path):
+        return None
+    parts = rel_path.replace("\\", "/").split("/")
+    if parts[0] in FORBIDDEN_INPUT_TOPS:
+        return None
+    try:
+        repo_resolved = Path(repo).resolve()
+    except OSError:
+        return None
+    cur = Path(repo)
+    for part in parts:
+        cur = cur / part
+        try:
+            if cur.is_symlink():
+                return None
+        except OSError:
+            return None
+    target = Path(repo) / rel_path
+    try:
+        if target.is_symlink():
+            return None
+        resolved = target.resolve()
+    except OSError:
+        return None
+    try:
+        if resolved != repo_resolved and repo_resolved not in resolved.parents:
+            return None
+    except OSError:
+        return None
+    try:
+        if not target.is_file():
+            return None
+    except OSError:
+        return None
+    return target
+
+
+def _read_bytes_strict(path):
+    """Read a map/config file only if it is a safe regular file.
+
+    Refuses symlinks (including link->sentinel) and non-regular files
+    (directories, fifos, devices, missing) WITHOUT reading. Returns the
+    bytes, or raises OSError on refusal (callers map to unknown/MapError).
+    """
+    candidate = Path(path)
+    if candidate.is_symlink():
+        raise OSError(f"refused symlink map/config read: {path}")
+    if not candidate.is_file():
+        raise OSError(f"refused non-regular map/config read: {path}")
+    return candidate.read_bytes()
+
+
+def _git_blob_is_regular(repo, spec, path):
+    """True only if the git object at spec is a regular blob (no read)."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo), "ls-tree", spec, "--", path],
+            capture_output=True, timeout=120)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if proc.returncode != 0:
+        return False
+    try:
+        out = proc.stdout.decode("utf-8", errors="strict").strip()
+    except UnicodeDecodeError:
+        return False
+    if not out:
+        return False
+    # "<mode> <type> <sha>\t<path>"; regular files are 100644/100755.
+    # Symlinks (120000), gitlinks (160000), trees are non-regular -> False.
+    mode = out.split(" ", 1)[0]
+    return mode in ("100644", "100755")
+
+
+def _git_staged_is_regular(repo, path):
+    """True only if the index entry is a regular blob (no read)."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo), "ls-files", "-s", "--", path],
+            capture_output=True, timeout=120)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if proc.returncode != 0:
+        return False
+    try:
+        out = proc.stdout.decode("utf-8", errors="strict").strip()
+    except UnicodeDecodeError:
+        return False
+    if not out:
+        return False
+    mode = out.split(" ", 1)[0]
+    return mode in ("100644", "100755")
+
 
 def _input_content_hash(repo, origin, status, path):
     """Hash the bytes behind one changed input, or a stable marker.
@@ -938,17 +1114,26 @@ def _input_content_hash(repo, origin, status, path):
     delete (no bytes to hash), or "unknown" when the bytes cannot be
     established without reading a forbidden area (fail-closed: the caller
     turns the whole fingerprint unidentifiable). Never reads forbidden
-    areas: an escaping path or a path under rom/ is "unknown" unread.
+    areas: an escaping path, a symlink/.. traversal, a repo-outside
+    resolution, a non-regular file, or a path under rom/ is "unknown"
+    unread. Direct forbidden specs are refused pre-read (no git/FS call).
     """
-    parts = path.replace("\\", "/").split("/")
-    if not parts or any(part in ("", ".", "..") for part in parts):
+    if not _lexical_input_ok(path):
         return "unknown"
+    parts = path.replace("\\", "/").split("/")
     if parts[0] in FORBIDDEN_INPUT_TOPS:
         return "unknown"
     if status == "D":
         return "deleted"
     try:
         if origin == "committed":
+            if not _git_blob_is_regular(repo, "HEAD", path):
+                # Covers missing blobs (deleted-after-rename etc.) and
+                # non-regular blobs (symlink/gitlink): fail-closed. The
+                # caller maps a genuinely deleted path via status "D";
+                # anything else unconfirmable refuses reuse instead of
+                # hashing link text or failing open.
+                return "unknown"
             proc = subprocess.run(
                 ["git", "-C", str(repo), "show", f"HEAD:{path}"],
                 capture_output=True, timeout=120)
@@ -956,18 +1141,40 @@ def _input_content_hash(repo, origin, status, path):
                 return "unknown"
             return hashlib.sha256(proc.stdout).hexdigest()
         if origin == "staged":
+            if not _git_staged_is_regular(repo, path):
+                return "unknown"
             proc = subprocess.run(
                 ["git", "-C", str(repo), "show", f":{path}"],
                 capture_output=True, timeout=120)
             if proc.returncode != 0:
                 return "unknown"
             return hashlib.sha256(proc.stdout).hexdigest()
-        target = Path(repo) / path
-        try:
-            target.relative_to(Path(repo).resolve())
-        except ValueError:
-            return "unknown"
-        if not target.is_file():
+        target = _worktree_target_safe(repo, path)
+        if target is None:
+            # Missing worktree file: it may be deleted (not yet staged).
+            # Distinguish "deleted" from "unreadable symlink/outside"
+            # without reading: a lexical path whose parent chain has no
+            # symlink and whose resolved location is inside the repo but
+            # which simply does not exist is "deleted"; any symlink,
+            # outside resolution, forbidden top, or non-regular is
+            # "unknown" (refuse reuse).
+            try:
+                candidate = Path(repo) / path
+                if candidate.is_symlink():
+                    return "unknown"
+                if candidate.exists():
+                    return "unknown"
+            except OSError:
+                return "unknown"
+            # Re-verify the missing path would resolve inside the repo.
+            try:
+                repo_resolved = Path(repo).resolve()
+                resolved = (Path(repo) / path).resolve()
+                if (resolved != repo_resolved
+                        and repo_resolved not in resolved.parents):
+                    return "unknown"
+            except OSError:
+                return "unknown"
             return "deleted"
         return hashlib.sha256(target.read_bytes()).hexdigest()
     except (OSError, subprocess.SubprocessError, ValueError):
@@ -977,16 +1184,18 @@ def _input_content_hash(repo, origin, status, path):
 def _map_identity(map_path):
     """Identify the impact map by content hash plus envelope id.
 
-    Returns (map_sha256, map_id). Anything missing, unreadable, or
-    unparseable is ("unknown", "unknown") so reuse is refused
-    fail-closed. The envelope id is the provisional ``format`` tag or
+    Returns (map_sha256, map_id). Anything missing, unreadable,
+    symlink/non-regular, or unparseable is ("unknown", "unknown") so
+    reuse is refused fail-closed. Reads via the strict regular-file
+    helper so a symlink map (link->sentinel) is never read. The envelope
+    id is the provisional ``format`` tag or
     ``name/v<schema>@<base_commit>`` for the canonical map; bytes alone
     are not trusted to identify the schema.
     """
     if not map_path:
         return "unknown", "unknown"
     try:
-        raw = Path(map_path).read_bytes()
+        raw = _read_bytes_strict(map_path)
     except OSError:
         return "unknown", "unknown"
     digest = hashlib.sha256(raw).hexdigest()
@@ -1009,6 +1218,85 @@ def _map_identity(map_path):
     if not isinstance(base_commit, str) or not _HEX40_RE.match(base_commit):
         return digest, f"{name}/v{schema}@unidentified"
     return digest, f"{name}/v{schema}@{base_commit}"
+
+
+def _cli_effective_env(mode, extra_env=None):
+    """Capture the CLI-effective conditions allowlist (no dump, no secrets).
+
+    Only MODE, OSS_PCE_REQUIRE_CC65, and a sha256 hash of TOOLS_DIR are
+    recorded (the raw TOOLS_DIR path is private and never stored). Any
+    change in these conditions changes the fingerprint so old evidence
+    never reuses. extra_env (unit-test overrides) must be a str->str
+    dict; anything else marks the env malformed (refuse reuse).
+    """
+    try:
+        tools_raw = os.environ.get("TOOLS_DIR", "")
+        if tools_raw:
+            tools_hash = hashlib.sha256(tools_raw.encode()).hexdigest()
+        else:
+            tools_hash = "unset"
+    except (OSError, ValueError, UnicodeError):
+        tools_hash = "unknown"
+    env = {
+        "MODE": str(mode),
+        REQUIRE_CC65_ENV: str(os.environ.get(REQUIRE_CC65_ENV, "")),
+        "TOOLS_DIR_sha256": tools_hash,
+    }
+    if extra_env is None:
+        return env
+    if not isinstance(extra_env, dict):
+        return {"__malformed__": "non-dict-extra-env"}
+    for key, value in extra_env.items():
+        if not isinstance(key, str) or not isinstance(value, str):
+            return {"__malformed__": "non-string-extra-env"}
+        env[key] = value
+    return env
+
+
+def _declared_toolchain(repo):
+    """Declared toolchain pins plus execution-identity confirmation.
+
+    Returns the pins JSON, or "unknown" when identity is unconfirmable
+    (missing/unparseable dependencies.json, missing revisions, or an
+    unconfirmable TOOLS_DIR execution directory). Declared revision alone
+    is never trusted: without a confirmable execution identity the
+    fingerprint refuses reuse.
+    """
+    candidate = Path(repo) / "tools" / "dependencies.json"
+    try:
+        if candidate.is_symlink() or not candidate.is_file():
+            return "unknown"
+        deps = json.loads(candidate.read_bytes().decode("utf-8"))
+    except (OSError, ValueError, UnicodeDecodeError):
+        return "unknown"
+    try:
+        if not isinstance(deps, dict) or not deps:
+            return "unknown"
+        pins = {}
+        for name in sorted(deps):
+            entry = deps[name]
+            if not isinstance(entry, dict):
+                return "unknown"
+            revision = entry.get("revision")
+            if not isinstance(revision, str) or not revision:
+                return "unknown"
+            pins[name] = revision
+        declared = json.dumps(pins, sort_keys=True)
+    except (KeyError, AttributeError, ValueError, TypeError):
+        return "unknown"
+    # Execution identity: the TOOLS_DIR directory must be confirmable
+    # (exists, is a real directory, not a symlink) so the declared pins
+    # can be tied to an executed location. Unconfirmable -> unknown.
+    try:
+        raw = os.environ.get("TOOLS_DIR", "")
+        if not raw:
+            return "unknown"
+        tools_path = Path(raw)
+        if tools_path.is_symlink() or not tools_path.is_dir():
+            return "unknown"
+    except OSError:
+        return "unknown"
+    return declared
 
 
 def evidence_fingerprint(repo, changed, mode="debug", extra_env=None,
@@ -1046,13 +1334,7 @@ def evidence_fingerprint(repo, changed, mode="debug", extra_env=None,
     if changed.head in _UNIDENTIFIABLE or changed.base in _UNIDENTIFIABLE:
         inputs_digest = "unknown"
     map_sha256, map_id = _map_identity(map_path)
-    toolchain = "unknown"
-    try:
-        deps = json.loads((Path(repo) / "tools" / "dependencies.json").read_text())
-        toolchain = json.dumps({name: deps[name].get("revision")
-                                for name in sorted(deps)}, sort_keys=True)
-    except (OSError, ValueError, KeyError, AttributeError):
-        toolchain = "unknown"
+    toolchain = _declared_toolchain(repo)
     if commands is None:
         commands_digest = "unknown"
     else:
@@ -1076,32 +1358,72 @@ def evidence_fingerprint(repo, changed, mode="debug", extra_env=None,
         "platform": sys.platform,
         "toolchain": toolchain,
         "mode": mode,
-        "env": dict(extra_env or {}),
+        "env": _cli_effective_env(mode, extra_env),
     }
 
 
 def evidence_reusable(stored, current):
     """A stored result is reusable only on exact fingerprint equality.
 
-    Unknown toolchains never reuse: without pins, "same toolchain" cannot be
-    established, so reuse is refused fail-closed. The same refusal applies
-    to any unidentifiable input (unknown/manual HEAD, unknown inputs from
-    forbidden areas or unreadable bytes, missing/unparseable map, unknown
-    selector, unknown level/command set): when identity cannot be
-    established, reuse is refused. Legacy fingerprints missing the newer
-    keys compare equal only to equally legacy fingerprints; any stored
-    fingerprint from before content hashing never matches a current one.
+    Prefer-refuse-on-incomplete: any missing key, None, empty string,
+    wrong-typed value, malformed envelope, or unidentifiable marker
+    ("unknown"/"manual") on EITHER side refuses. In particular
+    evidence_reusable({}, {}) is False (no keys, no identity, no reuse).
+    Unknown toolchains never reuse: without confirmable pins plus a
+    confirmable TOOLS_DIR execution identity, "same toolchain" cannot be
+    established, so reuse is refused fail-closed. The same refusal
+    applies to any unidentifiable input (unknown/manual HEAD, unknown
+    inputs from forbidden areas/symlinks/unreadable bytes,
+    missing/unparseable/symlink map, unknown selector, unknown
+    level/command set, malformed env): when identity cannot be
+    established, reuse is refused.
     """
+    if not isinstance(stored, dict) or not isinstance(current, dict):
+        return False
     required = ("head", "base", "inputs_sha256", "map_sha256", "map_id",
                 "selector", "api", "level", "commands_sha256",
                 "python", "platform", "toolchain", "mode", "env")
     for key in required:
-        if stored.get(key) != current.get(key):
+        if key not in stored or key not in current:
             return False
+        stored_value = stored.get(key)
+        current_value = current.get(key)
+        if stored_value is None or current_value is None:
+            return False
+        if stored_value != current_value:
+            return False
+    # Type/shape gate: malformed fingerprints never reuse.
+    for key in ("head", "base", "inputs_sha256", "map_sha256",
+                "map_id", "selector", "api", "level",
+                "commands_sha256", "python", "platform",
+                "toolchain", "mode"):
+        stored_value, current_value = stored[key], current[key]
+        if (not isinstance(stored_value, str)
+                or not isinstance(current_value, str)):
+            return False
+        if not stored_value or not current_value:
+            return False
+    for key in ("env",):
+        if (not isinstance(stored[key], dict)
+                or not isinstance(current[key], dict)):
+            return False
+        for side in (stored[key], current[key]):
+            for env_key, env_value in side.items():
+                if (not isinstance(env_key, str)
+                        or not isinstance(env_value, str)):
+                    return False
+        if "__malformed__" in stored[key] or "__malformed__" in current[key]:
+            return False
+    # Unidentifiable markers on EITHER side refuse (stored unknown must
+    # never satisfy a current unknown: equality of two unknowns is not
+    # identity).
     for key in ("head", "base", "inputs_sha256", "map_sha256", "map_id",
                 "selector", "level", "commands_sha256", "toolchain"):
-        if current.get(key) in _UNIDENTIFIABLE:
+        if stored[key] in _UNIDENTIFIABLE or current[key] in _UNIDENTIFIABLE:
             return False
+    # Selector pinning: results from another selector never reuse.
+    if stored["selector"] != SELECTOR_ID or current["selector"] != SELECTOR_ID:
+        return False
     return True
 
 
@@ -1122,14 +1444,31 @@ def _l3_selection(reasons, fallback_reason, fingerprint):
                      fingerprint=fingerprint)
 
 
+def _rule_matches(path, rule):
+    """Match one input path against one rule (B-4: kind-preserving).
+
+    Canonical exact/exact-list rules (literal=True) compare literally
+    so metacharacters ([, *, ?) never act as globs; only glob rules use
+    fnmatch. Provisional rules are glob-only (literal=False).
+    """
+    if getattr(rule, "literal", False):
+        return path == rule.pattern
+    return fnmatch.fnmatchcase(path, rule.pattern)
+
+
 def select(changed, rules, apis, api=None, fingerprint=None,
            match_mode="max"):
     """Classify every change; anything unclassifiable selects L3.
 
-    match_mode "max" (provisional) takes the highest matching rule level;
-    "first-match" (Task-A canonical) uses entry order, so the first rule
-    matching the path (and the --api tag, when given) wins. Both modes are
-    fail-closed: no match, or an L3 match, selects L3.
+    match_mode "max" (provisional, isolated) takes the highest matching
+    rule level. match_mode "first-match" (Task-A canonical) applies
+    entry order BEFORE any --api narrowing: the first path-matching rule
+    wins, and a requested --api must equal that rule's api tag, otherwise
+    the classification is uncertain -> full L3. --api never skips a
+    preceding L3 safety rule, never drops needed commands via
+    intersection, and never lowers the required level/commands. Both
+    modes are fail-closed: no match, uncertain match, or an L3 match
+    selects L3.
     """
     fingerprint = fingerprint or {}
     if match_mode not in ("max", "first-match"):
@@ -1156,18 +1495,31 @@ def select(changed, rules, apis, api=None, fingerprint=None,
     reasons = []
     for origin, _status, path in changed.all_classifiable():
         if match_mode == "first-match":
+            # Canonical: first path match wins, independent of --api.
+            # The --api tag is checked AFTER (narrowing), never as a
+            # pre-filter, so a preceding L3 safety rule cannot be skipped.
             first = next((rule for rule in rules
-                          if fnmatch.fnmatchcase(path, rule.pattern)
-                          and (api is None or rule.api == api)), None)
-            hits = [first] if first is not None else []
+                          if _rule_matches(path, rule)), None)
+            if first is None:
+                return _l3_selection(
+                    reasons + [f"{origin}:{path}: no map rule matches -> L3"],
+                    "unclassified-file", fingerprint)
+            if api is not None and first.api != api:
+                return _l3_selection(
+                    reasons + [f"{origin}:{path}: first-match rule "
+                               f"{first.pattern!r} carries api "
+                               f"{first.api!r}, requested api {api!r} "
+                               "mismatches (uncertain) -> L3"],
+                    "api-first-match-mismatch", fingerprint)
+            hits = [first]
         else:
             hits = [rule for rule in rules
-                    if fnmatch.fnmatchcase(path, rule.pattern)
+                    if _rule_matches(path, rule)
                     and (api is None or rule.api == api)]
-        if not hits:
-            return _l3_selection(
-                reasons + [f"{origin}:{path}: no map rule matches -> L3"],
-                "unclassified-file", fingerprint)
+            if not hits:
+                return _l3_selection(
+                    reasons + [f"{origin}:{path}: no map rule matches -> L3"],
+                    "unclassified-file", fingerprint)
         top = max(LEVEL_RANK[rule.level] for rule in hits)
         level_rank = max(level_rank, top)
         for rule in hits:
@@ -1190,7 +1542,14 @@ def select(changed, rules, apis, api=None, fingerprint=None,
             return _l3_selection(reasons, "api-slot-requires-L3",
                                  fingerprint)
         wanted = apis[api]["commands"]
-        selected = [cmd for cmd in selected if cmd in wanted] or list(wanted)
+        # B-4: never narrow by intersection (it would drop needed
+        # commands when entries and slots differ, or across multi-change
+        # inputs). The slot's command set IS the API evidence; path
+        # classification only raises the level, never reduces the set.
+        if match_mode == "first-match":
+            selected = list(wanted)
+        else:
+            selected = list(wanted)
         reasons.append(f"api:{api}: {apis[api]['reason']}")
         level_rank = max(level_rank, LEVEL_RANK[api_level])
     deduped = []
@@ -1252,11 +1611,14 @@ def render(selection):
                  f"{REQUIRE_CC65_ENV}=1 so a missing cc65 FAILs.")
     lines.append(f"SELECTED ({len(selection.selected)}):")
     for command in selection.selected:
+        # B-5: displayed command must equal the executed argv. shlex.join
+        # quotes whitespace/metachars so the report parses back to argv.
         lines.append(f"  env {REQUIRE_CC65_ENV}=1 -- "
-                     + " ".join(command["argv"]))
+                     + shlex.join([str(part) for part in command["argv"]]))
     lines.append(f"UNSELECTED ({len(selection.unselected)}):")
     for command in selection.unselected:
-        lines.append("  (not run at this level) " + " ".join(command["argv"]))
+        lines.append("  (not run at this level) "
+                     + shlex.join([str(part) for part in command["argv"]]))
     lines.append(f"REASONS ({len(selection.reasons)}):")
     for reason in selection.reasons:
         lines.append(f"  {reason}")
@@ -1295,9 +1657,15 @@ def run_selector(repo, base, map_path=None, api=None, fetch=False,
     """
     if requested_level in MANUAL_ONLY_LEVELS:
         changed = ChangedInputs(head="manual", base=base)
-        fingerprint = {"head": "manual", "base": base, "inputs_sha256": "manual",
-                       "python": platform.python_version(), "platform": sys.platform,
-                       "toolchain": "manual", "mode": mode, "env": {}}
+        fingerprint = {"head": "manual", "base": base,
+                       "inputs_sha256": "manual",
+                       "map_sha256": "manual", "map_id": "manual",
+                       "selector": SELECTOR_ID, "api": "none",
+                       "level": "L4", "commands_sha256": "manual",
+                       "python": platform.python_version(),
+                       "platform": sys.platform,
+                       "toolchain": "manual", "mode": mode,
+                       "env": _cli_effective_env(mode, None)}
         selection = Selection(
             level="L4",
             selected=[_with_required_env({"make": "dev-mul16s-sweep"})],
