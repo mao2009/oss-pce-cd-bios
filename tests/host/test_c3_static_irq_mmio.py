@@ -529,6 +529,47 @@ class SharedTailTests(unittest.TestCase):
         self.assertNotIn(C.FAIL, by_rule(report, "CI-3.02"), report.findings)
         self.assertIn(C.OK, by_rule(report, "CI-3.02"))
 
+    # --- tail/variant range hardening (Wave2 follow-up): label-anchored scans ---
+    # Boundary table (10 boundaries; T0 = first tail instruction line, TJ = restore TAM line,
+    # H = variant-head label line, S = SEI line, B = closing BRA line):
+    #   T1  directive at tail_no (`shared_tail: .byte ...`) .................... FAIL (inspected)
+    #   T2  same-line-label directive in (tail_no, T0) (`pad: .byte`) .......... FAIL (inspected)
+    #   T3  stray label in (tail_no, T0) (`stray:` between tail and pla) ....... FAIL (inspected)
+    #   T4  directive at T0 (same line as the first tail instruction) .......... out-of-scope: the
+    #       reader models one statement per physical line, so no line can be both a directive and an
+    #       instruction sharing that number.
+    #   T5  interior directive in (T0, TJ) (`.byte` mid-tail) .................. FAIL (inspected pin;
+    #       already FAIL before this change, kept against regressions)
+    #   T6  directive at TJ (same line as the restoring TAM) ................... out-of-scope: same
+    #       one-statement-per-line reason as T4.
+    #   T7  directive after TJ (post-restore parcel) ........................... out-of-scope: outside
+    #       the span by construction; covered by test_outside_span_conditional_parcel_still_accepted.
+    #   V1  directive in [H, S) (`.byte` between the head label and SEI) ...... FAIL (inspected)
+    #   V2  outer scaffolding (`.ifdef V` opener before H, `.endif` after B) ... ACCEPT (inspected via
+    #       the healthy fixture and the outside-span parcel: exempt by range, not by directive kind).
+    #   N1  negated/comparison opener (`.if VAR_A = 0` claiming VAR_A) ......... out-of-scope here:
+    #       #875 residual, intentionally unchanged by this task; starter-polarity (.ifndef / .else /
+    #       .elseif, tested above) still FAILs, so no guarantee is weakened.
+    def test_tail_label_byte_is_rejected(self):   # T1: directive on the tail-label line itself
+        self.assert_shared_fail(SHARED_HEALTHY.replace("shared_tail:\n    pla\n",
+                                                         "shared_tail: .byte $00\n    pla\n"))
+
+    def test_same_line_label_byte_in_tail_gap_is_rejected(self):   # T2: `pad: .byte` hides between a
+        self.assert_shared_fail(SHARED_HEALTHY.replace("shared_tail:\n    pla\n",  # label-only tail
+                                                         "shared_tail:\npad: .byte $00\n    pla\n"))  # and pla
+
+    def test_stray_label_between_tail_label_and_head_is_rejected(self):   # T3: other label in the gap
+        self.assert_shared_fail(SHARED_HEALTHY.replace("shared_tail:\n    pla\n",
+                                                         "shared_tail:\nstray:\n    pla\n"))
+
+    def test_interior_tail_byte_is_rejected(self):   # T5 pin: `.byte` between pla and the restore
+        self.assert_shared_fail(SHARED_HEALTHY.replace("shared_tail:\n    pla\n",
+                                                         "shared_tail:\n    pla\n    .byte $00\n"))
+
+    def test_byte_between_head_and_sei_is_rejected(self):   # V1: smuggled bytes below the old SEI bound
+        self.assert_shared_fail(SHARED_HEALTHY.replace("head_a:\n    php\n    sei\n",
+                                                         "head_a:\n    php\n    .byte $00\n    sei\n"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -222,12 +222,22 @@ def _shared_tail_windows(path, source, mmio, report):
     span or the tail span. Anything else (missing SEI, CLI / PLP / TXS or another MPR0 TAM inside a span, a
     branch / call / return / label inside a span, an access outside every span, a missing variant or an
     undeclared section window) is a FAIL, never a skip. The tail span is scanned head-inclusive (its first
-    instruction counts). Conditional structure is fail-closed on the cifs stack (kind, operand, block_id,
+    instruction counts) and label-anchored: the directive scan covers tail_no <= ln.number < ins[j].number
+    (a directive on the tail-label line itself, e.g. `shared_tail: .byte ...`, or on a line between a
+    label-only tail and its first instruction, otherwise hides below the first-instruction lower bound),
+    and any non-tail label in [tail_no, ins[j].number] breaks the straight-line tail (the tail label
+    itself is exempt; a line co-defining the tail with another label still counts via that other
+    label). Conditional structure is fail-closed on the cifs stack (kind, operand, block_id,
     branch_id per conditional level): SEI, set-up and closing BRA must share one identical cifs whose
     variant opener is affirmative (an .ifdef / .if-style header mentioning the variant, on branch 0: a
     `.ifndef V` block or an .else / .elseif branch must not claim a V window), every other instruction of
     the span must carry that same cifs (no nested conditional, no .endif reopen, no branch change inside),
-    and no directive may sit inside a claimed span. A conditional tail-label definition, a conditional tail
+    and no directive may sit inside a claimed span (the variant-span directive scan extends down to the
+    variant-head line so bytes smuggled between the head label and SEI cannot hide; the outer variant
+    scaffolding -- the `.ifdef V` opener before the head and the `.endif` closer after the BRA -- stays
+    outside [head_no, ins[b].number) by construction, and any inner conditional scaffolding is already
+    rejected by the same-cifs check, so this scan is the backstop for non-conditional content like
+    .byte). A conditional tail-label definition, a conditional tail
     instruction, or any directive inside the tail span is likewise unresolvable. Returns the covered
     [(start, end)] line spans, or None when the declaration itself is unusable.
     """
@@ -264,8 +274,12 @@ def _shared_tail_windows(path, source, mmio, report):
                    "structure: an instruction of the tail span sits inside a conditional block, so the tail "
                    "assembles differently per build (the tail must be unconditional)")
         tail_ok = False
+    # Label-anchored tail directive scan: tail_no <= ln.number < ins[j].number. The old
+    # ins[tail_idx].number lower bound missed a directive sitting on the tail-label line itself
+    # (same-line-label directive, `shared_tail: .byte ...`) or on a line between a label-only tail
+    # and its first instruction.
     tail_dir = next((ln for ln in source.lines if ln.directive
-                       and ins[tail_idx].number < ln.number < ins[j].number), None)
+                       and tail_no <= ln.number < ins[j].number), None)
     if tail_dir is not None:
         report.add("CI-3.02", FAIL, where(tail_dir), f"shared tail {tail!r} has an unresolvable conditional "
                    f"structure: directive {tail_dir.directive} sits inside the tail span, so each build "
@@ -275,9 +289,15 @@ def _shared_tail_windows(path, source, mmio, report):
                        (x.mnemonic == "tam" and ((_op(source, x).value or 0x01) & 0x01)) or
                        x.mnemonic == "txs"), None)
     immediate_close = ins[j - 1].mnemonic == "lda" and _op(source, ins[j - 1]).mode == "immediate"
-    if tail_break is not None or _labels_between(source, ins[tail_idx].number, ins[j].number) \
-            or immediate_close:
-        report.add("CI-3.02", FAIL, where(tail_break or ins[j]), f"shared tail {tail!r} is not one "
+    # Any non-tail label from the tail-label line through the restore breaks the tail. The old
+    # _labels_between(ins[tail_idx].number, ...) missed labels between a label-only tail and its first
+    # instruction; the tail label itself is exempt (a co-defined `tail: other:` line still counts).
+    tail_labels = [ln for ln in source.lines
+                   if tail_no <= ln.number <= ins[j].number and ln.labels
+                   and any(lab != tail for lab in ln.labels)]
+    if tail_break is not None or tail_labels or immediate_close:
+        report.add("CI-3.02", FAIL, where(tail_break or (tail_labels[0] if tail_labels else ins[j])),
+                   f"shared tail {tail!r} is not one "
                    "straight-line run up to its restoring TAM")
         tail_ok = False
     sets = [i for i in range(len(ins)) if _is_set_ff(source, ins, i) and ins[i].number < tail_no]
@@ -308,6 +328,16 @@ def _shared_tail_windows(path, source, mmio, report):
     for variant in sorted(by_variant):
         for i in by_variant[variant]:
             _, start, _ = _routine_of(source, ins[i])
+            # Variant-head line: the routine boundary label (e.g. `head_a:`) that opens the routine
+            # containing the set-up. Replicates _routine_of's boundary (last non-local label at or
+            # before the set-up); falls back to the routine's first instruction when no label precedes
+            # (cannot happen for headed variant routines, but keeps the bound conservative).
+            head_no = ins[start].number
+            for _ln in source.lines:
+                if _ln.number > ins[i].number:
+                    break
+                if any(not _lab.startswith("@") for _lab in _ln.labels):
+                    head_no = _ln.number
             seis = [k for k in range(start, i) if ins[k].mnemonic == "sei" and ins[k].cifs == ins[i].cifs]
             if not seis or not _straight(source, ins, seis[-1], i) or any(
                     x.mnemonic in ("cli", "plp", "rti", "txs") for x in ins[seis[-1]:i]):
@@ -339,8 +369,12 @@ def _shared_tail_windows(path, source, mmio, report):
                            "same conditional block and branch (no nested conditional, no .endif reopen, no "
                            ".else / .elseif branch change inside the span)")
                 continue
+            # Head-anchored variant directive scan: head_no <= ln.number < ins[b].number. The old
+            # ins[s].number lower bound missed bytes smuggled between the head label and SEI. The
+            # outer scaffolding (opener before the head, closer after the BRA) stays outside by
+            # construction; inner conditional scaffolding is already rejected by same-cifs above.
             span_dir = next((ln for ln in source.lines if ln.directive
-                               and ins[s].number < ln.number < ins[b].number), None)
+                               and head_no <= ln.number < ins[b].number), None)
             if span_dir is not None:
                 report.add("CI-3.02", FAIL, where(span_dir), f"variant {variant!r} window has an unresolvable "
                            f"conditional structure: directive {span_dir.directive} sits inside the window span, "
