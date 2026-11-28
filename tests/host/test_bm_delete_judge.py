@@ -650,5 +650,154 @@ class BmDeleteStructureGateTest(unittest.TestCase):
             self.assertEqual(spy.call_count, 0)
 
 
+class _BadName(bytes):
+    """bytes subclass with valid 12-byte payload; exact-type gate must refuse."""
+    pass
+
+
+class _BadBA(bytearray):
+    """bytearray subclass with valid 12-byte payload; exact-type gate must refuse."""
+    pass
+
+
+class _RedirectName:
+    """Non-bytes redirect: bytes() would copy a valid name, len() claims 12; gate must refuse before any copy."""
+    def __bytes__(self):
+        return N_A
+    def __len__(self):
+        return 12
+
+
+def _fresh_exact_gate_bad_names():
+    """Fresh BadName/RedirectName/BadBA/RedirectBA table; new objects per call (no aliasing)."""
+    return [
+        ("BadName", _BadName(N_A)),
+        ("RedirectName", _RedirectName()),
+        ("BadBA", _BadBA(N_A)),
+        ("RedirectBA", memoryview(N_A)),
+    ]
+
+
+class BmDeleteExactNameGateTest(unittest.TestCase):
+    """Issue #38 Wave2: exact-type name gate (type(name) in (bytes, bytearray) before len).
+
+    Table BadName/RedirectName/BadBA/RedirectBA x judge REFUSED-identical +
+    validate False + mock_delete ValueError + spy non-invocation + input-unmutated +
+    cross-return fresh + exact-match control + order preservation. CORRUPTED-wins holds
+    for doubly-bad (bad name + bad image). No generic bytes(name) copying: redirect
+    names whose bytes()/buffer would equal a stored entry are still REFUSED. Synthetic only.
+    """
+
+    def test_exact_name_gate_validate_is_false(self):
+        for label, bad in _fresh_exact_gate_bad_names():
+            with self.subTest(name=label):
+                self.assertFalse(bj.validate_input(bad))
+
+    def test_exact_name_gate_judge_refused_identical(self):
+        img = _image([(N_A, b"a"), (N_B, b"bb")])
+        for label, bad in _fresh_exact_gate_bad_names():
+            with self.subTest(name=label):
+                outcome, out = bj.judge(img, bad)
+                self.assertEqual(outcome, bj.REFUSED)
+                self.assertTrue(bj._images_equal(out, img))
+
+    def test_exact_name_gate_mock_delete_raises(self):
+        img = _image([(N_A, b"a")])
+        for label, bad in _fresh_exact_gate_bad_names():
+            with self.subTest(name=label):
+                with self.assertRaises(ValueError):
+                    bj.mock_delete(img, bad)
+
+    def test_exact_name_gate_make_image_rejects(self):
+        for label, bad in _fresh_exact_gate_bad_names():
+            with self.subTest(name=label):
+                with self.assertRaises(ValueError):
+                    bj.make_image(entries=[(bad, b"a")])
+
+    def test_exact_name_gate_never_calls_mock_delete(self):
+        import copy
+        from unittest import mock as utm
+        img = _image([(N_A, b"a")])
+        with utm.patch.object(bj, "mock_delete", side_effect=AssertionError("must not call")) as spy:
+            for label, bad in _fresh_exact_gate_bad_names():
+                with self.subTest(name=label):
+                    frozen = copy.deepcopy(img)
+                    outcome, out = bj.judge(img, bad)
+                    self.assertEqual(outcome, bj.REFUSED)
+                    self.assertTrue(bj._images_equal(out, img))
+                    self.assertEqual(img, frozen)
+            self.assertEqual(spy.call_count, 0)
+
+    def test_exact_name_gate_inputs_unmutated(self):
+        import copy
+        img = _image([(N_A, b"a"), (N_B, b"bb")])
+        for label, bad in _fresh_exact_gate_bad_names():
+            with self.subTest(name=label):
+                frozen = copy.deepcopy(img)
+                bj.judge(img, bad)
+                bj.validate_input(bad)
+                with self.assertRaises(ValueError):
+                    bj.mock_delete(img, bad)
+                self.assertEqual(img, frozen)
+                # Redirect payload itself is not normalized by the judge.
+                if isinstance(bad, (bytes, bytearray, memoryview)):
+                    self.assertEqual(bytes(bad), N_A)
+                else:
+                    self.assertEqual(bytes(bad), N_A)
+
+    def test_exact_name_gate_cross_return_fresh(self):
+        img = _image([(N_A, b"a")])
+        for label, bad in _fresh_exact_gate_bad_names():
+            with self.subTest(name=label):
+                _, first = bj.judge(img, bad)
+                _, second = bj.judge(img, bad)
+                self.assertEqual(first, second)
+                self.assertIsNot(first, second)
+                self.assertIsNot(first["entries"], second["entries"])
+                self.assertTrue(bj._images_equal(first, img))
+                self.assertTrue(bj._images_equal(second, img))
+
+    def test_exact_name_gate_corrupted_wins_over_refused(self):
+        base = bj._snapshot(_image([(N_A, b"a")]))
+        broken = dict(base, end=base["end"] + 1)
+        for label, bad in _fresh_exact_gate_bad_names():
+            with self.subTest(name=label):
+                outcome, out = bj.judge(broken, bad)
+                self.assertEqual(outcome, bj.CORRUPTED)
+                self.assertTrue(bj._images_equal(out, broken))
+        for label, bad in _fresh_exact_gate_bad_names():
+            with self.subTest(name="un-snapshotable+" + label):
+                outcome, out = bj.judge(None, bad)
+                self.assertEqual(outcome, bj.CORRUPTED)
+                self.assertEqual(out, {"entries": [], "formatted": False, "capacity": 0, "end": 0})
+
+    def test_exact_name_gate_no_generic_copying(self):
+        # bytes(RedirectName) and bytes(RedirectBA) both equal the stored entry,
+        # yet the judge must REFUSE instead of converting them into a lookup key.
+        img = _image([(N_A, b"a")])
+        for label, bad in _fresh_exact_gate_bad_names():
+            with self.subTest(name=label):
+                self.assertEqual(bytes(bad), N_A)
+                outcome, _ = bj.judge(img, bad)
+                self.assertEqual(outcome, bj.REFUSED)
+
+    def test_exact_name_gate_exact_match_control_and_order(self):
+        # Exact bytes and exact bytearray still hit; subclasses/redirects never do.
+        img = _image([(N_A, b"a"), (N_B, b"bb"), (N_C, b"ccc")])
+        self.assertTrue(bj.validate_input(bytearray(N_A)))
+        self.assertEqual(bj.judge(img, bytearray(N_A))[0], bj.OK)
+        for label, bad in _fresh_exact_gate_bad_names():
+            with self.subTest(control=label):
+                self.assertNotEqual(bj.judge(img, bad)[0], bj.OK)
+        # Order preservation with exact names: head/middle/tail deletes keep survivors in order.
+        _, head = bj.judge(img, N_A)
+        self.assertEqual([bytes(e["name"]) for e in head["entries"]], [N_B, N_C])
+        _, mid = bj.judge(img, N_B)
+        self.assertEqual([bytes(e["name"]) for e in mid["entries"]], [N_A, N_C])
+        _, tail = bj.judge(img, N_C)
+        self.assertEqual([bytes(e["name"]) for e in tail["entries"]], [N_A, N_B])
+        self.assertEqual([bytes(e["data"]) for e in mid["entries"]], [b"a", b"ccc"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -286,7 +286,7 @@ VERIFIED（真正 BIOS の確認）は 0 件。`release_eligible=false`。
        `mock_delete` は呼ばない。画像は不変（N5）。`formatted == false` は監査対象外であり、
        `mock_delete` が `(NOT_FORMATTED, 同一画像)` を返す正常系（N2）と区別する。
        画像も名前も不正な二重不良は `CORRUPTED` とする（`REFUSED` ではない）。
-    2. `validate_input(name)`: `name` が `bytes` かつ `len == 12` でなければ `REFUSED`。
+    2. `validate_input(name)`: `type(name) in (bytes, bytearray)` かつ `len == 12` でなければ `REFUSED`。bytes/bytearray subclass・`__bytes__`/buffer redirect は exact-type 外として拒否し、`mock_delete`/`make_image` は `ValueError`。`bytes(name)` の汎用複写は gate 通過後の exact 値に限る。`judge`/`mock_delete` の gate は `blob=bytes(name)` より前、画像も名前も不正な二重不良は `CORRUPTED` とする（`REFUSED` ではない）。
     3. `mock_delete(clean_image, name)`: `formatted == false` なら `(NOT_FORMATTED, 同一画像)`（N2）。
        名前完全一致の entry が無ければ `(NOT_FOUND, 同一画像)`（N1、N3、N7 の 2 回目）。
        あれば当該 1 件を除去し後続を詰めて `(OK, 新画像)`（P1–P4、N6、N7 の 1 回目）。

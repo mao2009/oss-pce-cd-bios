@@ -38,11 +38,11 @@ def mock_used(entries):
 
 
 def make_image(entries=(), formatted=True, capacity=2048):
-    """Build a synthetic clean image. entries is an iterable of (name, data); name must be 12 bytes."""
+    """Build a synthetic clean image. entries is an iterable of (name, data); name must be exact bytes/bytearray of length 12."""
     lst = []
     for name, data in entries:
-        if not isinstance(name, (bytes, bytearray)) or len(name) != 12:
-            raise ValueError("mock entry name must be 12 bytes")
+        if type(name) not in (bytes, bytearray) or len(name) != 12:
+            raise ValueError("mock entry name must be exact bytes/bytearray of length 12")
         if not isinstance(data, (bytes, bytearray)):
             raise ValueError("mock entry data must be bytes")
         lst.append({"name": bytes(name), "data": bytes(data)})
@@ -144,8 +144,10 @@ def _clean_errors(image):
 
 
 def validate_input(name):
-    """Input layer: name must be bytes of exactly length 12, else REFUSED (mock_delete is not called)."""
-    if not isinstance(name, (bytes, bytearray)) or len(name) != 12:
+    """Input layer: name must satisfy type(name) in (bytes, bytearray) and len == 12, else REFUSED (mock_delete is not called)."""
+    if type(name) not in (bytes, bytearray):
+        return False
+    if len(name) != 12:
         return False
     return True
 
@@ -177,10 +179,12 @@ def mock_delete(image, name):
 
     Callers must run validate_input and _clean_errors first (judge does so); this function re-checks
     fail-closed and returns HarnessOutcome-layer values only via judge, never as MockStatus.
+    Exact-type name gate (validate_input) runs before any bytes(name) copy, so subclass/redirect
+    names raise ValueError and are never generically copied.
     """
     before = _snapshot(image)
     if not validate_input(name):
-        raise ValueError("mock_delete refused: name must be 12 bytes")
+        raise ValueError("mock_delete refused: name must be exact bytes/bytearray of length 12")
     err = _clean_errors(image)
     if err is not None:
         raise ValueError(f"mock_delete refused on non-clean image: {err}")
@@ -213,6 +217,9 @@ def judge(image, name):
         return REFUSED, _snapshot(image)
     if not image["formatted"]:
         return NOT_FORMATTED, _snapshot(image)
+    # Exact-type name gate (validate_input above) runs before any bytes(name) copy:
+    # only exact bytes/bytearray reach this line, so bytes(name) cannot generically
+    # copy a subclass/redirect (__bytes__/buffer) into an accepted lookup key.
     blob = bytes(name)
     if not any(bytes(e["name"]) == blob for e in image["entries"]):
         return NOT_FOUND, _snapshot(image)
