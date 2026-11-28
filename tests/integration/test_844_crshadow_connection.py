@@ -165,7 +165,9 @@ class ConnectionOracleTests(unittest.TestCase):
                 self.assertEqual(cout, 0, "ok forces C=0 from either entry class")
                 self.assertEqual(ar, AR_OK)
 
-    # Oracle table C4: $A5 desync -> false-ok RED (stale image published).
+    # Oracle table C4a: $A5 desync with (shadow&$FB)!=(real&$FB) ->
+    # false-ok RED (stale image published). Static model computation only;
+    # no core execution is claimed beyond this unit check.
     def test_c4_marker_a5_desync_false_ok_red(self):
         path, cr, pub, cout, ar = model_2b(0xFF, MARKER_OK, 0x00, entry_ar=9)
         self.assertEqual(path, "ok")
@@ -173,10 +175,34 @@ class ConnectionOracleTests(unittest.TestCase):
         self.assertEqual(pub, 0xFB)
         self.assertEqual(cout, 0, "false-ok exits C=0 exactly like a sync ok")
         self.assertEqual(ar, AR_OK)
+        # Destruction condition: (shadow & $FB) != (real & $FB).
+        self.assertNotEqual(0xFF & MASK_2B, 0x00 & MASK_2B)
         # Non-target-bit damage: every set bit in $FB except bit2 comes from
         # the stale image (real was $00) — the RED condition.
         self.assertNotEqual(0xFB & ~0x04, 0x00)
         self.assertEqual(0xFB & ~0x04, 0xFF & ~0x04 & 0xFB)
+
+    # Oracle table C4b boundary: bit-2-only desync (shadow $04 vs real $00,
+    # marker $A5 actual, both entry-C classes) -> ok-path pass with C=0 but
+    # NO output destruction. Static model computation only; no core
+    # execution is claimed beyond this unit check.
+    def test_c4b_bit2_only_desync_no_destruction_red_lineage(self):
+        for entry_c in (0, 1):
+            path, cr, pub, cout, ar = model_2b(0x04, MARKER_OK, 0x00,
+                                               entry_ar=9, entry_c=entry_c)
+            self.assertEqual(path, "ok")
+            self.assertEqual(cr, 0x00, "actual published value kept")
+            self.assertEqual(pub, 0x00)
+            self.assertEqual(cout, 0, "async ok still exits C=0")
+            self.assertEqual(ar, AR_OK)
+        # No destruction: the $FB mask erases exactly the one differing bit.
+        self.assertNotEqual(0x04, 0x00, "inputs are desynced")
+        self.assertEqual(0x04 & MASK_2B, 0x00 & MASK_2B,
+                         "masked images coincide: no destruction")
+        self.assertEqual(cr, 0x00 & MASK_2B)
+        # Lineage is still RED: shadow != real, so this ok-path pass is
+        # async / improper lineage even though the value coincides with
+        # correct. An output match never proves sync or ownership.
 
     def test_entry_c_forced_both_classes(self):
         # ok forces C=0 and reject forces C=1 regardless of entry Carry.
@@ -207,7 +233,7 @@ class ConnectionOracleTests(unittest.TestCase):
         self.assertEqual(pub, 0xFF, "M_NOPUBLISH leaves shadow stale")
 
     def test_head_mutants_red_desync_oracle(self):
-        # Each single-byte head mutant must RED the C4 desync oracle (never
+        # Each single-byte head mutant must RED the C4a desync oracle (never
         # GREEN by masking). Expected-correct reference: ("ok", $FB, $FB, 0, 5).
         for kind in ("wrongbit", "destroy", "noop", "bypass"):
             with self.subTest(mutant=kind):

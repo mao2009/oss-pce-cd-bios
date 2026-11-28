@@ -124,15 +124,27 @@ cold==warm on all security state.
 | C1 | `$00` | any | reject (SEC, no write) | unchanged (real kept) | `[shadow,$00]` untouched | 1 | GREEN reject-correct |
 | C2 | `$5A` (loader-fill shape, actual `$5A` seed) | any | reject (SEC, no write) | unchanged | `[shadow,$5A]` untouched | 1 | GREEN reject-correct; oracle compares the actual byte, never fixed `$00` |
 | C3 | `$A5` synced (`shadow==real`) | equal | ok (publish + VDC write) | `shadow&$FB` (correct image) | `[CR,$A5]` | 0 | GREEN positive control (e.g. `04/04→00`, `FB/FB→FB`) |
-| C4 | `$A5` desync (`shadow!=real`) | differ | ok (publish + VDC write) | `stale&$FB` (wrong image, e.g. real `$00`+stale `$FF`→`$FB`) | `[stale&$FB,$A5]` | 0 | RED false-ok confirmed; non-target bits prove stale damage |
+| C4a | `$A5` desync with `(shadow&$FB)!=(real&$FB)` | differ (non-target bits differ) | ok (publish + VDC write) | `stale&$FB` (wrong image, e.g. real `$00`+stale `$FF`→`$FB`) | `[stale&$FB,$A5]` | 0 | RED false-ok confirmed; non-target bits prove stale damage |
+| C4b | `$A5` desync with `(shadow&$FB)==(real&$FB)` (bit-2-only difference, e.g. shadow `$04` vs real `$00`) | differ (target bit only) | ok (publish + VDC write) | `stale&$FB==real&$FB` (`$00`: correct-by-coincidence, actual value kept) | `[stale&$FB,$A5]` | 0 | RED lineage (async ok-path pass, improper lineage) but NO output destruction; output match never proves sync/ownership |
 
-Separation rows (mutant ROMs, same argv as C4): `M_NOVDC` must RED the VDC
+Separation rows (mutant ROMs, same argv as C4a): `M_NOVDC` must RED the VDC
 oracle (`vdc_r_before==vdc_r_after`) while shadow stays GREEN
 (`shadow_post==[$FB,$A5]`); `M_NOPUBLISH` must RED the shadow oracle
 (`shadow_post==[$FF,$A5]`) while VDC stays GREEN (`CR==$FB`). Head mutants
 `M_WRONGBIT`/`M_DESTROY`/`M_NOOP`/`M_BYPASS` must each RED the matching
 oracle on both cycles. Fail-closed argv: out-of-domain marker/ncalls/steps
 refused with no RESULT.
+
+C4a vs C4b discipline (SOURCE_CONFIRMED arithmetic on the `$FB` mask):
+async/improper-lineage/ok-path-pass (`shadow!=real` with `$A5`) and
+actual-output-destruction (`(shadow&$FB)!=(real&$FB)`) are distinct
+properties. C4a has both; C4b has the former without the latter (the `$2B`
+`AND #$FB` erases only bit2, so a bit-2-only desync publishes the correct
+value by coincidence). An output match (`CR==real&$FB`) therefore never
+proves sync, ownership, or lineage — only `(shadow==real)+$A5` with a
+justified lineage does. The execution-wave oracle must classify RED lineage
+on any `shadow!=real` ok-path pass, and additionally RED output-destruction
+only when `(shadow&$FB)!=(real&$FB)`.
 
 Positive control via post-staging intentional seed (execution-wave shape,
 unit-modeled here): after `L5RPT` observes the residue triple, the payload
@@ -214,7 +226,8 @@ no Geargrafx, no `./rom/` access; new payload explicitly NOT added per §6):
 - `EvidenceLabelTests`: the five-label taxonomy is closed and every
   module-level claim table entry carries a valid label.
 - `ConnectionOracleTests`: pure `$2B` model (`marker!=$A5`→reject else
-  publish `shadow&$FB`) checked against oracle table C1–C4, both entry-C
+  publish `shadow&$FB`) checked against oracle table C1–C4b (C4a destructive
+  desync RED plus C4b bit-2-only async-without-destruction RED lineage), both entry-C
   classes, AR discipline, cold/warm equality, `M_NOVDC`/`M_NOPUBLISH`
   separation, head-mutant REDs, and the post-staging intentional-seed
   positive control (residue-desync RED vs reseeded-sync GREEN).
