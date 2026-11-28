@@ -15,8 +15,12 @@ changing the default behavior:
 - 9 calls with default cap: 8 records, truncated, dropped 1 (RED control)
 - 9/12/16 calls with raised cap: full order, no truncation, dropped 0
 - over-cap (17 calls, cap 16): 16 records, truncated, dropped 1
+- exact/overflow at both hard bounds: 1x1 full, 2x1 drops 1, 64x64 full,
+  65x64 drops 1 (cap20x64 kept as the under-cap control)
+- distinct-slot order: 10-call $4A/$25/$24/$36/$35 x2 pattern proves slot+pc
+  order both cycles (identical-$35 repetition cannot catch a permutation)
 - invalid capacities (0, 65, non-int) refused fail-closed (Python ValueError;
-  direct C++ invocation exits non-zero)
+  direct C++ invocation exits exactly 2, with a valid-cap control at exit 0)
 - truncation invariant: truncated is True iff dropped > 0, both cycles
 - cold/warm identical event order on every run
 - commercial mode stays RAM-clean (assert_commercial_clean) with the new key
@@ -41,8 +45,22 @@ TRACK_SEL = 2
 BUDGET = 20_000_000
 
 
-def payload_asm(ncalls):
-    calls = "\n".join(["    jsr $E09F"] * ncalls)
+# Distinct safe order pattern: every slot below is "experimental" (returns via
+# the preservation scaffold) in the cap35 G5 ROM built in setUpClass, so a
+# multi-slot payload still returns cleanly to the cd_halt_ok halt.
+SAFE_ORDER_SLOTS = (0x4A, 0x25, 0x24, 0x36, 0x35)
+
+
+def entry_of_slot(slot):
+    return 0xE000 + slot * 3
+
+
+def payload_asm(ncalls, pattern=None):
+    if pattern is None:
+        calls = "\n".join(["    jsr $E09F"] * ncalls)
+    else:
+        seq = [pattern[i % len(pattern)] for i in range(ncalls)]
+        calls = "\n".join([f"    jsr ${entry_of_slot(s):04X}" for s in seq])
     return f""".setcpu "huc6280"
 .segment "CODE"
 payload_entry:
@@ -111,10 +129,11 @@ class ApicallCapacitySynthetic(unittest.TestCase):
     def _run(self, name, ncalls, **kwargs):
         import environment
         from geargrafx_api_entry import run_probe
+        pattern = kwargs.pop("pattern", None)
         o = self.out / name
         o.mkdir(exist_ok=True)
         src = o / (name + ".s")
-        src.write_text(payload_asm(ncalls), encoding="ascii")
+        src.write_text(payload_asm(ncalls, pattern), encoding="ascii")
         cfg = ("MEMORY {\n    RAM: start = $3000, size = $0F00, file = %O;\n}\n"
                "SEGMENTS {\n    CODE: load = RAM, type = ro, start = $3000;\n}\n")
         obj, binp, cfgp, lblp = (o / (name + ".o"), o / (name + ".bin"),
@@ -159,10 +178,26 @@ class ApicallCapacitySynthetic(unittest.TestCase):
             assert isinstance(r.get("apicall_dropped"), int), r
             out[cycle] = {"slots": [c["slot"] for c in calls],
                           "pcs": [c["entry_pc"] for c in calls],
+                          "caller_pcs": [c["caller_pc"] for c in calls],
+                          "steps": [c["step"] for c in calls],
                           "trunc": r["apicall_truncated"],
                           "dropped": r["apicall_dropped"],
                           "match": [c.get("stack_check") for c in calls]}
         return out
+
+    def _assert_capacity(self, rec, ncalls, cap):
+        """Per-cycle bound check: kept == min(ncalls, cap), dropped == ncalls - kept."""
+        s = self._summarize(rec)
+        want_kept = min(ncalls, cap)
+        want_dropped = max(0, ncalls - cap)
+        for cycle in ("cold", "warm"):
+            self.assertEqual(len(s[cycle]["slots"]), want_kept, cycle)
+            self.assertEqual(s[cycle]["dropped"], want_dropped, cycle)
+            self.assertIs(s[cycle]["trunc"], want_dropped > 0, cycle)
+            self.assertEqual(s[cycle]["trunc"], s[cycle]["dropped"] > 0, cycle)
+        self.assertEqual(s["cold"]["slots"], s["warm"]["slots"])
+        self.assertEqual(s["cold"]["pcs"], s["warm"]["pcs"])
+        return s
 
     def _check_full(self, rec, ncalls):
         s = self._summarize(rec)
@@ -206,8 +241,67 @@ class ApicallCapacitySynthetic(unittest.TestCase):
             self.assertIs(s[cycle]["trunc"], True, cycle)
             self.assertEqual(s[cycle]["dropped"], 1, cycle)
 
-    def test_max_cap_boundary(self):
+    def test_under_max_cap(self):
+        # Under-cap control (renamed from cap20x64): 20 calls at cap 64 stay
+        # fully recorded; the exact 64/overflow bounds are proved below.
         self._check_full(self._run("cap20x64", 20, max_apicalls=64), 20)
+
+    def test_cap1_exact(self):
+        # Lower hard bound: a single call at cap 1 is fully recorded.
+        self._check_full(self._run("cap1x1", 1, max_apicalls=1), 1)
+
+    def test_cap1_overflow(self):
+        # Lower overflow: 2 calls at cap 1 keep the first, drop exactly 1.
+        rec = self._run("cap2x1", 2, max_apicalls=1)
+        s = self._assert_capacity(rec, 2, 1)
+        for cycle in ("cold", "warm"):
+            self.assertEqual(s[cycle]["slots"], [0x35], cycle)
+            self.assertEqual(s[cycle]["pcs"], [0xE09F], cycle)
+
+    def test_cap64_exact(self):
+        # Upper hard bound: 64 calls at cap 64 are fully recorded.
+        self._check_full(self._run("cap64x64", 64, max_apicalls=64), 64)
+
+    def test_cap64_overflow(self):
+        # Upper overflow: 65 calls at cap 64 keep 64, drop exactly 1.
+        rec = self._run("cap65x64", 65, max_apicalls=64)
+        s = self._assert_capacity(rec, 65, 64)
+        for cycle in ("cold", "warm"):
+            self.assertEqual(s[cycle]["slots"], [0x35] * 64, cycle)
+            self.assertEqual(s[cycle]["pcs"], [0xE09F] * 64, cycle)
+
+    def test_distinct_slot_order_both_cycles(self):
+        # Order permutation sensitivity (preferred option A): a repeating safe
+        # sequence over distinct experimental slots proves slot+pc order per
+        # cycle. Identical-$35 repetition cannot catch a shuffle; this can.
+        ncalls = 10
+        pattern = list(SAFE_ORDER_SLOTS)
+        want_slots = [pattern[i % len(pattern)] for i in range(ncalls)]
+        want_pcs = [entry_of_slot(s) for s in want_slots]
+        rec = self._run("caporder10x16", ncalls, max_apicalls=16,
+                        pattern=pattern)
+        s = self._summarize(rec)
+        for cycle in ("cold", "warm"):
+            self.assertEqual(s[cycle]["slots"], want_slots, cycle)
+            self.assertEqual(s[cycle]["pcs"], want_pcs, cycle)
+            self.assertIs(s[cycle]["trunc"], False, cycle)
+            self.assertEqual(s[cycle]["dropped"], 0, cycle)
+            self.assertEqual(s[cycle]["match"], ["MATCH"] * ncalls, cycle)
+            # Caller PCs strictly increase inside the payload window and the
+            # probe steps strictly increase: any record permutation or skip
+            # breaks one of these sequences.
+            cpcs, steps = s[cycle]["caller_pcs"], s[cycle]["steps"]
+            self.assertEqual(len(cpcs), ncalls, cycle)
+            for pc in cpcs:
+                self.assertGreaterEqual(pc, 0x3000, cycle)
+                self.assertLess(pc, 0x3800, cycle)
+            self.assertEqual(cpcs, sorted(cpcs), cycle)
+            self.assertEqual(len(set(cpcs)), ncalls, cycle)
+            self.assertEqual(steps, sorted(steps), cycle)
+            self.assertEqual(len(set(steps)), ncalls, cycle)
+        self.assertEqual(s["cold"]["slots"], s["warm"]["slots"])
+        self.assertEqual(s["cold"]["pcs"], s["warm"]["pcs"])
+        self.assertEqual(s["cold"]["caller_pcs"], s["warm"]["caller_pcs"])
 
     def test_invalid_caps_refused(self):
         # None means "default 8" and is valid, so it is not listed here.
@@ -217,20 +311,39 @@ class ApicallCapacitySynthetic(unittest.TestCase):
                     self._run("capbad", 7, max_apicalls=bad)
 
     def test_direct_probe_rejects_bad_cap(self):
-        # Fail-closed at the C++ boundary: non-numeric/out-of-range 7th arg.
+        # Fail-closed at the C++ boundary: non-numeric/out-of-range 7th arg
+        # exits exactly 2. The valid-cap control (explicit "8" and the
+        # 6-arg default form) must exit 0 with 2 RUNs, proving the exit-2
+        # failures are cap rejections, not unrelated setup failures.
+        # (" 8" is deliberately not listed: strtol skips leading spaces.)
         import tempfile
         priv = Path(tempfile.mkdtemp(prefix="pce-apicap-raw-"))
         try:
             lab = priv / "x.labels"
             lab.write_text("cd_halt_ok 3000\ncd_halt_fail 3001\n"
                            "cd_unexpected_interrupt 3002\napi_unimplemented 3003\n")
-            for bad in ("0", "65", "abc", "-3"):
+            base = [str(self.probe), str(self.rom), "-", str(lab),
+                    "1000", "synthetic"]
+            for bad in ("0", "65", "abc", "-3", "", "08x", "8.0"):
                 with self.subTest(arg=bad):
                     r = subprocess.run(
-                        [str(self.probe), str(self.rom), "-", str(lab),
-                         "1000", "synthetic", bad],
+                        base + [bad],
                         capture_output=True, text=True, timeout=60)
-                    self.assertNotEqual(r.returncode, 0, f"cap {bad} must fail")
+                    self.assertEqual(r.returncode, 2, f"cap {bad!r} must exit 2")
+            for good in (["8"], []):
+                with self.subTest(arg=good):
+                    r = subprocess.run(
+                        base + good,
+                        capture_output=True, text=True, timeout=120)
+                    self.assertEqual(r.returncode, 0, f"cap {good!r} must run")
+                    runs = [ln for ln in r.stdout.splitlines()
+                            if ln.startswith("RUN ")]
+                    self.assertEqual(len(runs), 2, f"cap {good!r} must emit 2 RUNs")
+                    for ln in runs:
+                        body = json.loads(ln[len("RUN "):])
+                        self.assertIn(body.get("reason"), ("budget", "cd_halt_ok",
+                                                           "cd_halt_fail", "cd_unexpected_interrupt",
+                                                           "api_unimplemented"))
         finally:
             import shutil
             shutil.rmtree(priv, ignore_errors=True)
@@ -246,16 +359,131 @@ class ApicallCapacitySynthetic(unittest.TestCase):
             self.assertEqual(s[cycle]["dropped"], 0, cycle)
         import geargrafx_api_entry as E
         E.assert_commercial_clean(rec)
+        # Evidence projection persists both keys per RUN with the right types.
+        runs = E.evidence_runs(rec)
+        self.assertEqual(len(runs), 2)
+        for r in runs:
+            self.assertIs(r["apicall_truncated"], False)
+            self.assertEqual(r["apicall_dropped"], 0)
+            self.assertIsInstance(r["apicall_dropped"], int)
+            self.assertNotIsInstance(r["apicall_dropped"], bool)
 
     def test_truncation_invariant(self):
         # truncated is True iff dropped > 0, on every run of every shape.
         for name, ncalls, cap in (("inv7", 7, None), ("inv9", 9, None),
-                                  ("inv12", 12, 16), ("inv17", 17, 16)):
+                                  ("inv12", 12, 16), ("inv17", 17, 16),
+                                  ("inv1x1", 1, 1), ("inv2x1", 2, 1),
+                                  ("inv64x64", 64, 64), ("inv65x64", 65, 64)):
             with self.subTest(name=name):
                 rec = (self._run(name, ncalls) if cap is None
                        else self._run(name, ncalls, max_apicalls=cap))
                 for r in rec["RUN"]:
                     self.assertEqual(r["apicall_truncated"], r["apicall_dropped"] > 0)
+
+    # --- CLI --max-apicalls contract (synthetic-only, no ./rom/ access) ---
+
+    def test_cli_help_lists_flag(self):
+        r = subprocess.run(
+            [sys.executable, str(Path(__file__).resolve().parent /
+                                  "geargrafx_api_entry.py"), "--help"],
+            capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("--max-apicalls", r.stdout)
+
+    def test_cli_malformed_caps_exit_2(self):
+        # Range/non-int rejections exit 2 via parser.error/argparse before any
+        # ROM check, so no media or build artifact is needed here.
+        entry = str(Path(__file__).resolve().parent / "geargrafx_api_entry.py")
+        for bad in ("0", "65", "-3", "abc", "8.0"):
+            with self.subTest(arg=bad):
+                r = subprocess.run(
+                    [sys.executable, entry, "--max-apicalls", bad],
+                    capture_output=True, text=True, timeout=60)
+                self.assertEqual(r.returncode, 2, f"--max-apicalls {bad} must exit 2")
+
+    def _fake_probe_result(self, runs):
+        import json as _json
+        import unittest.mock
+        lines = ["RUN " + _json.dumps(r) for r in runs]
+        m = unittest.mock.MagicMock()
+        m.stdout = "\n".join(lines) + "\n"
+        return m
+
+    def test_run_probe_default_is_six_args(self):
+        # None keeps the historical 6-argument probe invocation unchanged.
+        import unittest.mock
+        import geargrafx_api_entry as E
+        seen = {}
+
+        def fake_run(cmd, **kwargs):
+            seen["cmd"] = list(cmd)
+            return self._fake_probe_result([
+                {"cycle": "cold", "reason": "budget", "halt_confirmed": False},
+                {"cycle": "warm", "reason": "budget", "halt_confirmed": False}])
+        with unittest.mock.patch.object(E.subprocess, "run", fake_run):
+            E.run_probe("P", "R", "C", "L", 1000, "synthetic")
+        self.assertEqual(len(seen["cmd"]), 6)
+        self.assertEqual(seen["cmd"][:6], ["P", "R", "C", "L", "1000", "synthetic"])
+
+    def test_run_probe_explicit_cap_is_seventh_arg(self):
+        # Explicit caps become probe argv[6]; the CLI forwards this position.
+        import unittest.mock
+        import geargrafx_api_entry as E
+        seen = {}
+
+        def fake_run(cmd, **kwargs):
+            seen["cmd"] = list(cmd)
+            return self._fake_probe_result([
+                {"cycle": "cold", "reason": "budget", "halt_confirmed": False},
+                {"cycle": "warm", "reason": "budget", "halt_confirmed": False}])
+        with unittest.mock.patch.object(E.subprocess, "run", fake_run):
+            E.run_probe("P", "R", "C", "L", 1000, "synthetic", max_apicalls=16)
+        self.assertEqual(len(seen["cmd"]), 7)
+        self.assertEqual(seen["cmd"][6], "16")
+
+    def test_cli_forwards_cap_in_both_paths(self):
+        # Static contract: both synthetic and commercial run_probe call sites
+        # forward args.max_apicalls (None preserves default-8 history).
+        src = (Path(__file__).resolve().parent /
+               "geargrafx_api_entry.py").read_text(encoding="utf-8")
+        self.assertIn("max_apicalls=max_apicalls", src)
+        self.assertIn("max_apicalls=args.max_apicalls", src)
+        self.assertEqual(src.count("max_apicalls=args.max_apicalls"), 3)
+
+    def test_evidence_projection_schema_unit(self):
+        # Synthetic-only schema check on fabricated structural records: both
+        # keys present with bool/int types, truncation invariant holds, and
+        # the commercial clean-audit accepts the additive dropped count.
+        import geargrafx_api_entry as E
+        rec = {"CAP": [], "HIT": [], "PHASE": [], "APICALL": [], "RUN": [
+            {"cycle": "cold", "reason": "cd_halt_ok", "pc": 0x3000, "x": 0x35,
+             "halt_confirmed": True, "step": 10,
+             "apicall_truncated": False, "apicall_dropped": 0},
+            {"cycle": "warm", "reason": "cd_halt_ok", "pc": 0x3000, "x": 0x35,
+             "halt_confirmed": True, "step": 12,
+             "apicall_truncated": True, "apicall_dropped": 1}]}
+        E.assert_commercial_clean(rec)
+        runs = E.evidence_runs(rec)
+        self.assertEqual(len(runs), 2)
+        self.assertIs(runs[0]["apicall_truncated"], False)
+        self.assertEqual(runs[0]["apicall_dropped"], 0)
+        self.assertIs(runs[1]["apicall_truncated"], True)
+        self.assertEqual(runs[1]["apicall_dropped"], 1)
+        for r in runs:
+            self.assertIsInstance(r["apicall_truncated"], bool)
+            self.assertIsInstance(r["apicall_dropped"], int)
+            self.assertNotIsInstance(r["apicall_dropped"], bool)
+            self.assertEqual(r["apicall_truncated"], r["apicall_dropped"] > 0)
+        # Missing keys default (backward-compatible with older evidence).
+        legacy = {"RUN": [{"cycle": "cold", "reason": "budget", "pc": 0,
+                            "x": 0, "halt_confirmed": False, "step": 5}]}
+        legacy_runs = E.evidence_runs(legacy)
+        self.assertIs(legacy_runs[0]["apicall_truncated"], False)
+        self.assertEqual(legacy_runs[0]["apicall_dropped"], 0)
+        # Truncation stays fail-closed: any truncated trace classifies
+        # INCOMPLETE, never a confirmation.
+        verdict, _detail = E.classify_commercial(rec, stub_addr=None)
+        self.assertEqual(verdict, "INCOMPLETE")
 
 
 if __name__ == "__main__":
