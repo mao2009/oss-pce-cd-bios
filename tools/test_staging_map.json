@@ -5,7 +5,7 @@
   "base_commit": "2399a50b5e67f25b9efae206e2690984879c8746",
   "base_desc": "origin/main, Merge PR #851",
   "local_media": {
-    "rom_dir_present": false,
+    "rom_dir_present": "not-asserted (presence-independent; never checked)",
     "access": "none",
     "verdict": "PASS (no ./rom access; synthetic fixtures only)"
   },
@@ -38,7 +38,7 @@
     "release_eligible": false,
     "release_gate": "make release BLOCKED exit 1; dev gate exit 3 + BLOCKED only",
     "docs_only_fast_path_enabled": false,
-    "commercial_media_access": "none (./rom absent)"
+    "commercial_media_access": "none (tracked-files-only enumeration; synthetic fixtures only)"
   },
   "ci_facts": {
     "core_harness_jobs_total": 8,

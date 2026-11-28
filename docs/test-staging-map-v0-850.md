@@ -5,8 +5,14 @@
 > bodies, or pins. Base: `origin/main` `2399a50b` (Merge PR #851).
 > Branch: `agent/test-staging-map-v0-20261128`.
 > **Evidence boundary:** PASS below applies only to the listed checks.
-> **Local media:** `./rom/` is absent (`ls rom/` fails); no commercial or
-> reference-BIOS media was accessed. Real-media tests are SKIP, not PASS.
+> **Local media:** no commercial or reference-BIOS media was accessed.
+> Non-contact holds independent of media presence: enumeration is
+> tracked-files-only (`git ls-files -z`, so untracked `./rom/` content
+> is never scanned) plus a synthetic-fixture non-contact test; nothing
+> asserts on `./rom/` existence, listing, or bytes. (History, not proof:
+> an early draft noted `ls rom/` failing; current evidence does not rely
+> on that.) The media test PASSES (never SKIP); no real-media test is
+> attempted.
 
 Related: #850 (survey/design, `docs/test-staging-survey-850.md` §§1–3),
 #853 (ledger gaps corrected here, §5), #848 (CI sharding, integrated),
@@ -140,11 +146,13 @@ only; docs-only fast path disabled; no `./rom` access.
 ## 7. Validation evidence
 
 - RED: with the map absent, `python3 -m unittest
-  tests.host.test_test_staging_map` → 15 failures (0 errors, 0 skipped;
-  only the 2 map-independent invariant tests pass).
-- GREEN: with the map present → `Ran 17 tests ... OK` in
-  ~0.1–0.2 s local; the `./rom` media test asserts absence and PASSES
-  (never SKIP; no real-media test attempted, synthetic fixtures only).
+  tests.host.test_test_staging_map` → 17 failures (0 errors, 0 skipped;
+  only the 3 map-independent tests pass: the 2 ledger/gate invariant
+  tests plus the synthetic enumeration-hygiene test).
+- GREEN: with the map present → `Ran 20 tests ... OK` in
+  ~0.1–0.2 s local; the `./rom` media tests PASS presence-independently
+  (never SKIP; tracked-files-only enumeration hygiene + synthetic
+  fixtures only, no `./rom/` existence, listing, or byte asserts).
 - `git diff --check`: clean (new files only, no whitespace errors).
 - `make check`: PASS (unchanged static gate; see run log for timing).
 - `git status --short`: only the 3 added files (plus the branch itself).
@@ -158,7 +166,7 @@ only; docs-only fast path disabled; no `./rom` access.
 > (`tools/test_staging_map.json`, 65 entries + 81 API-slot rows + 55
 > transitive Makefile rows), its human companion
 > (`docs/test-staging-map-v0-850.md`), and fail-closed validation tests
-> (`tests/host/test_test_staging_map.py`, 17 tests). Applies the Issue
+> (`tests/host/test_test_staging_map.py`, 20 tests). Applies the Issue
 > #853 corrections (§5). Safety invariants unchanged (6 Required, JSR
 > 0/81, VERIFIED 0/81, `release_eligible=false`, docs-only disabled, no
 > `./rom` access). Evidence: new-test RED→GREEN, `git diff --check`
@@ -170,5 +178,6 @@ only; docs-only fast path disabled; no `./rom` access.
 ---
 
 *Provenance: original analysis (MIT). No proprietary content. No
-`./rom` access (`rom/` absent, confirmed). No emulator runs; timings are
+`./rom` access (presence-independent: tracked-files-only enumeration,
+no existence, listing, or byte reads). No emulator runs; timings are
 host-side file checks only.*
