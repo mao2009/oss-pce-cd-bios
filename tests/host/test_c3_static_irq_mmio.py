@@ -503,6 +503,12 @@ class SharedTailTests(unittest.TestCase):
     def test_ifndef_opener_cannot_claim_variant(self):   # polarity: a `.ifndef VAR_A` block is the VAR_A-absent
         self.assert_shared_fail(SHARED_HEALTHY.replace(".ifdef VAR_A\nhead_a:", ".ifndef VAR_A\nhead_a:"))  # path
 
+    def test_if_comparison_opener_cannot_claim_variant(self):  # #875: VAR_A-absent paths
+        self.assert_shared_fail(SHARED_HEALTHY.replace(".ifdef VAR_A\nhead_a:", ".if VAR_A = 0\nhead_a:"))
+        self.assert_shared_fail(SHARED_HEALTHY.replace(".ifdef VAR_A\nhead_a:", ".if VAR_A <> 1\nhead_a:"))
+        self.assert_shared_fail(SHARED_HEALTHY.replace(".ifdef VAR_A\nhead_a:",
+                                                         ".if !DEFINED(VAR_A)\nhead_a:"))
+
     def test_endif_reopen_breaks_span_identity(self):   # same operand, new block: SEI and set-up no longer share it
         self.assert_shared_fail(SHARED_HEALTHY.replace("head_a:\n    php\n    sei\n",
                                                          "head_a:\n    php\n    sei\n.endif\n.ifdef VAR_A\n"))
