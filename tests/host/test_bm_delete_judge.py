@@ -1032,5 +1032,295 @@ class BmDeleteBadKeyGateTest(unittest.TestCase):
         self.assertEqual(out["entries"], [])
 
 
+class _RaisingMeta(type):
+    """Metaclass whose __eq__ raises: tuple `in` would propagate; `is` never calls it."""
+    def __eq__(cls, other):
+        raise RuntimeError("metaclass __eq__ must never run")
+    def __ne__(cls, other):
+        raise RuntimeError("metaclass __ne__ must never run")
+
+
+class _SpoofMeta(type):
+    """Metaclass whose __eq__ spoofs True: tuple `in` would accept any class."""
+    def __eq__(cls, other):
+        return True
+    def __ne__(cls, other):
+        return False
+
+
+_META_EQ_CALLS = []
+
+
+class _CountingMeta(type):
+    """Metaclass that records __eq__ calls (returns False): proves non-invocation."""
+    def __eq__(cls, other):
+        _META_EQ_CALLS.append((cls, other))
+        return False
+    def __ne__(cls, other):
+        _META_EQ_CALLS.append((cls, other))
+        return True
+
+
+class _EvilBytes(bytes, metaclass=_RaisingMeta):
+    pass
+
+
+class _EvilInt(int, metaclass=_RaisingMeta):
+    pass
+
+
+class _SpoofBytes(bytes, metaclass=_SpoofMeta):
+    pass
+
+
+class _SpoofInt(int, metaclass=_SpoofMeta):
+    pass
+
+
+class _CountBytes(bytes, metaclass=_CountingMeta):
+    pass
+
+
+class _CountInt(int, metaclass=_CountingMeta):
+    pass
+
+
+class _SwapRedirect(bytes, metaclass=_SpoofMeta):
+    """Payload WRONG but bytes() returns b"TARGET      \": a tuple-`in` gate would delete TARGET."""
+    def __bytes__(self):
+        return b"TARGET      "
+
+
+class BmDeleteMetaclassIdentityGateTest(unittest.TestCase):
+    """Issue #38 Wave2: explicit-`is` allowlist via the shared `_type_is` predicate.
+
+    `type(v) in (...)` invokes a custom metaclass __eq__ (raise or spoof-True);
+    the gate must use identity only. Pins (tables use subTest; all pre-existing
+    rows are kept untouched): RaisingMeta bytes/int at all 7 positions
+    (external name, scalar x3, entry x2, make_image); SpoofMeta-True still
+    rejected; counting-meta 0 __eq__ calls; Redirect swap (payload != bytes()
+    value); mutable-int alias impossible; doubly-bad CORRUPTED-wins;
+    mock_delete spy 0; fresh-EMPTY identity; exact builtin acceptance (bool
+    stays listed). Synthetic images only; no I/O.
+    """
+
+    EMPTY = {"entries": [], "formatted": False, "capacity": 0, "end": 0}
+
+    def _base(self):
+        return bj._snapshot(_image([(N_A, b"a")]))
+
+    def test_raising_meta_external_name_never_raises(self):
+        img = self._base()
+        for label, bad in (("EvilBytes", _EvilBytes(N_A)),
+                           ("EvilBytes-wrong", _EvilBytes(b"\x00\x00WRONG     "))):
+            with self.subTest(name=label):
+                self.assertFalse(bj.validate_input(bad))  # must not raise
+                outcome, out = bj.judge(img, bad)  # must not raise
+                self.assertEqual(outcome, bj.REFUSED)
+                self.assertTrue(bj._images_equal(out, img))
+                with self.assertRaises(ValueError):
+                    bj.mock_delete(img, bad)  # ValueError, never RuntimeError
+
+    def test_raising_meta_scalars_corrupted_empty(self):
+        for key in ("formatted", "capacity", "end"):
+            for label, evil in (("EvilInt", _EvilInt(1)), ("EvilBytes", _EvilBytes(b"x"))):
+                with self.subTest(scalar=key, evil=label):
+                    broken = dict(self._base(), **{key: evil})
+                    self.assertFalse(bj._is_snapshotable(broken))  # must not raise
+                    outcome, out = bj.judge(broken, N_A)  # must not raise
+                    self.assertEqual(outcome, bj.CORRUPTED)
+                    self.assertEqual(out, self.EMPTY)
+
+    def test_raising_meta_entry_fields_corrupted_empty(self):
+        base = self._base()
+        for field, payload in (("name", _EvilBytes(N_A)), ("data", _EvilBytes(b"a"))):
+            with self.subTest(field=field):
+                broken = dict(base, entries=[dict(base["entries"][0], **{field: payload})])
+                self.assertFalse(bj._is_snapshotable(broken))  # must not raise
+                outcome, out = bj.judge(broken, N_A)  # must not raise
+                self.assertEqual(outcome, bj.CORRUPTED)
+                self.assertEqual(out, self.EMPTY)
+
+    def test_spoof_meta_true_still_rejected(self):
+        # External name position -> REFUSED (never OK, never raise).
+        img = self._base()
+        for label, spoof in (("SpoofBytes", _SpoofBytes(N_A)),
+                             ("SpoofBytes-wrong", _SpoofBytes(b"\x00\x00WRONG     "))):
+            with self.subTest(position="external", spoof=label):
+                self.assertFalse(bj.validate_input(spoof))
+                outcome, out = bj.judge(img, spoof)
+                self.assertEqual(outcome, bj.REFUSED)
+                self.assertTrue(bj._images_equal(out, img))
+        # Scalar x3 positions -> CORRUPTED + fresh EMPTY (spoof-True must not pass).
+        spoof_scalars = {
+            "formatted": [_SpoofInt(1), _SpoofBytes(b"yes")],
+            "capacity": [_SpoofInt(2048), _SpoofBytes(b"2048")],
+            "end": [_SpoofInt(19), _SpoofBytes(b"19")],
+        }
+        for key, spoofs in spoof_scalars.items():
+            for spoof in spoofs:
+                with self.subTest(position="scalar-" + key, spoof=type(spoof).__name__):
+                    broken = dict(self._base(), **{key: spoof})
+                    self.assertFalse(bj._is_snapshotable(broken))
+                    outcome, out = bj.judge(broken, N_A)
+                    self.assertEqual(outcome, bj.CORRUPTED)
+                    self.assertEqual(out, self.EMPTY)
+        # Entry x2 positions -> CORRUPTED + fresh EMPTY.
+        base = self._base()
+        for field, payload in (("name", _SpoofBytes(N_A)), ("data", _SpoofBytes(b"a"))):
+            with self.subTest(position="entry-" + field):
+                broken = dict(base, entries=[dict(base["entries"][0], **{field: payload})])
+                self.assertFalse(bj._is_snapshotable(broken))
+                outcome, out = bj.judge(broken, N_A)
+                self.assertEqual(outcome, bj.CORRUPTED)
+                self.assertEqual(out, self.EMPTY)
+
+    def test_counting_meta_eq_never_called(self):
+        base = self._base()
+        payloads = [
+            ("external-name", _CountBytes(N_A)),
+            ("scalar-formatted", _CountInt(1)),
+            ("scalar-capacity", _CountInt(2048)),
+            ("scalar-end", _CountInt(19)),
+            ("entry-name", _CountBytes(N_A)),
+            ("entry-data", _CountBytes(b"a")),
+        ]
+        for label, payload in payloads:
+            with self.subTest(position=label):
+                del _META_EQ_CALLS[:]
+                if label == "external-name":
+                    self.assertFalse(bj.validate_input(payload))
+                    outcome, out = bj.judge(base, payload)
+                    self.assertEqual(outcome, bj.REFUSED)
+                    self.assertTrue(bj._images_equal(out, base))
+                elif label.startswith("scalar-"):
+                    key = label.split("-", 1)[1]
+                    broken = dict(base, **{key: payload})
+                    outcome, out = bj.judge(broken, N_A)
+                    self.assertEqual(outcome, bj.CORRUPTED)
+                    self.assertEqual(out, self.EMPTY)
+                else:
+                    field = label.split("-", 1)[1]
+                    broken = dict(base, entries=[dict(base["entries"][0], **{field: payload})])
+                    outcome, out = bj.judge(broken, N_A)
+                    self.assertEqual(outcome, bj.CORRUPTED)
+                    self.assertEqual(out, self.EMPTY)
+                self.assertEqual(_META_EQ_CALLS, [])
+
+    def test_redirect_swap_no_deletion(self):
+        target = bj.make_image(entries=[(b"TARGET      ", b"data")])
+        trap = _SwapRedirect(b"WRONG       ")
+        self.assertEqual(len(trap), 12)
+        self.assertEqual(bytes(trap), b"TARGET      ")  # trap armed
+        self.assertFalse(bj.validate_input(trap))
+        outcome, out = bj.judge(target, trap)
+        self.assertEqual(outcome, bj.REFUSED)
+        self.assertTrue(bj._images_equal(out, target))
+        self.assertEqual([bytes(e["name"]) for e in out["entries"]], [b"TARGET      "])
+
+    def test_mutable_int_alias_impossible(self):
+        v = _SpoofInt(2048)
+        v.extra = []
+        broken = dict(self._base(), capacity=v)
+        self.assertFalse(bj._is_snapshotable(broken))
+        outcome, out = bj.judge(broken, N_A)
+        self.assertEqual(outcome, bj.CORRUPTED)
+        self.assertEqual(out, self.EMPTY)
+        self.assertIsNot(out, self.EMPTY)
+        # Mutating the return must not touch the input's aliased-capable object.
+        out["entries"].append({"name": N_A, "data": b"x"})
+        out["capacity"] = 9999
+        self.assertEqual(v.extra, [])
+        self.assertIs(broken["capacity"], v)
+        # Cross-return freshness.
+        _, second = bj.judge(broken, N_A)
+        self.assertEqual(second, self.EMPTY)
+        self.assertIsNot(out, second)
+
+    def test_make_image_rejects_metaclass_names(self):
+        for label, bad in (("EvilBytes", _EvilBytes(N_A)),
+                           ("SpoofBytes", _SpoofBytes(N_A)),
+                           ("CountBytes", _CountBytes(N_A))):
+            with self.subTest(name=label):
+                del _META_EQ_CALLS[:]
+                with self.assertRaises(ValueError):  # ValueError, never RuntimeError
+                    bj.make_image(entries=[(bad, b"a")])
+                self.assertEqual(_META_EQ_CALLS, [])
+
+    def test_doubly_bad_metaclass_corrupted_wins(self):
+        base = self._base()
+        evil_scalar = dict(base, capacity=_EvilInt(2048))
+        evil_entry = dict(base, entries=[dict(base["entries"][0], name=_EvilBytes(N_A))])
+        for label, broken in (("scalar", evil_scalar), ("entry", evil_entry)):
+            for bad_name in (b"", b"short", "FILE_A", None, 1234,
+                             _EvilBytes(N_A), _SpoofBytes(N_A)):
+                with self.subTest(image=label, bad_name=repr(bad_name)[:24]):
+                    outcome, out = bj.judge(broken, bad_name)  # must not raise
+                    self.assertEqual(outcome, bj.CORRUPTED)
+                    self.assertEqual(out, self.EMPTY)
+        for bad_name in (_EvilBytes(N_A), _SpoofBytes(N_A)):
+            with self.subTest(image="none", bad_name=type(bad_name).__name__):
+                outcome, out = bj.judge(None, bad_name)  # must not raise
+                self.assertEqual(outcome, bj.CORRUPTED)
+                self.assertEqual(out, self.EMPTY)
+
+    def test_metaclass_never_calls_mock_delete_and_fresh_empty(self):
+        from unittest import mock as utm
+        base = self._base()
+        abnormals = [
+            dict(base, formatted=_EvilInt(1)),
+            dict(base, capacity=_EvilInt(2048)),
+            dict(base, end=_EvilInt(19)),
+            dict(base, formatted=_SpoofInt(1)),
+            dict(base, capacity=_SpoofInt(2048)),
+            dict(base, end=_SpoofInt(19)),
+            dict(base, entries=[dict(base["entries"][0], name=_EvilBytes(N_A))]),
+            dict(base, entries=[dict(base["entries"][0], data=_EvilBytes(b"a"))]),
+        ]
+        self.assertEqual(len(abnormals), 8)
+        names = [N_A, b"short", None, _EvilBytes(N_A), _SpoofBytes(N_A)]
+        with utm.patch.object(bj, "mock_delete", side_effect=AssertionError("must not call")) as spy:
+            for idx, broken in enumerate(abnormals):
+                with self.subTest(case=idx):
+                    for name in names:
+                        outcome, out = bj.judge(broken, name)  # must not raise
+                        self.assertEqual(outcome, bj.CORRUPTED)
+                        self.assertEqual(out, self.EMPTY)
+            self.assertEqual(spy.call_count, 0)
+        _, first = bj.judge(abnormals[0], N_A)
+        _, second = bj.judge(abnormals[0], N_A)
+        self.assertEqual(first, self.EMPTY)
+        self.assertEqual(first, second)
+        self.assertIsNot(first, second)
+        self.assertIsNot(first, self.EMPTY)
+
+    def test_exact_builtin_acceptance_kept(self):
+        # bool stays listed: exact True/False/int/str/bytes pass the gate; subclasses do not.
+        base = self._base()
+        self.assertTrue(bj._is_snapshotable(base))
+        self.assertTrue(bj.validate_input(N_A))
+        self.assertTrue(bj.validate_input(bytearray(N_A)))
+        self.assertFalse(bj.validate_input(_SpoofBytes(N_A)))
+        self.assertFalse(bj.validate_input(_EvilBytes(N_A)))
+        for key, good in (("formatted", True), ("formatted", False), ("formatted", 1),
+                          ("formatted", "yes"), ("capacity", 2048), ("capacity", "2048"),
+                          ("end", 19), ("end", "19")):
+            with self.subTest(scalar=key, value=repr(good)):
+                self.assertTrue(bj._is_snapshotable(dict(base, **{key: good})))
+        for key, bad in (("formatted", _SpoofInt(1)), ("capacity", _EvilInt(2048)),
+                          ("end", _SpoofInt(19))):
+            with self.subTest(scalar=key, rejected=type(bad).__name__):
+                self.assertFalse(bj._is_snapshotable(dict(base, **{key: bad})))
+        # Shared predicate is identity-only.
+        self.assertTrue(bj._type_is(N_A, (bytes, bytearray)))
+        self.assertTrue(bj._type_is(bytearray(N_A), (bytes, bytearray)))
+        self.assertFalse(bj._type_is(_SpoofBytes(N_A), (bytes, bytearray)))
+        self.assertFalse(bj._type_is(_EvilBytes(N_A), (bytes, bytearray)))
+        self.assertTrue(bj._type_is(True, (bool, int, str, bytes)))
+        self.assertTrue(bj._type_is(1, (bool, int, str, bytes)))
+        # End-to-end: exact names still delete.
+        self.assertEqual(bj.judge(base, bytearray(N_A))[0], bj.OK)
+
+
 if __name__ == "__main__":
     unittest.main()

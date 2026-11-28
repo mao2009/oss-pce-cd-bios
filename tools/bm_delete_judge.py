@@ -37,11 +37,24 @@ def mock_used(entries):
     return sum(MOCK_ENTRY_OVERHEAD + len(e["data"]) for e in entries)
 
 
+def _type_is(value, allowed):
+    """Exact-type membership using identity only (never metaclass __eq__).
+
+    `type(value) in allowed` would invoke a custom metaclass __eq__ (which can
+    raise or spoof True), so every allowlist site uses this shared predicate:
+    an explicit `is` disjunction over plain builtin types. Single definition so
+    all seven sites (make_image name, formatted/capacity/end, entry name/data,
+    validate_input) stay in sync. `allowed` holds plain builtin types only.
+    """
+    t = type(value)
+    return any(t is a for a in allowed)
+
+
 def make_image(entries=(), formatted=True, capacity=2048):
     """Build a synthetic clean image. entries is an iterable of (name, data); name must be exact bytes/bytearray of length 12."""
     lst = []
     for name, data in entries:
-        if type(name) not in (bytes, bytearray) or len(name) != 12:
+        if not _type_is(name, (bytes, bytearray)) or len(name) != 12:
             raise ValueError("mock entry name must be exact bytes/bytearray of length 12")
         if not isinstance(data, (bytes, bytearray)):
             raise ValueError("mock entry data must be bytes")
@@ -68,7 +81,8 @@ def _is_snapshotable(image):
     Covers exact-dict image, stored keys exactly str, required keys, exact-list entries,
     and each entry being an exact dict with exactly-str keys plus exact bytes/bytearray
     name+data. Scalar snapshotability: formatted/capacity/end must each satisfy
-    type(value) in (bool, int, str, bytes) (exact immutable, so _snapshot's by-reference
+    type(value) is bool/int/str/bytes (identity-only via _type_is, so a custom
+    metaclass __eq__ can neither raise nor spoof; exact immutable, so _snapshot's by-reference
     scalar copy cannot alias caller-mutable subclass state). Subclasses (int/str/bytes/
     dict/list/bytearray subclasses, incl. mutable attrs or raising special methods) and
     non-str stored keys (incl. str subclasses and same-hash colliding keys) are
@@ -88,11 +102,11 @@ def _is_snapshotable(image):
             return False
     if "entries" not in image or "formatted" not in image or "capacity" not in image or "end" not in image:
         return False
-    if type(image["formatted"]) not in (bool, int, str, bytes):
+    if not _type_is(image["formatted"], (bool, int, str, bytes)):
         return False
-    if type(image["capacity"]) not in (bool, int, str, bytes):
+    if not _type_is(image["capacity"], (bool, int, str, bytes)):
         return False
-    if type(image["end"]) not in (bool, int, str, bytes):
+    if not _type_is(image["end"], (bool, int, str, bytes)):
         return False
     if type(image["entries"]) is not list:
         return False
@@ -104,9 +118,9 @@ def _is_snapshotable(image):
                 return False
         if "name" not in entry or "data" not in entry:
             return False
-        if type(entry["name"]) not in (bytes, bytearray):
+        if not _type_is(entry["name"], (bytes, bytearray)):
             return False
-        if type(entry["data"]) not in (bytes, bytearray):
+        if not _type_is(entry["data"], (bytes, bytearray)):
             return False
     return True
 
@@ -153,8 +167,8 @@ def _clean_errors(image):
 
 
 def validate_input(name):
-    """Input layer: name must satisfy type(name) in (bytes, bytearray) and len == 12, else REFUSED (mock_delete is not called)."""
-    if type(name) not in (bytes, bytearray):
+    """Input layer: name must satisfy type(name) is bytes/bytearray (identity via _type_is) and len == 12, else REFUSED (mock_delete is not called)."""
+    if not _type_is(name, (bytes, bytearray)):
         return False
     if len(name) != 12:
         return False
