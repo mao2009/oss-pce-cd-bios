@@ -97,13 +97,68 @@ def _git_env_isolated():
     redirect `git init/add/ls-files` run with cwd=synthetic-tmp onto an
     external repo (victim HEAD move / stray commit / index mutation).
     Passing this env to EVERY git subprocess keeps each synthetic fixture
-    self-contained; production callers benefit identically.
+    self-contained; production callers benefit identically. This is the
+    shared GIT_*-strip base: _git_env_readonly() and _synthetic_git_env()
+    both build on it (Issue #854 review 6096132357 A-1: GIT_* stripping
+    alone does NOT isolate HOME/XDG/system config, hooks, or templates).
     """
     return {k: v for k, v in os.environ.items()
             if not k.startswith("GIT_")}
 
 
-def repo_files(root=ROOT):
+def _git_env_readonly():
+    """SEPARATE, explicitly read-only env for real-tree enumeration.
+
+    Used ONLY for `git ls-files` on the REAL worktree via repo_files().
+    `git ls-files` never executes hooks, copies templates, or signs, so
+    HOME/XDG/system config need no further isolation here; GIT_* stripping
+    (via _git_env_isolated) prevents repo redirection. Synthetic fixture
+    subprocesses MUST NOT use this env -- they use _synthetic_git_env() +
+    _synthetic_git_prefix() + --template (full config/hook/template/signing
+    isolation). Keeping the two envs distinct makes the audit explicit.
+    """
+    return _git_env_isolated()
+
+
+def _synthetic_git_env(synth_home):
+    """Full isolation for EVERY synthetic-fixture git subprocess.
+
+    Covers the review 6096132357 A-1 leak: _git_env_isolated() alone leaves
+    HOME / XDG_CONFIG_HOME / system config visible, so a hostile global
+    `core.hooksPath` (or init.templatedir / commit.gpgsign) would make a
+    fixture `git commit` execute an external hook. This env redirects HOME
+    and XDG_CONFIG_HOME at an empty synthetic dir, sets GIT_CONFIG_NOSYSTEM
+    plus GIT_CONFIG_GLOBAL/SYSTEM=/dev/null (ignore system+global config
+    files even if the parent points at them), and still strips every GIT_*
+    discovery var. Callers additionally pass _synthetic_git_prefix() (-c
+    core.hooksPath=<empty> + signing off) and --template=<empty> on init,
+    so even a hostile config leaking through cannot supply hooks/templates.
+    """
+    env = _git_env_isolated()
+    env["HOME"] = synth_home
+    env["XDG_CONFIG_HOME"] = os.path.join(synth_home, ".config")
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
+    env["GIT_CONFIG_GLOBAL"] = os.devnull
+    env["GIT_CONFIG_SYSTEM"] = os.devnull
+    return env
+
+
+def _synthetic_git_prefix(empty_hooks_dir):
+    """Per-invocation -c overrides for every synthetic-fixture git call.
+
+    Forces core.hooksPath at a known-empty synthetic dir (no external
+    pre-commit/commit-msg/post-commit hook can run) and disables commit/tag
+    signing (no external gpg/helper execution, no interactive prompt). Used
+    as `git <prefix> <subcommand>...` for init/add/rev-parse/ls-files in
+    fixtures; `git init` additionally takes --template=<empty> so no system
+    template hooks are copied.
+    """
+    return ["-c", f"core.hooksPath={empty_hooks_dir}",
+            "-c", "commit.gpgsign=false",
+            "-c", "tag.gpgsign=false"]
+
+
+def repo_files(root=ROOT, env=None):
     # Tracked-files-only enumeration (Issue #854 review): `git ls-files`
     # lists the versioned index, so untracked/private worktree content --
     # notably optional ./rom/ commercial media -- is never scanned and
@@ -112,10 +167,17 @@ def repo_files(root=ROOT):
     # is never touched (no existence check, listing, or read). The root
     # parameter exists only so the synthetic test below can run the same
     # tracked-index enumeration inside an isolated temp repo; production
-    # callers always use the default (real worktree index).
+    # callers always use the default (real worktree index) with the
+    # SEPARATE read-only env (_git_env_readonly: GIT_* stripped; ls-files
+    # never executes hooks/templates/signing). Synthetic-fixture callers
+    # pass an explicit _synthetic_git_env() so fixture ls-files is also
+    # isolated from global/system config (audit: init/add/rev-parse/
+    # ls-files/commit all covered; see test body).
+    if env is None:
+        env = _git_env_readonly()
     proc = subprocess.run(["git", "ls-files", "-z"], cwd=root,
                           stdout=subprocess.PIPE, check=True,
-                          env=_git_env_isolated())
+                          env=env)
     out = [p for p in proc.stdout.decode("utf-8").split("\0")
            if p and is_scanned_tracked_path(p)]
     return sorted(out)
@@ -391,22 +453,40 @@ class MapSafetyTest(unittest.TestCase):
         # check against any live-tree fixed path. Per-run unique probe
         # names (pid + uuid4) are created exclusively (x-mode/O_EXCL:
         # refuse instead of clobbering, symlink included); only
-        # self-created files are removed. All git subprocesses (init /
-        # add / ls-files) run with an explicit env stripping every GIT_*
-        # local-discovery var, so a hostile parent GIT_DIR/GIT_WORK_TREE/
-        # GIT_INDEX_FILE/GIT_COMMON_DIR cannot redirect the fixture onto
-        # an external repo. `git add` suffices for the index enumeration;
-        # no commit is created in the fixture. No ./rom access of any
-        # kind (nothing created, listed, or read under ./rom).
+        # self-created files are removed. Audit (review 6096132357 A-1):
+        # EVERY fixture git subprocess (init/add/rev-parse --verify/
+        # ls-files; no commit anywhere) runs under _synthetic_git_env() +
+        # _synthetic_git_prefix() + init --template=<empty>, so a hostile
+        # parent GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE/GIT_COMMON_DIR cannot
+        # redirect the fixture onto an external repo AND a hostile HOME/XDG
+        # global config (core.hooksPath / init.templatedir / commit.gpgsign)
+        # cannot supply an external hook, template, or signer. Real-tree
+        # enumeration stays on the SEPARATE read-only env (repo_files()
+        # default: GIT_* stripped; ls-files never executes hooks). `git add`
+        # suffices for the index enumeration; no commit is created in any
+        # fixture or in the victim setup (victim HEAD stays unborn, which is
+        # itself the stray-commit detector), so no hook path can execute.
+        # No ./rom access of any kind (nothing created, listed, or read
+        # under ./rom); all temp dirs are synthetic (never ./rom, never the
+        # real worktree).
         with tempfile.TemporaryDirectory(
                 prefix="staging-map-enum-proof-") as tmp:
             troot = Path(tmp)
-            subprocess.run(["git", "init", "-q"], cwd=troot, check=True,
-                           env=_git_env_isolated())
+            # Controlled, empty isolation roots (synthetic-only).
+            synth_home = troot / "synth_home_isolated"
+            synth_home.mkdir()
+            empty_hooks = troot / "empty_hooks"
+            empty_hooks.mkdir()
+            empty_template = troot / "empty_template"
+            empty_template.mkdir()
+            synth_env = _synthetic_git_env(str(synth_home))
+            synth_prefix = _synthetic_git_prefix(str(empty_hooks))
+            subprocess.run(["git"] + synth_prefix +
+                           ["init", "-q", f"--template={empty_template}"],
+                           cwd=troot, check=True, env=synth_env)
             (troot / "tracked.txt").write_text("tracked\n", encoding="utf-8")
-            subprocess.run(["git", "add", "tracked.txt"],
-                           cwd=troot, check=True,
-                           env=_git_env_isolated())
+            subprocess.run(["git"] + synth_prefix + ["add", "tracked.txt"],
+                           cwd=troot, check=True, env=synth_env)
             # Parallel-safe unique names: pid + uuid4, distinct per run.
             tag = f"{os.getpid()}.{uuid.uuid4().hex}"
             probe_name = f"synthetic_untracked_probe.{tag}.tmp"
@@ -446,71 +526,141 @@ class MapSafetyTest(unittest.TestCase):
                     fh.write("synthetic enumeration probe "
                              "(untracked, must be invisible)\n")
                 created = True
-                listed = repo_files(troot)
+                listed = repo_files(troot, env=synth_env)
                 self.assertIn("tracked.txt", listed)
                 self.assertNotIn(probe_name, listed)
             finally:
                 if created:
                     probe.unlink(missing_ok=True)
-            # External-repo isolation under hostile GIT_*: a second
-            # synthetic repo (victim) must keep the same HEAD, index,
-            # tracked files, and config while the fixture runs with a
-            # hostile parent env. repo_files() re-sanitizes internally,
-            # so its enumeration stays fixture-local (tracked-only).
+            # External-repo + external-hook isolation under hostile GIT_* +
+            # hostile HOME/XDG (review 6096132357 A-1): a second synthetic
+            # repo (victim, add-only so HEAD stays unborn) must keep the same
+            # unborn HEAD, index, tracked files, and config while the fixture
+            # runs with a hostile parent env whose global config points
+            # core.hooksPath at a synthetic sentinel hook. The sentinel marker
+            # must stay absent (GREEN); repo_files() with the synthetic env
+            # stays fixture-local (tracked-only).
             with tempfile.TemporaryDirectory(
-                    prefix="staging-map-victim-") as vtmp:
+                    prefix="staging-map-victim-") as vtmp, \
+                    tempfile.TemporaryDirectory(
+                        prefix="staging-map-hostile-home-") as htmp, \
+                    tempfile.TemporaryDirectory(
+                        prefix="staging-map-hostile-hooks-") as hookstmp:
                 victim_repo = Path(vtmp)
-                iso = _git_env_isolated()
-                subprocess.run(["git", "init", "-q"], cwd=victim_repo,
-                               check=True, env=iso)
+                hostile_home = Path(htmp)
+                hostile_hooks = Path(hookstmp)
+                hostile_marker = hostile_hooks / "EXTERNAL_MARKER_CREATED"
+                # Hostile external hook + hostile global config (ALL synthetic:
+                # sentinel pre-commit writes a marker if it ever executes;
+                # hostile HOME .gitconfig points core.hooksPath at it). The
+                # old _git_env_isolated() (GIT_* strip only) left HOME/XDG
+                # visible, so a fixture `git commit` under this parent env
+                # executed the external hook (RED: marker created). The fixed
+                # fixture below must NOT create the marker (GREEN).
+                (hostile_hooks / "pre-commit").write_text(
+                    f"#!/bin/sh\necho HIT > {hostile_marker}\n",
+                    encoding="utf-8")
+                os.chmod(hostile_hooks / "pre-commit", 0o755)
+                (hostile_home / ".gitconfig").write_text(
+                    f"[core]\n\thooksPath = {hostile_hooks}\n",
+                    encoding="utf-8")
+                hostile_xdg = hostile_home / ".config" / "git"
+                hostile_xdg.mkdir(parents=True)
+                (hostile_xdg / "config").write_text(
+                    f"[core]\n\thooksPath = {hostile_hooks}\n",
+                    encoding="utf-8")
+                # Victim setup under FULL synthetic isolation (no commit:
+                # `git add` suffices for the index proof, and dropping the
+                # commit removes the only hook-execution path from the setup
+                # itself -- no pre-commit/commit-msg/post-commit can run when
+                # nothing is committed. Victim HEAD therefore stays unborn;
+                # "still unborn afterwards" is the stray-commit detector.
+                # Audit: init/add/rev-parse/ls-files below all use
+                # synth_env + synth_prefix + --template (config/hook/template
+                # /signing isolated); rev-parse --verify and ls-files are
+                # read-only (never execute hooks) but still isolated.
+                subprocess.run(["git"] + synth_prefix +
+                               ["init", "-q", f"--template={empty_template}"],
+                               cwd=victim_repo, check=True, env=synth_env)
                 (victim_repo / "victim.txt").write_text(
                     "victim DATA - must survive\n", encoding="utf-8")
-                subprocess.run(["git", "add", "victim.txt"],
-                               cwd=victim_repo, check=True, env=iso)
-                subprocess.run(["git", "-c", "user.email=t@t", "-c",
-                                "user.name=t", "commit", "-qm", "init"],
-                               cwd=victim_repo, check=True, env=iso)
-                head_proc = subprocess.run(
-                    ["git", "rev-parse", "HEAD"], cwd=victim_repo,
-                    stdout=subprocess.PIPE, check=True, env=iso)
-                victim_head = head_proc.stdout.decode("utf-8").strip()
-                count_proc = subprocess.run(
-                    ["git", "rev-list", "--count", "HEAD"],
+                subprocess.run(["git"] + synth_prefix + ["add", "victim.txt"],
+                               cwd=victim_repo, check=True, env=synth_env)
+                verify_before = subprocess.run(
+                    ["git"] + synth_prefix + ["rev-parse", "--verify", "HEAD"],
                     cwd=victim_repo, stdout=subprocess.PIPE,
-                    check=True, env=iso)
-                victim_count = count_proc.stdout.decode("utf-8").strip()
+                    stderr=subprocess.DEVNULL, env=synth_env)
+                self.assertNotEqual(verify_before.returncode, 0,
+                                    "victim HEAD must start unborn (no commit)")
                 files_proc = subprocess.run(
-                    ["git", "ls-files", "-z"], cwd=victim_repo,
-                    stdout=subprocess.PIPE, check=True, env=iso)
+                    ["git"] + synth_prefix + ["ls-files", "-z"],
+                    cwd=victim_repo,
+                    stdout=subprocess.PIPE, check=True, env=synth_env)
                 victim_files = sorted(
                     p for p in files_proc.stdout.decode("utf-8").split("\0")
                     if p)
+                self.assertEqual(victim_files, ["victim.txt"])
                 victim_index = (victim_repo / ".git" / "index").read_bytes()
                 victim_content = (victim_repo / "victim.txt").read_bytes()
                 victim_config = (victim_repo / ".git" / "config").read_bytes()
                 hostile_keys = ("GIT_DIR", "GIT_WORK_TREE",
-                                "GIT_INDEX_FILE", "GIT_COMMON_DIR")
+                                "GIT_INDEX_FILE", "GIT_COMMON_DIR",
+                                "HOME", "XDG_CONFIG_HOME",
+                                "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_GLOBAL",
+                                "GIT_CONFIG_SYSTEM")
                 saved = {k: os.environ.get(k) for k in hostile_keys}
                 os.environ["GIT_DIR"] = str(victim_repo / ".git")
                 os.environ["GIT_WORK_TREE"] = str(troot)
                 os.environ["GIT_INDEX_FILE"] = str(victim_repo / ".git" / "index")
                 os.environ["GIT_COMMON_DIR"] = str(victim_repo / ".git")
+                # Hostile HOME/XDG: global config points at the external hook
+                # dir. The fixture below runs under synth_env (synthetic HOME
+                # + NOSYSTEM + GLOBAL/SYSTEM=/dev/null) + hooksPath override
+                # + empty template, so the hostile config must be ignored and
+                # the sentinel hook must NOT execute (GREEN: no marker).
+                os.environ["HOME"] = str(hostile_home)
+                os.environ["XDG_CONFIG_HOME"] = str(hostile_home / ".config")
+                os.environ.pop("GIT_CONFIG_NOSYSTEM", None)
+                os.environ.pop("GIT_CONFIG_GLOBAL", None)
+                os.environ.pop("GIT_CONFIG_SYSTEM", None)
                 try:
                     with tempfile.TemporaryDirectory(
                             prefix="staging-map-fixture2-") as ftmp:
                         froot = Path(ftmp)
                         subprocess.run(
-                            ["git", "init", "-q"], cwd=froot,
-                            check=True, env=_git_env_isolated())
+                            ["git"] + synth_prefix +
+                            ["init", "-q", f"--template={empty_template}"],
+                            cwd=froot, check=True, env=synth_env)
                         (froot / "tracked2.txt").write_text(
                             "tracked2\n", encoding="utf-8")
-                        subprocess.run(["git", "add", "tracked2.txt"],
-                                       cwd=froot, check=True,
-                                       env=_git_env_isolated())
-                        listed2 = repo_files(froot)
+                        subprocess.run(["git"] + synth_prefix +
+                                       ["add", "tracked2.txt"],
+                                       cwd=froot, check=True, env=synth_env)
+                        # Safely-isolated fixture commit (necessary: `git add`
+                        # never executes hooks, so without a commit the
+                        # hooksPath proof would be vacuous. This commit runs
+                        # under the FULL synthetic isolation -- synth_env
+                        # (empty HOME/XDG + NOSYSTEM + GLOBAL/SYSTEM=/dev/null
+                        # + GIT_* stripped) + core.hooksPath=<empty> + empty
+                        # --template + signing off -- while the hostile parent
+                        # env (GIT_DIR->victim + HOME/XDG->hostile hooksPath
+                        # config) is active. It must land in froot (not the
+                        # victim) and must NOT execute the external sentinel
+                        # hook (GREEN: marker absent). Synthetic-only; the
+                        # victim setup itself stays commit-free, so no hook
+                        # path exists there by construction.)
+                        subprocess.run(["git"] + synth_prefix +
+                                       ["-c", "user.email=t@t",
+                                        "-c", "user.name=t",
+                                        "commit", "-qm", "fixture2"],
+                                       cwd=froot, check=True, env=synth_env)
+                        self.assertFalse(hostile_marker.exists(),
+                                         "fixture commit must NOT execute "
+                                         "external hooksPath hook")
+                        listed2 = repo_files(froot, env=synth_env)
                         self.assertIn("tracked2.txt", listed2)
                         self.assertNotIn("victim.txt", listed2)
-                        listed_t = repo_files(troot)
+                        listed_t = repo_files(troot, env=synth_env)
                         self.assertIn("tracked.txt", listed_t)
                         self.assertNotIn("victim.txt", listed_t)
                         self.assertNotIn(probe_name, listed_t)
@@ -520,23 +670,27 @@ class MapSafetyTest(unittest.TestCase):
                             os.environ.pop(k, None)
                         else:
                             os.environ[k] = v
-                after_head = subprocess.run(
-                    ["git", "rev-parse", "HEAD"], cwd=victim_repo,
-                    stdout=subprocess.PIPE, check=True,
-                    env=_git_env_isolated()).stdout.decode("utf-8").strip()
-                after_count = subprocess.run(
-                    ["git", "rev-list", "--count", "HEAD"],
+                # Victim must be unchanged: HEAD still unborn (no stray commit
+                # could have been created via a GIT_DIR leak), index/files/
+                # content/config identical, and the hostile external hook must
+                # NOT have executed (GREEN: sentinel marker absent). All
+                # verification git calls use the same synthetic isolation
+                # (synth_env + prefix); rev-parse --verify / ls-files are
+                # read-only and never run hooks, but the env still isolates
+                # them from global/system config.
+                after_verify = subprocess.run(
+                    ["git"] + synth_prefix + ["rev-parse", "--verify", "HEAD"],
                     cwd=victim_repo, stdout=subprocess.PIPE,
-                    check=True,
-                    env=_git_env_isolated()).stdout.decode("utf-8").strip()
+                    stderr=subprocess.DEVNULL, env=synth_env)
+                self.assertNotEqual(after_verify.returncode, 0,
+                                    "victim HEAD must stay unborn (stray commit)")
                 after_files = sorted(
                     p for p in subprocess.run(
-                        ["git", "ls-files", "-z"], cwd=victim_repo,
+                        ["git"] + synth_prefix + ["ls-files", "-z"],
+                        cwd=victim_repo,
                         stdout=subprocess.PIPE, check=True,
-                        env=_git_env_isolated()
+                        env=synth_env
                     ).stdout.decode("utf-8").split("\0") if p)
-                self.assertEqual(after_head, victim_head)
-                self.assertEqual(after_count, victim_count)
                 self.assertEqual(after_files, victim_files)
                 self.assertEqual((victim_repo / ".git" / "index").read_bytes(),
                                  victim_index)
@@ -544,6 +698,9 @@ class MapSafetyTest(unittest.TestCase):
                                  victim_content)
                 self.assertEqual((victim_repo / ".git" / "config").read_bytes(),
                                  victim_config)
+                self.assertFalse(hostile_marker.exists(),
+                                 "external hooksPath hook must NOT execute "
+                                 "under synthetic isolation (marker absent)")
 
 
 class MapSafetyOrderTest(unittest.TestCase):
