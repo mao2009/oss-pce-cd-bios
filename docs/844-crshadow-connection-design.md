@@ -138,7 +138,10 @@ Positive control via post-staging intentional seed (execution-wave shape,
 unit-modeled here): after `L5RPT` observes the residue triple, the payload
 explicitly re-seeds `shadow==real` + `$A5` — a documented harness seed, never
 firmware init, never an auto-seed — then `JSR $E081`. Sync GREEN alongside
-residue-desync RED proves discrimination end to end. No loader save/restore,
+residue-desync RED proves discrimination end to end. At unit level the
+observed `(C4,C5,C6)` triple is passed with its actual `$C5` marker (reject,
+`C=1`); the false-ok RED uses only the hypothetical synthetic `(C4,$A5,C6)`
+triple, never a marker-substituted residue. No loader save/restore,
 no marker change, no `$20F3`/`$20F7`.
 
 ## 4. Loader-transfer residue vs direct seed (labels)

@@ -222,18 +222,37 @@ class ConnectionOracleTests(unittest.TestCase):
                                         f"mutant {kind} must not look correct")
 
     def test_positive_control_via_post_staging_intentional_seed(self):
-        # Post-staging intentional seed (documented harness seed, never
-        # firmware init): after observing residue (C4,C5,C6), re-seeding
-        # shadow==real+$A5 goes GREEN while the residue-desync goes RED —
-        # the discrimination proof the execution wave must reproduce on core.
-        residue = (0xC4, 0xC5, 0xC6)
-        red = model_2b(residue[0], MARKER_OK, 0x00)  # stale vs real $00
-        self.assertEqual(red[0], "ok")
-        self.assertNotEqual(red[1], 0x00 & MASK_2B)
+        # Model-level verification only (no core run, no loader transfer):
+        # three explicit cases the execution wave must reproduce on core.
+        # Case 1 — observed L5 residue (C4,C5,C6) passed AS-IS with its
+        # ACTUAL marker byte $C5 (!= $A5): the oracle rejects; CR and shadow
+        # untouched, C=1, entry AR preserved.
+        observed = (0xC4, 0xC5, 0xC6)
+        rej = model_2b(observed[0], observed[1], 0x00, entry_ar=9)
+        self.assertEqual(rej, ("reject", 0x00, 0xC4, 1, 9))
+        # Case 2 — HYPOTHETICAL synthetic triple (C4,$A5,C6), every byte
+        # passed as-is with NO shadow/marker substitution: desync false-ok
+        # (C=0, stale image published) but NOT normal operation. Distinct
+        # from the observed L5 residue above, whose actual marker is $C5.
+        synth = (0xC4, MARKER_OK, 0xC6)
+        self.assertNotEqual(synth[1], observed[1],
+                            "synthetic marker differs from observed L5 marker")
+        false_ok = model_2b(synth[0], synth[1], 0x00, entry_ar=9)
+        self.assertEqual(false_ok,
+                         ("ok", 0xC4 & MASK_2B, 0xC4 & MASK_2B, 0, AR_OK))
+        self.assertNotEqual(false_ok[1], 0x00 & MASK_2B,
+                            "stale-derived bits persist (RED false-ok)")
+        # Case 3 — intentional sync re-seed (documented harness seed, never
+        # firmware init): shadow==real+$A5 goes GREEN: normal mask/publish,
+        # C=0.
         green = model_2b(0x04, MARKER_OK, 0x04)  # intentional sync re-seed
         self.assertEqual(green, ("ok", 0x00, 0x00, 0, AR_OK))
-        self.assertNotEqual((red[1], red[3]), (green[1], green[3]),
-                            "harness must discriminate residue-desync from sync")
+        # Discrimination across all three: reject (C=1) vs false-ok vs
+        # sync-ok (both C=0 yet different CR values) are three distinct
+        # outcomes; the harness must reproduce each on core.
+        self.assertNotEqual(rej[3], false_ok[3])
+        self.assertNotEqual(false_ok[1], green[1])
+        self.assertNotEqual((rej[1], rej[3]), (green[1], green[3]))
 
 
 class StagingGeometryTests(unittest.TestCase):
