@@ -77,6 +77,19 @@ byt    = $28
 
 BUF     = $2200
 RB      = $2F00
+.ifdef IPL_L5_SNAPSHOT
+; Issue #862 TEST-ONLY staging snapshots (never in production ROMs): BUF
+; offsets $0302-$0304 (the CR-shadow cells) recorded into RB spare after
+; the $5A fill, the INFO read, the probe_last read, and the first/last
+; BODY reads. Payload report base (written by tests/integration/
+; ipl_payload_l5.s): shadow triple + entry MPR0/MPR1.
+L5_FILL = RB + $24
+L5_INFO = RB + $27
+L5_PRE  = RB + $2A
+L5_FIRST= RB + $2D
+L5_LAST = RB + $30
+L5_RPT  = RB + $34
+.endif
 R_CODE  = RB + 0
 R_STAGE = RB + 1
 R_COPIED = RB + 2
@@ -127,6 +140,14 @@ reset:
     adc #0
     sta lbahi
     jsr read_sector
+.ifdef IPL_L5_SNAPSHOT
+    lda BUF+$0302             ; TEST-ONLY: post-INFO staging snapshot
+    sta L5_INFO
+    lda BUF+$0303
+    sta L5_INFO+1
+    lda BUF+$0304
+    sta L5_INFO+2
+.endif
     jsr validate_info
     jsr probe_last
     jsr copy_body
@@ -399,6 +420,14 @@ probe_last:
     sbc #0
     sta lbahi
     jsr read_sector
+.ifdef IPL_L5_SNAPSHOT
+    lda BUF+$0302             ; TEST-ONLY: post-pre-check staging snapshot
+    sta L5_PRE
+    lda BUF+$0303
+    sta L5_PRE+1
+    lda BUF+$0304
+    sta L5_PRE+2
+.endif
     rts
 
 ; ---------------------------------------------------------------------------
@@ -428,6 +457,23 @@ copy_body:
     adc #0
     sta lbahi
     jsr read_sector
+.ifdef IPL_L5_SNAPSHOT
+    lda idx                   ; TEST-ONLY: first/last BODY staging snapshots
+    bne @l5last
+    lda BUF+$0302
+    sta L5_FIRST
+    lda BUF+$0303
+    sta L5_FIRST+1
+    lda BUF+$0304
+    sta L5_FIRST+2
+@l5last:
+    lda BUF+$0302
+    sta L5_LAST
+    lda BUF+$0303
+    sta L5_LAST+1
+    lda BUF+$0304
+    sta L5_LAST+2
+.endif
     lda #<BUF
     sta src
     lda #>BUF
@@ -479,7 +525,13 @@ copy_body:
     inc idx
     lda idx
     cmp nsec
+.ifdef IPL_L5_SNAPSHOT
+    beq @l5done              ; TEST-ONLY: snapshot bytes push @sector out of branch range
+    jmp @sector
+@l5done:
+.else
     bne @sector
+.endif
     lda sumv
     sta R_SRC
     lda sumv+1
@@ -659,6 +711,14 @@ read_sector:
     inc ptr+1
     dex
     bne @fill
+.ifdef IPL_L5_SNAPSHOT
+    lda BUF+$0302             ; TEST-ONLY: post-fill staging snapshot ($5A triple)
+    sta L5_FILL
+    lda BUF+$0303
+    sta L5_FILL+1
+    lda BUF+$0304
+    sta L5_FILL+2
+.endif
     lda #<BUF
     sta ptr
     lda #>BUF
