@@ -2635,12 +2635,25 @@ class Review6096132688B1GitEnvTests(unittest.TestCase):
     merge-base, all diffs, untracked listing, blob/index fetches, and the
     explicit --fetch update target stay on the target repo. Proven on two
     synthetic repos with the target call run under the OTHER repo's
-    GIT_DIR/WORK_TREE.
+    GIT_DIR/WORK_TREE (plus object-db redirects at the other repo).
+    The BINDING_VARS literal below intentionally duplicates
+    SEL._GIT_REPO_BINDING_VARS (it must NOT be derived from it): deriving
+    the expectation from the implementation would make a dropped strip
+    vacuous GREEN. If the implementation drops one variable, the
+    per-variable spy assertion below flips RED.
     """
-    BINDING_VARS = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE",
+    BINDING_VARS = ("GIT_DIR", "GIT_WORK_TREE", "GIT_IMPLICIT_WORK_TREE",
+                    "GIT_INDEX_FILE", "GIT_INDEX_VERSION",
                     "GIT_COMMON_DIR", "GIT_NAMESPACE",
                     "GIT_CEILING_DIRECTORIES",
-                    "GIT_DISCOVERY_ACROSS_FILESYSTEM", "GIT_PREFIX")
+                    "GIT_DISCOVERY_ACROSS_FILESYSTEM", "GIT_PREFIX",
+                    "GIT_OBJECT_DIRECTORY",
+                    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+                    "GIT_QUARANTINE_PATH", "GIT_GRAFT_FILE",
+                    "GIT_SHALLOW_FILE", "GIT_NO_REPLACE_OBJECTS",
+                    "GIT_REPLACE_REF_BASE", "GIT_CONFIG",
+                    "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT",
+                    "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM")
 
     def make_pair(self):
         repo_a = make_repo("only-in-A.s")
@@ -2648,8 +2661,13 @@ class Review6096132688B1GitEnvTests(unittest.TestCase):
         return repo_a, repo_b
 
     def hostile_env(self, other):
-        return {"GIT_DIR": str(Path(other) / ".git"),
-                "GIT_WORK_TREE": str(other)}
+        other = Path(other)
+        return {"GIT_DIR": str(other / ".git"),
+                "GIT_WORK_TREE": str(other),
+                "GIT_OBJECT_DIRECTORY": str(other / ".git" / "objects"),
+                "GIT_ALTERNATE_OBJECT_DIRECTORIES": str(other / ".git" / "objects"),
+                "GIT_QUARANTINE_PATH": str(other / ".git" / "objects"),
+                "GIT_INDEX_FILE": str(other / ".git" / "index")}
 
     def test_hostile_git_dir_cannot_rebind_head(self):
         repo_a, repo_b = self.make_pair()
@@ -2728,6 +2746,237 @@ class Review6096132688B1GitEnvTests(unittest.TestCase):
         fetched = git(repo_a, "rev-parse", "FETCH_HEAD").strip()
         pushed = git(repo_a, "rev-parse", "HEAD").strip()
         self.assertTrue(fetched.startswith(pushed))
+
+
+class Review6096255224ObjectDbIsolationTests(unittest.TestCase):
+    """Object-database isolation: GIT_OBJECT_DIRECTORY and friends inherit.
+
+    Pre-fix, _GIT_REPO_BINDING_VARS covered only 8 worktree/discovery
+    vars, so `git -C A fetch origin HEAD` with a hostile
+    GIT_OBJECT_DIRECTORY stored the fetched objects in repo B (B cat-file
+    resolved the foreign commit; A dangled), and foreign alternates/
+    configs redirected reads. Every git subprocess goes through _run_git
+    (the single call site), so extending the strip list fixes all paths:
+    worktree/gitdir/index, object/alternate/quarantine dirs, graft/
+    shallow/replace overlays, and config-file/-c redirects. Transport,
+    auth, and identity GIT_* must keep working (KEEP).
+
+    EXPECTED_REMOVE below intentionally duplicates
+    SEL._GIT_REPO_BINDING_VARS instead of deriving from it: dropping any
+    single isolated variable from the implementation must flip its test
+    RED (no vacuous GREEN). All fixtures are synthetic temp dirs +
+    sentinel bytes (no ./rom, no network, no real checkouts).
+    """
+    EXPECTED_REMOVE = ("GIT_DIR", "GIT_WORK_TREE",
+                       "GIT_IMPLICIT_WORK_TREE", "GIT_INDEX_FILE",
+                       "GIT_INDEX_VERSION", "GIT_COMMON_DIR",
+                       "GIT_NAMESPACE", "GIT_CEILING_DIRECTORIES",
+                       "GIT_DISCOVERY_ACROSS_FILESYSTEM", "GIT_PREFIX",
+                       "GIT_OBJECT_DIRECTORY",
+                       "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+                       "GIT_QUARANTINE_PATH", "GIT_GRAFT_FILE",
+                       "GIT_SHALLOW_FILE", "GIT_NO_REPLACE_OBJECTS",
+                       "GIT_REPLACE_REF_BASE", "GIT_CONFIG",
+                       "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT",
+                       "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM")
+    EXPECTED_KEEP = ("GIT_SSH_COMMAND", "GIT_ASKPASS",
+                     "GIT_ALLOW_PROTOCOL", "GIT_AUTHOR_NAME",
+                     "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME",
+                     "GIT_CONFIG_NOSYSTEM", "GIT_TRACE",
+                     "GIT_PAGER", "GIT_LITERAL_PATHSPECS",
+                     "GIT_OPTIONAL_LOCKS", "GIT_EXTERNAL_DIFF")
+
+    def hostile_value(self, var, tmp):
+        if var in ("GIT_OBJECT_DIRECTORY",
+                   "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+                   "GIT_QUARANTINE_PATH"):
+            return str(tmp / "objects")
+        if var in ("GIT_DIR",):
+            return str(tmp / ".git")
+        if var in ("GIT_WORK_TREE",):
+            return str(tmp)
+        if var in ("GIT_INDEX_FILE", "GIT_GRAFT_FILE",
+                   "GIT_SHALLOW_FILE", "GIT_CONFIG",
+                   "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"):
+            target = tmp / (var.lower().replace("git_", "") + ".sentinel")
+            target.write_text("hostile\n")
+            return str(target)
+        return "hostile-sentinel"
+
+    def clean_git(self, repo, *args):
+        proc = subprocess.run(["git", *args], cwd=str(repo),
+                              capture_output=True, text=True, timeout=120,
+                              env=SEL._git_env_for_repo())
+        if proc.returncode != 0:
+            raise AssertionError(
+                f"git {' '.join(args)} failed: {proc.stderr[-1000:]}")
+        return proc.stdout
+
+    def snapshot_foreign_repo(self, repo):
+        repo = Path(repo)
+        objects = sorted(
+            str(path.relative_to(repo))
+            for path in (repo / ".git" / "objects").rglob("*")
+            if path.is_file())
+        refs = self.clean_git(repo, "for-each-ref")
+        head = self.clean_git(repo, "rev-parse", "HEAD").strip()
+        index = (repo / ".git" / "index").read_bytes()
+        config = (repo / ".git" / "config").read_bytes()
+        return {"objects": objects, "refs": refs, "head": head,
+                "index": index, "config": config}
+
+    def test_strip_table_covers_every_binding_var(self):
+        # Data-driven over the independent EXPECTED_REMOVE literal: if
+        # the implementation stops stripping exactly one variable, that
+        # subTest flips RED.
+        tmp = Path(tempfile.mkdtemp(prefix="r6096255224-strip-"))
+        (tmp / "objects").mkdir(exist_ok=True)
+        # The implementation must cover every expected variable; the
+        # per-variable subTests below then prove each one is stripped.
+        missing = [var for var in self.EXPECTED_REMOVE
+                   if var not in SEL._GIT_REPO_BINDING_VARS]
+        self.assertEqual(missing, [])
+        for var in self.EXPECTED_REMOVE:
+            with self.subTest(var=var):
+                with unittest.mock.patch.dict(
+                        os.environ, {var: self.hostile_value(var, tmp)}):
+                    self.assertNotIn(var, SEL._git_env_for_repo())
+
+    def test_config_key_value_prefixes_stripped(self):
+        tmp = Path(tempfile.mkdtemp(prefix="r6096255224-kv-"))
+        hostile = {"GIT_CONFIG_COUNT": "2",
+                   "GIT_CONFIG_KEY_0": "url.dead.insteadOf",
+                   "GIT_CONFIG_VALUE_0": "x",
+                   "GIT_CONFIG_KEY_7": "url.dead.insteadOf",
+                   "GIT_CONFIG_VALUE_7": "y"}
+        with unittest.mock.patch.dict(os.environ, hostile):
+            env = SEL._git_env_for_repo()
+        for var in hostile:
+            with self.subTest(var=var):
+                self.assertNotIn(var, env)
+
+    def test_transport_auth_identity_vars_pass_through(self):
+        # Stripping these would gratuitously break normal settings: the
+        # fetch URL still comes from the bound repo's own origin, so
+        # auth/communication overrides carry no repo identity.
+        keep = {var: f"keep-{var}" for var in self.EXPECTED_KEEP}
+        with unittest.mock.patch.dict(os.environ, keep):
+            env = SEL._git_env_for_repo()
+        for var in self.EXPECTED_KEEP:
+            with self.subTest(var=var):
+                self.assertEqual(env.get(var), f"keep-{var}")
+
+    def make_remote_pair(self):
+        base = Path(tempfile.mkdtemp(prefix="r6096255224-"))
+        remote = base / "r.git"
+        proc = subprocess.run(["git", "init", "-q", "--bare",
+                               str(remote)], capture_output=True,
+                              timeout=120)
+        self.assertEqual(proc.returncode, 0, proc.stderr[-500:])
+        writer = base / "writer"
+        git(writer.parent, "clone", "-q", str(remote), str(writer))
+        git(writer, "config", "user.email", "test@example.invalid")
+        git(writer, "config", "user.name", "staging-test")
+        (writer / "base.txt").write_text("base\n")
+        git(writer, "add", "-A")
+        git(writer, "commit", "-qm", "c1")
+        git(writer, "push", "-q", "origin", "HEAD:refs/heads/main")
+        git(remote, "symbolic-ref", "HEAD", "refs/heads/main")
+        repo_a = base / "A"
+        git(base, "clone", "-q", str(remote), str(repo_a))
+        repo_b = make_repo("only-in-B.s")
+        return remote, writer, repo_a, repo_b
+
+    def test_fetch_with_hostile_object_db_stays_in_target_repo(self):
+        remote, writer, repo_a, repo_b = self.make_remote_pair()
+        (writer / "payload2.txt").write_text("sentinel-payload-2\n")
+        git(writer, "add", "-A")
+        git(writer, "commit", "-qm", "c2")
+        git(writer, "push", "-q", "origin", "HEAD:refs/heads/main")
+        sha2 = git(writer, "rev-parse", "HEAD").strip()
+        b_before = self.snapshot_foreign_repo(repo_b)
+        hostile = {
+            "GIT_OBJECT_DIRECTORY":
+                str(repo_b / ".git" / "objects"),
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES":
+                str(repo_b / ".git" / "objects"),
+            "GIT_QUARANTINE_PATH":
+                str(repo_b / ".git" / "objects"),
+            "GIT_INDEX_FILE": str(repo_b / ".git" / "index"),
+            "GIT_DIR": str(repo_b / ".git"),
+            "GIT_WORK_TREE": str(repo_b),
+        }
+        with unittest.mock.patch.dict(os.environ, hostile):
+            # Explicit --fetch through the tool's own runner, then the
+            # full read-path suite, all under hostile env.
+            SEL.attempt_fetch(str(repo_a), "main")
+            changed = SEL.collect_changes(str(repo_a), "main")
+            blob_ok = SEL._git_blob_is_regular(str(repo_a), "HEAD",
+                                               "base.txt")
+        b_after = self.snapshot_foreign_repo(repo_b)
+        # B objects/refs/index/config byte-identical: nothing leaked.
+        self.assertEqual(b_after, b_before)
+        # The fetch landed in A (explicit --fetch bound to target repo).
+        fetched = self.clean_git(repo_a, "rev-parse",
+                                 "FETCH_HEAD").strip()
+        self.assertEqual(fetched, sha2)
+        proc_type = subprocess.run(
+            ["git", "-C", str(repo_a), "cat-file", "-t", sha2],
+            capture_output=True, text=True, timeout=120,
+            env=SEL._git_env_for_repo())
+        self.assertEqual((proc_type.returncode, proc_type.stdout.strip()),
+                         (0, "commit"))
+        proc_b = subprocess.run(
+            ["git", "-C", str(repo_b), "cat-file", "-t", sha2],
+            capture_output=True, text=True, timeout=120,
+            env=SEL._git_env_for_repo())
+        self.assertNotEqual(proc_b.returncode, 0)
+        self.assertTrue(blob_ok)
+        self.assertEqual(changed.head,
+                         git(repo_a, "rev-parse", "HEAD").strip())
+
+    def test_alternate_object_dirs_do_not_leak_foreign_reads(self):
+        repo_a = make_repo("only-in-A.s")
+        repo_b = make_repo("only-in-B.s")
+        sha_b = git(repo_b, "rev-parse", "HEAD").strip()
+        hostile = {"GIT_ALTERNATE_OBJECT_DIRECTORIES":
+                   str(repo_b / ".git" / "objects")}
+        with unittest.mock.patch.dict(os.environ, hostile):
+            # A's reads must not resolve B's objects via the alternate.
+            self.assertFalse(SEL._git_blob_is_regular(
+                str(repo_a), sha_b, "only-in-B.s"))
+            with self.assertRaises(SEL.GitError):
+                SEL._real_runner(str(repo_a), "cat-file", "-t", sha_b)
+        # Control: the clean env agrees (A genuinely lacks B's commit,
+        # so the hostile-vs-clean equality proves no leak either way).
+        self.assertFalse(SEL._git_blob_is_regular(
+            str(repo_a), sha_b, "only-in-B.s"))
+        # Positive control: B resolves its own commit through the same
+        # sanitized boundary.
+        with unittest.mock.patch.dict(os.environ, hostile):
+            self.assertEqual(
+                SEL._real_runner(str(repo_b), "cat-file", "-t",
+                                 sha_b).strip(), "commit")
+
+    def test_config_redirect_is_stripped(self):
+        remote, _writer, repo_a, _repo_b = self.make_remote_pair()
+        pushed = git(_writer, "rev-parse", "HEAD").strip()
+        foreign = Path(tempfile.mkdtemp(prefix="r6096255224-cfg-"))
+        foreign_cfg = foreign / "foreign.gitconfig"
+        # A foreign url.insteadOf would rewrite A's origin to a dead URL:
+        # unstripped, the fetch fails; stripped, it hits the real origin.
+        foreign_cfg.write_text(
+            f'[url "file:///nonexistent-dead-6096255224/"]\n'
+            f"\tinsteadOf = {remote}\n")
+        hostile = {"GIT_CONFIG": str(foreign_cfg),
+                   "GIT_CONFIG_COUNT": "1",
+                   "GIT_CONFIG_KEY_0":
+                       "url.file:///nonexistent-dead-6096255224/.insteadOf",
+                   "GIT_CONFIG_VALUE_0": str(remote)}
+        with unittest.mock.patch.dict(os.environ, hostile):
+            SEL.attempt_fetch(str(repo_a), "main")
+        fetched = git(repo_a, "rev-parse", "FETCH_HEAD").strip()
+        self.assertEqual(fetched, pushed)
 
 
 class Review6096132688B2MapPrereadTests(Wave2B4RepoConsistencyTests):

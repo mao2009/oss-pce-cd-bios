@@ -172,29 +172,72 @@ class Selection:
 # Git input collection (Issue #852 acceptance inputs).
 # ---------------------------------------------------------------------------
 
-# Repo-local git binding (Issue #852, review 6096132688 B-1). Every git
-# subprocess below runs through _run_git with BOTH an explicit
-# ``git -C <repo>`` binding AND a sanitized environment: the repo-binding
-# variables below are stripped so a hostile caller environment (exported
-# GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE/GIT_COMMON_DIR pointing at another
-# checkout, a ceiling/discovery override, or a namespace/prefix redirect)
-# can never rebind HEAD/BASE/merge-base resolution, committed/staged/
-# unstaged diffs, untracked listing, blob/index regular-file checks, blob
-# fetches, fingerprint hashing, or the explicit --fetch update target to
-# the wrong repository. Binding therefore holds even under a hostile env
-# (no refusal dance needed: isolation is total, -C + cwd + clean env).
-# Non-binding GIT_* (author/committer/config) are left untouched: the
-# read-only subcommands used here never need them, and stripping them
-# would only break callers' commit plumbing.
+# Repo-local git binding (Issue #852, reviews 6096132688 B-1 and
+# 6096255224 object-database isolation). Every git subprocess below runs
+# through _run_git with BOTH an explicit ``git -C <repo>`` binding AND a
+# sanitized environment: the repo-binding variables below are stripped so
+# a hostile caller environment (exported GIT_DIR/GIT_WORK_TREE pointing at
+# another checkout, a ceiling/discovery/namespace/prefix redirect, a
+# foreign object database, an alternate/quarantine object dir, a graft/
+# shallow/replace history overlay, a redirected index, or a config-file/
+# -c-pair redirect) can never rebind HEAD/BASE/merge-base resolution,
+# committed/staged/unstaged diffs, untracked listing, blob/index
+# regular-file checks, blob fetches, fingerprint hashing, or the explicit
+# --fetch update target to the wrong repository. Binding therefore holds
+# even under a hostile env (no refusal dance needed: isolation is total,
+# -C + cwd + clean env). Audit basis: `git rev-parse --local-env-vars`
+# (repo-local scope) plus the object-db/index/config/fetch sources
+# (object-file.c quarantine, setup.c worktree/prefix, config.c cascade,
+# read-cache.c index version, replace-object machinery). Transport, auth,
+# and identity GIT_* (SSH/ASKPASS/HTTP/proxy/allow-protocol, author/
+# committer, pager/diff drivers, traces, pathspec glob flags, optional
+# locks, notes/attr drivers, exec-path, perf/test knobs) are left
+# untouched: they carry no repo/object-db identity (the fetch URL comes
+# from the bound repo's own origin once the config redirects below are
+# stripped), and stripping them would gratuitously break normal settings.
+# GIT_CONFIG_NOSYSTEM is likewise kept (it only suppresses system config
+# -- a fail-safe direction, never a foreign redirect). No blanket refuse
+# of unknown GIT_*: that would be a generic OS sandbox (out of scope)
+# and would break normal communication. Unisolatable git failures still
+# fail closed (GitError -> L3, reuse refused) at the call sites.
 _GIT_REPO_BINDING_VARS = (
+    # Worktree/gitdir/index binding (review 6096132688 B-1).
     "GIT_DIR",
     "GIT_WORK_TREE",
+    "GIT_IMPLICIT_WORK_TREE",
     "GIT_INDEX_FILE",
+    "GIT_INDEX_VERSION",
     "GIT_COMMON_DIR",
     "GIT_NAMESPACE",
     "GIT_CEILING_DIRECTORIES",
     "GIT_DISCOVERY_ACROSS_FILESYSTEM",
     "GIT_PREFIX",
+    # Object-database binding (review 6096255224): a foreign object dir
+    # (write path: fetch stores here), foreign alternates (read path),
+    # or a foreign quarantine dir would let `git -C A fetch/read`
+    # resolve or persist objects via repo B.
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_QUARANTINE_PATH",
+    # History-identity binding: graft/shallow/replace overlays rewrite
+    # commit parentage and merge-base/HEAD resolution.
+    "GIT_GRAFT_FILE",
+    "GIT_SHALLOW_FILE",
+    "GIT_NO_REPLACE_OBJECTS",
+    "GIT_REPLACE_REF_BASE",
+    # Config binding: one-shot file redirects and -c pairs override the
+    # bound repo's own .git/config (e.g. url.insteadOf fetch rewrites).
+    "GIT_CONFIG",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_SYSTEM",
+)
+# Dynamic-suffix config pairs (GIT_CONFIG_COUNT=N reads GIT_CONFIG_KEY_<i>
+# /GIT_CONFIG_VALUE_<i>): stripped by prefix since the names are indexed.
+_GIT_REPO_BINDING_VAR_PREFIXES = (
+    "GIT_CONFIG_KEY_",
+    "GIT_CONFIG_VALUE_",
 )
 
 
@@ -202,6 +245,9 @@ def _git_env_for_repo():
     """Sanitized environment for one bound git invocation (no repo bind)."""
     env = dict(os.environ)
     for var in _GIT_REPO_BINDING_VARS:
+        env.pop(var, None)
+    for var in [var for var in env
+                if var.startswith(_GIT_REPO_BINDING_VAR_PREFIXES)]:
         env.pop(var, None)
     return env
 
@@ -235,9 +281,11 @@ def _real_runner(repo, *args):
     # misidentifying the path. Exit text is decoded lossily for the
     # message only (never parsed as a path).
     # Repo binding: delegated to _run_git (explicit -C + cwd AND a
-    # sanitized env), so GIT_DIR/WORK_TREE/INDEX_FILE/COMMON_DIR (or
-    # ceiling/discovery/namespace/prefix) overrides in the caller env can
-    # never redirect this call at another checkout's objects.
+    # sanitized env), so repo/object-db/history/config overrides in the
+    # caller env (gitdir/worktree/index, object/alternate/quarantine
+    # dirs, graft/shallow/replace overlays, config-file/-c redirects,
+    # ceiling/discovery/namespace/prefix) can never redirect this call
+    # at another checkout's objects.
     proc = _run_git(repo, *args)
     if proc.returncode != 0:
         raise GitError("git-exit",
