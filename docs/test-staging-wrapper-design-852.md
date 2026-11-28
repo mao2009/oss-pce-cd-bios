@@ -183,6 +183,26 @@ supersedes the interim `cf428568` pin. Post-merge re-verification is
 still required after Owner merges #856: re-run the `CanonicalLoaderTests`
 (17 tests) plus `make check` on the merged map and re-request review.
 
+Pin-update steps (read-only; never check out the Task-A branch, never
+copy the map into tracked paths, no `./rom`, no Phase-4 wiring):
+
+- Pre-integration (now): resolve the branch HEAD with
+  `git rev-parse origin/agent/test-staging-map-v0-20261128`, verify
+  schema stability read-only (`git diff <old>..<new> --name-only` touches
+  only tests/docs, and the `tools/test_staging_map.json` +
+  `spec/api_slots.json` blobs are byte-identical), then update
+  `REAL_MAP_HEAD_PIN` in `tests/host/test_test_staging_select.py` with
+  that verification in the comment. The canonical E2E commits the blob
+  (`git show <pin>:tools/test_staging_map.json`) into a synthetic temp
+  repo as its repo-bound default map -- nothing lands in tracked paths.
+- Post-integration (after Owner merges #856 and the map is tracked at
+  `tools/test_staging_map.json`): drop the blob-commit step (the default
+  repo-bound map loads the tracked file), re-run `CanonicalLoaderTests`
+  plus `make check` on the merged map, refresh `CANONICAL_SOURCE_HEAD` /
+  `REAL_MAP_HEAD_PIN` notes, and re-request review. `base_commit` stays
+  a content fingerprint, never repo-identity proof: only containment of
+  the map inside the bound repo binds them.
+
 ## 5. Issue #852 acceptance matrix
 
 | #852 condition | Prototype behaviour | Covering test |

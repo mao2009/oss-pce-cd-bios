@@ -173,17 +173,29 @@ class Selection:
 # ---------------------------------------------------------------------------
 
 def _real_runner(repo, *args):
+    # Binary capture + strict UTF-8 decode (never text mode): universal-
+    # newline translation would silently rewrite filenames containing CR
+    # (``a\rb`` reported as ``a\nb`` -- a different, possibly
+    # nonexistent path), and undecodable bytes would mojibake paths.
+    # Both cases are unidentifiable inputs, so both fail closed: a decode
+    # failure raises GitError (callers escalate to L3) instead of
+    # misidentifying the path. Exit text is decoded lossily for the
+    # message only (never parsed as a path).
     try:
         proc = subprocess.run(
-            ["git", *args], cwd=repo, capture_output=True, text=True,
+            ["git", *args], cwd=repo, capture_output=True, text=False,
             timeout=120)
     except (OSError, subprocess.SubprocessError) as error:
         raise GitError("git-execution", str(error)) from error
     if proc.returncode != 0:
         raise GitError("git-exit",
                        f"git {' '.join(args)} exited {proc.returncode}: "
-                       f"{proc.stderr.strip()[-500:]}")
-    return proc.stdout
+                       f"{proc.stderr.decode('utf-8', errors='replace').strip()[-500:]}")
+    try:
+        return proc.stdout.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise GitError("git-decode",
+                       f"git output is not valid UTF-8: {error}") from error
 
 
 _STATUS_TOKEN = re.compile(r"^[A-Z][0-9]*$")
@@ -264,13 +276,30 @@ def collect_changes(repo, base, runner=_real_runner, fetch=False):
             runner(repo, "diff", "--name-status", "-z", "--no-renames", "--"))
     except GitError as error:
         raise GitError("diff", f"change detection failed: {error}") from error
+    try:
+        status_output = runner(repo, "status", "--porcelain=v1", "-z",
+                               "--untracked-files=all", "--")
+    except (GitError, UnicodeDecodeError, ValueError) as error:
+        raise GitError("diff",
+                       f"change detection failed: {error}") from error
     untracked = []
-    for chunk in runner(repo, "status", "--porcelain=v1", "-z",
-                        "--untracked-files=all", "--").split("\0"):
-        if chunk.startswith("??"):
-            path = chunk[2:].strip()
-            if path:
-                untracked.append(path)
+    for chunk in status_output.split("\0"):
+        if not chunk:
+            continue
+        if not chunk.startswith("??"):
+            continue
+        # Porcelain -z emits exactly ``??`` + ONE separator space + the
+        # raw path (no quoting, NUL-terminated, so whitespace/tab/newline
+        # inside the name round-trips). Strip ONLY that fixed prefix:
+        # strip()/lstrip()/normalization would destroy leading/trailing
+        # whitespace filenames (``sample `` is not ``sample``). A chunk
+        # without the separator, or with an empty path, is unidentifiable
+        # -> fail closed (GitError -> L3), never silently skipped.
+        rest = chunk[2:]
+        if not rest.startswith(" ") or len(rest) < 2:
+            raise GitError("diff",
+                           f"unparseable untracked entry: {chunk!r}")
+        untracked.append(rest[1:])
     return ChangedInputs(head=head, base=base_sha, committed=committed,
                          staged=staged, unstaged=unstaged, untracked=untracked)
 
@@ -552,6 +581,40 @@ class CanonicalJsonMapLoader(MapLoader):
     def load(self, path, repo=None):
         effective = repo if repo is not None else (
             self._repo if getattr(self, "_repo", None) is not None else ROOT)
+        if repo is not None or getattr(self, "_repo", None) is not None:
+            # Repo-bound load (the normal CLI always binds --repo here):
+            # the map must live inside the bound repo. An absolute --map
+            # from another checkout would otherwise mix that checkout's
+            # map bytes with this repo's ledger/Makefile/diff/pins, so it
+            # is refused BEFORE any read (fail-closed L3). Unbound loads
+            # keep the isolated explicit-synthetic-fixture boundary
+            # (temp fixtures validated without a repo anchor). base_commit
+            # is a content fingerprint of the map document, never proof
+            # of which checkout it came from -- only containment binds it.
+            try:
+                base = Path(effective).resolve()
+            except (OSError, ValueError) as error:
+                raise MapError(f"canonical map repo {effective!r} is not "
+                               f"resolvable: {error} -> L3") from error
+            candidate = Path(path)
+            if not candidate.is_absolute():
+                candidate = base / candidate
+            try:
+                resolved = candidate.resolve()
+            except (OSError, ValueError) as error:
+                raise MapError(f"canonical map {path!r} is not "
+                               f"resolvable: {error} -> L3") from error
+            try:
+                inside = (resolved == base or base in resolved.parents)
+            except (OSError, ValueError):
+                inside = False
+            if not inside:
+                raise MapError(
+                    f"normal-CLI --map {path!r} is outside the bound repo "
+                    f"{effective}: cross-repo mixing refused fail-closed "
+                    "-> L3 (bind target repo+map+ledger+Makefile+ "
+                    "dependencies consistently; use a repo-relative --map "
+                    "or the repo-bound default)")
         try:
             raw = _read_bytes_strict(path, effective)
         except OSError:
@@ -988,9 +1051,9 @@ def _with_required_env(command):
 # Selector identity stamped into every fingerprint. Bumped whenever the
 # selection semantics change (L3 set, alias rules, api-level handling,
 # exact-vs-glob matching, first-match-before-API narrowing, map-repo
-# binding, toolchain execution identity, API-union). Results from an older
-# selector never reuse against a newer one.
-SELECTOR_ID = "test_staging_select/l3full-maprepo-toolchain-union-v3"
+# binding, toolchain execution identity, API-union, untracked-prefix
+# parsing). Results from an older selector never reuse against a newer one.
+SELECTOR_ID = "test_staging_select/l3full-maprepo-toolchain-untracked-nomix-v4"
 
 # Top-level input paths that must never be content-hashed (private
 # reference inputs, not fixtures). A change touching them still classifies
@@ -1325,33 +1388,108 @@ def _map_identity(map_path, repo=None):
 
 
 def _resolve_pinned_tool_path(tools_root, revision, name, binary):
-    """Resolve the actually-executed file for one pinned tool (no run)."""
+    """Resolve the actually-executed file for one pinned tool (no run).
+
+    Resolution mirrors the real build side (tools/environment.py
+    executable(): explicit ``CA65``/``LD65`` env override, else the
+    pinned ``<TOOLS_DIR>/cc65-<revision>/bin/*`` location, via
+    shutil.which). An override carrying a forbidden (``rom`` segment) or
+    outside (``..``) spec is refused BEFORE which() runs, so a forbidden
+    input causes zero filesystem probing; the found path is vetted again
+    before any read or execution (see _tool_execution_target_safe).
+    """
     override = os.environ.get(binary.upper())
     if override:
+        if _map_spec_refused_pre_read(override):
+            return None
         import shutil as _shutil
         found = _shutil.which(override)
         return Path(found) if found else None
     return Path(tools_root) / f"{name}-{revision}" / "bin" / binary
 
 
-def _hash_tool_file(path):
-    """Hash one executed tool file, or None when unconfirmable (no run)."""
+def _tool_execution_target_safe(resolved, repo):
+    """Vet an executed-tool path BEFORE any read or execution (or None).
+
+    The unified safe boundary for the toolchain side, mirroring the
+    map/config side (_read_bytes_strict): lexical pre-refusal of
+    forbidden (``rom`` segment) and outside (``..``) specs with zero FS
+    calls, then lstat-only symlink checks (final component AND every
+    parent prefix), then in-repo refusal, then non-regular refusal. No
+    bytes are read and nothing is executed on refusal. ``repo`` may be
+    None (lexical + symlink checks only); pass the target repo so
+    in-repo tool locations are refused too.
+    """
+    if _map_spec_refused_pre_read(resolved):
+        return None
     try:
-        candidate = Path(path)
+        text = (os.fspath(resolved) if isinstance(resolved, os.PathLike)
+                else resolved)
+        candidate = Path(text)
+        if candidate.is_symlink():
+            return None
         if _path_has_symlink_parent(candidate):
             return None
+        if repo is not None:
+            base = Path(repo).resolve()
+            got = candidate.resolve()
+            if got == base or base in got.parents:
+                return None
         if candidate.is_symlink() or not candidate.is_file():
             return None
-        return hashlib.sha256(candidate.read_bytes()).hexdigest()
+    except (OSError, ValueError):
+        return None
+    return candidate
+
+
+def _tools_dir_vetted_path(raw, repo):
+    """Vet TOOLS_DIR BEFORE any enumerate/stat/read/execute (or None).
+
+    Lexical forbidden/outside specs are refused with zero FS calls; only
+    then do lstat-only symlink checks and the in-repo comparison run. A
+    refused TOOLS_DIR makes both the toolchain and the env verdict
+    unidentifiable (refuse reuse), so neither path can bypass the other.
+    """
+    if _map_spec_refused_pre_read(raw):
+        return None
+    try:
+        candidate = Path(raw)
+        if candidate.is_symlink():
+            return None
+        if _path_has_symlink_parent(candidate):
+            return None
+        resolved = candidate.resolve()
+        base = Path(repo).resolve()
+        if resolved == base or base in resolved.parents:
+            return None
+    except (OSError, ValueError):
+        return None
+    return resolved
+
+
+def _hash_tool_file(path, repo=None):
+    """Hash one executed tool file, or None when unconfirmable (no run)."""
+    target = _tool_execution_target_safe(path, repo)
+    if target is None:
+        return None
+    try:
+        return hashlib.sha256(target.read_bytes()).hexdigest()
     except (OSError, ValueError):
         return None
 
 
-def _verify_tool_reports_pin(tool_path, pin_prefix):
-    """True only if ``tool --version`` reports the pinned revision."""
+def _verify_tool_reports_pin(tool_path, pin_prefix, repo=None):
+    """True only if ``tool --version`` reports the pinned revision.
+
+    The candidate is vetted by the unified boundary BEFORE execution: a
+    refused path returns False with zero subprocess calls.
+    """
+    target = _tool_execution_target_safe(tool_path, repo)
+    if target is None:
+        return False
     try:
         proc = subprocess.run(
-            [str(tool_path), "--version"], capture_output=True, text=True,
+            [str(target), "--version"], capture_output=True, text=True,
             timeout=120)
     except (OSError, subprocess.SubprocessError, ValueError):
         return False
@@ -1361,60 +1499,36 @@ def _verify_tool_reports_pin(tool_path, pin_prefix):
     return bool(pin_prefix) and pin_prefix in output
 
 
-def _cli_effective_env(mode, extra_env=None):
+def _cli_effective_env(mode, extra_env=None, repo=None):
     """Capture the CLI-effective conditions allowlist (no dump, no secrets).
 
-    Only MODE, OSS_PCE_REQUIRE_CC65, and a sha256 hash of the TOOLS_DIR
-    execution identity are recorded (the raw TOOLS_DIR path is private
-    and never stored). The identity hash covers the path PLUS the bytes
-    of the actually-executed cc65 tools where confirmable, so a
-    same-path tool content change still changes the fingerprint; when
-    tools are unconfirmable the path hash is kept (the toolchain field
-    is "unknown", which already refuses reuse). Any change in these
-    conditions changes the fingerprint so old evidence never reuses.
+    Only MODE, OSS_PCE_REQUIRE_CC65, and a sha256 of the TOOLS_DIR *path
+    string* (identity of the location, never its contents, never the raw
+    path) are recorded. Tool *content* binding lives solely in
+    _declared_toolchain (hashes of the executed ca65/ld65 bytes): this
+    function performs zero directory enumeration, zero reads, and zero
+    subprocess calls, so it cannot bypass the toolchain refusal -- a
+    same-path content change alters the toolchain verdict while this
+    identity stays put. A lexically forbidden (``rom``/``..``) or, when
+    ``repo`` is given, symlink-parent/in-repo TOOLS_DIR is unidentifiable
+    ("unknown", refuse reuse); unset stays "unset". Any change in
+    these conditions changes the fingerprint so old evidence never reuses.
     extra_env (unit-test overrides) must be a str->str dict; anything
     else marks the env malformed (refuse reuse).
     """
     try:
         tools_raw = os.environ.get("TOOLS_DIR", "")
-        if tools_raw:
-            # Best-effort content binding without importing the repo pins
-            # here (pins live in _declared_toolchain): hash every regular
-            # ``bin/*`` entry directly under ``<TOOLS_DIR>/cc65-*/bin``.
-            # Synthetic same-path content changes alter these bytes, so
-            # the env hash changes even when the path is identical.
-            content_parts = []
-            try:
-                root = Path(tools_raw)
-                if not _path_has_symlink_parent(root) and root.is_dir():
-                    for child in sorted(root.iterdir()):
-                        if not child.is_dir() or child.is_symlink():
-                            continue
-                        bindir = child / "bin"
-                        try:
-                            if bindir.is_symlink() or not bindir.is_dir():
-                                continue
-                            for tool in sorted(bindir.iterdir()):
-                                try:
-                                    if tool.is_symlink() or not tool.is_file():
-                                        continue
-                                    content_parts.append(
-                                        hashlib.sha256(
-                                            tool.read_bytes()).hexdigest())
-                                except (OSError, ValueError):
-                                    content_parts.append("unreadable")
-                        except (OSError, ValueError):
-                            continue
-            except (OSError, ValueError):
-                content_parts = []
-            if content_parts:
-                tools_hash = hashlib.sha256(
-                    (tools_raw + "|" + "|".join(
-                        content_parts)).encode()).hexdigest()
-            else:
-                tools_hash = hashlib.sha256(tools_raw.encode()).hexdigest()
-        else:
+        if not tools_raw:
             tools_hash = "unset"
+        elif repo is not None:
+            tools_hash = ("unknown"
+                           if _tools_dir_vetted_path(tools_raw, repo) is None
+                           else hashlib.sha256(
+                               tools_raw.encode()).hexdigest())
+        elif _map_spec_refused_pre_read(tools_raw):
+            tools_hash = "unknown"
+        else:
+            tools_hash = hashlib.sha256(tools_raw.encode()).hexdigest()
     except (OSError, ValueError, UnicodeError):
         tools_hash = "unknown"
     env = {
@@ -1438,15 +1552,20 @@ def _declared_toolchain(repo):
 
     Returns a JSON string binding the declared pins to the bytes and
     ``--version`` output of the actually-executed cc65 tools (the same
-    ``revision[:9] in --version`` check the build uses in tools/build.py),
-    or "unknown" when identity is unconfirmable. Declared revision plus
-    a TOOLS_DIR path/existence check is NOT execution identity: the same
-    path with different tool bytes, a different real checkout revision, an
-    empty TOOLS_DIR, or a declared-pin-vs-entity mismatch must all refuse
+    ``revision[:9] in --version`` check the build uses in tools/build.py,
+    resolved the same way tools/environment.py executable() resolves:
+    explicit override via shutil.which, else the pinned
+    ``<TOOLS_DIR>/cc65-<revision>/bin/*`` location), or "unknown" when
+    identity is unconfirmable. Declared revision plus a TOOLS_DIR
+    path/existence check is NOT execution identity: the same path with
+    different tool bytes, a different real checkout revision, an empty
+    TOOLS_DIR, or a declared-pin-vs-entity mismatch must all refuse
     reuse. Unconfirmable (missing/unparseable dependencies.json, missing
-    revisions, symlink-parent/irregular reads, unresolvable/missing tools,
-    ``--version`` failure or pin mismatch, TOOLS_DIR inside the repo) ->
-    "unknown". No blanket env collection, no secrets.
+    revisions, forbidden/outside TOOLS_DIR specs vetted before any
+    enumerate/stat/read, symlink-parent/irregular reads, TOOLS_DIR inside
+    the repo, unresolvable/missing/overridden-forbidden tools,
+    ``--version`` failure or pin mismatch) -> "unknown". No blanket env
+    collection, no secrets.
     """
     base = Path(repo)
     candidate = base / "tools" / "dependencies.json"
@@ -1470,23 +1589,19 @@ def _declared_toolchain(repo):
     except (KeyError, AttributeError, ValueError, TypeError):
         return "unknown"
     # Execution identity: TOOLS_DIR must be a confirmable external real
-    # directory (not a symlink, not inside the repo, non-empty).
+    # directory (not a symlink, not inside the repo, non-empty). The
+    # vetted path refuses forbidden (rom segment) and outside (..)
+    # specs BEFORE any enumerate/stat/read/execute, so neither this
+    # verdict nor the _cli_effective_env identity can be bypassed.
     try:
         raw = os.environ.get("TOOLS_DIR", "")
-        if not raw:
-            return "unknown"
+    except (OSError, ValueError, UnicodeError):
+        return "unknown"
+    if _tools_dir_vetted_path(raw, repo) is None:
+        return "unknown"
+    try:
         tools_path = Path(raw)
-        if tools_path.is_symlink() or not tools_path.is_dir():
-            return "unknown"
-        try:
-            repo_resolved = base.resolve()
-            tools_resolved = tools_path.resolve()
-            if (tools_resolved == repo_resolved
-                    or repo_resolved in tools_resolved.parents):
-                return "unknown"
-        except OSError:
-            return "unknown"
-        if _path_has_symlink_parent(tools_path):
+        if not tools_path.is_dir():
             return "unknown"
         try:
             if not any(tools_path.iterdir()):
@@ -1497,19 +1612,19 @@ def _declared_toolchain(repo):
         return "unknown"
     # Confirmable execution entities: the actually-used cc65 binaries.
     # Resolve exactly like tools/environment.py (explicit override or the
-    # pinned ``<TOOLS_DIR>/cc65-<revision>/bin/*`` location).
+    # pinned ``<TOOLS_DIR>/cc65-<revision>/bin/*`` location); each
+    # candidate is vetted (forbidden/in-repo/symlink/non-regular refusal)
+    # BEFORE its bytes are read AND before ``--version`` is executed.
     cc65_rev = pins.get("cc65")
     if not cc65_rev:
         return "unknown"
     tool_hashes = {}
     for binary in ("ca65", "ld65"):
         resolved = _resolve_pinned_tool_path(raw, cc65_rev, "cc65", binary)
-        if resolved is None:
-            return "unknown"
-        digest = _hash_tool_file(resolved)
+        digest = _hash_tool_file(resolved, repo)
         if digest is None:
             return "unknown"
-        if not _verify_tool_reports_pin(resolved, cc65_rev[:9]):
+        if not _verify_tool_reports_pin(resolved, cc65_rev[:9], repo):
             return "unknown"
         tool_hashes[binary] = digest
     return json.dumps({"pins": pins, "tools": tool_hashes},
@@ -1575,7 +1690,7 @@ def evidence_fingerprint(repo, changed, mode="debug", extra_env=None,
         "platform": sys.platform,
         "toolchain": toolchain,
         "mode": mode,
-        "env": _cli_effective_env(mode, extra_env),
+        "env": _cli_effective_env(mode, extra_env, repo),
     }
 
 
@@ -1855,15 +1970,17 @@ def render(selection):
     return "\n".join(lines) + "\n"
 
 
-# Default impact map for the normal CLI path: the Task-A canonical map
-# v0 (tracked at tools/test_staging_map.json after Owner merges #856; read
-# from that path by default, or from an explicit --map). The
-# ProvisionalJsonMapLoader is isolated to explicit synthetic-test use
-# (callers pass loader=ProvisionalJsonMapLoader() directly); the normal
-# CLI path -- including an explicit --map -- always starts the canonical
-# loader, so a provisional envelope via --map fails closed to L3 instead of
-# being misread. A missing or inconsistent canonical map is L3 fail-closed.
-DEFAULT_CANONICAL_MAP = ROOT / "tools" / "test_staging_map.json"
+# Normal-CLI vs explicit-synthetic map lanes: the normal CLI path always
+# starts the canonical loader bound to --repo (default
+# <repo>/tools/test_staging_map.json, or a repo-relative --map -- both
+# inside the target checkout; an absolute --map outside it is cross-repo
+# mixing and refused fail-closed). ProvisionalJsonMapLoader is isolated
+# to explicit synthetic-test use (callers pass
+# loader=ProvisionalJsonMapLoader() directly) with its own temp-fixture
+# boundary. There is deliberately no ROOT-anchored default constant: a
+# silent fallback to this checkout's files would mis-select when --repo
+# differs from ROOT. A missing or inconsistent canonical map is L3
+# fail-closed.
 
 
 def run_selector(repo, base, map_path=None, api=None, fetch=False,
@@ -1871,11 +1988,15 @@ def run_selector(repo, base, map_path=None, api=None, fetch=False,
                  requested_level=None):
     """Collect inputs, load the map, select, and return (selection, report).
 
-    The normal path uses CanonicalJsonMapLoader with DEFAULT_CANONICAL_MAP
-    unless the caller passes an explicit --map (still canonical) or an
-    explicit loader (synthetic tests only). The returned fingerprint is
-    finalised with the map identity, API choice, level, and command set so
-    reuse comparisons cover content plus selection plus conditions.
+    The normal path uses a CanonicalJsonMapLoader bound to ``repo``: the
+    default map is ``<repo>/tools/test_staging_map.json`` and an explicit
+    --map is either repo-relative (resolved inside ``repo``) or absolute
+    inside ``repo`` -- an absolute --map from another checkout is refused
+    fail-closed (cross-repo mixing), never mixed with this repo's
+    ledger/Makefile/diff/pins. Pass an explicit loader only for isolated
+    synthetic-test fixtures. The returned fingerprint is finalised with
+    the map identity, API choice, level, and command set so reuse
+    comparisons cover content plus selection plus conditions.
     """
     if requested_level in MANUAL_ONLY_LEVELS:
         changed = ChangedInputs(head="manual", base=base)
@@ -1887,7 +2008,7 @@ def run_selector(repo, base, map_path=None, api=None, fetch=False,
                        "python": platform.python_version(),
                        "platform": sys.platform,
                        "toolchain": "manual", "mode": mode,
-                       "env": _cli_effective_env(mode, None)}
+                       "env": _cli_effective_env(mode, None, repo)}
         selection = Selection(
             level="L4",
             selected=[_with_required_env({"make": "dev-mul16s-sweep"})],
