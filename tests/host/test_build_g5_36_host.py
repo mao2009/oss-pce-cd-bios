@@ -87,9 +87,9 @@ class BuildSatclr36HostTests(unittest.TestCase):
             data = rom.read_bytes()
             self.assertEqual(len(data), 262144)
             self.assertNotIn("ex_satclr_entry", syms)
-            pinned = "9a7a2c00bed665a9d90030b824ad3c8e7d7a81c2eec71f824d6e8fb59ce00bc6"
+            pinned = "3d7e14093de3b10eb8c73bafa2dd3946b12ebeec9dfc0dd5ae0d164d0b657034"
             self.assertEqual(hashlib.sha256(data).hexdigest(), pinned,
-                             "stub-default G5 ROM differs from pre-$36 baseline")
+                             "stub-default G5 ROM differs from the Issue #843 baseline")
 
     def test_builder_experimental_wiring(self):
         import sys
@@ -353,7 +353,7 @@ class BuildSatclr36HostTests(unittest.TestCase):
         self.assertEqual(len(names), 16)
         self.assertEqual(len(shas), 16)
         self.assertEqual(default_sha,
-                         "9a7a2c00bed665a9d90030b824ad3c8e7d7a81c2eec71f824d6e8fb59ce00bc6",
+                         "3d7e14093de3b10eb8c73bafa2dd3946b12ebeec9dfc0dd5ae0d164d0b657034",
                          "all-stub default differs from pinned baseline")
 
 

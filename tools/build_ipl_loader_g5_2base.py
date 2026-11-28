@@ -40,9 +40,11 @@ Reuses (no large new builder, no logic duplication):
   - tools/build_rom.py: assemble_api_objects (normal DEV 18 overrides,
     byte-identical) + verify_dev_rom (tamper refusal).
   - src/cd_base_2base.s, src/cd_read_commercial.s (BOOT segment). Separate variant from proto/link V1.
-  - src/ipl_loader_g5_glue.s (new, tiny): XSEL selection record (same layout
-    as experimental_bios_boot.s, for the proto's INDEX01 comparison) +
-    experimental_slot_33 wrapper (.include ex_dspoff.s, single source).
+  - src/ipl_loader_g5_glue.s (tiny): XSEL selection record (same layout
+    as experimental_bios_boot.s, for the proto's INDEX01 comparison).
+  - src/ex_cr_family.s (CR-family single source, NEED_CRxx): the $33/$2C/$2B
+    D2 heads + shared reject/tail (Issue #843); $33 always linked via
+    NEED_CR33, $2C/$2B opt-in via NEED_CR2C/NEED_CR2B.
 
 The XSEL record and IPL_SEL are derived from the SAME synthetic INDEX 01 LBA
 (sel, 16-bit). Mismatch is refused by construction (single sel input); a disc
@@ -82,7 +84,11 @@ if __package__:
     from .build_rom import BANK_BYTES, IMAGE_BYTES, ROOT, assemble_api_objects, overrides, verify_dev_rom
     from .build_dev_ipl_loader_bios import LOADER_SOURCE, REQUIRED as LOADER_REQUIRED, parse_labels
     from .build_experimental_bios_boot import (
+        CR_FAMILY_SOURCE,
+        CR_REJECT_ENTRY,
+        CR_TAIL_ENTRY,
         SLOT02_PATCH_LEN,
+        _check_cr_common_in_boot,
         _patch_slot02_to_proto,
         _redirect_slot03_to_link,
         _redirect_slot33_to_body,
@@ -136,7 +142,11 @@ else:
     from build_rom import BANK_BYTES, IMAGE_BYTES, ROOT, assemble_api_objects, overrides, verify_dev_rom
     from build_dev_ipl_loader_bios import LOADER_SOURCE, REQUIRED as LOADER_REQUIRED, parse_labels
     from build_experimental_bios_boot import (
+        CR_FAMILY_SOURCE,
+        CR_REJECT_ENTRY,
+        CR_TAIL_ENTRY,
         SLOT02_PATCH_LEN,
+        _check_cr_common_in_boot,
         _patch_slot02_to_proto,
         _redirect_slot03_to_link,
         _redirect_slot33_to_body,
@@ -204,9 +214,7 @@ SATCLR_SOURCE = ROOT / "src" / "ex_satclr.s"
 SATCLR_ENTRY = "ex_satclr_entry"
 SPRDMA_SOURCE = ROOT / "src" / "ex_sprdma.s"
 SPRDMA_ENTRY = "ex_sprdma_entry"
-IRQON_SOURCE = ROOT / "src" / "ex_irqon.s"
 IRQON_ENTRY = "ex_irqon_entry"
-RCROFF_SOURCE = ROOT / "src" / "ex_rcroff.s"
 RCROFF_ENTRY = "ex_rcroff_entry"
 BANK0_CFG = ROOT / "src" / "bank0.cfg"
 
@@ -214,6 +222,7 @@ ROM_STEM = "dev-ipl-loader-g5-not-compatible"
 EXP_LABELS = ("api_slot_02", "api_unimplemented", "cd_base_2base_entry",
               "api_slot_03", "cd_read_commercial_entry",
               "api_slot_33", "experimental_slot_33",
+              CR_TAIL_ENTRY, CR_REJECT_ENTRY,
               "api_slot_4A", "ex_memopen_entry",
               "api_slot_25", "ex_scrmod_entry",
               "api_slot_24", "ex_dotmod_entry",
@@ -355,8 +364,7 @@ def _g5_leaf_names(variant: str) -> list:
     names += [f"cd_base_2base_{variant}.o", f"cd_read_commercial_{variant}.o",
               f"cd_read_link_{variant}.o", f"ex_memopen_{variant}.o",
               f"ex_scrmod_{variant}.o", f"ex_dotmod_{variant}.o", f"ex_satclr_{variant}.o",
-              f"ex_sprdma_{variant}.o", f"ex_irqon_{variant}.o",
-              f"ex_rcroff_{variant}.o",
+              f"ex_sprdma_{variant}.o", f"ex_cr_family_{variant}.o",
               f"ipl_loader_g5_glue_{variant}.o", f"ipl_loader_{variant}.o",
               "bank0-ipl-loader-g5.cfg",
               f"bank0-{variant}-g5.bin", f"ipl-loader-g5-{variant}.lbl",
@@ -454,19 +462,21 @@ def g5_manifest(sel: int, track: int, mode: str, variant: str, defines: list,
         "mode": mode, "variant": variant, "rom_name": rom_name,
         "rom_sha256": hashlib.sha256(data).hexdigest(), "rom_bytes": IMAGE_BYTES,
         "loader_source": "tests/integration/ipl_loader_rom.s (unchanged, Issue #670)",
-        "glue_source": "src/ipl_loader_g5_glue.s (Issue #800, XSEL + slot33 wrapper)",
+        "glue_source": "src/ipl_loader_g5_glue.s (Issue #800, XSEL record)",
         "experimental_sources": ((["src/cd_base_2base.s", "src/cd_read_commercial.s",
-                                  "src/ex_dspoff.s (via glue, single source)"]
+                                  "src/ex_cr_family.s (CR-family single source, NEED_CR33" +
+                                  ("+NEED_CR2C" if cd_2c == "experimental" else "") +
+                                  ("+NEED_CR2B" if cd_2b == "experimental" else "") + ")"]
                                  if cd_read == "commercial" else
                                  ["src/cd_base_2base.s", "src/cd_read_link.s",
-                                  "src/ex_dspoff.s (via glue, single source)"])
+                                  "src/ex_cr_family.s (CR-family single source, NEED_CR33" +
+                                  ("+NEED_CR2C" if cd_2c == "experimental" else "") +
+                                  ("+NEED_CR2B" if cd_2b == "experimental" else "") + ")"])
                                 + (["src/ex_memopen.s"] if cd_4a == "experimental" else [])
                                 + (["src/ex_scrmod.s"] if cd_25 == "experimental" else [])
                                 + (["src/ex_dotmod.s"] if cd_24 == "experimental" else [])
                                 + (["src/ex_satclr.s"] if cd_36 == "experimental" else [])
-                                + (["src/ex_sprdma.s"] if cd_35 == "experimental" else [])
-                                + (["src/ex_irqon.s"] if cd_2c == "experimental" else [])
-                                + (["src/ex_rcroff.s"] if cd_2b == "experimental" else [])),
+                                + (["src/ex_sprdma.s"] if cd_35 == "experimental" else [])),
         "defines": list(defines), "symbols": dict(symbols), "labels": dict(link_labels),
         "pinned_cc65": DEPENDENCIES["cc65"]["revision"],
         "pinned_geargrafx": DEPENDENCIES["geargrafx"]["revision"],
@@ -550,25 +560,24 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
     body, $E084 -> JMP ex_irqon_entry: CR R05 bit3 set via the shared $2502
     shadow, $20F3/$20F7 + CPU I + IDR untouched). Anything else is refused.
     Only the ($2C-only, cd_2b stub), (full $4A+$25+$24+$36+$35+$2C,
-    cd_2b stub), and ($2C+$2B chain, cd_2b experimental, all others stub)
+    cd_2b stub), ($2C+$2B chain, cd_2b experimental, all others stub) and
+    full ExpG ($4A+$25+$24+$36+$35+$2C+$2B, all experimental, Issue #843)
     experimental combinations are supported; any other cd_2c="experimental"
     combination is refused fail-closed (bounded variant lattice, no power-set
-    growth). Full ExpG ($4A+$25+$24+$36+$35+$2C+$2B) is refused on BOOT
-    overflow (see cd_2b; tracked in #843).
+    growth). Full ExpG links cleanly after the Issue #843 CR-family
+    commonization (shared reject/tail in src/ex_cr_family.s).
     `cd_2b` selects the $2B wiring: "stub" (default; the $E081 table entry
     stays on the linked fallback stub, preserving every existing test and the
     SIMULATED separation) or "experimental" (Issue #53 D2 limited-functional
     body, $E081 -> JMP ex_rcroff_entry: CR R05 bit2 clear via the shared
     $2502 shadow, bit3 preserved, $20F3/$20F7 + CPU I + IDR + RCR R06
     untouched). Anything else is refused. Only the ($2B-only, all others
-    stub) and ($2C+$2B chain, all others stub) experimental combinations
-    are supported; any other cd_2b="experimental" combination is refused
-    fail-closed (bounded variant lattice, no power-set growth). The full
-    ExpG ($4A+$25+$24+$36+$35+$2C+$2B) overflows the $F000-$FFF5 BOOT+CODE
-    budget by 19 bytes (ExpF slack 25 bytes, $2B body 44 bytes; linker
-    overflow proved) and is refused fail-closed until a BOOT-saving
-    follow-up (CR-family commonization) lands; the $2C->$2B synthetic
-    chain reuses the $2C+$2B image.
+    stub), ($2C+$2B chain, all others stub) and full ExpG ($4A+$25+$24+
+    $36+$35+$2C+$2B, all experimental, Issue #843) combinations are
+    supported; any other cd_2b="experimental" combination is refused
+    fail-closed (bounded variant lattice, no power-set growth). The $2C->$2B
+    synthetic chain reuses the $2C+$2B image; the full CR chain reuses the
+    full ExpG image.
     """
     if cd_read not in ("commercial", "link"):
         raise ValueError("cd_read must be 'commercial' or 'link'")
@@ -595,16 +604,16 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
         raise ValueError("cd_2c='experimental' (cd_2b stub) supports only the $2C-only unit "
                          "combination and the full ExpF combination "
                          "($4A+$25+$24+$36+$35+$2C); refusing unbounded lattice growth")
-    if cd_4a == "experimental" and cd_25 == "experimental" and cd_24 == "experimental" and cd_36 == "experimental" and cd_35 == "experimental" and cd_2c == "experimental" and cd_2b == "experimental":
-        raise ValueError("full ExpG ($4A+$25+$24+$36+$35+$2C+$2B) overflows the $F000-$FFF5 BOOT+CODE budget by 19 bytes "
-                         "(ExpF slack 25 bytes, $2B body 44 bytes; ld65 overflow proved); refusing until a BOOT-saving follow-up lands")
     if cd_2b == "experimental" and not (
             (cd_4a == "stub" and cd_25 == "stub" and cd_24 == "stub"
              and cd_36 == "stub" and cd_35 == "stub" and cd_2c == "stub")
             or (cd_4a == "stub" and cd_25 == "stub" and cd_24 == "stub"
-                and cd_36 == "stub" and cd_35 == "stub" and cd_2c == "experimental")):
+                and cd_36 == "stub" and cd_35 == "stub" and cd_2c == "experimental")
+            or (cd_4a == "experimental" and cd_25 == "experimental" and cd_24 == "experimental"
+                and cd_36 == "experimental" and cd_35 == "experimental" and cd_2c == "experimental")):
         raise ValueError("cd_2b='experimental' supports only the $2B-only unit "
-                         "combination and the $2C+$2B chain combination; refusing unbounded lattice growth")
+                         "combination, the $2C+$2B chain combination and the full ExpG "
+                         "combination; refusing unbounded lattice growth")
     link_source = LINK_SOURCE_COMMERCIAL if cd_read == "commercial" else LINK_SOURCE_V1
     link_entry = LINK_ENTRY_COMMERCIAL if cd_read == "commercial" else LINK_ENTRY_V1
     # MAJOR-1: experimental bodies are opt-in only. A stub default must not
@@ -615,6 +624,7 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
     exp_labels = ["api_slot_02", "api_unimplemented", "cd_base_2base_entry",
                   "api_slot_03", link_entry,
                   "api_slot_33", "experimental_slot_33",
+                  CR_TAIL_ENTRY, CR_REJECT_ENTRY,
                   "api_slot_4A"]
     if cd_4a == "experimental":
         exp_labels.append(MEMOPEN_ENTRY)
@@ -648,7 +658,8 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
     _refuse_unsafe_variant(variant)
     canon_defines, _ = _normalize_defines(defines)  # is_public unused: manifest derives it
     # MAJOR-1: stub defaults must not require the experimental sources.
-    required_sources = [PROTO_SOURCE, link_source, GLUE_SOURCE]
+    required_sources = [PROTO_SOURCE, link_source, GLUE_SOURCE,
+                        CR_FAMILY_SOURCE]
     if cd_4a == "experimental":
         required_sources.append(MEMOPEN_SOURCE)
     if cd_25 == "experimental":
@@ -659,10 +670,6 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
         required_sources.append(SATCLR_SOURCE)
     if cd_35 == "experimental":
         required_sources.append(SPRDMA_SOURCE)
-    if cd_2c == "experimental":
-        required_sources.append(IRQON_SOURCE)
-    if cd_2b == "experimental":
-        required_sources.append(RCROFF_SOURCE)
     required_sources = tuple(required_sources)
     for src in required_sources:
         if not src.is_file():
@@ -708,8 +715,18 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
     objects = assemble_api_objects(output, mode)
     exp_defs = _exp_defines(sel, track)
     # MAJOR-1: link each experimental body only when it is selected. The
-    # (stub x5) order (proto, link, glue) is unchanged, so the default
-    # image stays byte-identical to the prior all-stub baseline.
+    # (stub x5) order (proto, link, family, glue) is unchanged, so the
+    # default image stays byte-identical to the prior all-stub baseline
+    # except for the Issue #843 CR-family commonization itself (the $33 head
+    # shrinks 44 -> 29 bytes and the shared 17-byte reject/tail joins BOOT).
+    # The CR-family unit always assembles NEED_CR33 (the always-wired $33
+    # head); NEED_CR2C/NEED_CR2B join only when the $2C/$2B heads are
+    # selected, so stub defaults never link the $2C/$2B bodies.
+    family_defs = ["-D", "NEED_CR33"]
+    if cd_2c == "experimental":
+        family_defs += ["-D", "NEED_CR2C"]
+    if cd_2b == "experimental":
+        family_defs += ["-D", "NEED_CR2B"]
     g5_sources = [(PROTO_SOURCE, exp_defs), (link_source, [])]
     if cd_4a == "experimental":
         g5_sources.append((MEMOPEN_SOURCE, []))
@@ -721,10 +738,7 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
         g5_sources.append((SATCLR_SOURCE, []))
     if cd_35 == "experimental":
         g5_sources.append((SPRDMA_SOURCE, []))
-    if cd_2c == "experimental":
-        g5_sources.append((IRQON_SOURCE, []))
-    if cd_2b == "experimental":
-        g5_sources.append((RCROFF_SOURCE, []))
+    g5_sources.append((CR_FAMILY_SOURCE, family_defs))
     g5_sources.append((GLUE_SOURCE, exp_defs))
     for src, extra in g5_sources:
         obj = output / f"{src.stem}_{variant}.o"
@@ -760,6 +774,10 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
         symbols["cd_base_2base_entry"])
     patched = _redirect_slot33_to_body(
         patched, symbols["api_slot_33"], symbols["experimental_slot_33"])
+    # CR-family shared tail/reject placement + content (Issue #843; every
+    # $33/$2C/$2B head branches here, so this is a protection boundary).
+    _check_cr_common_in_boot(bytes(patched), symbols[CR_TAIL_ENTRY],
+                             symbols[CR_REJECT_ENTRY])
     patched = _redirect_slot03_to_link(
         patched, symbols["api_slot_03"], symbols[link_entry])
     if cd_4a == "experimental":
@@ -784,7 +802,9 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
         patched = _redirect_slot2b_to_body(
             patched, symbols["api_slot_2B"], symbols[RCROFF_ENTRY])
     slot02_addr = symbols["api_slot_02"]
-    if cd_2b == "experimental" and cd_2c == "experimental":
+    if cd_4a == "experimental" and cd_25 == "experimental" and cd_24 == "experimental" and cd_36 == "experimental" and cd_35 == "experimental" and cd_2c == "experimental" and cd_2b == "experimental":
+        allowed = unified_api_windows_4a_25_24_36_35_2c_2b(slot02_addr)
+    elif cd_2b == "experimental" and cd_2c == "experimental":
         allowed = unified_api_windows_2c_2b(slot02_addr)
     elif cd_2b == "experimental":
         allowed = unified_api_windows_2b(slot02_addr)

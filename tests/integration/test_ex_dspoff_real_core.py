@@ -2,12 +2,12 @@
 
 The experimental System-Card-sized DEV image redirects its $E099 table entry to a
 BOOT-region copy of the project-own DEV EX_DSPOFF fragment (single source:
-src/ex_dspoff.s). The guest below is placed in the $E800-$EFFF probe-overlay
+the NEED_CR33 head of src/ex_cr_family.s, Issue #843). The guest below is placed in the $E800-$EFFF probe-overlay
 window with the reset vector redirected at it (the BOOT region holds the $33
 body, so the reset-overwrite pattern cannot be used) and JSRs the REAL $E099
 table entry -- not a stub, not an immediate-RTS fabrication.
 
-Each run checks the project-own contract (src/ex_dspoff.s) through the shared
+Each run checks the project-own contract (the NEED_CR33 head) through the shared
 geargrafx_dev_cr oracle: VDC CR low gains cleared BB+SB via the work-RAM shadow
 ($2502/$2503, magic $A5), CR high untouched, A/X/Y/P preserved (C=0 ok, C=1 on
 uninitialized-shadow reject), VDC AR left at 5, stack balanced, MPRs intact, RAM

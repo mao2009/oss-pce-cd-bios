@@ -272,12 +272,25 @@ VERIFIED（真正 BIOS の確認）は 0 件。`release_eligible=false`。
     真正 BIOS の返値集合の主張ではない（§5.2-4、§10-1）。
   - `HarnessOutcome`: 判定層（入力検証・監査）の結果域。`{REFUSED, CORRUPTED}`。
     PROJECT-INVENTED の入力拒否・検証失敗であり、`MockStatus` とは別の型・別の層である。
-  - 判定フロー `judge(image, name)`:
-    1. `validate_input(name)`: `name` が `bytes` かつ `len == 12` でなければ `REFUSED`。
-       `mock_delete` は呼ばない。画像は不変（N4、B1）。
-    2. `audit_image(image)`: 下記 CLEAN 不変条件を満たさなければ `CORRUPTED`。
+  - 判定フロー `judge(image, name)`（`CORRUPTED` が `REFUSED` に優先する）:
+    0. `structure_gate(image)`: スナップショット不能（非 exact-dict・キー欠落・`entries` 非 exact-list・
+       非 exact-dict 件・`name`/`data` 非 exact-bytes/bytearray・`formatted`/`capacity`/`end` が
+       `type(value) is bool/int/str/bytes`（identity。tuple `in` は metaclass `__eq__` を
+       呼ぶため `_type_is` 共有述語に統一）以外の `list/dict/bytearray/set/tuple/float/None` 等・
+       および同型の subclass 全般（int/str/bytes/dict/list/bytearray subclass。mutable attrs や
+       raising special method を持つ場合を含む））なら `CORRUPTED`＋空画像規約。例外を投げない。
+       exact `bool/int/str/bytes` の異常値（例: `formatted=1`、`capacity="2048"`）は snapshot-able 異常として
+       入力同一スナップショットを返す（T18）。スカラ型の許可リストは可変物のエイリアス共有を防ぐためであり、
+       値の正当性（bool 性・正数・範囲・終端一致）は監査層が判定する。exact-type 判定は当該層の
+       格納済み key の反復＋`type(key) is str` 判定は当該層の membership/subscript より先に行うため、
+       非 str key・str subclass key・同ハッシュ衝突 key の special method（`__hash__`/`__eq__` 等）は
+       実行されない。exact-str の正常画像と exact-str の余分 key は gate を通過する（余分 key は
+       許容し、必須 key の有無で判定する）。
+    1. `audit_image(image)`: 下記 CLEAN 不変条件を満たさなければ `CORRUPTED`＋入力同一スナップショット。
        `mock_delete` は呼ばない。画像は不変（N5）。`formatted == false` は監査対象外であり、
        `mock_delete` が `(NOT_FORMATTED, 同一画像)` を返す正常系（N2）と区別する。
+       画像も名前も不正な二重不良は `CORRUPTED` とする（`REFUSED` ではない）。
+    2. `validate_input(name)`: `type(name) is bytes/bytearray`（identity。`_type_is` 共有述語。`make_image` の name 検査と同一）かつ `len == 12` でなければ `REFUSED`。bytes/bytearray subclass・`__bytes__`/buffer redirect は exact-type 外として拒否し、`mock_delete`/`make_image` は `ValueError`。`bytes(name)` の汎用複写は gate 通過後の exact 値に限る。`judge`/`mock_delete` の gate は `blob=bytes(name)` より前、画像も名前も不正な二重不良は `CORRUPTED` とする（`REFUSED` ではない）。
     3. `mock_delete(clean_image, name)`: `formatted == false` なら `(NOT_FORMATTED, 同一画像)`（N2）。
        名前完全一致の entry が無ければ `(NOT_FOUND, 同一画像)`（N1、N3、N7 の 2 回目）。
        あれば当該 1 件を除去し後続を詰めて `(OK, 新画像)`（P1–P4、N6、N7 の 1 回目）。
