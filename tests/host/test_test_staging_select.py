@@ -461,10 +461,12 @@ CANONICAL_PIN = "2ab14d08fc9fbdc704da1b1f07c96501850b542e"
 # CanonicalDefaultTests.test_cli_end_to_end_with_real_canonical_map.
 # Recorded 2026-11-28 as 3dad5dad (doc-fix-only, schema stable); branch
 # moved to 71ad00ab (doc-only local_media/commercial_media_access wording,
-# schema unchanged) and the pin is updated here. If the branch moves again
-# this pin fails and Wave3 finalises it against the merge (no checkout,
-# no tracked copy, no ./rom).
-REAL_MAP_HEAD_PIN = "71ad00abbcba90678ba6fcc03481e68030d0deef"
+# schema unchanged), then to e8d51e75 (enumeration-probe non-destructive
+# test-only change, schema stable -- verified: diff 71ad00ab..e8d51e75
+# touches only tests/host/test_test_staging_map.py). Pin updated here.
+# If the branch moves again this pin fails and Wave3 finalises it against
+# the merge (no checkout, no tracked copy, no ./rom).
+REAL_MAP_HEAD_PIN = "e8d51e75c0e3f4b324342722b5538c0f1c1faf2d"
 
 
 def canonical_tests(host=(), scripts=(), targets=(), static=()):
@@ -724,13 +726,15 @@ class CanonicalLoaderTests(unittest.TestCase):
         for api, argvs in seen.items():
             with self.subTest(api=api):
                 self.assertEqual(argvs, seen["MA_MUL8U"])
-        # The slot subset is the slot's own commands (dev-rom + the slot
-        # host pattern), not the whole entry command set.
+        # B-3 Wave2 union: the selected set is path-rule commands UNION
+        # API slot commands (deduped). The entry carries contracts+table+
+        # dev-rom; the slot carries contracts+dev-rom; the union keeps the
+        # path-only table evidence (A survives) instead of overwriting it.
         self.assertIn(("make", "dev-rom"), seen["MA_MUL8U"])
         self.assertTrue(any("test_api_contracts.py" in argv
                             for argv in seen["MA_MUL8U"]))
-        self.assertFalse(any("test_api_table.py" in argv
-                             for argv in seen["MA_MUL8U"]))
+        self.assertTrue(any("test_api_table.py" in argv
+                            for argv in seen["MA_MUL8U"]))
 
     def test_ledger_names_resolve_without_row_names(self):
         # FINAL form: slot rows carry NO name, yet apis resolve through
@@ -1116,11 +1120,37 @@ class CanonicalDefaultTests(unittest.TestCase):
             real_map = handle.name
         try:
             repo = make_repo("src/overrides/slot_3F.s")
+            # B-4 repo binding: the default CLI loader reads ledger +
+            # Makefile + pins + host/script existence from --repo, never a
+            # silent ROOT fallback. Populate the synthetic repo with the
+            # (unmodified) reference files the real map needs, committed
+            # as baseline so the only diff is the slot change; the map
+            # under test is still the read-only Task-A blob (temp file).
+            import shutil as _shutil
+            (repo / "spec").mkdir(parents=True, exist_ok=True)
+            _shutil.copyfile(str(ROOT / "spec" / "api_slots.json"),
+                             str(repo / "spec" / "api_slots.json"))
+            _shutil.copyfile(str(ROOT / "Makefile"),
+                             str(repo / "Makefile"))
+            (repo / "tools").mkdir(parents=True, exist_ok=True)
+            _shutil.copyfile(str(ROOT / "tools" / "dependencies.json"),
+                             str(repo / "tools" / "dependencies.json"))
+            for sub in ("host", "integration"):
+                src_dir = ROOT / "tests" / sub
+                dst_dir = repo / "tests" / sub
+                dst_dir.mkdir(parents=True, exist_ok=True)
+                for item in src_dir.iterdir():
+                    if item.is_symlink() or not item.is_file():
+                        continue
+                    _shutil.copyfile(str(item), str(dst_dir / item.name))
+            git(repo, "add", "-A")
+            git(repo, "commit", "-qm", "fixture baseline")
+            baseline = git(repo, "rev-parse", "HEAD").strip()
             write_file(repo, "src/overrides/slot_3F.s", "changed\n")
             git(repo, "commit", "-qam", "change")
             cli = [sys.executable,
                    str(ROOT / "tools" / "test_staging_select.py"),
-                   "--repo", str(repo), "--base", "vbase",
+                   "--repo", str(repo), "--base", baseline,
                    "--map", real_map, "--json"]
             proc = subprocess.run(cli, capture_output=True, text=True,
                                   timeout=300)
@@ -1655,5 +1685,469 @@ class B5DisplayExecEquivalenceTests(unittest.TestCase):
             self.assertEqual(command["env"], {SEL.REQUIRE_CC65_ENV: "1"})
 
 
-if __name__ == "__main__":
-    unittest.main()
+# ---------------------------------------------------------------------------
+# Wave2 blockers (review 6095526960): B-1 map-read boundary, B-2 toolchain
+# execution identity, B-3 API-command union, B-4 --repo consistency.
+#
+# All fixtures are synthetic temp dirs + sentinel bytes only (no ./rom,
+# no real checkouts, no network). Read-API-uncalled proofs spy on
+# Path.read_bytes and assert zero calls before refusal.
+# ---------------------------------------------------------------------------
+
+
+class Wave2B1MapBoundaryTests(unittest.TestCase):
+    """B-1: the common safe-read boundary guards fingerprint AND loaders.
+
+    Direct forbidden specs, parent-symlink traversals, and outside-repo
+    ``..`` escapes are refused PRE-READ (read API uncalled) on both the
+    fingerprint side (``_map_identity``) and the loader side
+    (provisional + canonical ``load``), and ``run_selector`` fails closed
+    to full L3. Temp-dir ``--map`` fixtures (no rom/.. segments, no
+    symlink parents) still load: the authorized test-only boundary.
+    """
+    def spy_reads(self):
+        reads = []
+        real_read = Path.read_bytes
+
+        def spy(self, *args, **kwargs):
+            reads.append(str(self))
+            return real_read(self, *args, **kwargs)
+        return reads, real_read, spy
+
+    def assert_both_loaders_refuse_without_read(self, spec, repo):
+        reads, real_read, spy = self.spy_reads()
+        orig = Path.read_bytes
+        Path.read_bytes = spy
+        try:
+            sha, mid = SEL._map_identity(spec, repo)
+        finally:
+            Path.read_bytes = orig
+        self.assertEqual((sha, mid), ("unknown", "unknown"))
+        self.assertEqual(reads, [], f"sentinel was read: {reads}")
+        reads2, _, spy2 = self.spy_reads()
+        Path.read_bytes = spy2
+        try:
+            with self.assertRaises(SEL.MapError):
+                SEL.ProvisionalJsonMapLoader().load(spec)
+            with self.assertRaises(SEL.MapError):
+                SEL.CanonicalJsonMapLoader().load(spec)
+        finally:
+            Path.read_bytes = orig
+        self.assertEqual(reads2, [], f"sentinel was read: {reads2}")
+
+    def test_direct_forbidden_spec_refused_pre_read_both_paths(self):
+        repo = make_repo("f.s")
+        sentinel = Path(repo) / "rom" / "sentinel.json"
+        sentinel.parent.mkdir(parents=True, exist_ok=True)
+        sentinel.write_text('{"sentinel": true}\n')
+        spec = "rom/sentinel.json"
+        self.assert_both_loaders_refuse_without_read(spec, str(repo))
+        selection, _ = SEL.run_selector(
+            str(repo), "vbase", map_path=spec,
+            loader=SEL.ProvisionalJsonMapLoader())
+        assert_full_l3(self, selection, "map-missing-or-inconsistent")
+
+    def test_parent_symlink_traversal_refused_pre_read_both_paths(self):
+        repo = make_repo("f.s")
+        outside = Path(tempfile.mkdtemp(prefix="b1-pdir-"))
+        sentinel = outside / "map.json"
+        sentinel.write_text('{"sentinel": true}\n')
+        link = Path(repo) / "linkdir"
+        try:
+            link.symlink_to(outside, target_is_directory=True)
+        except OSError as error:
+            self.skipTest(f"symlink unavailable: {error}")
+        spec = str(link / "map.json")
+        self.assert_both_loaders_refuse_without_read(spec, str(repo))
+        selection, _ = SEL.run_selector(
+            str(repo), "vbase", map_path=spec,
+            loader=SEL.ProvisionalJsonMapLoader())
+        assert_full_l3(self, selection, "map-missing-or-inconsistent")
+
+    def test_outside_repo_dotdot_refused_pre_read_both_paths(self):
+        repo = make_repo("f.s")
+        parent = Path(repo).parent
+        sentinel = parent / f"b1-outside-{os.getpid()}.json"
+        sentinel.write_text('{"sentinel": true}\n')
+        try:
+            spec = str(Path(repo) / ".." / sentinel.name)
+            self.assertIn("..", spec)
+            self.assert_both_loaders_refuse_without_read(spec, str(repo))
+            selection, _ = SEL.run_selector(
+                str(repo), "vbase", map_path=spec,
+                loader=SEL.ProvisionalJsonMapLoader())
+            assert_full_l3(self, selection, "map-missing-or-inconsistent")
+        finally:
+            try:
+                sentinel.unlink()
+            except OSError:
+                pass
+
+    def test_authorized_temp_map_still_loads(self):
+        # The explicit --map temp-dir boundary (no rom/.., no symlinks)
+        # passes the same strict checks on both paths.
+        repo = make_repo("f.s")
+        map_path = write_map(repo, provisional_map([l1_rule("src/**")]))
+        sha, mid = SEL._map_identity(map_path, str(repo))
+        self.assertNotEqual(sha, "unknown")
+        self.assertTrue(mid.startswith("provisional:"))
+        rules, _apis = SEL.ProvisionalJsonMapLoader().load(map_path)
+        self.assertTrue(rules)
+
+
+class Wave2B2ToolchainTests(unittest.TestCase):
+    """B-2: declared revision + TOOLS_DIR existence is NOT execution identity.
+
+    The actually-executed cc65 binaries are verified (bytes hashed,
+    ``--version`` must report the pinned ``revision[:9]``); anything
+    unconfirmable (same-path content change alters the identity, different
+    checkout revision, empty dir, missing tools, pin-vs-entity mismatch)
+    refuses reuse. No blanket env collection, no secrets.
+    """
+    def make_tools(self, revision, wrong_report=None):
+        tools_root = Path(tempfile.mkdtemp(prefix="b2-tools-"))
+        bindir = tools_root / f"cc65-{revision}" / "bin"
+        bindir.mkdir(parents=True)
+        report = wrong_report if wrong_report is not None else revision[:9]
+        for binary in ("ca65", "ld65"):
+            tool = bindir / binary
+            tool.write_text(f"#!/bin/sh\necho '{binary} V2.19 - {report}'\n")
+            tool.chmod(0o755)
+        return tools_root
+
+    def make_pinned_repo(self, revision):
+        repo = make_repo("f.s")
+        tools_dir = Path(repo) / "tools"
+        tools_dir.mkdir(parents=True, exist_ok=True)
+        (tools_dir / "dependencies.json").write_text(json.dumps({
+            "cc65": {"revision": revision}}))
+        git(repo, "add", "-A")
+        git(repo, "commit", "-qm", "pins")
+        return repo
+
+    def fingerprint_with_tools(self, repo, tools_root, **kwargs):
+        with unittest.mock.patch.dict(os.environ, {"TOOLS_DIR": str(tools_root)},
+                                      clear=False):
+            changed = SEL.collect_changes(str(repo), "vbase")
+            return SEL.evidence_fingerprint(str(repo), changed, **kwargs)
+
+    def test_same_tools_dir_content_change_refuses_reuse(self):
+        revision = "71746c829e77f74c2b601a7d16821170c2610df3"
+        repo = self.make_pinned_repo(revision)
+        tools_root = self.make_tools(revision)
+        try:
+            first = self.fingerprint_with_tools(str(repo), tools_root,
+                                                 map_path=None, level="L1",
+                                                 commands=[{"make": "check"}])
+            self.assertNotEqual(first["toolchain"], "unknown")
+            # Same path, same --version output, different bytes (comment).
+            for binary in ("ca65", "ld65"):
+                tool = tools_root / f"cc65-{revision}" / "bin" / binary
+                with tool.open("a") as handle:
+                    handle.write("# content change\n")
+            second = self.fingerprint_with_tools(str(repo), tools_root,
+                                                  map_path=None, level="L1",
+                                                  commands=[{"make": "check"}])
+            self.assertNotEqual(second["toolchain"], "unknown")
+            self.assertNotEqual(first["toolchain"], second["toolchain"])
+            self.assertNotEqual(first["env"], second["env"])
+            self.assertFalse(SEL.evidence_reusable(first, second))
+        finally:
+            with unittest.mock.patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("TOOLS_DIR", None)
+
+    def test_different_checkout_revision_mismatch_refuses(self):
+        revision = "71746c829e77f74c2b601a7d16821170c2610df3"
+        repo = self.make_pinned_repo(revision)
+        tools_root = self.make_tools(revision, wrong_report="deadbee")
+        try:
+            fingerprint = self.fingerprint_with_tools(
+                str(repo), tools_root, map_path=None, level="L1",
+                commands=[{"make": "check"}])
+            self.assertEqual(fingerprint["toolchain"], "unknown")
+            self.assertFalse(SEL.evidence_reusable(fingerprint, fingerprint))
+        finally:
+            os.environ.pop("TOOLS_DIR", None)
+
+    def test_empty_tools_dir_refuses(self):
+        revision = "71746c829e77f74c2b601a7d16821170c2610df3"
+        repo = self.make_pinned_repo(revision)
+        empty = Path(tempfile.mkdtemp(prefix="b2-empty-"))
+        try:
+            fingerprint = self.fingerprint_with_tools(
+                str(repo), empty, map_path=None, level="L1",
+                commands=[{"make": "check"}])
+            self.assertEqual(fingerprint["toolchain"], "unknown")
+            self.assertFalse(SEL.evidence_reusable(fingerprint, fingerprint))
+        finally:
+            os.environ.pop("TOOLS_DIR", None)
+
+    def test_missing_tool_binaries_refuse(self):
+        revision = "71746c829e77f74c2b601a7d16821170c2610df3"
+        repo = self.make_pinned_repo(revision)
+        tools_root = Path(tempfile.mkdtemp(prefix="b2-notools-"))
+        (tools_root / f"cc65-{revision}" / "bin").mkdir(parents=True)
+        try:
+            fingerprint = self.fingerprint_with_tools(
+                str(repo), tools_root, map_path=None, level="L1",
+                commands=[{"make": "check"}])
+            self.assertEqual(fingerprint["toolchain"], "unknown")
+            self.assertFalse(SEL.evidence_reusable(fingerprint, fingerprint))
+        finally:
+            os.environ.pop("TOOLS_DIR", None)
+
+    def test_old_selector_results_never_reuse_against_new(self):
+        # Selector pinning (SELECTOR_ID v3): a stored result from the
+        # previous selector never reuses, even when every other field
+        # matches. This is what retires pre-Wave2 pins-only evidence.
+        stored = {
+            "head": "a" * 40, "base": "b" * 40,
+            "inputs_sha256": "c" * 64, "map_sha256": "d" * 64,
+            "map_id": "test-staging-map-v0/v1@" + "e" * 40,
+            "selector": "test_staging_select/l3full-no-barehex-v2",
+            "api": "none", "level": "L1",
+            "commands_sha256": "f" * 64, "python": "3.12.3",
+            "platform": "linux",
+            "toolchain": json.dumps({"pins": {"cc65": "x" * 40},
+                                       "tools": {"ca65": "y" * 64,
+                                                 "ld65": "z" * 64}}),
+            "mode": "debug",
+            "env": {"MODE": "debug", SEL.REQUIRE_CC65_ENV: "",
+                    "TOOLS_DIR_sha256": "t" * 64},
+        }
+        current = dict(stored, selector=SEL.SELECTOR_ID)
+        self.assertFalse(SEL.evidence_reusable(stored, current))
+        self.assertFalse(SEL.evidence_reusable(current, stored))
+
+    def test_missing_malformed_mandatory_elements_refuse(self):
+        base = {"head": "a" * 40, "base": "b" * 40,
+                "inputs_sha256": "c" * 64, "map_sha256": "d" * 64,
+                "map_id": "test-staging-map-v0/v1@" + "e" * 40,
+                "selector": SEL.SELECTOR_ID, "api": "none",
+                "level": "L1", "commands_sha256": "f" * 64,
+                "python": "3.12.3", "platform": "linux",
+                "toolchain": json.dumps({"pins": {"cc65": "x" * 40},
+                                           "tools": {"ca65": "y" * 64,
+                                                     "ld65": "z" * 64}}),
+                "mode": "debug",
+                "env": {"MODE": "debug", SEL.REQUIRE_CC65_ENV: "",
+                        "TOOLS_DIR_sha256": "t" * 64}}
+        self.assertTrue(SEL.evidence_reusable(base, dict(base)))
+        for key in ("toolchain", "mode", "env", "map_sha256",
+                    "inputs_sha256"):
+            mutated = dict(base)
+            del mutated[key]
+            self.assertFalse(SEL.evidence_reusable(base, mutated))
+            self.assertFalse(SEL.evidence_reusable(mutated, base))
+            mutated = dict(base, **{key: None})
+            self.assertFalse(SEL.evidence_reusable(base, mutated))
+            mutated = dict(base, **{key: ("" if key != "env" else {})})
+            self.assertFalse(SEL.evidence_reusable(base, mutated))
+
+
+class Wave2B3UnionTests(unittest.TestCase):
+    """B-3: --api unions path-rule commands instead of overwriting them."""
+    def test_path_rule_ab_with_api_b_keeps_a(self):
+        changed = SEL.ChangedInputs(
+            head="h" * 40, base="vbase", committed=[("M", "f.s")])
+        rules = [SEL.MapRule(pattern="f.s", level="L1",
+                             commands=[{"make": "dev-rom"},
+                                       {"unittest": "a.py",
+                                        "suite": "host"}],
+                             reason="path A+B", api="SLOT_X",
+                             literal=True)]
+        apis = {"SLOT_X": {"commands": [{"make": "dev-rom"}],
+                             "reason": "slot B", "level": "L1"}}
+        selection = SEL.select(changed, rules, apis, api="SLOT_X",
+                               fingerprint={}, match_mode="first-match")
+        self.assertEqual(selection.level, "L1")
+        kinds = [(cmd.get("make"), cmd.get("unittest"))
+                 for cmd in selection.selected]
+        self.assertIn(("dev-rom", None), kinds)
+        self.assertIn((None, "a.py"), kinds)
+
+    def test_differing_path_and_api_sets_union(self):
+        changed = SEL.ChangedInputs(
+            head="h" * 40, base="vbase", committed=[("M", "f.s")])
+        rules = [SEL.MapRule(pattern="f.s", level="L1",
+                             commands=[{"make": "check"}],
+                             reason="path", api="SLOT_X", literal=True)]
+        apis = {"SLOT_X": {"commands": [{"make": "dev-rom"}],
+                             "reason": "slot", "level": "L1"}}
+        selection = SEL.select(changed, rules, apis, api="SLOT_X",
+                               fingerprint={}, match_mode="first-match")
+        self.assertEqual(selection.level, "L1")
+        kinds = [cmd.get("make") for cmd in selection.selected]
+        self.assertIn("check", kinds)
+        self.assertIn("dev-rom", kinds)
+
+    def test_multi_change_same_api_unions_all(self):
+        changed = SEL.ChangedInputs(
+            head="h" * 40, base="vbase",
+            committed=[("M", "a.s"), ("M", "b.s")])
+        rules = [SEL.MapRule(pattern="a.s", level="L1",
+                             commands=[{"make": "check"}],
+                             reason="a", api="SLOT_X", literal=True),
+                 SEL.MapRule(pattern="b.s", level="L1",
+                             commands=[{"unittest": "b.py",
+                                        "suite": "host"}],
+                             reason="b", api="SLOT_X", literal=True)]
+        apis = {"SLOT_X": {"commands": [{"make": "dev-rom"}],
+                             "reason": "slot", "level": "L1"}}
+        selection = SEL.select(changed, rules, apis, api="SLOT_X",
+                               fingerprint={}, match_mode="first-match")
+        self.assertEqual(selection.level, "L1")
+        kinds = [cmd.get("make", cmd.get("unittest"))
+                 for cmd in selection.selected]
+        self.assertIn("check", kinds)
+        self.assertIn("b.py", kinds)
+        self.assertIn("dev-rom", kinds)
+
+    def test_api_never_lowers_level_with_union(self):
+        changed = SEL.ChangedInputs(
+            head="h" * 40, base="vbase", committed=[("M", "f.s")])
+        rules = [SEL.MapRule(pattern="f.s", level="L2",
+                             commands=[{"make": "check"}],
+                             reason="path L2", api="SLOT_X",
+                             literal=True)]
+        apis = {"SLOT_X": {"commands": [{"make": "dev-rom"}],
+                             "reason": "slot L1", "level": "L1"}}
+        selection = SEL.select(changed, rules, apis, api="SLOT_X",
+                               fingerprint={}, match_mode="first-match")
+        self.assertEqual(selection.level, "L2")
+        kinds = [cmd.get("make") for cmd in selection.selected]
+        self.assertIn("check", kinds)
+        self.assertIn("dev-rom", kinds)
+
+    def test_l3_safety_rule_always_kept_as_full_l3(self):
+        changed = SEL.ChangedInputs(
+            head="h" * 40, base="vbase", committed=[("M", "f.s")])
+        rules = [SEL.MapRule(pattern="f.s", level="L3",
+                             commands=[{"make": "check"}],
+                             reason="safety", api="", literal=True)]
+        apis = {"SLOT_X": {"commands": [{"make": "dev-rom"}],
+                             "reason": "slot", "level": "L1"}}
+        selection = SEL.select(changed, rules, apis, api="SLOT_X",
+                               fingerprint={}, match_mode="first-match")
+        assert_full_l3(self, selection, "api-first-match-mismatch")
+
+    def test_provisional_max_mode_unions(self):
+        changed = SEL.ChangedInputs(
+            head="h" * 40, base="vbase", committed=[("M", "f.s")])
+        rules = [SEL.MapRule(pattern="*.s", level="L1",
+                             commands=[{"make": "check"}],
+                             reason="path", api="SLOT_X")]
+        apis = {"SLOT_X": {"commands": [{"make": "dev-rom"}],
+                             "reason": "slot"}}
+        selection = SEL.select(changed, rules, apis, api="SLOT_X",
+                               fingerprint={}, match_mode="max")
+        self.assertEqual(selection.level, "L1")
+        kinds = [cmd.get("make") for cmd in selection.selected]
+        self.assertIn("check", kinds)
+        self.assertIn("dev-rom", kinds)
+
+
+class Wave2B4RepoConsistencyTests(unittest.TestCase):
+    """B-4: diff/fingerprint/map/ledger/Makefile/pins bind to --repo."""
+    SLOT_A = "API_ALPHA"
+    SLOT_B = "API_BETA"
+
+    def ledger_doc(self, slot63_name):
+        slots = []
+        for number in range(81):
+            if number == 0x3F:
+                slots.append({"id": number,
+                              "candidate_name": slot63_name})
+            else:
+                slots.append({"id": number,
+                              "candidate_name": f"DUMMY_{number:02X}"})
+        return {"schema_version": 1, "slots": slots}
+
+    def make_consistent_repo(self, slot_name, with_dev_rom=True):
+        repo = make_repo("src/overrides/slot_3F.s")
+        spec_dir = Path(repo) / "spec"
+        spec_dir.mkdir(parents=True, exist_ok=True)
+        (spec_dir / "api_slots.json").write_text(
+            json.dumps(self.ledger_doc(slot_name)))
+        make_targets = ["build", "test", "test-real-core", "check",
+                        "verify-build-diff", "rom-provenance",
+                        "dev-integration", "dev-release-gate-blocked"]
+        if with_dev_rom:
+            make_targets.append("dev-rom")
+        (Path(repo) / "Makefile").write_text(
+            "".join(f"{target}:\n\ttrue\n" for target in make_targets))
+        tools_dir = Path(repo) / "tools"
+        tools_dir.mkdir(parents=True, exist_ok=True)
+        import shutil as _shutil
+        _shutil.copyfile(str(ROOT / "tools" / "dependencies.json"),
+                         str(tools_dir / "dependencies.json"))
+        host_dir = Path(repo) / "tests" / "host"
+        host_dir.mkdir(parents=True, exist_ok=True)
+        for module in ("test_api_contracts.py", "test_api_table.py"):
+            (host_dir / module).write_text('"""fixture host module."""\n')
+        (tools_dir / "test_staging_map.json").write_text(
+            json.dumps(canonical_doc()))
+        git(repo, "add", "-A")
+        git(repo, "commit", "-qm", "consistent baseline")
+        baseline = git(repo, "rev-parse", "HEAD").strip()
+        write_file(repo, "src/overrides/slot_3F.s", "changed\n")
+        git(repo, "commit", "-qam", "change")
+        return repo, baseline
+
+    def cli(self, repo, baseline, *extra):
+        cmd = [sys.executable,
+               str(ROOT / "tools" / "test_staging_select.py"),
+               "--repo", str(repo), "--base", baseline,
+               "--json", *extra]
+        proc = subprocess.run(cmd, capture_output=True, text=True,
+                              timeout=300)
+        self.assertEqual(proc.returncode, 0, proc.stderr[-2000:])
+        return json.loads(proc.stdout)
+
+    def test_two_repos_no_cross_checkout_mixing(self):
+        repo_a, base_a = self.make_consistent_repo(self.SLOT_A)
+        repo_b, base_b = self.make_consistent_repo(self.SLOT_B)
+        payload_a = self.cli(repo_a, base_a, "--api", self.SLOT_A)
+        payload_b = self.cli(repo_b, base_b, "--api", self.SLOT_B)
+        self.assertEqual(payload_a["level"], "L1")
+        self.assertFalse(payload_a["fallback"])
+        self.assertEqual(payload_b["level"], "L1")
+        self.assertFalse(payload_b["fallback"])
+        # Each repo resolves only its own ledger name; the other's name
+        # is unknown there (no cross-checkout ledger mixing).
+        cross_a = self.cli(repo_a, base_a, "--api", self.SLOT_B)
+        self.assertEqual(cross_a["level"], "L3")
+        cross_b = self.cli(repo_b, base_b, "--api", self.SLOT_A)
+        self.assertEqual(cross_b["level"], "L3")
+        # Selections carry each repo's own evidence (levels match, apis
+        # differ, fingerprints differ by repo HEAD/ledger-bound map).
+        self.assertNotEqual(payload_a["fingerprint"]["head"],
+                            payload_b["fingerprint"]["head"])
+
+    def test_makefile_bound_to_target_repo(self):
+        repo_ok, base_ok = self.make_consistent_repo(self.SLOT_A,
+                                                     with_dev_rom=True)
+        repo_bare, base_bare = self.make_consistent_repo(self.SLOT_A,
+                                                         with_dev_rom=False)
+        payload_ok = self.cli(repo_ok, base_ok, "--api", self.SLOT_A)
+        self.assertEqual(payload_ok["level"], "L1")
+        payload_bare = self.cli(repo_bare, base_bare,
+                                "--api", self.SLOT_A)
+        # The bare repo's Makefile lacks dev-rom: the same map is
+        # inconsistent there (fail-closed L3), proving the live Makefile
+        # comes from --repo rather than a shared checkout.
+        self.assertEqual(payload_bare["level"], "L3")
+        self.assertTrue(payload_bare["fallback"])
+
+    def test_unhandleable_different_root_refuses_fail_closed(self):
+        repo = make_repo("src/a.s")
+        write_file(repo, "src/a.s", "changed\n")
+        git(repo, "commit", "-qam", "change")
+        # No ledger/Makefile/map in the target repo: the repo-bound reads
+        # refuse explicitly (L3) instead of silently using ROOT's files.
+        selection, _ = SEL.run_selector(str(repo), "vbase")
+        self.assertEqual(selection.level, "L3")
+        self.assertTrue(selection.fallback)
+        self.assertEqual(selection.fallback_reason,
+                         "map-missing-or-inconsistent")
+if __name__ == "__main__": unittest.main()

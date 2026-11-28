@@ -292,7 +292,7 @@ class MapLoader:
     # defaults to "max" so existing callers are unaffected.
     match_mode = "max"
 
-    def load(self, path):
+    def load(self, path, repo=None):
         """Return (rules, apis) or raise MapError."""
         raise NotImplementedError
 
@@ -330,9 +330,9 @@ class ProvisionalJsonMapLoader(MapLoader):
     inconsistency (-> L3).
     """
 
-    def load(self, path):
+    def load(self, path, repo=None):
         try:
-            raw = _read_bytes_strict(path)
+            raw = _read_bytes_strict(path, repo)
         except OSError:
             raise MapError(f"impact map is missing: {path}")
         try:
@@ -464,17 +464,22 @@ _HEX40_RE = re.compile(r"^[0-9a-f]{40}$")
 _DOTTED_HOST_RE = re.compile(r"^tests\.host\.([A-Za-z_][A-Za-z0-9_]*)$")
 
 
-def _makefile_targets():
-    """Parse live Makefile targets (a map may only reference real ones)."""
-    candidate = ROOT / "Makefile"
+def _makefile_targets(repo=None):
+    """Parse live Makefile targets (a map may only reference real ones).
+
+    Bound to the target repo (B-4): the CLI path passes ``--repo`` so the
+    diff, map, ledger, Makefile, and pins all come from the same checkout.
+    A missing/unreadable/symlink-parent Makefile is MapError (fail-closed
+    L3, never a silent fallback to another checkout). Direct callers
+    without a repo use ROOT (legacy unit-test boundary).
+    """
+    base = Path(repo) if repo is not None else ROOT
+    candidate = base / "Makefile"
     try:
-        if candidate.is_symlink() or not candidate.is_file():
-            raise MapError("cannot read Makefile for target validation: "
-                           "refused symlink/non-regular Makefile -> L3")
-        text = candidate.read_text(encoding="utf-8")
-    except OSError as error:
+        text = _read_bytes_strict(candidate, base).decode("utf-8")
+    except (OSError, ValueError, UnicodeDecodeError) as error:
         raise MapError("cannot read Makefile for target validation: "
-                       f"{error}") from error
+                       f"{error} -> L3") from error
     targets = set()
     for line in text.splitlines():
         match = _MAKE_TARGET_RE.match(line)
@@ -525,8 +530,9 @@ class CanonicalJsonMapLoader(MapLoader):
 
     match_mode = "first-match"
 
-    def __init__(self):
+    def __init__(self, repo=None):
         self._api_aliases = {}
+        self._repo = repo
 
     def resolve_api(self, api):
         """Accept ledger names, slash-name parts, and slot-number spellings.
@@ -543,9 +549,11 @@ class CanonicalJsonMapLoader(MapLoader):
             return None
         return self._api_aliases.get(str(api), str(api))
 
-    def load(self, path):
+    def load(self, path, repo=None):
+        effective = repo if repo is not None else (
+            self._repo if getattr(self, "_repo", None) is not None else ROOT)
         try:
-            raw = _read_bytes_strict(path)
+            raw = _read_bytes_strict(path, effective)
         except OSError:
             raise MapError(f"canonical map is missing: {path}")
         try:
@@ -602,9 +610,9 @@ class CanonicalJsonMapLoader(MapLoader):
             raise MapError("canonical fallback must be match '**' at L3 "
                            "-> L3")
         slots = document.get("api_slots")
-        ledger_names = self._load_ledger_names()
+        ledger_names = self._load_ledger_names(effective)
         self._check_slots(slots)
-        targets = _makefile_targets()
+        targets = _makefile_targets(effective)
         dev_source_to_slot = {}
         for slot in slots:
             source = slot.get("dev_source")
@@ -613,7 +621,7 @@ class CanonicalJsonMapLoader(MapLoader):
         rules = []
         for index, entry in enumerate(entries):
             rules.extend(self._convert_entry(index, entry, targets, static_set,
-                                             dev_source_to_slot))
+                                             dev_source_to_slot, effective))
         apis = {}
         aliases = {}
         for slot in slots:
@@ -621,7 +629,8 @@ class CanonicalJsonMapLoader(MapLoader):
             name = ledger_names[number]
             commands = self._convert_tests(slot["tests"], static_set,
                                            targets, f"api-slot ${number:02X}",
-                                           require_commands=True)
+                                           require_commands=True,
+                                           repo=effective)
             apis[name] = {
                 "commands": commands,
                 "reason": str(slot.get("reason") or f"canonical slot ${number:02X}"),
@@ -713,19 +722,20 @@ class CanonicalJsonMapLoader(MapLoader):
         if len(set(ids)) != len(ids):
             raise MapError("canonical entry ids must be unique -> L3")
 
-    def _load_ledger_names(self):
+    def _load_ledger_names(self, repo=None):
         """Resolve slot-number -> candidate name via spec/api_slots.json.
 
-        The FINAL canonical map identifies api_slots by number only; names
-        live in the ledger (the single source). A missing, unreadable, or
-        deformed ledger is inconsistent -> L3 (fail-closed, never unnamed).
+        Bound to the target repo (B-4): the ledger is read from the same
+        checkout as the diff/map/Makefile/pins. A missing, unreadable,
+        symlink-parent, or deformed ledger is inconsistent -> L3
+        (fail-closed, never unnamed, never a silent ROOT fallback when a
+        repo is given).
         """
-        ledger_path = ROOT / "spec" / "api_slots.json"
+        base = Path(repo) if repo is not None else ROOT
+        ledger_path = base / "spec" / "api_slots.json"
         try:
-            if ledger_path.is_symlink() or not ledger_path.is_file():
-                raise MapError(f"canonical slot ledger {ledger_path} is "
-                               "a symlink/non-regular file -> L3")
-            ledger = json.loads(ledger_path.read_bytes().decode("utf-8"))
+            ledger = json.loads(
+                _read_bytes_strict(ledger_path, base).decode("utf-8"))
         except (OSError, ValueError, UnicodeDecodeError) as error:
             raise MapError(f"canonical slot ledger {ledger_path} is "
                            f"missing or not valid JSON: {error} -> L3") from error
@@ -808,7 +818,7 @@ class CanonicalJsonMapLoader(MapLoader):
                            "exactly once -> L3")
 
     def _convert_entry(self, index, entry, targets, static_set,
-                       dev_source_to_slot):
+                       dev_source_to_slot, repo=None):
         level = entry["level"]
         reason = entry["reason"]
         # Entries may list zero commands: an L3 entry with empty tests
@@ -817,7 +827,7 @@ class CanonicalJsonMapLoader(MapLoader):
         # fail-closed; a 0-command L0-L2 classification escalates to L3.
         commands = self._convert_tests(entry["tests"], static_set, targets,
                                        f"entry {entry['id']}",
-                                       require_commands=False)
+                                       require_commands=False, repo=repo)
         if level == "L4":
             # Manual-only opt-in is never auto-selected: escalate fail-closed
             # to L3 and discard the L4 opt-in commands (validated above) so
@@ -852,7 +862,8 @@ class CanonicalJsonMapLoader(MapLoader):
         return rules
 
     def _convert_tests(self, tests, static_set, targets, owner,
-                       require_commands):
+                       require_commands, repo=None):
+        base = Path(repo) if repo is not None else ROOT
         commands = []
         for target in tests["dev_targets"]:
             if not isinstance(target, str) or not target:
@@ -864,9 +875,9 @@ class CanonicalJsonMapLoader(MapLoader):
                                "commands) -> L3")
             commands.append({"make": target})
         for ref in tests["host"]:
-            commands.append(self._canonical_host_command(ref, owner))
+            commands.append(self._canonical_host_command(ref, owner, base))
         for script in tests["integration_scripts"]:
-            commands.append(self._canonical_script_command(script, owner))
+            commands.append(self._canonical_script_command(script, owner, base))
         for unit in tests["static_units"]:
             if not isinstance(unit, str) or not unit:
                 raise MapError(f"{owner}: bad static unit {unit!r} "
@@ -881,13 +892,14 @@ class CanonicalJsonMapLoader(MapLoader):
                            "(a 0-test selection is never PASS) -> L3")
         return commands
 
-    def _canonical_host_command(self, ref, owner):
+    def _canonical_host_command(self, ref, owner, repo=None):
+        base = Path(repo) if repo is not None else ROOT
         if not isinstance(ref, str) or not ref:
             raise MapError(f"{owner}: bad host ref {ref!r} -> L3")
         dotted = _DOTTED_HOST_RE.match(ref)
         if dotted:
             module = dotted.group(1)
-            if not (ROOT / "tests" / "host" / f"{module}.py").is_file():
+            if not (base / "tests" / "host" / f"{module}.py").is_file():
                 raise MapError(f"{owner}: host ref {ref!r} has no such test "
                                "module -> L3")
             return {"unittest": f"{module}.py", "suite": "host"}
@@ -895,7 +907,7 @@ class CanonicalJsonMapLoader(MapLoader):
             pattern = ref[len("tests/host/"):]
             if not pattern or ".." in ref:
                 raise MapError(f"{owner}: bad host ref {ref!r} -> L3")
-            host_dir = ROOT / "tests" / "host"
+            host_dir = base / "tests" / "host"
             if "*" in pattern or "?" in pattern or "[" in pattern:
                 try:
                     names = [item.name for item in host_dir.iterdir()
@@ -915,13 +927,17 @@ class CanonicalJsonMapLoader(MapLoader):
                        "tests.host.MOD or slash tests/host/PATTERN.py only) "
                        "-> L3")
 
-    def _canonical_script_command(self, script, owner):
+    def _canonical_script_command(self, script, owner, repo=None):
+        base = Path(repo) if repo is not None else ROOT
         if (not isinstance(script, str) or not script.startswith(
                 "tests/integration/") or not script.endswith(".py")
                 or ".." in script or "*" in script or "?" in script):
             raise MapError(f"{owner}: bad integration script {script!r} "
                            "-> L3")
-        raw_target = ROOT / script
+        raw_target = base / script
+        if _path_has_symlink_parent(raw_target):
+            raise MapError(f"{owner}: script {script!r} traverses a symlink "
+                           "(refused fail-closed) -> L3")
         try:
             if raw_target.is_symlink():
                 raise MapError(f"{owner}: script {script!r} is a symlink "
@@ -931,7 +947,7 @@ class CanonicalJsonMapLoader(MapLoader):
             raise MapError(f"{owner}: script {script!r} is unreadable: "
                            f"{error} -> L3") from error
         try:
-            target.relative_to(ROOT.resolve())
+            target.relative_to(base.resolve())
         except ValueError as error:
             raise MapError(f"{owner}: script {script!r} escapes the "
                            "repository -> L3") from error
@@ -971,9 +987,10 @@ def _with_required_env(command):
 
 # Selector identity stamped into every fingerprint. Bumped whenever the
 # selection semantics change (L3 set, alias rules, api-level handling,
-# exact-vs-glob matching, first-match-before-API narrowing), so results
-# from an older selector never reuse against a newer one.
-SELECTOR_ID = "test_staging_select/l3full-no-barehex-v2"
+# exact-vs-glob matching, first-match-before-API narrowing, map-repo
+# binding, toolchain execution identity, API-union). Results from an older
+# selector never reuse against a newer one.
+SELECTOR_ID = "test_staging_select/l3full-maprepo-toolchain-union-v3"
 
 # Top-level input paths that must never be content-hashed (private
 # reference inputs, not fixtures). A change touching them still classifies
@@ -1050,18 +1067,100 @@ def _worktree_target_safe(repo, rel_path):
     return target
 
 
-def _read_bytes_strict(path):
+def _map_spec_refused_pre_read(path):
+    """Lexical pre-refusal for a map/config spec (no FS read, no bytes).
+
+    Returns True when the spec must be refused BEFORE any read API runs:
+    empty/non-string, NUL byte, any ``..`` segment (repo-outside escape),
+    or any ``rom`` segment (direct forbidden-area spec). Temp-dir
+    authorized fixtures (``--map`` test paths) never contain these
+    segments, so they pass; a sentinel under ``rom/`` or a ``..`` escape
+    is refused with zero read-API calls (spy-proven).
+    """
+    if isinstance(path, os.PathLike):
+        try:
+            path = os.fspath(path)
+        except (OSError, ValueError, TypeError):
+            return True
+    if not isinstance(path, (str, bytes)):
+        return True
+    text = path.decode("utf-8", errors="strict") if isinstance(path, bytes) else path
+    if not text or "\0" in text:
+        return True
+    segments = text.replace("\\", "/").split("/")
+    for segment in segments:
+        if segment == "..":
+            return True
+        if segment == "rom":
+            return True
+    return False
+
+
+def _path_has_symlink_parent(path):
+    """True when any parent prefix or the final component is a symlink.
+
+    Uses only lstat-style ``is_symlink`` calls (never ``read_bytes``), so
+    a sentinel behind a parent symlink is never opened. Missing prefixes
+    simply report False for that prefix; the caller still requires a
+    regular final file.
+    """
+    try:
+        candidate = Path(path)
+        if candidate.is_symlink():
+            return True
+        absolute = candidate.absolute()
+        # Walk every prefix from the anchor down to the parent.
+        cur = absolute.parent
+        seen = set()
+        while True:
+            key = str(cur)
+            if key in seen:
+                break
+            seen.add(key)
+            try:
+                if cur.is_symlink():
+                    return True
+            except OSError:
+                return True
+            parent = cur.parent
+            if parent == cur:
+                break
+            cur = parent
+    except OSError:
+        return True
+    return False
+
+
+def _read_bytes_strict(path, repo=None):
     """Read a map/config file only if it is a safe regular file.
 
-    Refuses symlinks (including link->sentinel) and non-regular files
-    (directories, fifos, devices, missing) WITHOUT reading. Returns the
-    bytes, or raises OSError on refusal (callers map to unknown/MapError).
+    Common safe-read boundary shared by the fingerprint side
+    (``_map_identity``) and the loader side (both map loaders, the slot
+    ledger, the Makefile, ``dependencies.json``): direct forbidden specs
+    (``rom`` segment) and ``..`` escapes are refused pre-read with zero
+    read-API calls, any symlink on the path (final component AND every
+    parent prefix) is refused, and non-regular files (directories, fifos,
+    devices, missing) are refused WITHOUT reading. Returns the bytes, or
+    raises OSError on refusal (callers map to unknown/MapError). The
+    optional ``repo`` refines the forbidden-top check for repo-relative
+    specs; absolute temp-dir fixtures (explicit ``--map`` test paths)
+    pass the same filesystem-level checks without a repo anchor.
     """
+    if _map_spec_refused_pre_read(path):
+        raise OSError(f"refused map/config spec pre-read: {path}")
     candidate = Path(path)
-    if candidate.is_symlink():
-        raise OSError(f"refused symlink map/config read: {path}")
-    if not candidate.is_file():
-        raise OSError(f"refused non-regular map/config read: {path}")
+    try:
+        if candidate.is_symlink():
+            raise OSError(f"refused symlink map/config read: {path}")
+    except OSError as error:
+        raise OSError(f"refused symlink map/config read: {path}: {error}") from error
+    if _path_has_symlink_parent(path):
+        raise OSError(f"refused parent-symlink map/config read: {path}")
+    try:
+        if not candidate.is_file():
+            raise OSError(f"refused non-regular map/config read: {path}")
+    except OSError as error:
+        raise OSError(f"refused non-regular map/config read: {path}: {error}") from error
     return candidate.read_bytes()
 
 
@@ -1181,21 +1280,26 @@ def _input_content_hash(repo, origin, status, path):
         return "unknown"
 
 
-def _map_identity(map_path):
+def _map_identity(map_path, repo=None):
     """Identify the impact map by content hash plus envelope id.
 
     Returns (map_sha256, map_id). Anything missing, unreadable,
-    symlink/non-regular, or unparseable is ("unknown", "unknown") so
-    reuse is refused fail-closed. Reads via the strict regular-file
-    helper so a symlink map (link->sentinel) is never read. The envelope
-    id is the provisional ``format`` tag or
-    ``name/v<schema>@<base_commit>`` for the canonical map; bytes alone
-    are not trusted to identify the schema.
+    symlink/parent-symlink/non-regular, forbidden-spec/``..``-escape, or
+    unparseable is ("unknown", "unknown") so reuse is refused
+    fail-closed. Reads via the common safe-read boundary (same as the
+    loaders) so a symlink map, a parent-symlink traversal, a direct
+    forbidden spec, or an outside-repo ``..`` never opens the sentinel:
+    the read API is uncalled (spy-proven). The envelope id is the
+    provisional ``format`` tag or ``name/v<schema>@<base_commit>`` for
+    the canonical map; bytes alone are not trusted to identify the
+    schema.
     """
     if not map_path:
         return "unknown", "unknown"
     try:
-        raw = _read_bytes_strict(map_path)
+        raw = _read_bytes_strict(map_path, repo)
+    except OSError:
+        return "unknown", "unknown"
     except OSError:
         return "unknown", "unknown"
     digest = hashlib.sha256(raw).hexdigest()
@@ -1220,19 +1324,95 @@ def _map_identity(map_path):
     return digest, f"{name}/v{schema}@{base_commit}"
 
 
+def _resolve_pinned_tool_path(tools_root, revision, name, binary):
+    """Resolve the actually-executed file for one pinned tool (no run)."""
+    override = os.environ.get(binary.upper())
+    if override:
+        import shutil as _shutil
+        found = _shutil.which(override)
+        return Path(found) if found else None
+    return Path(tools_root) / f"{name}-{revision}" / "bin" / binary
+
+
+def _hash_tool_file(path):
+    """Hash one executed tool file, or None when unconfirmable (no run)."""
+    try:
+        candidate = Path(path)
+        if _path_has_symlink_parent(candidate):
+            return None
+        if candidate.is_symlink() or not candidate.is_file():
+            return None
+        return hashlib.sha256(candidate.read_bytes()).hexdigest()
+    except (OSError, ValueError):
+        return None
+
+
+def _verify_tool_reports_pin(tool_path, pin_prefix):
+    """True only if ``tool --version`` reports the pinned revision."""
+    try:
+        proc = subprocess.run(
+            [str(tool_path), "--version"], capture_output=True, text=True,
+            timeout=120)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return False
+    if proc.returncode != 0:
+        return False
+    output = (proc.stdout or "") + (proc.stderr or "")
+    return bool(pin_prefix) and pin_prefix in output
+
+
 def _cli_effective_env(mode, extra_env=None):
     """Capture the CLI-effective conditions allowlist (no dump, no secrets).
 
-    Only MODE, OSS_PCE_REQUIRE_CC65, and a sha256 hash of TOOLS_DIR are
-    recorded (the raw TOOLS_DIR path is private and never stored). Any
-    change in these conditions changes the fingerprint so old evidence
-    never reuses. extra_env (unit-test overrides) must be a str->str
-    dict; anything else marks the env malformed (refuse reuse).
+    Only MODE, OSS_PCE_REQUIRE_CC65, and a sha256 hash of the TOOLS_DIR
+    execution identity are recorded (the raw TOOLS_DIR path is private
+    and never stored). The identity hash covers the path PLUS the bytes
+    of the actually-executed cc65 tools where confirmable, so a
+    same-path tool content change still changes the fingerprint; when
+    tools are unconfirmable the path hash is kept (the toolchain field
+    is "unknown", which already refuses reuse). Any change in these
+    conditions changes the fingerprint so old evidence never reuses.
+    extra_env (unit-test overrides) must be a str->str dict; anything
+    else marks the env malformed (refuse reuse).
     """
     try:
         tools_raw = os.environ.get("TOOLS_DIR", "")
         if tools_raw:
-            tools_hash = hashlib.sha256(tools_raw.encode()).hexdigest()
+            # Best-effort content binding without importing the repo pins
+            # here (pins live in _declared_toolchain): hash every regular
+            # ``bin/*`` entry directly under ``<TOOLS_DIR>/cc65-*/bin``.
+            # Synthetic same-path content changes alter these bytes, so
+            # the env hash changes even when the path is identical.
+            content_parts = []
+            try:
+                root = Path(tools_raw)
+                if not _path_has_symlink_parent(root) and root.is_dir():
+                    for child in sorted(root.iterdir()):
+                        if not child.is_dir() or child.is_symlink():
+                            continue
+                        bindir = child / "bin"
+                        try:
+                            if bindir.is_symlink() or not bindir.is_dir():
+                                continue
+                            for tool in sorted(bindir.iterdir()):
+                                try:
+                                    if tool.is_symlink() or not tool.is_file():
+                                        continue
+                                    content_parts.append(
+                                        hashlib.sha256(
+                                            tool.read_bytes()).hexdigest())
+                                except (OSError, ValueError):
+                                    content_parts.append("unreadable")
+                        except (OSError, ValueError):
+                            continue
+            except (OSError, ValueError):
+                content_parts = []
+            if content_parts:
+                tools_hash = hashlib.sha256(
+                    (tools_raw + "|" + "|".join(
+                        content_parts)).encode()).hexdigest()
+            else:
+                tools_hash = hashlib.sha256(tools_raw.encode()).hexdigest()
         else:
             tools_hash = "unset"
     except (OSError, ValueError, UnicodeError):
@@ -1254,19 +1434,25 @@ def _cli_effective_env(mode, extra_env=None):
 
 
 def _declared_toolchain(repo):
-    """Declared toolchain pins plus execution-identity confirmation.
+    """Declared toolchain pins plus ACTUAL execution-identity verification.
 
-    Returns the pins JSON, or "unknown" when identity is unconfirmable
-    (missing/unparseable dependencies.json, missing revisions, or an
-    unconfirmable TOOLS_DIR execution directory). Declared revision alone
-    is never trusted: without a confirmable execution identity the
-    fingerprint refuses reuse.
+    Returns a JSON string binding the declared pins to the bytes and
+    ``--version`` output of the actually-executed cc65 tools (the same
+    ``revision[:9] in --version`` check the build uses in tools/build.py),
+    or "unknown" when identity is unconfirmable. Declared revision plus
+    a TOOLS_DIR path/existence check is NOT execution identity: the same
+    path with different tool bytes, a different real checkout revision, an
+    empty TOOLS_DIR, or a declared-pin-vs-entity mismatch must all refuse
+    reuse. Unconfirmable (missing/unparseable dependencies.json, missing
+    revisions, symlink-parent/irregular reads, unresolvable/missing tools,
+    ``--version`` failure or pin mismatch, TOOLS_DIR inside the repo) ->
+    "unknown". No blanket env collection, no secrets.
     """
-    candidate = Path(repo) / "tools" / "dependencies.json"
+    base = Path(repo)
+    candidate = base / "tools" / "dependencies.json"
     try:
-        if candidate.is_symlink() or not candidate.is_file():
-            return "unknown"
-        deps = json.loads(candidate.read_bytes().decode("utf-8"))
+        deps = json.loads(
+            _read_bytes_strict(candidate, base).decode("utf-8"))
     except (OSError, ValueError, UnicodeDecodeError):
         return "unknown"
     try:
@@ -1281,12 +1467,10 @@ def _declared_toolchain(repo):
             if not isinstance(revision, str) or not revision:
                 return "unknown"
             pins[name] = revision
-        declared = json.dumps(pins, sort_keys=True)
     except (KeyError, AttributeError, ValueError, TypeError):
         return "unknown"
-    # Execution identity: the TOOLS_DIR directory must be confirmable
-    # (exists, is a real directory, not a symlink) so the declared pins
-    # can be tied to an executed location. Unconfirmable -> unknown.
+    # Execution identity: TOOLS_DIR must be a confirmable external real
+    # directory (not a symlink, not inside the repo, non-empty).
     try:
         raw = os.environ.get("TOOLS_DIR", "")
         if not raw:
@@ -1294,9 +1478,42 @@ def _declared_toolchain(repo):
         tools_path = Path(raw)
         if tools_path.is_symlink() or not tools_path.is_dir():
             return "unknown"
+        try:
+            repo_resolved = base.resolve()
+            tools_resolved = tools_path.resolve()
+            if (tools_resolved == repo_resolved
+                    or repo_resolved in tools_resolved.parents):
+                return "unknown"
+        except OSError:
+            return "unknown"
+        if _path_has_symlink_parent(tools_path):
+            return "unknown"
+        try:
+            if not any(tools_path.iterdir()):
+                return "unknown"
+        except OSError:
+            return "unknown"
     except OSError:
         return "unknown"
-    return declared
+    # Confirmable execution entities: the actually-used cc65 binaries.
+    # Resolve exactly like tools/environment.py (explicit override or the
+    # pinned ``<TOOLS_DIR>/cc65-<revision>/bin/*`` location).
+    cc65_rev = pins.get("cc65")
+    if not cc65_rev:
+        return "unknown"
+    tool_hashes = {}
+    for binary in ("ca65", "ld65"):
+        resolved = _resolve_pinned_tool_path(raw, cc65_rev, "cc65", binary)
+        if resolved is None:
+            return "unknown"
+        digest = _hash_tool_file(resolved)
+        if digest is None:
+            return "unknown"
+        if not _verify_tool_reports_pin(resolved, cc65_rev[:9]):
+            return "unknown"
+        tool_hashes[binary] = digest
+    return json.dumps({"pins": pins, "tools": tool_hashes},
+                      sort_keys=True)
 
 
 def evidence_fingerprint(repo, changed, mode="debug", extra_env=None,
@@ -1333,7 +1550,7 @@ def evidence_fingerprint(repo, changed, mode="debug", extra_env=None,
             "\n".join(sorted(entries)).encode()).hexdigest()
     if changed.head in _UNIDENTIFIABLE or changed.base in _UNIDENTIFIABLE:
         inputs_digest = "unknown"
-    map_sha256, map_id = _map_identity(map_path)
+    map_sha256, map_id = _map_identity(map_path, repo)
     toolchain = _declared_toolchain(repo)
     if commands is None:
         commands_digest = "unknown"
@@ -1542,14 +1759,19 @@ def select(changed, rules, apis, api=None, fingerprint=None,
             return _l3_selection(reasons, "api-slot-requires-L3",
                                  fingerprint)
         wanted = apis[api]["commands"]
-        # B-4: never narrow by intersection (it would drop needed
-        # commands when entries and slots differ, or across multi-change
-        # inputs). The slot's command set IS the API evidence; path
-        # classification only raises the level, never reduces the set.
-        if match_mode == "first-match":
-            selected = list(wanted)
-        else:
-            selected = list(wanted)
+        # B-3 (Wave2): never drop path evidence via overwrite. The
+        # selected set is the UNION of the path-rule set and the API slot
+        # set (deduped, path order first): a path-rule A+B with API slot B
+        # keeps A; differing path/API sets and multi-change same-API inputs
+        # keep every needed command. --api still never lowers the required
+        # level (level_rank takes the max), and an L3 path or L3 slot still
+        # escalates to the full local-L3 sequence below, so an L3 safety
+        # rule is always kept (as full L3, never as a filtered subset).
+        merged = []
+        for command in list(selected) + list(wanted):
+            if command not in merged:
+                merged.append(command)
+        selected = merged
         reasons.append(f"api:{api}: {apis[api]['reason']}")
         level_rank = max(level_rank, LEVEL_RANK[api_level])
     deduped = []
@@ -1687,12 +1909,47 @@ def run_selector(repo, base, map_path=None, api=None, fetch=False,
             [f"input-collection failed ({error.kind}): {error.detail}"],
             f"{error.kind}", fingerprint)
         return selection, render(selection)
-    active_loader = loader if loader is not None else CanonicalJsonMapLoader()
-    resolved_map = str(map_path) if map_path is not None else str(DEFAULT_CANONICAL_MAP)
+    explicit_loader = loader is not None
+    active_loader = loader if explicit_loader else CanonicalJsonMapLoader(repo=repo)
+    if map_path is not None:
+        given = Path(map_path)
+        if given.is_absolute():
+            # Explicit absolute --map: authorized external test-only
+            # boundary (temp dirs, never real checkouts). Same strict
+            # safe-read boundary applies; a different checkout's map never
+            # mixes with this repo's ledger/Makefile/diff.
+            resolved_map = str(given)
+        else:
+            # Repo-relative --map: bound to the target repo.
+            resolved_map = str(Path(repo) / map_path)
+    else:
+        # Default map is repo-bound (B-4): <repo>/tools/test_staging_map.json.
+        resolved_map = str(Path(repo) / "tools" / "test_staging_map.json")
     fingerprint = evidence_fingerprint(repo, changed, mode=mode,
                                        map_path=resolved_map)
     try:
-        rules, apis = active_loader.load(resolved_map)
+        import inspect as _inspect
+        try:
+            _params = list(_inspect.signature(active_loader.load).parameters)
+            _takes_repo = len(_params) >= 2
+        except (TypeError, ValueError):
+            _takes_repo = True
+        if _takes_repo and not explicit_loader:
+            # Default CLI path: bind ledger/Makefile/scripts to --repo.
+            rules, apis = active_loader.load(resolved_map, repo)
+        elif _takes_repo:
+            # Explicit synthetic-test loader: honour its own binding
+            # (stored repo or ROOT legacy boundary); the target repo's
+            # diff/fingerprint still applies, and the temp --map stays an
+            # isolated authorized fixture (never a real checkout).
+            bound = getattr(active_loader, "_repo", None)
+            if bound is not None:
+                rules, apis = active_loader.load(resolved_map)
+            else:
+                rules, apis = active_loader.load(resolved_map)
+        else:
+            # Legacy custom test loaders with load(path) only.
+            rules, apis = active_loader.load(resolved_map)
         resolve = getattr(active_loader, "resolve_api", None)
         if api is not None and callable(resolve):
             api = resolve(api)
