@@ -3107,4 +3107,209 @@ class Review6096132688B2MapPrereadTests(Wave2B4RepoConsistencyTests):
         self.assertFalse(selection.fallback)
 
 
+class Review6096382075HiddenIndexFlagTests(unittest.TestCase):
+    """Assume-unchanged/skip-worktree must fail closed (review 6096382075).
+
+    ``git diff``/``status`` silently miss worktree edits behind the
+    assume-unchanged (``h``) or skip-worktree (``S``/``s``) index flags,
+    so a hidden L3 edit used to classify as L1 (or as no change) while
+    the old evidence fingerprint stayed reusable across the hidden edit.
+    ``collect_changes`` now refuses ANY non-``H`` ``ls-files -v -z`` tag
+    (read-only: flags are never modified or cleared, no bytes are hashed)
+    and the refusal escalates to full L3 with an unknown fingerprint, so
+    reuse is refused in both directions.
+    """
+    L1_FILE = "src/overrides/slot_3F.s"
+    L3_FILE = "src/experimental/new_feature.s"
+
+    def make_two_file_repo(self):
+        repo = make_repo(self.L1_FILE)
+        write_file(repo, self.L3_FILE, "initial\n")
+        git(repo, "add", "-A")
+        git(repo, "commit", "-qam", "second file")
+        git(repo, "tag", "-f", "vbase")
+        return repo
+
+    def select_with_rules(self, repo):
+        map_path = write_map(repo, provisional_map(
+            [l1_rule("src/overrides/*.s"),
+             {"pattern": "src/experimental/*.s", "level": "L3",
+              "commands": [{"make": "check"}],
+              "reason": "experimental rule", "api": ""}]))
+        return SEL.run_selector(
+            str(repo), "vbase", map_path=map_path,
+            loader=SEL.ProvisionalJsonMapLoader())
+
+    def flag_cases(self):
+        # (name, update-index args, expected ls-files -v tag). The
+        # both-flags case needs two update-index calls: one call with
+        # both flags only sets assume-unchanged ('h'); two calls set
+        # both bits ('s'). Each case is a duplicate-literal per-var
+        # proof: dropping the ls-files check re-trips every one to RED.
+        return [
+            ("assume-unchanged", [["--assume-unchanged"]], "h"),
+            ("skip-worktree", [["--skip-worktree"]], "S"),
+            ("both-flags", [["--assume-unchanged"],
+                              ["--skip-worktree"]], "s"),
+        ]
+
+    def test_hidden_l3_edit_selects_full_l3(self):
+        for name, flag_calls, tag in self.flag_cases():
+            with self.subTest(flag=name):
+                repo = self.make_two_file_repo()
+                for flag in flag_calls:
+                    git(repo, "update-index", *flag, self.L3_FILE)
+                self.assertIn(f"{tag} {self.L3_FILE}",
+                              git(repo, "ls-files", "-v"))
+                write_file(repo, self.L3_FILE, "HIDDEN-L3-EDIT\n")
+                write_file(repo, self.L1_FILE, "visible-l1-edit\n")
+                selection, _ = self.select_with_rules(repo)
+                assert_full_l3(self, selection, "hidden-index-flags")
+                self.assertTrue(
+                    any("assume-unchanged/skip-worktree" in reason
+                        for reason in selection.reasons))
+                self.assertEqual(
+                    selection.fingerprint["inputs_sha256"], "unknown")
+                self.assertFalse(SEL.evidence_reusable(
+                    selection.fingerprint, selection.fingerprint))
+
+    def test_flag_alone_with_no_edits_still_full_l3(self):
+        # A flag with zero worktree changes is still untrustworthy: the
+        # diff is empty either way, so the flag alone forces full L3.
+        for name, flag_calls, _tag in self.flag_cases():
+            with self.subTest(flag=name):
+                repo = self.make_two_file_repo()
+                for flag in flag_calls:
+                    git(repo, "update-index", *flag, self.L3_FILE)
+                selection, _ = self.select_with_rules(repo)
+                assert_full_l3(self, selection, "hidden-index-flags")
+                self.assertEqual(
+                    selection.fingerprint["inputs_sha256"], "unknown")
+
+    def test_collect_changes_raises_hidden_index_flags(self):
+        for name, flag_calls, _tag in self.flag_cases():
+            with self.subTest(flag=name):
+                repo = self.make_two_file_repo()
+                for flag in flag_calls:
+                    git(repo, "update-index", *flag, self.L3_FILE)
+                with self.assertRaises(SEL.GitError) as caught:
+                    SEL.collect_changes(str(repo), "vbase")
+                self.assertEqual(caught.exception.kind,
+                                 "hidden-index-flags")
+
+    def test_selector_never_modifies_index_flags_or_files(self):
+        for name, flag_calls, tag in self.flag_cases():
+            with self.subTest(flag=name):
+                repo = self.make_two_file_repo()
+                for flag in flag_calls:
+                    git(repo, "update-index", *flag, self.L3_FILE)
+                write_file(repo, self.L3_FILE, "HIDDEN-L3-EDIT\n")
+                before_flags = git(repo, "ls-files", "-v")
+                before_bytes = (repo / self.L3_FILE).read_bytes()
+                self.select_with_rules(repo)
+                # Read-only: the flag is still set (never cleared) and
+                # the worktree bytes are untouched.
+                self.assertEqual(git(repo, "ls-files", "-v"),
+                                 before_flags)
+                self.assertIn(f"{tag} {self.L3_FILE}", before_flags)
+                self.assertEqual((repo / self.L3_FILE).read_bytes(),
+                                 before_bytes)
+
+    def test_old_evidence_reuse_refused_across_hidden_change(self):
+        repo = self.make_two_file_repo()
+        clean = SEL.collect_changes(str(repo), "vbase")
+        old = SEL.evidence_fingerprint(
+            str(repo), clean, map_path=None, level="L1",
+            commands=[{"make": "dev-rom"}])
+        git(repo, "update-index", "--assume-unchanged", self.L3_FILE)
+        write_file(repo, self.L3_FILE, "HIDDEN-L3-EDIT\n")
+        selection, _ = self.select_with_rules(repo)
+        current = selection.fingerprint
+        self.assertEqual(current["inputs_sha256"], "unknown")
+        self.assertFalse(SEL.evidence_reusable(old, current))
+        self.assertFalse(SEL.evidence_reusable(current, old))
+
+    def test_whitespace_flagged_name_detected_verbatim(self):
+        # No strip damage: a leading-space flagged path is refused with
+        # its exact spelling (NUL-safe parse, fixed-prefix inspection).
+        repo = make_repo("base.txt")
+        write_file(repo, " lead.txt", "initial\n")
+        git(repo, "add", "-A")
+        git(repo, "commit", "-qam", "spaced")
+        git(repo, "tag", "-f", "vbase")
+        git(repo, "update-index", "--assume-unchanged", " lead.txt")
+        with self.assertRaises(SEL.GitError) as caught:
+            SEL.collect_changes(str(repo), "vbase")
+        self.assertEqual(caught.exception.kind, "hidden-index-flags")
+        self.assertIn("' lead.txt'", str(caught.exception))
+
+    def test_abnormal_ls_files_output_fails_closed(self):
+        repo = self.make_two_file_repo()
+
+        def malformed_runner(repo_path, *args):
+            if args[:1] == ("ls-files",):
+                return "H \0"  # empty path: unparseable
+            return SEL._real_runner(repo_path, *args)
+
+        def unknown_tag_runner(repo_path, *args):
+            if args[:1] == ("ls-files",):
+                return "X some/path.s\0"  # unknown tag
+            return SEL._real_runner(repo_path, *args)
+
+        for name, runner in (("malformed", malformed_runner),
+                             ("unknown-tag", unknown_tag_runner)):
+            with self.subTest(output=name):
+                with self.assertRaises(SEL.GitError) as caught:
+                    SEL.collect_changes(str(repo), "vbase", runner=runner)
+                self.assertEqual(caught.exception.kind,
+                                 "hidden-index-flags")
+                selection, _ = SEL.run_selector(
+                    str(repo), "vbase", runner=runner,
+                    map_path=write_map(repo, provisional_map(
+                        [l1_rule("src/**/*.s")])),
+                    loader=SEL.ProvisionalJsonMapLoader())
+                assert_full_l3(self, selection, "hidden-index-flags")
+                self.assertEqual(
+                    selection.fingerprint["inputs_sha256"], "unknown")
+
+    def test_ls_files_git_failure_fails_closed(self):
+        repo = self.make_two_file_repo()
+        runner = FailingRunner({"ls-files"},
+                               SEL.GitError("git-exit", "no ls-files"))
+        with self.assertRaises(SEL.GitError):
+            SEL.collect_changes(str(repo), "vbase", runner=runner)
+        selection, _ = SEL.run_selector(
+            str(repo), "vbase", runner=runner,
+            map_path=write_map(repo, provisional_map(
+                [l1_rule("src/**/*.s")])),
+            loader=SEL.ProvisionalJsonMapLoader())
+        assert_full_l3(self, selection, "git-exit")
+        self.assertEqual(selection.fingerprint["inputs_sha256"],
+                         "unknown")
+        self.assertFalse(SEL.evidence_reusable(
+            selection.fingerprint, selection.fingerprint))
+
+    def test_untracked_still_forces_l3(self):
+        repo = self.make_two_file_repo()
+        write_file(repo, "brand_new.txt", "untracked\n")
+        map_path = write_map(repo, provisional_map(
+            [l1_rule("src/**/*.s"), l1_rule("*.txt")]))
+        selection, _ = SEL.run_selector(
+            str(repo), "vbase", map_path=map_path,
+            loader=SEL.ProvisionalJsonMapLoader())
+        assert_full_l3(self, selection, "untracked-inputs")
+
+    def test_normal_h_only_repo_unaffected(self):
+        # No false positive: an H-only index still classifies normally
+        # (committed/staged/unstaged captured, L1 selected).
+        repo = self.make_two_file_repo()
+        self.assertNotIn("\nh ", "\n" + git(repo, "ls-files", "-v"))
+        write_file(repo, self.L1_FILE, "visible-l1-edit\n")
+        changed = SEL.collect_changes(str(repo), "vbase")
+        self.assertEqual(changed.unstaged, [("M", self.L1_FILE)])
+        selection, _ = self.select_with_rules(repo)
+        self.assertEqual(selection.level, "L1")
+        self.assertFalse(selection.fallback)
+
+
 if __name__ == "__main__": unittest.main()

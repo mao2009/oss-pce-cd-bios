@@ -342,13 +342,58 @@ def attempt_fetch(repo, base, runner=_real_runner):
         raise GitError("fetch", f"BASE fetch failed for {base!r}: {error}") from error
 
 
+def _refuse_hidden_index_flags(repo, runner=_real_runner):
+    """Fail closed when any tracked path can hide worktree changes (Issue #852).
+
+    Review 6096382075: ``git diff``/``status`` silently miss worktree edits
+    behind the assume-unchanged or skip-worktree index flags, so a hidden
+    L3 edit classifies as L1 (or as no change at all) and the evidence
+    fingerprint -- which never saw the hidden bytes -- stays reusable
+    across the hidden edit. ``git ls-files -v -z`` exposes the flags as
+    the per-entry tag: exactly ``H`` is a normal cached entry, while ``h``
+    (assume-unchanged), ``S`` (skip-worktree), ``s`` (both), or any other
+    abnormal tag (unmerged/removed/changed/killed/other, either case)
+    means the worktree diff is untrustworthy. ANY non-``H`` tag -- or any
+    malformed, undecodable, or failed ls-files output -- raises GitError
+    (callers escalate to full L3 with an unknown fingerprint, so reuse is
+    refused). Read-only: index flags are never modified or cleared, and no
+    file bytes are hashed here. Runs through the bound ``runner`` (same
+    repo-bound env isolation as every other git call). Entries are exactly
+    ``<TAG><one space><path>`` NUL-terminated; the path is taken verbatim
+    (no strip: leading/trailing-whitespace filenames must round-trip, so
+    only the fixed two-character prefix is inspected).
+    """
+    output = runner(repo, "ls-files", "-v", "-z", "--")
+    for chunk in output.split("\0"):
+        if not chunk:
+            continue
+        if len(chunk) < 3 or chunk[1] != " ":
+            raise GitError("hidden-index-flags",
+                           f"unparseable ls-files entry: {chunk!r}")
+        tag = chunk[0]
+        if tag == "H":
+            continue
+        path = chunk[2:]
+        if tag in ("h", "S", "s"):
+            raise GitError(
+                "hidden-index-flags",
+                f"tracked path {path!r} carries index flag {tag!r} "
+                "(assume-unchanged/skip-worktree hides worktree changes)")
+        raise GitError(
+            "hidden-index-flags",
+            f"tracked path {path!r} carries abnormal index flag {tag!r} "
+            "(worktree changes may be hidden)")
+
+
 def collect_changes(repo, base, runner=_real_runner, fetch=False):
     """Capture committed/staged/unstaged/untracked changes (Issue #852).
 
     Raises GitError (fail-closed -> L3) when BASE cannot be resolved, history
-    is shallow, a fetch fails, or any diff fails.
+    is shallow, a fetch fails, any diff fails, or any tracked path carries
+    an assume-unchanged/skip-worktree (or abnormal) index flag.
     """
     repo = str(repo)
+    _refuse_hidden_index_flags(repo, runner)
     if runner(repo, "rev-parse", "--is-shallow-repository").strip() == "true":
         raise GitError("shallow",
                        "shallow history cannot establish the comparison")
