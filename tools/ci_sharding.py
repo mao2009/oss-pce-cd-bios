@@ -74,6 +74,7 @@ INTEGRATION_SHARDS = {
     ],
     "rc-3": [
         "test_bm_delete_blocker",
+        "test_g5_expg_843",
         "test_g5_rcroff_2b",
         "test_g5_sprdma_35",
         "test_g5_chain_7api_24_36",

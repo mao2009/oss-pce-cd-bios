@@ -2,22 +2,25 @@
 
 Synthetic only, no emulator, no BIOS, no ROM, no reference JSR, and no
 ./rom/ content is read at any point. This file models the exact entry-gate
-and ok-path semantics shared by the four CR-family bodies, grounded in the
-source lines pinned by ``test_gate_shape_matches_source``:
+and ok-path semantics shared by the CR family, pinned by section-aware
+structural tests against the single-source unit ``src/ex_cr_family.s``
+(Issue #843: one NEED_CR33/NEED_CR2C/NEED_CR2B head section per slot plus a
+shared reject/tail) and, for $2E only, ``src/overrides/slot_2E.s``:
 
-    gate: lda $2503 ; cmp #$A5 ; beq @have (reject: SEC, no write anywhere)
-    have: lda $2502 ; <family mask> ; sta $2502 ; VDC CR write ; CLC
+    gate: lda $2503 ; cmp #$A5 ; bne cr_reject (reject: SEC, no write anywhere)
+    have: lda $2502 ; <family mask> ; bra cr_tail_publish (shared tail
+          publishes sta $2502 BEFORE sta $0002, restores MPR0, CLC)
 
 Family masks (SOURCE_CONFIRMED, see the structural test below):
-  $2B ex_rcroff.s        AND #$FB (clear bit 2)
-  $33 ex_dspoff.s        AND #$3F (clear bits 6-7)
-  $2C ex_irqon.s         ORA #$08 (set bit 3)
+  $2B ex_cr_family.s NEED_CR2B AND #$FB (clear bit 2)
+  $33 ex_cr_family.s NEED_CR33 AND #$3F (clear bits 6-7)
+  $2C ex_cr_family.s NEED_CR2C ORA #$08 (set bit 3)
   $2E overrides/slot_2E.s ORA #$80 (set bit 7)
 
 Covered cases:
   SYNC ok        real CR == shadow, marker $A5  -> ok path, target bit
                  updated, non-target bits preserved.
-  FALSE-OK stale real CR != stale shadow, marker $A5 (sector residue) ->
+  FALSE-OK       stale real CR != stale shadow, marker $A5 (sector residue) ->
                  ok path taken with the WRONG image; $2B publishes
                  non-target damage (CR=$FB from stale $FF).
   $33 mask       same stale state through the $33 mask yields CR=$00, which
@@ -59,12 +62,48 @@ FAMILY_MASKS = {
     "$2E": ("ORA", 0x80),
 }
 
-SRC_BY_SLOT = {
-    "$2B": "src/ex_rcroff.s",
-    "$33": "src/ex_dspoff.s",
-    "$2C": "src/ex_irqon.s",
-    "$2E": "src/overrides/slot_2E.s",
+# Single-source layout (Issue #843): one conditional head section per slot
+# in src/ex_cr_family.s, plus the shared reject/tail. $2E keeps its own body
+# in src/overrides/slot_2E.s and is pinned there, never remapped onto the
+# single-source unit (a whole-file match would let one slot's bytes satisfy
+# another slot's pin).
+CR_FAMILY_SRC = "src/ex_cr_family.s"
+SLOT_2E_SRC = "src/overrides/slot_2E.s"
+HEADS = {
+    "$2B": ("NEED_CR2B", "AND", 0xFB),
+    "$33": ("NEED_CR33", "AND", 0x3F),
+    "$2C": ("NEED_CR2C", "ORA", 0x08),
 }
+
+
+def _family_sections():
+    """Split ex_cr_family.s into {NEED_xxx: section text} + shared text.
+
+    A section is the raw text between its ``.ifdef NEED_xxx`` and the matching
+    ``.endif``; everything else (header comment, the NEED guard, the shared
+    reject/tail) is shared. KeyError on a missing section fails closed.
+    """
+    lines = (ROOT / CR_FAMILY_SRC).read_text().splitlines()
+    sections, shared, cur, buf = {}, [], None, []
+    for line in lines:
+        opened = re.match(r"\s*\.ifdef\s+(NEED_CR\w+)\s*$", line)
+        if opened:
+            cur, buf = opened.group(1), []
+            continue
+        if re.match(r"\s*\.endif\b", line) and cur is not None:
+            sections[cur] = "\n".join(buf)
+            cur = None
+            continue
+        (buf if cur is not None else shared).append(line)
+    return sections, "\n".join(shared)
+
+
+def _code_block(shared, label, stop_labels):
+    """Instruction-region text from ``label:`` up to (not incl.) the next stop label."""
+    start = shared.index("\n%s:" % label)
+    ends = [shared.index("\n%s:" % stop, start + 1)
+            for stop in stop_labels if "\n%s:" % stop in shared[start + 1:]]
+    return shared[start:min(ends)] if ends else shared[start:]
 
 
 def family_step(real_cr, shadow, marker, slot):
@@ -102,27 +141,81 @@ class CrShadowArithmeticTests(unittest.TestCase):
 class GateShapeMatchesSourceTests(unittest.TestCase):
     """Pin the model to the actual bodies (structural, no execution)."""
 
-    def _src(self, slot):
-        return (ROOT / SRC_BY_SLOT[slot]).read_text()
+    def test_each_head_gates_on_marker_a5(self):
+        sections, shared = _family_sections()
+        for slot, (need, _, _) in HEADS.items():
+            sec = sections[need]  # missing NEED section fails closed
+            for token in (r"^\s*lda\s+\$2503\b",
+                          r"^\s*cmp\s+#\$A5\b",
+                          r"^\s*bne\s+cr_reject\b"):
+                self.assertRegex(sec, r"(?m)%s" % token, "%s/%s" % (slot, need))
+            gate = [m.start() for m in
+                    re.finditer(r"(?m)^\s*(?:lda\s+\$2503|cmp\s+#\$A5|bne\s+cr_reject)\b",
+                                sec)]
+            self.assertEqual(len(gate), 3, "%s/%s" % (slot, need))
+            self.assertEqual(gate, sorted(gate), "%s/%s" % (slot, need))
+        # $2E keeps its own body: gate pinned there, untouched by #843.
+        slot_2e = (ROOT / SLOT_2E_SRC).read_text()
+        self.assertRegex(slot_2e, r"(?m)^\s*lda\s+\$2503\b", "$2E")
+        self.assertRegex(slot_2e, r"(?m)^\s*cmp\s+#\$A5\b", "$2E")
 
-    def test_each_body_gates_on_marker_a5(self):
-        for slot in FAMILY_MASKS:
-            text = self._src(slot)
-            self.assertIn("lda $2503", text, slot)
-            self.assertIn("cmp #$A5", text, slot)
-
-    def test_each_body_publishes_masked_shadow(self):
-        for slot in FAMILY_MASKS:
-            text = self._src(slot)
-            self.assertIn("lda $2502", text, slot)
-            self.assertIn("sta $2502", text, slot)
+    def test_each_head_publishes_masked_shadow(self):
+        sections, shared = _family_sections()
+        for slot, (need, _, _) in HEADS.items():
+            sec = sections[need]  # missing NEED section fails closed
+            self.assertRegex(sec, r"(?m)^\s*lda\s+\$2502\b",
+                             "%s/%s image load" % (slot, need))
+            self.assertRegex(sec, r"(?m)^\s*bra\s+cr_tail_publish\b",
+                             "%s/%s tail transfer" % (slot, need))
+            load = re.search(r"(?m)^\s*lda\s+\$2502\b", sec).start()
+            tail = re.search(r"(?m)^\s*bra\s+cr_tail_publish\b", sec).start()
+            self.assertLess(load, tail, "%s/%s" % (slot, need))
+            # The marker cell is never written by any head.
+            self.assertNotRegex(sec, r"(?m)^\s*st[axyz]\s+.*\$2503\b",
+                                "%s/%s must not store $2503" % (slot, need))
+        # Shared tail: publish the shadow image BEFORE the VDC write, then
+        # restore the caller's MPR0 and report ok.
+        tail = _code_block(shared, "cr_tail_publish", [])
+        publish = re.search(r"(?m)^\s*sta\s+\$2502\b", tail)
+        vdc = re.search(r"(?m)^\s*sta\s+a:\$0002\b", tail)
+        self.assertIsNotNone(publish, "tail publishes $2502")
+        self.assertIsNotNone(vdc, "tail writes VDC CR low")
+        self.assertLess(publish.start(), vdc.start(), "publish before VDC write")
+        self.assertRegex(tail, r"(?m)^\s*tam\s+#\$01\b", "tail restores MPR0")
+        self.assertLess(re.search(r"(?m)^\s*plp\b", tail).start(),
+                        re.search(r"(?m)^\s*clc\b", tail).start())
+        self.assertNotRegex(tail, r"(?m)^\s*st[axyz]\s+.*\$2503\b",
+                            "tail must not store the $2503 marker")
+        # Shared reject: SEC + RTS with no store of any kind (no write anywhere).
+        reject = _code_block(shared, "cr_reject", ["cr_tail_publish"])
+        self.assertRegex(reject, r"(?m)^\s*sec\b", "reject sets C")
+        self.assertRegex(reject, r"(?m)^\s*rts\b", "reject returns")
+        self.assertNotRegex(reject, r"(?m)^\s*st[axyz]\b",
+                            "reject path must not store anywhere")
 
     def test_family_masks_match_source(self):
-        for slot, (kind, mask) in FAMILY_MASKS.items():
-            text = self._src(slot)
+        sections, _ = _family_sections()
+        for slot, (need, kind, mask) in HEADS.items():
             op = "and" if kind == "AND" else "ora"
-            self.assertRegex(text, r"(?im)^\s*%s\s+#\$%02X\b" % (op, mask),
-                             slot)
+            # The mask lives in its own NEED section: a whole-file match
+            # would let one slot's bytes satisfy another slot's pin.
+            self.assertRegex(sections[need],
+                             r"(?m)^\s*%s\s+#\$%02X\b" % (op, mask),
+                             "%s/%s" % (slot, need))
+            for other, (oneed, okind, omask) in HEADS.items():
+                if other == slot:
+                    continue
+                oop = "and" if okind == "AND" else "ora"
+                self.assertNotRegex(sections[need],
+                                    r"(?m)^\s*%s\s+#\$%02X\b" % (oop, omask),
+                                    "%s/%s must not carry %s mask" % (slot, need, other))
+        # $2E keeps its own body: mask pinned there, untouched by #843.
+        slot_2e = (ROOT / SLOT_2E_SRC).read_text()
+        self.assertRegex(slot_2e, r"(?m)^\s*ora\s+#\$80\b", "$2E")
+        for _, ( _, okind, omask) in HEADS.items():
+            oop = "and" if okind == "AND" else "ora"
+            self.assertNotRegex(slot_2e, r"(?m)^\s*%s\s+#\$%02X\b" % (oop, omask),
+                                "$2E must not carry single-source masks")
 
     def test_loader_prefill_value_is_5a(self):
         text = (ROOT / "tests/integration/ipl_loader_rom.s").read_text()

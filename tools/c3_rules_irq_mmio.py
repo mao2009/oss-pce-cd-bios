@@ -11,6 +11,10 @@ Fail closed. Per bios file the contract may declare:
             (the CI-1 "restore"), in one straight-line run of one routine: no label, branch, jump, call, return,
             CLI, PLP or RTI inside it, and an SEI earlier in the routine with no CLI / PLP after it. Every page-0
             access must lie inside a window. A window file needs at least one window and one access.
+            A conditional unit (contract "shared_tail" + "variants") opens one window per .ifdef variant section
+            and closes each through the shared tail label: variant span SEI ... set ... BRA tail plus the shared
+            tail span label ... restoring TAM. Each span is straight-line on its own; the closing BRA must target
+            the declared tail label. Anything else is a FAIL, never a skip.
             "precondition": the routine documents that its caller maps MPR0 = $FF. Every JSR / JMP / BSR in a bios
             file to any label exported by the routine's file is found by the tool; the calling file must be listed
             in "callers", and the closest TAM #$01 before the call in that file must be an LDA #$FF / TAM #$01
@@ -193,6 +197,195 @@ def _windows(source, report):
     return out
 
 
+NEG_KINDS = {".ifndef", ".ifnblank"}   # conditional kinds whose taken branch means "variant absent"
+
+
+def _mentions(operand, variant):
+    """Variant symbol mentioned as a whole word in a conditional operand."""
+    return re.search(r"(?<![A-Za-z0-9_])" + re.escape(variant) + r"(?![A-Za-z0-9_])", operand or "") is not None
+
+
+def _starter_ok(entry, variant):
+    """Affirmative branch opener for `variant`: a non-negative kind (.ifdef / .if / ...) mentioning the
+    variant, on branch 0. An .else / .elseif branch (branch_id > 0) of `.ifdef V` is the V-absent path,
+    so it must not claim a V window; likewise a `.ifndef V` block must not claim one."""
+    kind, operand, _block, branch = entry
+    return branch == 0 and kind not in NEG_KINDS and _mentions(operand, variant)
+
+
+def _shared_tail_windows(path, source, mmio, report):
+    """Conditional-unit MPR0 windows closed through one shared tail label.
+
+    Each variant section (contract "variants": the .ifdef symbols) opens its own window (SEI ... LDA #$FF /
+    TAM #$01 ... page-0 access ... BRA tail) and closes it by branching to the shared tail label, whose
+    straight-line run ends at the single restoring TAM #$01. Every page-0 access must lie inside one variant
+    span or the tail span. Anything else (missing SEI, CLI / PLP / TXS or another MPR0 TAM inside a span, a
+    branch / call / return / label inside a span, an access outside every span, a missing variant or an
+    undeclared section window) is a FAIL, never a skip. The tail span is scanned head-inclusive (its first
+    instruction counts) and label-anchored: the directive scan covers tail_no <= ln.number < ins[j].number
+    (a directive on the tail-label line itself, e.g. `shared_tail: .byte ...`, or on a line between a
+    label-only tail and its first instruction, otherwise hides below the first-instruction lower bound),
+    and any non-tail label in [tail_no, ins[j].number] breaks the straight-line tail (the tail label
+    itself is exempt; a line co-defining the tail with another label still counts via that other
+    label). Conditional structure is fail-closed on the cifs stack (kind, operand, block_id,
+    branch_id per conditional level): SEI, set-up and closing BRA must share one identical cifs whose
+    variant opener is affirmative (an .ifdef / .if-style header mentioning the variant, on branch 0: a
+    `.ifndef V` block or an .else / .elseif branch must not claim a V window), every other instruction of
+    the span must carry that same cifs (no nested conditional, no .endif reopen, no branch change inside),
+    and no directive may sit inside a claimed span (the variant-span directive scan extends down to the
+    variant-head line so bytes smuggled between the head label and SEI cannot hide; the outer variant
+    scaffolding -- the `.ifdef V` opener before the head and the `.endif` closer after the BRA -- stays
+    outside [head_no, ins[b].number) by construction, and any inner conditional scaffolding is already
+    rejected by the same-cifs check, so this scan is the backstop for non-conditional content like
+    .byte). A conditional tail-label definition, a conditional tail
+    instruction, or any directive inside the tail span is likewise unresolvable. Returns the covered
+    [(start, end)] line spans, or None when the declaration itself is unusable.
+    """
+    tail = mmio.get("shared_tail")
+    variants = mmio.get("variants", [])
+    ins = source.instructions()
+    if not tail or not isinstance(tail, str) or not variants:
+        report.add("CI-3.02", FAIL, path, "shared-tail window needs a 'shared_tail' label and a non-empty "
+                   "'variants' list")
+        return None
+    tail_defs = [ln for ln in source.lines if tail in ln.labels]
+    if len(tail_defs) != 1:
+        report.add("CI-3.02", FAIL, path, f"shared tail label {tail!r}: expected exactly one definition, "
+                   f"found {len(tail_defs)}")
+        return None
+    if tail_defs[0].cifs or tail_defs[0].ifs or tail_defs[0].conditional:
+        report.add("CI-3.02", FAIL, where(tail_defs[0]), f"shared tail label {tail!r} is defined inside a "
+                   "conditional block, so a build without that branch has no tail to close through "
+                   "(unresolvable conditional structure: the tail label must be unconditional)")
+        return None
+    tail_no = tail_defs[0].number
+    restore = [k for k, ln in enumerate(ins) if ln.mnemonic == "tam" and _op(source, ln).value == 0x01
+               and ln.number > tail_no and not _is_set_ff(source, ins, k)]
+    if len(restore) != 1:
+        report.add("CI-3.02", FAIL, path, f"shared tail {tail!r}: expected exactly one restoring TAM #$01 "
+                   f"after the tail label, found {len(restore)}")
+        return None
+    j = restore[0]
+    tail_idx = next(k for k in range(len(ins)) if ins[k].number >= tail_no)
+    tail_ok = True
+    tail_cond = next((x for x in ins[tail_idx:j + 1] if x.conditional or x.ifs or x.cifs), None)
+    if tail_cond is not None:
+        report.add("CI-3.02", FAIL, where(tail_cond), f"shared tail {tail!r} has an unresolvable conditional "
+                   "structure: an instruction of the tail span sits inside a conditional block, so the tail "
+                   "assembles differently per build (the tail must be unconditional)")
+        tail_ok = False
+    # Label-anchored tail directive scan: tail_no <= ln.number < ins[j].number. The old
+    # ins[tail_idx].number lower bound missed a directive sitting on the tail-label line itself
+    # (same-line-label directive, `shared_tail: .byte ...`) or on a line between a label-only tail
+    # and its first instruction.
+    tail_dir = next((ln for ln in source.lines if ln.directive
+                       and tail_no <= ln.number < ins[j].number), None)
+    if tail_dir is not None:
+        report.add("CI-3.02", FAIL, where(tail_dir), f"shared tail {tail!r} has an unresolvable conditional "
+                   f"structure: directive {tail_dir.directive} sits inside the tail span, so each build "
+                   "assembles a different path through the window (the tail span must be directive-free)")
+        tail_ok = False
+    tail_break = next((x for x in ins[tail_idx:j] if x.mnemonic in WINDOW_BREAKERS or
+                       (x.mnemonic == "tam" and ((_op(source, x).value or 0x01) & 0x01)) or
+                       x.mnemonic == "txs"), None)
+    immediate_close = ins[j - 1].mnemonic == "lda" and _op(source, ins[j - 1]).mode == "immediate"
+    # Any non-tail label from the tail-label line through the restore breaks the tail. The old
+    # _labels_between(ins[tail_idx].number, ...) missed labels between a label-only tail and its first
+    # instruction; the tail label itself is exempt (a co-defined `tail: other:` line still counts).
+    tail_labels = [ln for ln in source.lines
+                   if tail_no <= ln.number <= ins[j].number and ln.labels
+                   and any(lab != tail for lab in ln.labels)]
+    if tail_break is not None or tail_labels or immediate_close:
+        report.add("CI-3.02", FAIL, where(tail_break or (tail_labels[0] if tail_labels else ins[j])),
+                   f"shared tail {tail!r} is not one "
+                   "straight-line run up to its restoring TAM")
+        tail_ok = False
+    sets = [i for i in range(len(ins)) if _is_set_ff(source, ins, i) and ins[i].number < tail_no]
+    by_variant = {}
+    mentioned = set()
+    for i in sets:
+        c = ins[i].cifs
+        if not c or ins[i - 1].cifs != c:
+            report.add("CI-3.02", FAIL, where(ins[i]), "MPR0 window set-up outside a declared variant section "
+                       f"({sorted(variants)}): every conditional-unit window must open inside exactly one variant")
+            continue
+        mentioned.update(v for v in variants for _e in c if _mentions(_e[1], v))
+        bad = sorted({v for v in variants for _e in c if _mentions(_e[1], v) and not _starter_ok(_e, v)})
+        good = sorted({v for v in variants for _e in c if _starter_ok(_e, v)})
+        if bad:
+            report.add("CI-3.02", FAIL, where(ins[i]), f"MPR0 window set-up claims variant {bad[0]!r} from a "
+                       "non-affirmative conditional branch (a `.ifndef V` block or an .else / .elseif branch "
+                       "is the V-absent path: unresolvable conditional structure)")
+            continue
+        if len(good) != 1:
+            report.add("CI-3.02", FAIL, where(ins[i]), "MPR0 window set-up outside a declared variant section "
+                       f"({sorted(variants)}): every conditional-unit window must open inside exactly one variant")
+            continue
+        by_variant.setdefault(good[0], []).append(i)
+    for missing in sorted(set(variants) - set(by_variant) - mentioned):
+        report.add("CI-3.02", FAIL, path, f"declared variant {missing!r} opens no MPR0 window (stale declaration)")
+    spans = []
+    for variant in sorted(by_variant):
+        for i in by_variant[variant]:
+            _, start, _ = _routine_of(source, ins[i])
+            # Variant-head line: the routine boundary label (e.g. `head_a:`) that opens the routine
+            # containing the set-up. Replicates _routine_of's boundary (last non-local label at or
+            # before the set-up); falls back to the routine's first instruction when no label precedes
+            # (cannot happen for headed variant routines, but keeps the bound conservative).
+            head_no = ins[start].number
+            for _ln in source.lines:
+                if _ln.number > ins[i].number:
+                    break
+                if any(not _lab.startswith("@") for _lab in _ln.labels):
+                    head_no = _ln.number
+            seis = [k for k in range(start, i) if ins[k].mnemonic == "sei" and ins[k].cifs == ins[i].cifs]
+            if not seis or not _straight(source, ins, seis[-1], i) or any(
+                    x.mnemonic in ("cli", "plp", "rti", "txs") for x in ins[seis[-1]:i]):
+                report.add("CI-3.02", FAIL, where(ins[i]), "MPR0 -> hardware page without an SEI of the same "
+                           "variant section on the same straight-line path (or with CLI / PLP / TXS after it)")
+                continue
+            s = seis[-1]
+            closes = [k for k in range(i + 1, len(ins)) if ins[k].number < tail_no
+                      and ins[k].cifs == ins[i].cifs and ins[k].mnemonic == "bra" and _target(ins[k]) == tail]
+            if not closes:
+                report.add("CI-3.02", FAIL, where(ins[i]), f"variant {variant!r} window never closes through "
+                           f"BRA {tail}")
+                continue
+            b = closes[0]
+            span_break = next((k for k in range(s + 1, b) if k != i and (
+                               ins[k].mnemonic in WINDOW_BREAKERS or
+                               (ins[k].mnemonic == "tam" and ((_op(source, ins[k]).value or 0x01) & 0x01)) or
+                               ins[k].mnemonic == "txs")), None)
+            span_break = ins[span_break] if span_break is not None else None
+            if span_break is not None or _labels_between(source, ins[s].number, ins[b].number):
+                report.add("CI-3.02", FAIL, where(span_break or ins[b]), f"variant {variant!r} window is not one "
+                           "straight-line run up to its closing BRA (label, branch, call, return, CLI / PLP / TXS "
+                           "or another MPR0 TAM inside)")
+                continue
+            span_cifs_bad = next((x for x in ins[s:b + 1] if x.cifs != ins[i].cifs), None)
+            if span_cifs_bad is not None:
+                report.add("CI-3.02", FAIL, where(span_cifs_bad), f"variant {variant!r} window has an unresolvable "
+                           "conditional structure: every instruction from SEI to the closing BRA must share the "
+                           "same conditional block and branch (no nested conditional, no .endif reopen, no "
+                           ".else / .elseif branch change inside the span)")
+                continue
+            # Head-anchored variant directive scan: head_no <= ln.number < ins[b].number. The old
+            # ins[s].number lower bound missed bytes smuggled between the head label and SEI. The
+            # outer scaffolding (opener before the head, closer after the BRA) stays outside by
+            # construction; inner conditional scaffolding is already rejected by same-cifs above.
+            span_dir = next((ln for ln in source.lines if ln.directive
+                               and head_no <= ln.number < ins[b].number), None)
+            if span_dir is not None:
+                report.add("CI-3.02", FAIL, where(span_dir), f"variant {variant!r} window has an unresolvable "
+                           f"conditional structure: directive {span_dir.directive} sits inside the window span, "
+                           "so each build assembles a different path through the window")
+                continue
+            if not tail_ok:
+                continue
+            spans += [(ins[s].number, ins[b].number), (ins[tail_idx].number, ins[j].number)]
+    return spans
+
+
 def _exports(source):
     names = set()
     for ln in source.lines:
@@ -354,18 +547,39 @@ def check(contract, sources, report):
                            f"{[f'${a:04X}' for a in unused]}")
             mode = mmio.get("mapping")
             if mode == "window":
-                windows = _windows(source, report)
-                ins = source.instructions()
-                spans = [(ins[i].number, ins[j].number) for i, j in windows]
-                outside = [(ln, a) for ln, a in page0 if not any(s < ln.number < e for s, e in spans)]
-                for ln, addr in outside:
-                    report.add("CI-3.02", FAIL, where(ln), f"access to ${addr:04X} outside every MPR0 window")
-                if not windows:
-                    report.add("CI-3.02", FAIL, path, "window mapping declared but no valid MPR0 window in the file")
-                elif not outside and not bad and page0 and not build_dependent:   # B2: no undecidable access
-                    report.add("CI-3.02", OK, path, f"{len(page0)} {mmio.get('device', 'MMIO')} access(es) inside "
-                               f"{len(windows)} SEI-masked, straight-line MPR0 window(s) closed by the restoring TAM "
-                               "(text-level)")
+                if "shared_tail" in mmio:
+                    spans = _shared_tail_windows(path, source, mmio, report)
+                    if spans is None:
+                        pass   # declaration unusable: FAIL already reported
+                    else:
+                        outside = [(ln, a) for ln, a in page0
+                                 if not any(s <= ln.number <= e for s, e in spans)]
+                        for ln, addr in outside:
+                            report.add("CI-3.02", FAIL, where(ln),
+                                       f"access to ${addr:04X} outside every MPR0 window")
+                        if not spans:
+                            report.add("CI-3.02", FAIL, path, "window mapping declared but no valid MPR0 window "
+                                       "in the file")
+                        elif not outside and not bad and page0 and not build_dependent:
+                            report.add("CI-3.02", OK, path,
+                                       f"{len(page0)} {mmio.get('device', 'MMIO')} access(es) inside "
+                                       f"{len(spans) // 2} SEI-masked variant window(s) closed through the shared "
+                                       f"tail {mmio['shared_tail']!r} (text-level)")
+                else:
+                    windows = _windows(source, report)
+                    ins = source.instructions()
+                    spans = [(ins[i].number, ins[j].number) for i, j in windows]
+                    outside = [(ln, a) for ln, a in page0 if not any(s < ln.number < e for s, e in spans)]
+                    for ln, addr in outside:
+                        report.add("CI-3.02", FAIL, where(ln), f"access to ${addr:04X} outside every MPR0 window")
+                    if not windows:
+                        report.add("CI-3.02", FAIL, path, "window mapping declared but no valid MPR0 window in "
+                                           "the file")
+                    elif not outside and not bad and page0 and not build_dependent:   # B2: no undecidable access
+                        report.add("CI-3.02", OK, path,
+                                   f"{len(page0)} {mmio.get('device', 'MMIO')} access(es) inside "
+                                   f"{len(windows)} SEI-masked, straight-line MPR0 window(s) closed by the "
+                                   "restoring TAM (text-level)")
             elif mode == "precondition":
                 _check_precondition(path, source, mmio, sources, files, report)
             else:

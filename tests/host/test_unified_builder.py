@@ -69,14 +69,20 @@ class UnionRequiredTests(unittest.TestCase):
     def test_link_units_carry_both_fragments(self):
         names = {path.name for path, _defines in U._experimental_boot_units(_selected())}
         self.assertEqual(names, {"experimental_bios_boot.s", "cd_load_exec_probe.s",
-                                 "cd_base_proto.s", "cd_read_link.s"})
+                                 "cd_base_proto.s", "cd_read_link.s",
+                                 "ex_cr_family.s"})
 
-    def test_slot33_body_comes_from_the_shared_fragment(self):
+    def test_family_unit_carries_the_selected_head(self):
+        units = {path.name: defines
+                 for path, defines in U._experimental_boot_units(_selected())}
+        self.assertEqual(units["ex_cr_family.s"], ["-D", "NEED_CR33"])
+
+    def test_slot33_body_comes_from_the_family_unit(self):
         source = (ROOT / "src" / "experimental_bios_boot.s").read_text(encoding="utf-8")
-        self.assertIn(".export experimental_slot_33", source)
-        self.assertIn('.include "ex_dspoff.s"', source)
+        self.assertNotIn('.include "ex_dspoff.s"', source)
         # Single source of truth: no duplicated $33 processing logic in the glue.
         self.assertNotIn("and #$3F", source)
+        self.assertIn("src/ex_cr_family.s", source)
 
 
 class Slot02PatchTests(unittest.TestCase):

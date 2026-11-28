@@ -22,9 +22,10 @@ Reuses (no large new builder, no logic duplication):
   - tools/build_rom.py: assemble_api_objects (normal DEV 18 overrides,
     byte-identical) + verify_dev_rom (tamper refusal).
   - src/cd_base_proto.s, src/cd_read_link.s (unchanged, BOOT segment).
-  - src/ipl_loader_g5_glue.s (new, tiny): XSEL selection record (same layout
-    as experimental_bios_boot.s, for the proto's INDEX01 comparison) +
-    experimental_slot_33 wrapper (.include ex_dspoff.s, single source).
+  - src/ipl_loader_g5_glue.s (tiny): XSEL selection record (same layout
+    as experimental_bios_boot.s, for the proto's INDEX01 comparison).
+  - src/ex_cr_family.s (CR-family single source, NEED_CR33): the
+    experimental_slot_33 EX_DSPOFF head + shared reject/tail.
 
 The XSEL record and IPL_SEL are derived from the SAME synthetic INDEX 01 LBA
 (sel, 16-bit). Mismatch is refused by construction (single sel input); a disc
@@ -54,7 +55,11 @@ if __package__:
     from .build_rom import BANK_BYTES, IMAGE_BYTES, ROOT, assemble_api_objects, overrides, verify_dev_rom
     from .build_dev_ipl_loader_bios import LOADER_SOURCE, REQUIRED as LOADER_REQUIRED, parse_labels
     from .build_experimental_bios_boot import (
+        CR_FAMILY_SOURCE,
+        CR_REJECT_ENTRY,
+        CR_TAIL_ENTRY,
         SLOT02_PATCH_LEN,
+        _check_cr_common_in_boot,
         _patch_slot02_to_proto,
         _redirect_slot03_to_link,
         _redirect_slot33_to_body,
@@ -65,7 +70,11 @@ else:
     from build_rom import BANK_BYTES, IMAGE_BYTES, ROOT, assemble_api_objects, overrides, verify_dev_rom
     from build_dev_ipl_loader_bios import LOADER_SOURCE, REQUIRED as LOADER_REQUIRED, parse_labels
     from build_experimental_bios_boot import (
+        CR_FAMILY_SOURCE,
+        CR_REJECT_ENTRY,
+        CR_TAIL_ENTRY,
         SLOT02_PATCH_LEN,
+        _check_cr_common_in_boot,
         _patch_slot02_to_proto,
         _redirect_slot03_to_link,
         _redirect_slot33_to_body,
@@ -82,6 +91,7 @@ ROM_STEM = "dev-ipl-loader-g5-not-compatible"
 EXP_LABELS = ("api_slot_02", "api_unimplemented", "cd_base_proto_entry",
               "api_slot_03", "cd_read_link_entry",
               "api_slot_33", "experimental_slot_33",
+              CR_TAIL_ENTRY, CR_REJECT_ENTRY,
               "experimental_selection")
 ALL_LABELS = tuple(dict.fromkeys(list(LOADER_REQUIRED) + list(EXP_LABELS)))
 
@@ -214,7 +224,8 @@ def _g5_leaf_names(variant: str) -> list:
     names = ["api_table.s", "api_table.o"]
     names += [f"{ov[slot].stem}.o" for slot in sorted(ov)]
     names += [f"cd_base_proto_{variant}.o", f"cd_read_link_{variant}.o",
-              f"ipl_loader_g5_glue_{variant}.o", f"ipl_loader_{variant}.o",
+              f"ipl_loader_g5_glue_{variant}.o",
+              f"ex_cr_family_{variant}.o", f"ipl_loader_{variant}.o",
               "bank0-ipl-loader-g5.cfg",
               f"bank0-{variant}-g5.bin", f"ipl-loader-g5-{variant}.lbl",
               f"ipl-loader-g5-{variant}.map",
@@ -310,9 +321,9 @@ def g5_manifest(sel: int, track: int, mode: str, variant: str, defines: list,
         "mode": mode, "variant": variant, "rom_name": rom_name,
         "rom_sha256": hashlib.sha256(data).hexdigest(), "rom_bytes": IMAGE_BYTES,
         "loader_source": "tests/integration/ipl_loader_rom.s (unchanged, Issue #670)",
-        "glue_source": "src/ipl_loader_g5_glue.s (Issue #800, XSEL + slot33 wrapper)",
+        "glue_source": "src/ipl_loader_g5_glue.s (Issue #800, XSEL record)",
         "experimental_sources": ["src/cd_base_proto.s", "src/cd_read_link.s",
-                                 "src/ex_dspoff.s (via glue, single source)"],
+                                 "src/ex_cr_family.s (CR-family single source, NEED_CR33)"],
         "defines": list(defines), "symbols": dict(symbols), "labels": dict(link_labels),
         "pinned_cc65": DEPENDENCIES["cc65"]["revision"],
         "pinned_geargrafx": DEPENDENCIES["geargrafx"]["revision"],
@@ -361,7 +372,7 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
         raise ValueError("EXP_SELECTED_TRACK must be 1..99")
     _refuse_unsafe_variant(variant)
     canon_defines, _ = _normalize_defines(defines)  # is_public unused: manifest derives it
-    for src in (PROTO_SOURCE, LINK_SOURCE, GLUE_SOURCE):
+    for src in (PROTO_SOURCE, LINK_SOURCE, GLUE_SOURCE, CR_FAMILY_SOURCE):
         if not src.is_file():
             raise ValueError(f"experimental source missing: {src}")
     original = Path(original_path).read_bytes()
@@ -405,7 +416,8 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
     objects = assemble_api_objects(output, mode)
     exp_defs = _exp_defines(sel, track)
     for src, extra in ((PROTO_SOURCE, exp_defs), (LINK_SOURCE, []),
-                       (GLUE_SOURCE, exp_defs)):
+                       (GLUE_SOURCE, exp_defs),
+                       (CR_FAMILY_SOURCE, ["-D", "NEED_CR33"])):
         obj = output / f"{src.stem}_{variant}.o"
         subprocess.run([ca65, str(src), *extra, "-o", str(obj), *g5_debug_flags],
                        check=True)
@@ -437,6 +449,8 @@ def build_ipl_loader_g5_rom(original_path: Path, output: Path, sel: int,
         symbols["cd_base_proto_entry"])
     patched = _redirect_slot33_to_body(
         patched, symbols["api_slot_33"], symbols["experimental_slot_33"])
+    _check_cr_common_in_boot(bytes(patched), symbols[CR_TAIL_ENTRY],
+                             symbols[CR_REJECT_ENTRY])
     patched = _redirect_slot03_to_link(
         patched, symbols["api_slot_03"], symbols["cd_read_link_entry"])
     slot02_addr = symbols["api_slot_02"]
