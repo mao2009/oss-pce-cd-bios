@@ -12,8 +12,12 @@ Scope (#862 = L5 + ownership; #861 owns the L4 desync RED run):
     (arithmetic, SOURCE_CONFIRMED);
   * INFO / pre-check / BODY sequencing with last-sector-wins at IPLJMP;
   * loader-ownership-period decision: the loader owns BUF during staging, so
-    the shadow is INVALID across any staging cycle (machine-checkable via
-    shadow_valid() and sync_caller_ok() below);
+    a staging overwrite or a reset/warm handoff with UNKNOWN contents ends
+    the seed lineage (machine-checkable via shadow_valid() below). Sync
+    state at entry is a separate judge (sync_caller_ok() below): a normal
+    sync family publish MAINTAINS sync (base cr_tail_publish writes the same
+    A to $2502 and a:$0002 with the marker preserved), so it is NOT a
+    shadow_valid() event;
   * marker-$A5-alone-is-not-proof (gate necessity vs sync sufficiency);
   * mitigation comparison lives in docs/862-loader-ownership-record.md; this
     file pins the code facts it rests on, including the forbidden absences
@@ -46,9 +50,21 @@ SEEDED_MARKER = 0xA5
 WORK_RAM_BANK = 0xF8  # MPR1 value mapping $2000-$3FFF to work RAM
 
 # ---- Ownership/lifetime decision record (machine-checkable) ----
+# Two separate judges (review 6096579240 B-1):
+#   * shadow_valid() tracks seed-ownership lifetime: whether the seeded
+#     $2502/$2503 cells can still be the caller seed lineage. Destroyed only
+#     by a staging overwrite (staging_cycle) or a reset/warm handoff with
+#     UNKNOWN contents (reset_or_warm_handoff). A normal sync family publish
+#     MAINTAINS the lineage: base src/ex_cr_family.s cr_tail_publish writes
+#     the same A to $2502 and a:$0002 with the marker preserved, so a synced
+#     caller stays synced with no re-seed between consecutive calls.
+#     Passing "family_publish" here is a conflation and fails closed.
+#   * sync_caller_ok() tracks sync state at entry: marker == $A5 AND shadow
+#     == real CR AND MPR1 == $F8. Value-match alone never proves caller
+#     intent or past safety (staging coincidence, desync-publish equality).
 OWNER_STAGING = "loader"       # owns BUF $2200-$29FF during staging
 OWNER_SHADOW_SYNC = "caller"   # owns $2502 image only inside a synced call window
-INVALIDATING_EVENTS = ("staging_cycle", "family_publish", "reset_or_warm_handoff")
+INVALIDATING_EVENTS = ("staging_cycle", "reset_or_warm_handoff")
 # Validity: a seeding store makes the shadow VALID; any invalidating event
 # makes it INVALID. There is no other transition (no auto-seed, no timeout).
 VALID = "VALID"
@@ -56,10 +72,12 @@ INVALID = "INVALID"
 
 
 def shadow_valid(state, event):
-    """Ownership-lifetime judge for the $2502/$2503 cells.
+    """Seed-ownership lifetime judge for the $2502/$2503 cells.
 
     state: VALID or INVALID. event: "seed" | one of INVALIDATING_EVENTS.
-    Unknown events fail closed (ValueError), never guess VALID.
+    "family_publish" is NOT a lifetime event (a normal sync publish
+    maintains sync; see family_ok_publish): it fails closed (ValueError),
+    never guess. Unknown events fail closed (ValueError), never guess VALID.
     """
     if event == "seed":
         return VALID
@@ -68,12 +86,36 @@ def shadow_valid(state, event):
     raise ValueError("unknown lifetime event: %r" % (event,))
 
 
+def family_ok_publish(shadow, marker, real_cr, mpr1, op):
+    """Model of the base ok-path tail (src/ex_cr_family.s cr_tail_publish).
+
+    The tail writes the same masked A to $2502 and a:$0002, preserves $2503,
+    and restores MPRs. op selects the head mask (SOURCE_CONFIRMED):
+    "dspoff" AND #$3F, "irqon" ORA #$08, "rcoff" AND #$FB.
+    Returns (new_shadow, marker, new_real, mpr1). No new caller constraints;
+    whether the published value is the caller true intent depends on entry
+    sync (sync_caller_ok at entry), which later value-match cannot prove.
+    """
+    if op == "dspoff":
+        new = shadow & 0x3F
+    elif op == "irqon":
+        new = shadow | 0x08
+    elif op == "rcoff":
+        new = shadow & 0xFB
+    else:
+        raise ValueError("unknown family op: %r" % (op,))
+    return (new, marker, new, mpr1)
+
+
 def sync_caller_ok(shadow, marker, real_cr, mpr1):
     """Machine-checkable synchronized-caller preconditions for a CR-family call.
 
     ALL must hold: marker == $A5 (gate necessity), shadow == real CR at entry
     (sync sufficiency), MPR1 == $F8 (work-RAM bank so $2502 is the owned cell).
-    Returns True only when the ok path would publish the caller's true intent.
+    Returns True only when the ok path would publish the caller true intent.
+    A normal sync publish (family_ok_publish from a sync entry) maintains
+    this predicate; post-publish equality after a desync entry, or a
+    coincidental staging-byte match, never retroactively proves intent.
     """
     return marker == SEEDED_MARKER and shadow == real_cr and mpr1 == WORK_RAM_BANK
 
@@ -263,25 +305,139 @@ class OwnershipLifetimeTests(unittest.TestCase):
     def test_staging_cycle_invalidates(self):
         # Loader-ownership-period: any staging cycle (fill + transfers)
         # overwrites the cells, so a previously seeded shadow is INVALID.
+        # A normal sync family publish is NOT staging and does NOT
+        # invalidate (review 6096579240 B-1; see FamilyPublishSyncTests).
         self.assertEqual(shadow_valid(VALID, "staging_cycle"), INVALID)
 
-    def test_family_publish_and_reset_invalidate(self):
-        self.assertEqual(shadow_valid(VALID, "family_publish"), INVALID)
-        self.assertEqual(shadow_valid(VALID, "reset_or_warm_handoff"), INVALID)
+    def test_reset_or_warm_handoff_invalidates_unknown(self):
+        # Reset/warm contents are UNKNOWN: fail closed, re-seed required.
+        self.assertEqual(shadow_valid(VALID, "reset_or_warm_handoff"),
+                         INVALID)
+
+    def test_family_publish_is_not_a_lifetime_event(self):
+        # Conflating a normal sync publish with staging destruction
+        # contradicts base cr_tail_publish (same A to $2502 and $0002,
+        # marker preserved): fail closed instead of invalidating.
+        with self.assertRaises(ValueError):
+            shadow_valid(VALID, "family_publish")
 
     def test_seed_after_staging_restores_validity(self):
         self.assertEqual(shadow_valid(shadow_valid(VALID, "staging_cycle"),
                                       "seed"), VALID)
 
+    def test_seed_after_reset_restores_validity(self):
+        self.assertEqual(shadow_valid(
+            shadow_valid(VALID, "reset_or_warm_handoff"), "seed"), VALID)
+
     def test_unknown_event_fails_closed(self):
-        with self.assertRaises(ValueError):
-            shadow_valid(VALID, "timeout")
-        with self.assertRaises(ValueError):
-            shadow_valid(VALID, "")
+        for bad in ("timeout", "", "family_publish", "external_write",
+                    "desync_publish"):
+            with self.assertRaises(ValueError, msg=bad):
+                shadow_valid(VALID, bad)
 
     def test_owners_are_explicit(self):
         self.assertEqual(OWNER_STAGING, "loader")
         self.assertEqual(OWNER_SHADOW_SYNC, "caller")
+
+
+class FamilyPublishSyncTests(unittest.TestCase):
+    """Normal publish MAINTAINS sync; value-match alone proves nothing."""
+
+    def test_sync_seed_publish_maintains_sync(self):
+        # Seeded sync entry stays sync after the ok-path tail for every
+        # head mask (marker preserved, both cells get the same masked A).
+        for op, want in (("dspoff", 0x04 & 0x3F), ("irqon", 0x04 | 0x08),
+                         ("rcoff", 0x04 & 0xFB)):
+            self.assertTrue(sync_caller_ok(shadow=0x04, marker=0xA5,
+                                           real_cr=0x04, mpr1=0xF8))
+            new_shadow, marker, new_real, mpr1 = family_ok_publish(
+                0x04, 0xA5, 0x04, 0xF8, op)
+            self.assertEqual((new_shadow, new_real), (want, want))
+            self.assertEqual(marker, 0xA5)
+            self.assertTrue(sync_caller_ok(shadow=new_shadow, marker=marker,
+                                           real_cr=new_real, mpr1=mpr1))
+
+    def test_consecutive_publishes_need_no_reseed(self):
+        # Review 6096579240 B-1 static counter-example, now RED-pinned as the
+        # correct behavior: $2B then $2C with no seed between stays sync.
+        self.assertTrue(sync_caller_ok(shadow=0x04, marker=0xA5, real_cr=0x04,
+                                       mpr1=0xF8))
+        s1, m1, r1, p1 = family_ok_publish(0x04, 0xA5, 0x04, 0xF8, "rcoff")
+        self.assertEqual((s1, r1), (0x00, 0x00))  # 0x04 & ~$04
+        self.assertTrue(sync_caller_ok(shadow=s1, marker=m1, real_cr=r1,
+                                       mpr1=p1))
+        s2, m2, r2, p2 = family_ok_publish(s1, m1, r1, p1, "irqon")
+        self.assertEqual((s2, r2), (0x08, 0x08))  # 0x00 | $08
+        self.assertTrue(sync_caller_ok(shadow=s2, marker=m2, real_cr=r2,
+                                       mpr1=p2))
+
+    def test_no_spurious_reseed_demand_after_sync_publish(self):
+        # After a normal sync publish the caller is still sync AND the seed
+        # lineage is still VALID (no staging/reset happened); demanding a
+        # re-seed here would be spurious. family_publish stays outside
+        # shadow_valid() so the lineage judge cannot even express the demand.
+        lineage = shadow_valid(shadow_valid(INVALID, "seed"),
+                               "staging_cycle")
+        lineage = shadow_valid(lineage, "seed")
+        self.assertEqual(lineage, VALID)
+        s, m, r, p = family_ok_publish(0x04, 0xA5, 0x04, 0xF8, "dspoff")
+        self.assertTrue(sync_caller_ok(shadow=s, marker=m, real_cr=r,
+                                       mpr1=p))
+        self.assertEqual(lineage, VALID)
+        with self.assertRaises(ValueError):
+            shadow_valid(lineage, "family_publish")
+
+    def test_staging_overwrite_destroys_seed_even_on_coincidental_match(self):
+        # A staging sector triple may coincidentally equal a seeded sync
+        # triple, but coincidence never proves caller intent or past safety:
+        # the lineage judge is INVALID regardless of the byte values.
+        info = bytes([0x04]) * 0x0302 + bytes([0x04, 0xA5, 0x00])
+        info = info + bytes([0x00] * (SECTOR - len(info)))
+        final = stage_track(FILL, [info])
+        self.assertEqual(final, (0x04, 0xA5, 0x00))
+        self.assertEqual(shadow_valid(VALID, "staging_cycle"), INVALID)
+
+    def test_reset_warm_unknown_requires_reseed(self):
+        # UNKNOWN residual after reset/warm: both judges fail closed.
+        self.assertEqual(shadow_valid(VALID, "reset_or_warm_handoff"),
+                         INVALID)
+        self.assertEqual(shadow_valid(shadow_valid(
+            VALID, "reset_or_warm_handoff"), "seed"), VALID)
+
+    def test_external_direct_write_desyncs(self):
+        # A CR write outside the family changes real CR without the shadow:
+        # entry sync is lost (out of contract); only a re-seed restores it.
+        # By construction nothing can observe the bypass (see §5
+        # reject-if-unsync); the model pins the consequence, not detection.
+        self.assertTrue(sync_caller_ok(shadow=0x04, marker=0xA5, real_cr=0x04,
+                                       mpr1=0xF8))
+        self.assertFalse(sync_caller_ok(shadow=0x04, marker=0xA5,
+                                        real_cr=0x00, mpr1=0xF8))
+
+    def test_desync_publish_post_equality_proves_nothing(self):
+        # Stale shadow + residue $A5 fails at entry; the tail then writes the
+        # stale-derived value to BOTH cells, so post-state value-matches.
+        # That equality never retroactively proves intent or past safety.
+        self.assertFalse(sync_caller_ok(shadow=0xFF, marker=0xA5,
+                                        real_cr=0x00, mpr1=0xF8))
+        s, m, r, p = family_ok_publish(0xFF, 0xA5, 0x00, 0xF8, "dspoff")
+        self.assertEqual(s, r)  # tail always reunifies the two cells
+        self.assertEqual(m, 0xA5)
+        # Post-equality with a desync history must NOT be read as sync
+        # justification: the published value (0xFF & $3F) came from stale.
+        self.assertEqual(s, 0xFF & 0x3F)
+
+    def test_mpr1_bad_breaks_sync_before_and_after_publish(self):
+        # Out-of-contract bank: the $2502 cell addressed is not work RAM.
+        self.assertFalse(sync_caller_ok(shadow=0x04, marker=0xA5, real_cr=0x04,
+                                        mpr1=0x80))
+        s, m, r, p = family_ok_publish(0x04, 0xA5, 0x04, 0x80, "dspoff")
+        self.assertFalse(sync_caller_ok(shadow=s, marker=m, real_cr=r,
+                                       mpr1=p))
+
+    def test_unknown_family_op_fails_closed(self):
+        with self.assertRaises(ValueError):
+            family_ok_publish(0x04, 0xA5, 0x04, 0xF8, "timeout")
 
 
 class MitigationRecordTests(unittest.TestCase):
