@@ -400,5 +400,106 @@ class NegativeTests(unittest.TestCase):
         self.assert_fail("CI-3.05", contract=c)
 
 
+SHARED_HEALTHY = """.setcpu "huc6280"
+.segment "CODE"
+.ifdef VAR_A
+head_a:
+    php
+    sei
+    tma #$01
+    pha
+    lda #$FF
+    tam #$01
+    lda #$05
+    sta a:$0000
+    bra shared_tail
+.endif
+.ifdef VAR_B
+head_b:
+    php
+    sei
+    tma #$01
+    pha
+    lda #$FF
+    tam #$01
+    lda #$05
+    sta a:$0000
+    bra shared_tail
+.endif
+shared_tail:
+    pla
+    tam #$01
+    plp
+    rts
+"""
+SHARED_BASE = {
+    "schema": 1,
+    "rule_groups": ["CI-1", "CI-2", "CI-3"],
+    "production_allowlist": {"status": "UNDECIDED", "approved_by": None, "review_ref": None},
+    "regions": {},
+    "scope": {"bios": ["src/shared.s"], "fixture": [], "fixture_reasons": {}},
+    "files": {
+        "src/shared.s": {"role": "api", "transfers": [], "tam": [
+            {"mask": "0x01", "value": "0xFF"},
+            {"mask": "0x01", "value": "restore", "reason": "caller MPR0"}],
+            "mmio": {"device": "VDC", "addresses": ["0x0000"], "mapping": "window",
+                     "shared_tail": "shared_tail", "variants": ["VAR_A", "VAR_B"]}},
+    },
+}
+
+
+def run_shared(text, contract=None):
+    return run({"src/shared.s": text}, copy.deepcopy(contract or SHARED_BASE))
+
+
+class SharedTailTests(unittest.TestCase):
+    """Shared-tail conditional-unit windows (#843 Wave2): the tail span is scanned head-inclusive and any
+    unresolvable conditional structure inside a claimed span is a FAIL."""
+    def assert_shared_fail(self, text):
+        report = run_shared(text)
+        self.assertIn(C.FAIL, by_rule(report, "CI-3.02"), report.findings)
+
+    def test_healthy_shared_tail_accepted(self):   # unconditional tail, uniform variant sections, no .else
+        report = run_shared(SHARED_HEALTHY)
+        self.assertNotIn(C.FAIL, by_rule(report, "CI-3.02"), report.findings)
+        self.assertIn(C.OK, by_rule(report, "CI-3.02"))
+
+    def test_tail_head_cli_breaks_window(self):   # off-by-one: the first tail instruction must count
+        self.assert_shared_fail(SHARED_HEALTHY.replace("shared_tail:\n    pla\n",
+                                                         "shared_tail:\n    cli\n    pla\n"))
+
+    def test_tail_head_plp_breaks_window(self):
+        self.assert_shared_fail(SHARED_HEALTHY.replace("shared_tail:\n    pla\n",
+                                                         "shared_tail:\n    plp\n    pla\n"))
+
+    def test_tail_head_branch_breaks_window(self):
+        self.assert_shared_fail(SHARED_HEALTHY.replace("shared_tail:\n    pla\n",
+                                                         "shared_tail:\n    bra shared_tail\n    pla\n"))
+
+    def test_tail_head_txs_breaks_window(self):
+        self.assert_shared_fail(SHARED_HEALTHY.replace("shared_tail:\n    pla\n",
+                                                         "shared_tail:\n    txs\n    pla\n"))
+
+    def test_conditional_tail_head_breaker_is_unresolvable(self):   # conditional CLI at the tail head
+        self.assert_shared_fail(SHARED_HEALTHY.replace("shared_tail:\n    pla\n",
+                                                         "shared_tail:\n.ifdef VAR_A\n    cli\n.endif\n"
+                                                         "    pla\n"))
+
+    def test_else_inside_variant_span_is_unresolvable(self):   # .else mid-span, uniform ifs otherwise
+        self.assert_shared_fail(SHARED_HEALTHY.replace("    sta a:$0000\n    bra shared_tail\n.endif\n"
+                                                         ".ifdef VAR_B",
+                                                         "    sta a:$0000\n.else\n    nop\n    bra shared_tail\n"
+                                                         ".endif\n.ifdef VAR_B"))
+
+    def test_nested_ifdef_inside_variant_span_is_unresolvable(self):   # span instruction outside VAR_A
+        self.assert_shared_fail(SHARED_HEALTHY.replace("head_a:\n    php\n    sei\n",
+                                                         "head_a:\n    php\n    sei\n.ifdef EXTRA\n    nop\n"
+                                                         ".endif\n"))
+
+    def test_nested_conditional_sei_is_omitted(self):   # the only SEI sits under an extra .ifdef: no same-section SEI
+        self.assert_shared_fail(SHARED_HEALTHY.replace("head_a:\n    php\n    sei\n",
+                                                         "head_a:\n    php\n.ifdef EXTRA\n    sei\n.endif\n"))
+
+
 if __name__ == "__main__":
     unittest.main()

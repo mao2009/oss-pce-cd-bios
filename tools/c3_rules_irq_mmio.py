@@ -205,8 +205,11 @@ def _shared_tail_windows(path, source, mmio, report):
     straight-line run ends at the single restoring TAM #$01. Every page-0 access must lie inside one variant
     span or the tail span. Anything else (missing SEI, CLI / PLP / TXS or another MPR0 TAM inside a span, a
     branch / call / return / label inside a span, an access outside every span, a missing variant or an
-    undeclared section window) is a FAIL, never a skip. Returns the covered [(start, end)] line spans, or None
-    when the declaration itself is unusable.
+    undeclared section window) is a FAIL, never a skip. The tail span is scanned head-inclusive (its first
+    instruction counts), and any unresolvable conditional structure is a FAIL: a conditional instruction or a
+    .else / .elseif branch inside a claimed span, or span instructions outside the declared variant section
+    (each build would take a different path through the window). Returns the covered [(start, end)] line
+    spans, or None when the declaration itself is unusable.
     """
     tail = mmio.get("shared_tail")
     variants = mmio.get("variants", [])
@@ -228,8 +231,30 @@ def _shared_tail_windows(path, source, mmio, report):
                    f"after the tail label, found {len(restore)}")
         return None
     j = restore[0]
-    if ins[j].ifs:
-        report.add("CI-3.02", FAIL, where(ins[j]), "the shared-tail restoring TAM is inside a conditional block")
+    tail_idx = next(k for k in range(len(ins)) if ins[k].number >= tail_no)
+    else_lines = [ln for ln in source.lines if ln.directive in (".else", ".elseif")]
+    tail_ok = True
+    tail_cond = next((x for x in ins[tail_idx:j + 1] if x.conditional or x.ifs), None)
+    if tail_cond is not None:
+        report.add("CI-3.02", FAIL, where(tail_cond), f"shared tail {tail!r} has an unresolvable conditional "
+                   "structure: an instruction of the tail span sits inside a conditional block, so the tail "
+                   "assembles differently per build (the tail must be unconditional)")
+        tail_ok = False
+    tail_else = next((ln for ln in else_lines if ins[tail_idx].number <= ln.number <= ins[j].number), None)
+    if tail_else is not None:
+        report.add("CI-3.02", FAIL, where(tail_else), f"shared tail {tail!r} has an unresolvable conditional "
+                   "structure: a .else/.elseif branch sits inside the tail span, so each build takes a "
+                   "different path through the window")
+        tail_ok = False
+    tail_break = next((x for x in ins[tail_idx:j] if x.mnemonic in WINDOW_BREAKERS or
+                       (x.mnemonic == "tam" and ((_op(source, x).value or 0x01) & 0x01)) or
+                       x.mnemonic == "txs"), None)
+    immediate_close = ins[j - 1].mnemonic == "lda" and _op(source, ins[j - 1]).mode == "immediate"
+    if tail_break is not None or _labels_between(source, ins[tail_idx].number, ins[j].number) \
+            or immediate_close:
+        report.add("CI-3.02", FAIL, where(tail_break or ins[j]), f"shared tail {tail!r} is not one "
+                   "straight-line run up to its restoring TAM")
+        tail_ok = False
     sets = [i for i in range(len(ins)) if _is_set_ff(source, ins, i) and ins[i].number < tail_no]
     by_variant = {}
     for i in sets:
@@ -268,15 +293,19 @@ def _shared_tail_windows(path, source, mmio, report):
                            "straight-line run up to its closing BRA (label, branch, call, return, CLI / PLP / TXS "
                            "or another MPR0 TAM inside)")
                 continue
-            tail_idx = next(k for k in range(len(ins)) if ins[k].number >= tail_no)
-            tail_break = next((x for x in ins[tail_idx + 1:j] if x.mnemonic in WINDOW_BREAKERS or
-                               (x.mnemonic == "tam" and ((_op(source, x).value or 0x01) & 0x01)) or
-                               x.mnemonic == "txs"), None)
-            immediate_close = ins[j - 1].mnemonic == "lda" and _op(source, ins[j - 1]).mode == "immediate"
-            if tail_break is not None or _labels_between(source, ins[tail_idx].number, ins[j].number) \
-                    or immediate_close:
-                report.add("CI-3.02", FAIL, where(tail_break or ins[j]), f"shared tail {tail!r} is not one "
-                           "straight-line run up to its restoring TAM")
+            span_ifs_bad = next((x for x in ins[s:b + 1] if x.ifs != ins[i].ifs), None)
+            if span_ifs_bad is not None:
+                report.add("CI-3.02", FAIL, where(span_ifs_bad), f"variant {variant!r} window has an unresolvable "
+                           "conditional structure: every instruction from SEI to the closing BRA must sit in the "
+                           "declared variant section")
+                continue
+            span_else = next((ln for ln in else_lines if ins[s].number <= ln.number <= ins[b].number), None)
+            if span_else is not None:
+                report.add("CI-3.02", FAIL, where(span_else), f"variant {variant!r} window has an unresolvable "
+                           "conditional structure: a .else/.elseif branch sits inside the window span, so each "
+                           "build takes a different path through the window")
+                continue
+            if not tail_ok:
                 continue
             spans += [(ins[s].number, ins[b].number), (ins[tail_idx].number, ins[j].number)]
     return spans
