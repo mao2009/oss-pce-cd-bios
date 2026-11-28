@@ -73,6 +73,7 @@ INTEGRATION_SHARDS = {
         "test_irq_366_entry_execbp",
     ],
     "rc-3": [
+        "test_862_loader_l5",
         "test_bm_delete_blocker",
         "test_g5_expg_843",
         "test_g5_rcroff_2b",
