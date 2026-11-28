@@ -281,6 +281,91 @@ class BmDeleteStructureGateTest(unittest.TestCase):
                 self.assertEqual(outcome, bj.CORRUPTED)
                 self.assertEqual(out, self.EMPTY)
 
+    def test_mutable_scalars_are_corrupted_empty(self):
+        """Wave1 allowlist: formatted/capacity/end holding list/dict/bytearray are un-snapshotable."""
+        base = bj._snapshot(_image([(N_A, b"a")]))
+        cases = [
+            ("formatted", [True]),
+            ("formatted", {"formatted": True}),
+            ("formatted", bytearray(b"\x01")),
+            ("capacity", [2048]),
+            ("capacity", {"capacity": 2048}),
+            ("capacity", bytearray(b"\x00\x08")),
+            ("end", [19]),
+            ("end", {"end": 19}),
+            ("end", bytearray(b"\x13")),
+        ]
+        self.assertEqual(len(cases), 9)
+        for key, bad_scalar in cases:
+            with self.subTest(scalar=key, kind=type(bad_scalar).__name__):
+                broken = dict(base, **{key: bad_scalar})
+                outcome, out = bj.judge(broken, N_A)
+                self.assertEqual(outcome, bj.CORRUPTED)
+                self.assertEqual(out, self.EMPTY)
+
+    def test_mutable_scalar_outputs_are_frozen_and_fresh(self):
+        import copy
+        base = bj._snapshot(_image([(N_A, b"a")]))
+        mutables = [
+            dict(base, formatted=[True]),
+            dict(base, capacity={"capacity": 2048}),
+            dict(base, end=bytearray(b"\x13")),
+        ]
+        for broken in mutables:
+            with self.subTest(broken=repr(broken)[:60]):
+                frozen = copy.deepcopy(broken)
+                outcome, out = bj.judge(broken, N_A)
+                self.assertEqual(outcome, bj.CORRUPTED)
+                self.assertEqual(out, self.EMPTY)
+                # Output mutation must not affect the input (deepcopy-frozen).
+                out["entries"].append({"name": N_A, "data": b"x"})
+                out["capacity"] = 9999
+                self.assertEqual(broken, frozen)
+                # Repeated returns are equal but never shared.
+                _, first = bj.judge(broken, N_A)
+                _, second = bj.judge(broken, N_A)
+                self.assertEqual(first, second)
+                self.assertIsNot(first, second)
+
+    def test_mutable_scalar_precedence_over_refused(self):
+        base = bj._snapshot(_image([(N_A, b"a")]))
+        broken_scalars = [
+            dict(base, formatted=[True]),
+            dict(base, capacity={"capacity": 2048}),
+            dict(base, end=bytearray(b"\x13")),
+        ]
+        for broken in broken_scalars:
+            for bad_name in (b"", b"short", "FILE_A", None, 1234):
+                with self.subTest(bad_name=repr(bad_name)[:20]):
+                    outcome, out = bj.judge(broken, bad_name)
+                    self.assertEqual(outcome, bj.CORRUPTED)
+                    self.assertEqual(out, self.EMPTY)
+
+    def test_mutable_scalars_never_call_mock_delete(self):
+        import copy
+        from unittest import mock as utm
+        base = bj._snapshot(_image([(N_A, b"a")]))
+        abnormal = [
+            dict(base, formatted=[True]),
+            dict(base, formatted={"formatted": True}),
+            dict(base, formatted=bytearray(b"\x01")),
+            dict(base, capacity=[2048]),
+            dict(base, capacity={"capacity": 2048}),
+            dict(base, capacity=bytearray(b"\x00\x08")),
+            dict(base, end=[19]),
+            dict(base, end={"end": 19}),
+            dict(base, end=bytearray(b"\x13")),
+        ]
+        with utm.patch.object(bj, "mock_delete", side_effect=AssertionError("must not call")) as spy:
+            for broken in abnormal:
+                frozen = copy.deepcopy(broken)
+                for name in (N_A, b"short", None):
+                    outcome, out = bj.judge(broken, name)
+                    self.assertEqual(outcome, bj.CORRUPTED)
+                    self.assertEqual(out, self.EMPTY)
+                self.assertEqual(broken, frozen)
+            self.assertEqual(spy.call_count, 0)
+
     def test_T18_scalar_insanity_is_corrupted_snapshot(self):
         base = bj._snapshot(_image([(N_A, b"a")]))
         cases = []

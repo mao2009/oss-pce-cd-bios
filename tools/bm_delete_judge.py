@@ -63,16 +63,26 @@ def _empty_image():
 
 
 def _is_snapshotable(image):
-    """Structure gate: True iff _snapshot(image) cannot fail. Explicit checks only (no try/except).
+    """Structure gate: True iff _snapshot(image) cannot alias or fail. Explicit checks only (no try/except).
 
     Covers isinstance-dict, required keys, entries-is-list, and each entry being a dict
-    with bytes/bytearray name+data. Scalar sanity (formatted/capacity/end types, name length,
-    duplicates, end consistency) is snapshot-safe and left to _clean_errors, which runs before
-    any _snapshot call. The gate never mutates its input and performs no I/O.
+    with bytes/bytearray name+data. Scalar snapshotability: formatted/capacity/end must each
+    be bool/int/str/bytes (immutable, so _snapshot's by-reference scalar copy cannot alias
+    caller-mutable state). list/dict/bytearray/set/tuple/float/None/objects are un-snapshotable
+    and fail the gate even though some would fail _clean_errors without raising. Scalar value
+    sanity (bool-ness, positivity, range, end consistency) is snapshot-safe and left to
+    _clean_errors, which runs before any _snapshot call. The gate never mutates its input
+    and performs no I/O.
     """
     if not isinstance(image, dict):
         return False
     if "entries" not in image or "formatted" not in image or "capacity" not in image or "end" not in image:
+        return False
+    if not isinstance(image["formatted"], (bool, int, str, bytes)):
+        return False
+    if not isinstance(image["capacity"], (bool, int, str, bytes)):
+        return False
+    if not isinstance(image["end"], (bool, int, str, bytes)):
         return False
     if not isinstance(image["entries"], list):
         return False
