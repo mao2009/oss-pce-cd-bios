@@ -267,7 +267,12 @@ def _bind_repo(repo):
     git runs and no file bytes are read here. Anything unusable (not a
     str/PathLike, empty, NUL, undecodable, not an existing directory)
     raises GitError (callers escalate to full L3 with an unknown
-    fingerprint, so reuse is refused).
+    fingerprint, so reuse is refused). Review 6096986826 MAJOR: a spec
+    containing a ``..`` segment is refused lexically (split-parts check
+    BEFORE abspath/normalization and before ANY git call) via the same
+    GitError path, so an ambiguous spec that would resolve elsewhere can
+    never bind git ops to the wrong repo while the map, ledger, and
+    fingerprint use the requested one.
     """
     try:
         given = os.fspath(repo)
@@ -282,6 +287,10 @@ def _bind_repo(repo):
                            f"repo spec is not decodable: {error}") from error
     if not isinstance(given, str) or not given or "\0" in given:
         raise GitError("repo", f"repo spec is not usable: {given!r}")
+    if ".." in Path(given).parts:
+        raise GitError(
+            "repo",
+            f"repo spec contains '..': {given!r} is refused")
     bound = os.path.abspath(given)
     try:
         is_dir = os.path.isdir(bound)

@@ -3450,6 +3450,64 @@ class Review6096688910RelativeRepoBindingTests(unittest.TestCase):
                     SEL._bind_repo(spec)
                 self.assertEqual(caught.exception.kind, "repo")
 
+    def test_bind_repo_refuses_dotdot_before_any_git_call(self):
+        # Review 6096986826 MAJOR: a spec containing a `..` segment is
+        # refused lexically BEFORE abspath/normalization and before ANY
+        # git call, so an ambiguous spec that would resolve elsewhere can
+        # never bind git ops to the wrong repo. A dotted name that is not
+        # exactly `..` ("...", "a..b") still binds normally.
+        parent, outer, _inner = self.make_nested_pair()
+        with self.cwd_at(parent):
+            specs = ["A/../A", "A/sub/../../A", "..",
+                     str(outer / "sub" / ".."), "../" + parent.name]
+            for spec in specs:
+                with self.subTest(spec=spec):
+                    with unittest.mock.patch.object(
+                            subprocess, "run",
+                            side_effect=AssertionError(
+                                "git must not run before .. refusal")):
+                        with self.assertRaises(SEL.GitError) as caught:
+                            SEL._bind_repo(spec)
+                    self.assertEqual(caught.exception.kind, "repo")
+            # No false positives: normal relative/absolute/dot specs and
+            # dotted-but-not-dotdot names still bind without a GitError.
+            self.assertEqual(SEL._bind_repo("A"), str(outer))
+            self.assertEqual(SEL._bind_repo(str(outer)), str(outer))
+            (outer / "...").mkdir(exist_ok=True)
+            (outer / "a..b").mkdir(exist_ok=True)
+            with self.cwd_at(outer):
+                self.assertEqual(SEL._bind_repo("."), str(outer))
+            with self.cwd_at(parent):
+                self.assertEqual(SEL._bind_repo("A/..."), str(outer / "..."))
+                self.assertEqual(SEL._bind_repo("A/a..b"),
+                                 str(outer / "a..b"))
+
+    def test_dotdot_spec_fails_closed_full_l3_no_fetch(self):
+        # The same `..` spec refused pre-read escalates through the normal
+        # GitError path: full L3, unknown identity, reuse refused, and an
+        # explicit --fetch never runs.
+        parent, outer, _inner = self.make_nested_pair()
+        map_path = write_map(outer, self.l1_outer_map())
+        fetch_argvs = []
+        real_run = subprocess.run
+
+        def spy_run(argv, *args, **kwargs):
+            if isinstance(argv, list) and "fetch" in argv:
+                fetch_argvs.append(list(argv))
+            return real_run(argv, *args, **kwargs)
+
+        with self.cwd_at(parent):
+            with unittest.mock.patch.object(subprocess, "run", spy_run):
+                selection, _ = SEL.run_selector(
+                    "A/../A", "vbase", fetch=True, map_path=map_path,
+                    loader=SEL.ProvisionalJsonMapLoader())
+        assert_full_l3(self, selection, "repo")
+        self.assertEqual(selection.fingerprint["inputs_sha256"],
+                         "unknown")
+        self.assertFalse(SEL.evidence_reusable(selection.fingerprint,
+                                               selection.fingerprint))
+        self.assertEqual(fetch_argvs, [])
+
     def test_relative_repo_binds_outer_head_not_inner(self):
         parent, outer, inner = self.make_nested_pair()
         outer_head = git(outer, "rev-parse", "HEAD").strip()
