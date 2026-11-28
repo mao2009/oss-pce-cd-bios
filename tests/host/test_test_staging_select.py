@@ -457,7 +457,7 @@ class ApiTests(unittest.TestCase):
 
 CANONICAL_PIN = "2ab14d08fc9fbdc704da1b1f07c96501850b542e"
 
-# Read-only pin of the Task-A branch HEAD used by
+# Read-only pin of the merged-main Task-A map used by
 # CanonicalDefaultTests.test_cli_end_to_end_with_real_canonical_map.
 # Recorded 2026-11-28 as 3dad5dad (doc-fix-only, schema stable); branch
 # moved to 71ad00ab (doc-only local_media/commercial_media_access wording,
@@ -468,10 +468,23 @@ CANONICAL_PIN = "2ab14d08fc9fbdc704da1b1f07c96501850b542e"
 # 6095863631 A-1+A-2 -- verified read-only: diff e8d51e75..aa03c061
 # touches only tests/host/test_test_staging_map.py, and the
 # tools/test_staging_map.json + spec/api_slots.json blobs are byte-
-# identical). Pin updated here. If the branch moves again this pin fails
-# and a later wave finalises it against the merge (no checkout, no
-# tracked copy, no ./rom).
-REAL_MAP_HEAD_PIN = "f21e7aa3426cc38999b2f019b3d51acb7a4e5c1d"
+# identical), then to f21e7aa3 (HOME/XDG hook isolation, review
+# 6096132357 A-1 -- map/ledger blobs byte-identical, schema stable).
+# FINAL (Wave2): PR #856 merged the Task-A map into main as merge commit
+# 53d9a315, and the Task-A branch ref was deleted on the remote
+# (verified: `git ls-remote origin agent/test-staging-map-v0-20261128`
+# is empty), so the branch ref no longer resolves in fresh (CI) clones
+# and branch-ref resolution skipped there (unlisted SKIP -> aggregate
+# reject). Pin is now the merged-main merge commit itself, resolved as a
+# commit object (present in full clones; CI uses fetch-depth 0). Map blob
+# at this pin is 0106b1260d81ea573363aa2c2621838193ec9e76, byte-identical
+# to the f21e7aa3 branch-tip blob (verified: content diff empty); ledger
+# blob likewise identical; schema stable (v0/schema-1, 81 slots, no name
+# key). No checkout, no tracked copy, no ./rom.
+REAL_MAP_HEAD_PIN = "53d9a3151ced008968ab9f8b51d1e6e2303f9dc2"
+
+# Expected git blob SHA of tools/test_staging_map.json at REAL_MAP_HEAD_PIN.
+REAL_MAP_BLOB_SHA = "0106b1260d81ea573363aa2c2621838193ec9e76"
 
 
 def canonical_tests(host=(), scripts=(), targets=(), static=()):
@@ -1101,25 +1114,32 @@ class CanonicalDefaultTests(unittest.TestCase):
                          "map-missing-or-inconsistent")
 
     def test_cli_end_to_end_with_real_canonical_map(self):
-        # Read-only use of the Task-A branch HEAD (REAL_MAP_HEAD_PIN).
-        # No checkout, no copy into tracked paths, no ./rom. If the branch
-        # moves, this pin fails and a later wave finalises it against the
-        # merge.
-        ref = "origin/agent/test-staging-map-v0-20261128"
+        # Read-only use of the merged-main Task-A map (REAL_MAP_HEAD_PIN,
+        # PR #856 merge commit on main). No checkout, no copy into tracked
+        # paths, no ./rom. Resolved as a commit object (present in full
+        # clones; CI uses fetch-depth 0): the pre-merge Task-A branch ref
+        # was deleted on the remote after #856 merged, so branch-ref
+        # resolution is gone. If the pin object is unavailable (e.g.
+        # shallow clone) the test skips; in CI it runs.
         try:
-            head = subprocess.run(
-                ["git", "rev-parse", ref], cwd=str(ROOT),
-                capture_output=True, text=True,
+            present = subprocess.run(
+                ["git", "cat-file", "-e", REAL_MAP_HEAD_PIN],
+                cwd=str(ROOT), capture_output=True, text=True,
                 timeout=120)
         except (OSError, subprocess.SubprocessError) as error:
-            self.skipTest(f"cannot resolve {ref}: {error}")
-        if head.returncode != 0:
-            self.skipTest(f"Task-A branch ref absent: {head.stderr[-200:]}")
-        self.assertEqual(head.stdout.strip(), REAL_MAP_HEAD_PIN)
+            self.skipTest(f"cannot inspect {REAL_MAP_HEAD_PIN}: {error}")
+        if present.returncode != 0:
+            self.skipTest(
+                f"merged-main map pin absent: {present.stderr[-200:]}")
         blob = subprocess.run(
             ["git", "show", f"{REAL_MAP_HEAD_PIN}:tools/test_staging_map.json"],
             cwd=str(ROOT), capture_output=True, timeout=120)
         self.assertEqual(blob.returncode, 0)
+        digest = subprocess.run(
+            ["git", "hash-object", "--stdin"], cwd=str(ROOT),
+            input=blob.stdout, capture_output=True, timeout=120)
+        self.assertEqual(digest.returncode, 0)
+        self.assertEqual(digest.stdout.decode().strip(), REAL_MAP_BLOB_SHA)
         try:
             repo = make_repo("src/overrides/slot_3F.s")
             # B-3/B-4 repo binding: the default CLI loader reads map +
