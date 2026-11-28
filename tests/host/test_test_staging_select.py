@@ -4,6 +4,7 @@ Static only: no cc65, no Geargrafx core, no private media, no network. Git
 fixtures are synthetic temporary repositories. Every test must RUN (never
 SKIP): a skip is never reported as success here.
 """
+import contextlib
 import copy
 import json
 import os
@@ -3330,6 +3331,357 @@ class Review6096382075HiddenIndexFlagTests(unittest.TestCase):
         selection, _ = self.select_with_rules(repo)
         self.assertEqual(selection.level, "L1")
         self.assertFalse(selection.fallback)
+
+
+# ---------------------------------------------------------------------------
+# Reviews 6096685265 + 6096688910 re-review (PR #857 Wave1): relative repo
+# double-resolution.
+#
+# Pre-fix, _run_git passed BOTH `git -C str(repo)` AND `cwd=str(repo)`: with
+# a relative repo "A" and an independent nested repo "A/A", the relative
+# path applied twice (subprocess chdir into A, then git -C into A again),
+# so every git operation bound the INNER repo while the map, ledger,
+# Makefile, dependencies, fingerprint, and --fetch target referenced the
+# OUTER repo (all exit 0, no GitError). The fix unifies binding to a SINGLE
+# absolute path BEFORE any git use and verifies it against
+# `rev-parse --show-toplevel` inside the same sanitized boundary, failing
+# closed (full L3 + unknown fingerprint + reuse refused) on mismatch.
+# All fixtures are synthetic temp dirs + sentinel bytes only (no ./rom,
+# no real checkouts, no network beyond local bare remotes as fetch targets).
+# ---------------------------------------------------------------------------
+
+
+class Review6096688910RelativeRepoBindingTests(unittest.TestCase):
+    """Relative repo "A" with an independent nested repo "A/A" inside."""
+    OUTER_FILE = "src/overrides/slot_3F.s"
+    INNER_FILE = "src/experimental/inner_feature.s"
+
+    @contextlib.contextmanager
+    def cwd_at(self, path):
+        prev = os.getcwd()
+        os.chdir(path)
+        try:
+            yield path
+        finally:
+            os.chdir(prev)
+
+    def make_nested_pair(self):
+        """Outer repo 'A' with an independent nested repo 'A/A'.
+
+        Both tag vbase (so BASE resolves in BOTH: the tests prove the
+        OUTER diff/HEAD is used, never the inner one), with diverging
+        committed changes: the outer change matches an L1 rule, the inner
+        change matches an L3 rule. The outer .gitignore covers the nested
+        checkout dir so no untracked input masks the binding verdict.
+        """
+        parent = Path(tempfile.mkdtemp(prefix="r6096688910-"))
+        outer = parent / "A"
+        git(parent, "init", "-q", "A")
+        git(outer, "config", "user.email", "test@example.invalid")
+        git(outer, "config", "user.name", "staging-test")
+        (outer / ".gitignore").write_text("A/\n")
+        target = outer / self.OUTER_FILE
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("initial\n")
+        nested = outer / "sub" / "nested.txt"
+        nested.parent.mkdir(parents=True, exist_ok=True)
+        nested.write_text("nested\n")
+        git(outer, "add", "-A")
+        git(outer, "commit", "-qm", "outer baseline")
+        git(outer, "tag", "vbase")
+        write_file(outer, self.OUTER_FILE, "OUTER-CHANGED\n")
+        git(outer, "commit", "-qam", "outer change")
+        inner = outer / "A"
+        git(outer, "init", "-q", "A")
+        git(inner, "config", "user.email", "test@example.invalid")
+        git(inner, "config", "user.name", "staging-test")
+        write_file(inner, "inner.txt", "inner\n")
+        write_file(inner, self.INNER_FILE, "inner initial\n")
+        git(inner, "add", "-A")
+        git(inner, "commit", "-qm", "inner baseline")
+        git(inner, "tag", "vbase")
+        write_file(inner, self.INNER_FILE, "INNER-DIVERGED\n")
+        git(inner, "commit", "-qam", "inner change")
+        return parent, outer, inner
+
+    def l1_outer_map(self):
+        return provisional_map([
+            l1_rule("src/overrides/*.s", reason="outer override"),
+            {"pattern": "src/experimental/*.s", "level": "L3",
+             "commands": [{"make": "check"}],
+             "reason": "inner experimental", "api": ""},
+        ])
+
+    def snapshot_repo(self, repo):
+        """Byte-level snapshot of a repo (gitdir + refs + worktree)."""
+        repo = Path(repo)
+        gitdir = {}
+        for path in sorted((repo / ".git").rglob("*")):
+            if path.is_file():
+                gitdir[str(path.relative_to(repo))] = path.read_bytes()
+        work = {}
+        for path in sorted(repo.rglob("*")):
+            if ".git" in path.parts:
+                continue
+            if path.is_file():
+                work[str(path.relative_to(repo))] = path.read_bytes()
+        return {"gitdir": gitdir,
+                "refs": git(repo, "for-each-ref").strip(),
+                "head": git(repo, "rev-parse", "HEAD").strip(),
+                "work": work}
+
+    def test_bind_repo_unifies_to_single_absolute_path(self):
+        parent, outer, _inner = self.make_nested_pair()
+        with self.cwd_at(parent):
+            self.assertEqual(SEL._bind_repo("A"), os.path.abspath("A"))
+            self.assertEqual(SEL._bind_repo("A"), str(outer))
+        self.assertEqual(SEL._bind_repo(str(outer)), str(outer))
+        self.assertEqual(SEL._bind_repo(outer), str(outer))
+
+    def test_bind_repo_rejects_unusable_specs(self):
+        parent, outer, _inner = self.make_nested_pair()
+        target = parent / "afile.txt"
+        target.write_text("x\n")
+        bad = [str(parent / "NOPE"), str(outer / "nope"), "",
+                "a\0b", None, 123, str(target)]
+        for spec in bad:
+            with self.subTest(spec=spec):
+                with self.assertRaises(SEL.GitError) as caught:
+                    SEL._bind_repo(spec)
+                self.assertEqual(caught.exception.kind, "repo")
+
+    def test_relative_repo_binds_outer_head_not_inner(self):
+        parent, outer, inner = self.make_nested_pair()
+        outer_head = git(outer, "rev-parse", "HEAD").strip()
+        inner_head = git(inner, "rev-parse", "HEAD").strip()
+        self.assertNotEqual(outer_head, inner_head)
+        with self.cwd_at(parent):
+            self.assertEqual(
+                SEL._real_runner("A", "rev-parse", "HEAD").strip(),
+                outer_head)
+
+    def test_relative_repo_collect_changes_binds_outer(self):
+        parent, outer, inner = self.make_nested_pair()
+        outer_head = git(outer, "rev-parse", "HEAD").strip()
+        inner_head = git(inner, "rev-parse", "HEAD").strip()
+        self.assertNotEqual(outer_head, inner_head)
+        with self.cwd_at(parent):
+            changed = SEL.collect_changes("A", "vbase")
+        self.assertEqual(changed.head, outer_head)
+        self.assertEqual(changed.base,
+                         git(outer, "rev-parse", "vbase").strip())
+        self.assertEqual(changed.committed, [("M", self.OUTER_FILE)])
+        self.assertEqual(changed.untracked, [])
+
+    def test_relative_repo_selector_classifies_outer_change(self):
+        parent, outer, inner = self.make_nested_pair()
+        map_path = write_map(outer, self.l1_outer_map())
+        with self.cwd_at(parent):
+            selection, _ = SEL.run_selector(
+                "A", "vbase", map_path=map_path,
+                loader=SEL.ProvisionalJsonMapLoader())
+        # The outer committed change matches the L1 rule; the inner
+        # L3 change must never mix into the reasons or the level.
+        self.assertEqual(selection.level, "L1")
+        self.assertFalse(selection.fallback)
+        self.assertTrue(any(self.OUTER_FILE in reason
+                            for reason in selection.reasons))
+        self.assertFalse(any("inner_feature" in reason
+                             for reason in selection.reasons))
+        self.assertEqual(selection.fingerprint["head"],
+                         git(outer, "rev-parse", "HEAD").strip())
+
+    def test_absolute_repo_unaffected(self):
+        _parent, outer, _inner = self.make_nested_pair()
+        map_path = write_map(outer, self.l1_outer_map())
+        selection, _ = SEL.run_selector(
+            str(outer), "vbase", map_path=map_path,
+            loader=SEL.ProvisionalJsonMapLoader())
+        self.assertEqual(selection.level, "L1")
+        self.assertFalse(selection.fallback)
+
+    def test_dot_repo_from_inside_root(self):
+        _parent, outer, _inner = self.make_nested_pair()
+        map_path = write_map(outer, self.l1_outer_map())
+        with self.cwd_at(outer):
+            selection, _ = SEL.run_selector(
+                ".", "vbase", map_path=map_path,
+                loader=SEL.ProvisionalJsonMapLoader())
+            self.assertEqual(
+                SEL._real_runner(".", "rev-parse", "HEAD").strip(),
+                git(outer, "rev-parse", "HEAD").strip())
+        self.assertEqual(selection.level, "L1")
+        self.assertFalse(selection.fallback)
+
+    def test_nested_non_root_subdir_fails_closed(self):
+        _parent, outer, _inner = self.make_nested_pair()
+        map_path = write_map(outer, self.l1_outer_map())
+        selection, _ = SEL.run_selector(
+            str(outer / "sub"), "vbase", map_path=map_path,
+            loader=SEL.ProvisionalJsonMapLoader())
+        # A subdir is not the worktree root: implicit parent-repo
+        # discovery mixing is refused (full L3, unknown inputs, no reuse).
+        assert_full_l3(self, selection, "repo")
+        self.assertEqual(selection.fingerprint["inputs_sha256"],
+                         "unknown")
+        self.assertFalse(SEL.evidence_reusable(selection.fingerprint,
+                                               selection.fingerprint))
+
+    def test_missing_repo_fails_closed(self):
+        parent, outer, _inner = self.make_nested_pair()
+        map_path = write_map(outer, self.l1_outer_map())
+        with self.cwd_at(parent):
+            with self.assertRaises(SEL.GitError) as caught:
+                SEL.collect_changes("NOPE", "vbase")
+            self.assertEqual(caught.exception.kind, "repo")
+            selection, _ = SEL.run_selector(
+                "NOPE", "vbase", map_path=map_path,
+                loader=SEL.ProvisionalJsonMapLoader())
+        assert_full_l3(self, selection, "repo")
+        self.assertEqual(selection.fingerprint["inputs_sha256"],
+                         "unknown")
+        self.assertFalse(SEL.evidence_reusable(selection.fingerprint,
+                                               selection.fingerprint))
+
+    def test_non_git_dir_fails_closed(self):
+        parent, outer, _inner = self.make_nested_pair()
+        plain = parent / "plain"
+        plain.mkdir()
+        (plain / "note.txt").write_text("not a repo\n")
+        map_path = write_map(outer, self.l1_outer_map())
+        with self.assertRaises(SEL.GitError) as caught:
+            SEL.collect_changes(str(plain), "vbase")
+        self.assertEqual(caught.exception.kind, "repo")
+        selection, _ = SEL.run_selector(
+            str(plain), "vbase", map_path=map_path,
+            loader=SEL.ProvisionalJsonMapLoader())
+        assert_full_l3(self, selection, "repo")
+        self.assertEqual(selection.fingerprint["inputs_sha256"],
+                         "unknown")
+        self.assertFalse(SEL.evidence_reusable(selection.fingerprint,
+                                               selection.fingerprint))
+
+    def test_linked_worktree_keeps_working(self):
+        outer = make_repo(self.OUTER_FILE)
+        sibling = outer.parent / "wt-linked"
+        git(outer, "worktree", "add", str(sibling))
+        try:
+            write_file(sibling, self.OUTER_FILE, "WT-CHANGED\n")
+            git(sibling, "commit", "-qam", "worktree change")
+            wt_head = git(sibling, "rev-parse", "HEAD").strip()
+            self.assertNotEqual(
+                wt_head, git(outer, "rev-parse", "HEAD").strip())
+            map_path = write_map(outer, self.l1_outer_map())
+            selection, _ = SEL.run_selector(
+                str(sibling), "vbase", map_path=map_path,
+                loader=SEL.ProvisionalJsonMapLoader())
+            self.assertEqual(selection.level, "L1")
+            self.assertFalse(selection.fallback)
+            self.assertEqual(
+                SEL._real_runner(str(sibling), "rev-parse",
+                                  "HEAD").strip(), wt_head)
+            # A relative worktree path binds the worktree itself.
+            with self.cwd_at(outer.parent):
+                self.assertEqual(
+                    SEL._real_runner(sibling.name, "rev-parse",
+                                     "HEAD").strip(), wt_head)
+        finally:
+            git(outer, "worktree", "remove", "--force", str(sibling))
+
+    def test_explicit_fetch_updates_only_bound_repo(self):
+        parent, outer, inner = self.make_nested_pair()
+        remote = parent / "r.git"
+        proc = subprocess.run(["git", "init", "-q", "--bare",
+                               str(remote)], capture_output=True,
+                              timeout=120)
+        self.assertEqual(proc.returncode, 0, proc.stderr[-500:])
+        for repo in (outer, inner):
+            git(repo, "remote", "add", "origin", str(remote))
+        git(outer, "push", "-q", "origin", "HEAD:refs/heads/main")
+        git(outer, "branch", "main")
+        git(remote, "symbolic-ref", "HEAD", "refs/heads/main")
+        writer = parent / "writer"
+        git(parent, "clone", "-q", str(remote), str(writer))
+        git(writer, "config", "user.email", "test@example.invalid")
+        git(writer, "config", "user.name", "staging-test")
+        (writer / "payload.txt").write_text("sentinel-payload\n")
+        git(writer, "add", "-A")
+        git(writer, "commit", "-qm", "advance remote")
+        git(writer, "push", "-q", "origin", "HEAD:refs/heads/main")
+        new_sha = git(writer, "rev-parse", "HEAD").strip()
+        before_inner = self.snapshot_repo(inner)
+        self.assertNotIn(".git/FETCH_HEAD", before_inner["gitdir"])
+        fetch_argvs = []
+        real_run = subprocess.run
+
+        def spy_run(argv, *args, **kwargs):
+            if isinstance(argv, list) and "fetch" in argv:
+                fetch_argvs.append(list(argv))
+            return real_run(argv, *args, **kwargs)
+
+        with self.cwd_at(parent):
+            with unittest.mock.patch.object(subprocess, "run", spy_run):
+                SEL.attempt_fetch("A", "main")
+                changed = SEL.collect_changes("A", "main")
+        # The fetch ran against the OUTER repo only: outer FETCH_HEAD
+        # advanced, and the inner repo is byte-identical (no FETCH_HEAD,
+        # refs, index, object, or worktree writes leaked inside).
+        self.assertEqual(git(outer, "rev-parse",
+                             "FETCH_HEAD").strip(), new_sha)
+        self.assertEqual(changed.head,
+                         git(outer, "rev-parse", "HEAD").strip())
+        self.assertEqual(self.snapshot_repo(inner), before_inner)
+        self.assertFalse((inner / ".git" / "FETCH_HEAD").exists())
+        bound_targets = [argv[argv.index("-C") + 1]
+                         for argv in fetch_argvs if "-C" in argv]
+        self.assertTrue(bound_targets)
+        for target in bound_targets:
+            self.assertEqual(target, str(outer))
+
+    def test_fetch_never_runs_after_failed_verification(self):
+        _parent, outer, _inner = self.make_nested_pair()
+        map_path = write_map(outer, self.l1_outer_map())
+        fetch_argvs = []
+        real_run = subprocess.run
+
+        def spy_run(argv, *args, **kwargs):
+            if isinstance(argv, list) and "fetch" in argv:
+                fetch_argvs.append(list(argv))
+            return real_run(argv, *args, **kwargs)
+
+        with unittest.mock.patch.object(subprocess, "run", spy_run):
+            selection, _ = SEL.run_selector(
+                str(outer / "sub"), "vbase", fetch=True,
+                map_path=map_path,
+                loader=SEL.ProvisionalJsonMapLoader())
+        assert_full_l3(self, selection, "repo")
+        self.assertEqual(fetch_argvs, [])
+        self.assertFalse((outer / ".git" / "FETCH_HEAD").exists())
+        self.assertEqual(selection.fingerprint["inputs_sha256"],
+                         "unknown")
+
+    def test_hostile_env_preserved_with_relative_repo(self):
+        parent, outer, inner = self.make_nested_pair()
+        outer_head = git(outer, "rev-parse", "HEAD").strip()
+        self.assertNotEqual(
+            outer_head, git(inner, "rev-parse", "HEAD").strip())
+        hostile = {"GIT_DIR": str(inner / ".git"),
+                   "GIT_WORK_TREE": str(inner),
+                   "GIT_OBJECT_DIRECTORY":
+                       str(inner / ".git" / "objects"),
+                   "GIT_ALTERNATE_OBJECT_DIRECTORIES":
+                       str(inner / ".git" / "objects"),
+                   "GIT_QUARANTINE_PATH":
+                       str(inner / ".git" / "objects"),
+                   "GIT_INDEX_FILE": str(inner / ".git" / "index")}
+        with self.cwd_at(parent):
+            with unittest.mock.patch.dict(os.environ, hostile):
+                self.assertEqual(
+                    SEL._real_runner("A", "rev-parse",
+                                     "HEAD").strip(), outer_head)
+                changed = SEL.collect_changes("A", "vbase")
+        self.assertEqual(changed.head, outer_head)
+        self.assertEqual(changed.committed, [("M", self.OUTER_FILE)])
 
 
 if __name__ == "__main__": unittest.main()

@@ -252,8 +252,113 @@ def _git_env_for_repo():
     return env
 
 
+def _bind_repo(repo):
+    """Resolve ``repo`` to a SINGLE absolute path BEFORE any git use.
+
+    Issue #852, reviews 6096685265 + 6096688910 re-review: pre-fix,
+    _run_git passed BOTH ``git -C str(repo)`` AND ``cwd=str(repo)``, so a
+    relative repo "A" with an independent nested repo "A/A" applied the
+    relative path twice (subprocess chdir into A, then git -C into A
+    again) and every git operation bound the INNER repo while the map,
+    ledger, Makefile, dependencies, fingerprint, and --fetch target
+    referenced the OUTER repo (all exit 0, no GitError). Resolving to one
+    absolute path first makes the handed-to-git binding idempotent
+    (absolute + absolute cannot double-apply). Pure path operation: no
+    git runs and no file bytes are read here. Anything unusable (not a
+    str/PathLike, empty, NUL, undecodable, not an existing directory)
+    raises GitError (callers escalate to full L3 with an unknown
+    fingerprint, so reuse is refused).
+    """
+    try:
+        given = os.fspath(repo)
+    except (TypeError, ValueError) as error:
+        raise GitError("repo",
+                       f"repo spec is not a path: {error}") from error
+    if isinstance(given, bytes):
+        try:
+            given = os.fsdecode(given)
+        except (OSError, ValueError, UnicodeError) as error:
+            raise GitError("repo",
+                           f"repo spec is not decodable: {error}") from error
+    if not isinstance(given, str) or not given or "\0" in given:
+        raise GitError("repo", f"repo spec is not usable: {given!r}")
+    bound = os.path.abspath(given)
+    try:
+        is_dir = os.path.isdir(bound)
+    except (OSError, ValueError) as error:
+        raise GitError(
+            "repo",
+            f"repo {given!r} is not resolvable: {error}") from error
+    if not is_dir:
+        raise GitError(
+            "repo", f"repo {given!r} is not an existing directory")
+    return bound
+
+
+def _verify_repo_root(bound):
+    """Check the bound path IS the actual git worktree root.
+
+    Runs ``git rev-parse --show-toplevel`` through the SAME sanitized
+    boundary (sanitized env, single absolute ``cwd``, no -C, so the check
+    itself can neither double-resolve nor be redirected at another
+    checkout's objects) and requires the reported root to equal the bound
+    path (symlink-insensitive comparison). A requested SUBDIRECTORY of a
+    repo therefore fails closed instead of silently mixing the parent
+    repo's diffs with the requested path's map/ledger/Makefile/pins; a
+    missing repo, a non-git dir, a bare repo, or any abnormal git response
+    fails closed the same way (GitError -> full L3, unknown fingerprint,
+    reuse refused). Linked worktrees keep working: their reported root is
+    the worktree path itself.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"], cwd=bound,
+            capture_output=True, text=False, timeout=120,
+            env=_git_env_for_repo())
+    except (OSError, subprocess.SubprocessError) as error:
+        raise GitError(
+            "repo",
+            f"repo {bound!r} is not verifiable: {error}") from error
+    if proc.returncode != 0:
+        raise GitError(
+            "repo", f"repo {bound!r} is not a git worktree root: "
+            f"{proc.stderr.decode('utf-8', errors='replace').strip()[-500:]}")
+    try:
+        out = proc.stdout.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise GitError(
+            "repo",
+            f"repo {bound!r} gave an abnormal git response: "
+            f"{error}") from error
+    lines = [line for line in out.splitlines() if line.strip()]
+    if len(lines) != 1:
+        raise GitError(
+            "repo",
+            f"repo {bound!r} gave an abnormal git response")
+    actual = os.path.normcase(os.path.realpath(lines[0].strip()))
+    want = os.path.normcase(os.path.realpath(bound))
+    if actual != want:
+        raise GitError(
+            "repo",
+            f"repo {bound!r} is inside git worktree "
+            f"{lines[0].strip()!r}: implicit parent-repo discovery "
+            "is refused fail-closed")
+    return bound
+
+
 def _run_git(repo, *args):
-    """Run one git subcommand bound to ``repo`` (sanitized env, -C + cwd).
+    """Run one git subcommand bound to ``repo`` (sanitized env, one path).
+
+    The repo is unified to a SINGLE absolute path BEFORE any git use
+    (_bind_repo: a relative spec resolves exactly once against the
+    process cwd) and verified against the actual worktree root
+    (_verify_repo_root: ``rev-parse --show-toplevel`` inside the same
+    sanitized boundary, so the check itself cannot be misbound). The same
+    absolute value is then handed to BOTH ``git -C`` and ``cwd``:
+    absolute + absolute is idempotent, so the old relative
+    double-resolution (nested independent repo silently bound instead of
+    the requested one) is gone, while the argv shape (explicit -C) and
+    the env isolation are unchanged.
 
     Covers EVERY git subprocess path: HEAD/BASE/merge-base resolution,
     committed/staged/unstaged diffs, untracked listing, explicit --fetch,
@@ -262,9 +367,11 @@ def _run_git(repo, *args):
     the CompletedProcess for the caller to interpret (regular-file
     checks treat it as non-regular, the runner treats it as git-exit).
     """
+    bound = _bind_repo(repo)
+    _verify_repo_root(bound)
     try:
         return subprocess.run(
-            ["git", "-C", str(repo), *args], cwd=str(repo),
+            ["git", "-C", bound, *args], cwd=bound,
             capture_output=True, text=False, timeout=120,
             env=_git_env_for_repo())
     except (OSError, subprocess.SubprocessError) as error:
@@ -280,12 +387,13 @@ def _real_runner(repo, *args):
     # failure raises GitError (callers escalate to L3) instead of
     # misidentifying the path. Exit text is decoded lossily for the
     # message only (never parsed as a path).
-    # Repo binding: delegated to _run_git (explicit -C + cwd AND a
-    # sanitized env), so repo/object-db/history/config overrides in the
-    # caller env (gitdir/worktree/index, object/alternate/quarantine
-    # dirs, graft/shallow/replace overlays, config-file/-c redirects,
-    # ceiling/discovery/namespace/prefix) can never redirect this call
-    # at another checkout's objects.
+    # Repo binding: delegated to _run_git (one absolute path handed to
+    # explicit -C + cwd AND a sanitized env), so repo/object-db/history/
+    # config overrides in the caller env (gitdir/worktree/index, object/
+    # alternate/quarantine dirs, graft/shallow/replace overlays,
+    # config-file/-c redirects, ceiling/discovery/namespace/prefix) can
+    # never redirect this call at another checkout's objects, and a
+    # relative spec can never double-resolve into a nested repo.
     proc = _run_git(repo, *args)
     if proc.returncode != 0:
         raise GitError("git-exit",
@@ -1196,9 +1304,10 @@ def _with_required_env(command):
 # Selector identity stamped into every fingerprint. Bumped whenever the
 # selection semantics change (L3 set, alias rules, api-level handling,
 # exact-vs-glob matching, first-match-before-API narrowing, map-repo
-# binding, toolchain execution identity, API-union, untracked-prefix
+# binding, git-repo binding (single-absolute-path + worktree-root
+# verification), toolchain execution identity, API-union, untracked-prefix
 # parsing). Results from an older selector never reuse against a newer one.
-SELECTOR_ID = "test_staging_select/l3full-maprepo-toolchain-untracked-nomix-v4"
+SELECTOR_ID = "test_staging_select/l3full-maprepo-toolchain-untracked-nomix-v5"
 
 # Top-level input paths that must never be content-hashed (private
 # reference inputs, not fixtures). A change touching them still classifies
