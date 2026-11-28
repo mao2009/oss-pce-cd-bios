@@ -366,6 +366,204 @@ class BmDeleteStructureGateTest(unittest.TestCase):
                 self.assertEqual(broken, frozen)
             self.assertEqual(spy.call_count, 0)
 
+    def test_subclass_scalars_are_corrupted_empty(self):
+        """Wave2 strict gate: int/str/bytes subclasses w/ mutable attrs on all 3 fields fail closed."""
+        class MyInt(int):
+            pass
+        class MyStr(str):
+            pass
+        class MyBytes(bytes):
+            pass
+        base = bj._snapshot(_image([(N_A, b"a")]))
+
+        def with_attr(cls, v):
+            obj = cls(v)
+            obj.extra = [1, 2, 3]
+            return obj
+        cases = [
+            ("formatted", with_attr(MyInt, 1)),
+            ("formatted", with_attr(MyStr, "yes")),
+            ("formatted", with_attr(MyBytes, b"yes")),
+            ("capacity", with_attr(MyInt, 2048)),
+            ("capacity", with_attr(MyStr, "2048")),
+            ("capacity", with_attr(MyBytes, b"2048")),
+            ("end", with_attr(MyInt, 19)),
+            ("end", with_attr(MyStr, "19")),
+            ("end", with_attr(MyBytes, b"19")),
+        ]
+        self.assertEqual(len(cases), 9)
+        for key, bad in cases:
+            with self.subTest(scalar=key, kind=type(bad).__name__):
+                broken = dict(base, **{key: bad})
+                outcome, out = bj.judge(broken, N_A)
+                self.assertEqual(outcome, bj.CORRUPTED)
+                self.assertEqual(out, self.EMPTY)
+
+    def test_subclass_containers_are_corrupted_empty(self):
+        """Wave2 strict gate: dict/list/entry/bytes-subclass containers fail closed (no aliasing)."""
+        class MyDict(dict):
+            pass
+        class MyList(list):
+            pass
+        class MyBytes(bytes):
+            pass
+        class MyBA(bytearray):
+            pass
+        base = bj._snapshot(_image([(N_A, b"a")]))
+        dimg = MyDict(base)
+        lentries = dict(base, entries=MyList(base["entries"]))
+        dentry = dict(base, entries=[MyDict(base["entries"][0])])
+        bname = dict(base, entries=[{"name": MyBytes(N_A), "data": b"a"}])
+        bdata = dict(base, entries=[{"name": N_A, "data": MyBytes(b"a")}])
+        baname = dict(base, entries=[{"name": MyBA(N_A), "data": b"a"}])
+        cases = [dimg, lentries, dentry, bname, bdata, baname]
+        self.assertEqual(len(cases), 6)
+        for broken in cases:
+            with self.subTest(broken=repr(broken)[:60]):
+                outcome, out = bj.judge(broken, N_A)
+                self.assertEqual(outcome, bj.CORRUPTED)
+                self.assertEqual(out, self.EMPTY)
+
+    def test_exact_builtin_gate_acceptance(self):
+        """Exact bool/int/str/bytes pass the gate; subclasses and disallowed builtins do not."""
+        class MyInt(int):
+            pass
+        base = bj._snapshot(_image([(N_A, b"a")]))
+        self.assertTrue(bj._is_snapshotable(base))
+        for broken in (dict(base, formatted=1), dict(base, formatted="yes"),
+                        dict(base, capacity="2048"), dict(base, end="19")):
+            with self.subTest(broken=(broken["formatted"], broken["capacity"], broken["end"])):
+                self.assertTrue(bj._is_snapshotable(broken))
+        for bad in ([True], {"a": 1}, bytearray(b"\x01"), {1, 2}, (1,), 1.5, None):
+            with self.subTest(bad=type(bad).__name__):
+                self.assertFalse(bj._is_snapshotable(dict(base, formatted=bad)))
+                self.assertFalse(bj._is_snapshotable(dict(base, capacity=bad)))
+                self.assertFalse(bj._is_snapshotable(dict(base, end=bad)))
+        self.assertFalse(bj._is_snapshotable(dict(base, formatted=MyInt(1))))
+        self.assertFalse(bj._is_snapshotable(dict(base, capacity=MyInt(2048))))
+        self.assertFalse(bj._is_snapshotable(dict(base, end=MyInt(19))))
+
+    def test_evil_special_methods_never_raise(self):
+        """Subclass special-method hole: EvilInt/EvilStr as any scalar -> CORRUPTED+EMPTY, no raise."""
+        class EvilInt(int):
+            def __eq__(self, other):
+                raise RuntimeError("EvilInt __eq__")
+            def __ne__(self, other):
+                raise RuntimeError("EvilInt __ne__")
+            def __lt__(self, other):
+                raise RuntimeError("EvilInt __lt__")
+            def __le__(self, other):
+                raise RuntimeError("EvilInt __le__")
+            def __gt__(self, other):
+                raise RuntimeError("EvilInt __gt__")
+            def __ge__(self, other):
+                raise RuntimeError("EvilInt __ge__")
+            __hash__ = int.__hash__
+        class EvilStr(str):
+            def __eq__(self, other):
+                raise RuntimeError("EvilStr __eq__")
+            def __ne__(self, other):
+                raise RuntimeError("EvilStr __ne__")
+            def __lt__(self, other):
+                raise RuntimeError("EvilStr __lt__")
+            def __le__(self, other):
+                raise RuntimeError("EvilStr __le__")
+            def __gt__(self, other):
+                raise RuntimeError("EvilStr __gt__")
+            def __ge__(self, other):
+                raise RuntimeError("EvilStr __ge__")
+            def __len__(self):
+                raise RuntimeError("EvilStr __len__")
+            __hash__ = str.__hash__
+        base = bj._snapshot(_image([(N_A, b"a")]))
+        evils = [EvilInt(1), EvilInt(2048), EvilInt(19),
+                 EvilStr("yes"), EvilStr("2048"), EvilStr("19")]
+        fields = ["formatted", "capacity", "end"]
+        self.assertEqual(len(evils), 6)
+        for field in fields:
+            for idx, evil in enumerate(evils):
+                with self.subTest(field=field, evil="%s#%d" % (type(evil).__name__, idx)):
+                    broken = dict(base, **{field: evil})
+                    for name in (N_A, b"short", None):
+                        outcome, out = bj.judge(broken, name)  # must not raise
+                        self.assertEqual(outcome, bj.CORRUPTED)
+                        self.assertEqual(out, self.EMPTY)
+                    self.assertIs(broken[field], evil)
+
+    def test_subclass_outputs_frozen_fresh_cross_return(self):
+        import copy
+        class MyInt(int):
+            pass
+        class MyStr(str):
+            pass
+        class MyBytes(bytes):
+            pass
+        base = bj._snapshot(_image([(N_A, b"a")]))
+        brokens = [
+            dict(base, formatted=MyInt(1)),
+            dict(base, capacity=MyStr("2048")),
+            dict(base, end=MyBytes(b"19")),
+        ]
+        for broken in brokens:
+            with self.subTest(broken=repr(broken)[:60]):
+                frozen = copy.deepcopy(broken)
+                outcome, out = bj.judge(broken, N_A)
+                self.assertEqual(outcome, bj.CORRUPTED)
+                self.assertEqual(out, self.EMPTY)
+                out["entries"].append({"name": N_A, "data": b"x"})
+                out["capacity"] = 9999
+                self.assertEqual(broken, frozen)
+                _, first = bj.judge(broken, N_A)
+                _, second = bj.judge(broken, N_A)
+                self.assertEqual(first, second)
+                self.assertIsNot(first, second)
+
+    def test_subclass_precedence_over_refused_and_spy(self):
+        import copy
+        from unittest import mock as utm
+        class MyInt(int):
+            pass
+        class EvilInt(int):
+            def __eq__(self, other):
+                raise RuntimeError("EvilInt __eq__")
+            def __ne__(self, other):
+                raise RuntimeError("EvilInt __ne__")
+            def __lt__(self, other):
+                raise RuntimeError("EvilInt __lt__")
+            def __le__(self, other):
+                raise RuntimeError("EvilInt __le__")
+            def __gt__(self, other):
+                raise RuntimeError("EvilInt __gt__")
+            def __ge__(self, other):
+                raise RuntimeError("EvilInt __ge__")
+            __hash__ = int.__hash__
+        base = bj._snapshot(_image([(N_A, b"a")]))
+        evil = EvilInt(2048)
+        brokens = [
+            dict(base, formatted=MyInt(1)),
+            dict(base, capacity=MyInt(2048)),
+            dict(base, end=MyInt(19)),
+            dict(base, capacity=evil),
+        ]
+        with utm.patch.object(bj, "mock_delete", side_effect=AssertionError("must not call")) as spy:
+            for broken in brokens:
+                if any(type(v).__name__ == "EvilInt" for v in broken.values()):
+                    marker = broken["capacity"]
+                else:
+                    marker = None
+                frozen = None
+                if marker is None:
+                    frozen = copy.deepcopy(broken)
+                for bad_name in (b"", b"short", "FILE_A", None, 1234):
+                    outcome, out = bj.judge(broken, bad_name)  # must not raise
+                    self.assertEqual(outcome, bj.CORRUPTED)
+                    self.assertEqual(out, self.EMPTY)
+                if marker is not None:
+                    self.assertIs(broken["capacity"], evil)
+                else:
+                    self.assertEqual(broken, frozen)
+            self.assertEqual(spy.call_count, 0)
+
     def test_T18_scalar_insanity_is_corrupted_snapshot(self):
         base = bj._snapshot(_image([(N_A, b"a")]))
         cases = []

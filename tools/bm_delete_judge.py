@@ -65,35 +65,39 @@ def _empty_image():
 def _is_snapshotable(image):
     """Structure gate: True iff _snapshot(image) cannot alias or fail. Explicit checks only (no try/except).
 
-    Covers isinstance-dict, required keys, entries-is-list, and each entry being a dict
-    with bytes/bytearray name+data. Scalar snapshotability: formatted/capacity/end must each
-    be bool/int/str/bytes (immutable, so _snapshot's by-reference scalar copy cannot alias
-    caller-mutable state). list/dict/bytearray/set/tuple/float/None/objects are un-snapshotable
-    and fail the gate even though some would fail _clean_errors without raising. Scalar value
-    sanity (bool-ness, positivity, range, end consistency) is snapshot-safe and left to
-    _clean_errors, which runs before any _snapshot call. The gate never mutates its input
-    and performs no I/O.
+    Covers exact-dict image, required keys, exact-list entries, and each entry being an exact
+    dict with exact bytes/bytearray name+data. Scalar snapshotability: formatted/capacity/end
+    must each satisfy type(value) in (bool, int, str, bytes) (exact immutable, so _snapshot's
+    by-reference scalar copy cannot alias caller-mutable subclass state). Subclasses
+    (int/str/bytes/dict/list/bytearray subclasses, incl. mutable attrs or raising
+    special methods) are un-snapshotable and fail closed even though some would fail
+    _clean_errors without raising. Exact-type checks run before any key access/iteration
+    on that level, so subclass special methods (__contains__/__getitem__/__iter__/__len__/
+    __eq__ etc.) never run and the gate never raises. Scalar value sanity (bool-ness,
+    positivity, range, end consistency) is snapshot-safe and left to _clean_errors,
+    which runs before any _snapshot call. The gate never mutates its input and performs
+    no I/O.
     """
-    if not isinstance(image, dict):
+    if type(image) is not dict:
         return False
     if "entries" not in image or "formatted" not in image or "capacity" not in image or "end" not in image:
         return False
-    if not isinstance(image["formatted"], (bool, int, str, bytes)):
+    if type(image["formatted"]) not in (bool, int, str, bytes):
         return False
-    if not isinstance(image["capacity"], (bool, int, str, bytes)):
+    if type(image["capacity"]) not in (bool, int, str, bytes):
         return False
-    if not isinstance(image["end"], (bool, int, str, bytes)):
+    if type(image["end"]) not in (bool, int, str, bytes):
         return False
-    if not isinstance(image["entries"], list):
+    if type(image["entries"]) is not list:
         return False
     for entry in image["entries"]:
-        if not isinstance(entry, dict):
+        if type(entry) is not dict:
             return False
         if "name" not in entry or "data" not in entry:
             return False
-        if not isinstance(entry["name"], (bytes, bytearray)):
+        if type(entry["name"]) not in (bytes, bytearray):
             return False
-        if not isinstance(entry["data"], (bytes, bytearray)):
+        if type(entry["data"]) not in (bytes, bytearray):
             return False
     return True
 

@@ -273,12 +273,15 @@ VERIFIED（真正 BIOS の確認）は 0 件。`release_eligible=false`。
   - `HarnessOutcome`: 判定層（入力検証・監査）の結果域。`{REFUSED, CORRUPTED}`。
     PROJECT-INVENTED の入力拒否・検証失敗であり、`MockStatus` とは別の型・別の層である。
   - 判定フロー `judge(image, name)`（`CORRUPTED` が `REFUSED` に優先する）:
-    0. `structure_gate(image)`: スナップショット不能（非 dict・キー欠落・`entries` 非 list・
-       非 dict 件・`name`/`data` 非 bytes 系・`formatted`/`capacity`/`end` が `bool/int/str/bytes` 以外の
-       `list/dict/bytearray/set/tuple/float/None` 等）なら `CORRUPTED`＋空画像規約。例外を投げない。
-       `bool/int/str/bytes` の異常値（例: `formatted=1`、`capacity="2048"`）は snapshot-able 異常として
+    0. `structure_gate(image)`: スナップショット不能（非 exact-dict・キー欠落・`entries` 非 exact-list・
+       非 exact-dict 件・`name`/`data` 非 exact-bytes/bytearray・`formatted`/`capacity`/`end` が
+       `type(value) in (bool/int/str/bytes)` 以外の `list/dict/bytearray/set/tuple/float/None` 等・
+       および同型の subclass 全般（int/str/bytes/dict/list/bytearray subclass。mutable attrs や
+       raising special method を持つ場合を含む））なら `CORRUPTED`＋空画像規約。例外を投げない。
+       exact `bool/int/str/bytes` の異常値（例: `formatted=1`、`capacity="2048"`）は snapshot-able 異常として
        入力同一スナップショットを返す（T18）。スカラ型の許可リストは可変物のエイリアス共有を防ぐためであり、
-       値の正当性（bool 性・正数・範囲・終端一致）は監査層が判定する。
+       値の正当性（bool 性・正数・範囲・終端一致）は監査層が判定する。exact-type 判定は当該層の
+       key 参照・反復より先に行うため subclass の special method は実行されない。
     1. `audit_image(image)`: 下記 CLEAN 不変条件を満たさなければ `CORRUPTED`＋入力同一スナップショット。
        `mock_delete` は呼ばない。画像は不変（N5）。`formatted == false` は監査対象外であり、
        `mock_delete` が `(NOT_FORMATTED, 同一画像)` を返す正常系（N2）と区別する。
