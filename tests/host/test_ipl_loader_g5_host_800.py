@@ -130,7 +130,7 @@ class BootPathDifferentialTest(unittest.TestCase):
         link = (ROOT / "src" / "cd_read_link.s").read_text(encoding="utf-8")
         self.assertIn("$2400", link)
         self.assertIn("INVALID_STATE", link)
-        dsp = (ROOT / "src" / "ex_dspoff.s").read_text(encoding="utf-8")
+        dsp = (ROOT / "src" / "ex_cr_family.s").read_text(encoding="utf-8")
         self.assertIn("$2502", dsp)
         self.assertIn("$2503", dsp)
         loader = (ROOT / "tests" / "integration" / "ipl_loader_rom.s").read_text(

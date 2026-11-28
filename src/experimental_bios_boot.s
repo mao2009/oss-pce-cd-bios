@@ -90,10 +90,8 @@ experimental_selection_prefix:
 ; src/overrides/slot_33.s exists. This entry lives in the BOOT region (link
 ; offsets >= 0x1000, outside the builder's first-4KiB identity window) and
 ; tools/build_experimental_bios_boot.py redirects the experimental $E099 table
-; entry to it. Contract is exactly src/ex_dspoff.s (single source via .include,
-; no duplicated logic): work-RAM shadow $2502/$2503 discipline, AND #$3F
-; immediate write, C=0 ok / C=1 unseeded reject, MPR0=$FF window with SEI, AR
-; left at 5, caller SP >= $05.
-.export experimental_slot_33
-experimental_slot_33:
-.include "ex_dspoff.s"
+; entry to it. Contract is exactly the NEED_CR33 head of src/ex_cr_family.s
+; (single source assembled+linked by the builder, no duplicated logic):
+; work-RAM shadow $2502/$2503 discipline, AND #$3F immediate write, C=0 ok /
+; C=1 unseeded reject, MPR0=$FF window with SEI, AR left at 5, caller SP >= $05.
+; (The experimental_slot_33 label itself is defined in src/ex_cr_family.s.)

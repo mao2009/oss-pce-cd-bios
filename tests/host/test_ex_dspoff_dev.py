@@ -1,16 +1,18 @@
-"""MODEL-ONLY host check of the DEV EX_DSPOFF fragment (slot $33, Issue #61).
+"""MODEL-ONLY host check of the DEV EX_DSPOFF head (slot $33, Issue #61).
 Not the System Card ABI.
 
-The fragment src/ex_dspoff.s reuses the DEV VDC CR display-family discipline of
+The NEED_CR33 head of src/ex_cr_family.s (Issue #843 single source for the
+whole CR family) reuses the DEV VDC CR display-family discipline of
 src/overrides/slot_2E.s (EX_BGON): CR-low shadow at $2502, magic $A5 at $2503,
 reserved $2504, MPR0=$FF window with SEI, AR left at 5, C=0 on ok / C=1 when the
 shadow is uninitialized, balanced stack, no RAM outside owned cells. The mask
 differs: AND #$3F clears BB+SB (bits 7+6) instead of setting BB. This test
 checks a Python model of that contract and static checks on the assembly
-source. It does NOT assemble or execute src/ex_dspoff.s, and the fragment is
-NOT linked into the DEV ROM (ROM-layout ceiling: OVERRIDES ends $E7FB, 5 bytes
-below the $E800 probe overlay; see docs/61-dspoff-contract.md). Keep host model
-checks and real-core checks distinct.
+source (the $33 head plus the shared reject/tail it branches to). It does NOT
+assemble or execute src/ex_cr_family.s, and the family unit is NOT linked
+into the DEV ROM (ROM-layout ceiling: OVERRIDES ends $E7FB, 5 bytes below the
+$E800 probe overlay; see docs/61-dspoff-contract.md). Keep host model checks
+and real-core checks distinct.
 """
 import json
 import re
@@ -19,7 +21,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-SRC = ROOT / "src" / "ex_dspoff.s"
+SRC = ROOT / "src" / "ex_cr_family.s"
 SPEC = ROOT / "spec" / "dev_implementations.json"
 
 sys.path.insert(0, str(ROOT / "tests" / "integration"))
@@ -33,7 +35,7 @@ def dspoff_model(shadow_lo, magic):
     """Project-own DEV contract: initialized shadow -> clear BB+SB, C=0
     (SETWRT-style result convention); uninitialized shadow -> reject with C=1
     and no VDC or non-stack RAM writes (the call's own transient PHP/PHA/JSR
-    stack slots are written and balanced, as documented in src/ex_dspoff.s).
+    stack slots are written and balanced, as documented in src/ex_cr_family.s).
     Returns (new_shadow_lo, new_magic, carry, vdc_written_or_None)."""
     if magic != 0xA5:
         return shadow_lo, magic, 1, None
@@ -166,10 +168,19 @@ class RamDiffScopeTests(unittest.TestCase):
 
 class AssemblyStaticTests(unittest.TestCase):
     def _code(self):
+        # Static scope is the NEED_CR33 head plus the shared reject/tail it
+        # branches to (Issue #843 single unit). The sibling $2C/$2B heads
+        # live in the same file but are out of scope here (their masks and
+        # opcodes are covered by their own host + real-core suites).
+        text = SRC.read_text(encoding="utf-8")
+        head = text.split(".ifdef NEED_CR33", 1)[1].split(".endif", 1)[0]
+        tail = text.split("cr_reject:", 1)[1]
         lines = []
-        for line in SRC.read_text(encoding="utf-8").splitlines():
+        for line in (head + "\n" + tail).splitlines():
             code = line.split(";", 1)[0]
-            if not code.strip() or code.strip().startswith((".", "ex_dspoff:")):
+            if not code.strip() or code.strip().startswith(
+                    (".", "ex_dspoff:", "experimental_slot_33:",
+                     "cr_reject:", "cr_tail_publish:")):
                 continue
             lines.append(code.strip())
         return lines
@@ -191,14 +202,15 @@ class AssemblyStaticTests(unittest.TestCase):
         self.assertIn("lda $2503", code)
         self.assertIn("cmp #$A5", code)
         self.assertIn("sta $2502", code)
-        # DSPOFF clears BB+SB; it must AND #$3F exactly once and never ORA.
+        # DSPOFF clears BB+SB; it must AND #$3F exactly once and never ORA
+        # (the ORA heads of the sibling $2C entry are out of scope here).
         self.assertIn("and #$3F", code)
         self.assertEqual(sum(1 for line in code if "and #$3F" in line), 1)
         self.assertFalse(any("ora " in line for line in code),
                          "DSPOFF must clear bits (AND), never set them (ORA)")
         self.assertEqual(code.count("sta a:$0002"), 1)
         self.assertEqual(code[-1], "rts")
-        self.assertIn(".export ex_dspoff", SRC.read_text(encoding="utf-8"))
+        self.assertIn(".export ex_dspoff, experimental_slot_33", SRC.read_text(encoding="utf-8"))
 
     def test_push_depth_matches_the_sp05_bound(self):
         code = self._code()
@@ -219,10 +231,17 @@ class AssemblyStaticTests(unittest.TestCase):
         code = "\n".join(self._code()).lower()
         self.assertNotRegex(code, r"\$20[0-9a-f]{2}")
         self.assertNotRegex(code, r"\$21[0-9a-f]{2}")
-        for mnemonic in ("bra", "bne", "bcc", "bcs", "jmp", "jsr", "rti",
+        # The head reaches the shared reject/tail by local branch (Issue #843:
+        # ca65 cannot branch to an imported symbol, so a split link would need
+        # JMPs and would not fit the BOOT budget). Exactly one BNE (unseeded
+        # -> shared reject) and one BRA (ok -> shared tail); no JMP/JSR/RTI/
+        # BRK and no read-modify-write opcodes.
+        for mnemonic in ("bcc", "bcs", "jmp", "jsr", "rti",
                          "brk", "inc", "dec", "asl", "lsr", "rol", "ror"):
             self.assertNotIn(mnemonic, code.split())
-        self.assertEqual(sum(1 for tok in code.split() if tok == "beq"), 1)
+        self.assertEqual(sum(1 for tok in code.split() if tok == "bne"), 1)
+        self.assertEqual(sum(1 for tok in code.split() if tok == "bra"), 1)
+        self.assertEqual(sum(1 for tok in code.split() if tok == "beq"), 0)
 
     def test_fragment_is_not_linked_into_the_dev_rom(self):
         # The ceiling guard: no src/overrides/slot_33.s may exist on this
