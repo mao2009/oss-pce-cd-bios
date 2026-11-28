@@ -592,8 +592,21 @@ def verify_media_unchanged(snap: dict) -> None:
             raise ValueError("FAIL commercial observation: media changed during probe")
 
 
+def evidence_runs(records):
+    """Project persisted per-run evidence (structural ints/bools only).
+
+    Additive schema: each RUN keeps `apicall_truncated` (bool) plus
+    `apicall_dropped` (int >= 0); readers use `.get(..., default)` so older
+    evidence without the key still loads. Truncation invariant:
+    truncated is True iff dropped > 0.
+    """
+    return [{k: r[k] for k in ("cycle", "reason", "pc", "x", "halt_confirmed", "step")} |
+            {"apicall_truncated": r.get("apicall_truncated", False),
+             "apicall_dropped": r.get("apicall_dropped", 0)} for r in records["RUN"]]
+
+
 def synthetic_case(tmp: Path, probe, bios, stub, name, defines, expect_slot, expect_method, budget=20_000_000,
-                   origin=0x3000, sta=0x3000, entry=None, nsec=1, public=False):
+                   origin=0x3000, sta=0x3000, entry=None, nsec=1, public=False, max_apicalls=None):
     if entry is None:
         entry = origin
     stub_addr = stub["api_unimplemented"]
@@ -646,7 +659,8 @@ def synthetic_case(tmp: Path, probe, bios, stub, name, defines, expect_slot, exp
                       f"cd_halt_fail {stub['cd_halt_fail']:04x}\n"
                       f"cd_unexpected_interrupt {stub['cd_unexpected_interrupt']:04x}\n"
                       f"api_unimplemented {stub['api_unimplemented']:04x}\n", encoding="ascii")
-    records = run_probe(probe, bios, cue, labels, budget, "synthetic")
+    records = run_probe(probe, bios, cue, labels, budget, "synthetic",
+                        max_apicalls=max_apicalls)
     verdicts = []
     for cycle in ("cold", "warm"):
         calls = [c for c in records["APICALL"] if c["cycle"] == cycle]
@@ -720,7 +734,12 @@ def main():
                              "stat-only from the selected CUE (mutually exclusive with --commercial-rom)")
     parser.add_argument("--commercial-loader-format", choices=("public", "dev"), default="public",
                         help="IPL loader format for --commercial-auto-loader (default public)")
+    parser.add_argument("--max-apicalls", type=int, default=None,
+                        help="bounded APICALL capacity 1..64 (default: historical 8; "
+                             "forwarded to the probe as argv[6] when explicit)")
     args = parser.parse_args()
+    if args.max_apicalls is not None and not 1 <= args.max_apicalls <= 64:
+        parser.error("--max-apicalls must be an int in 1..64")
 
     has_commercial_args = (
         args.commercial_rom is not None or args.commercial_cue is not None
@@ -808,7 +827,8 @@ def main():
             raise SystemExit(f"FAIL commercial labels: {error}")
         budget = 80_000_000
         try:
-            records = run_probe(probe, commercial_rom, cue_path, labels_path, budget, "commercial")
+            records = run_probe(probe, commercial_rom, cue_path, labels_path, budget, "commercial",
+                                max_apicalls=args.max_apicalls)
         except ValueError as error:
             raise SystemExit(f"FAIL commercial observation: {error}")
         try:
@@ -821,13 +841,13 @@ def main():
             calls = [c for c in records["APICALL"] if c["cycle"] == cycle]
             runs = [r for r in records["RUN"] if r["cycle"] == cycle]
             trunc = runs[0].get("apicall_truncated", False) if runs else False
-            print(f"cycle={cycle} apicalls={len(calls)} truncated={trunc} runs={[(r['reason'], r['halt_confirmed']) for r in runs]}")
+            dropped = runs[0].get("apicall_dropped", 0) if runs else 0
+            print(f"cycle={cycle} apicalls={len(calls)} truncated={trunc} dropped={dropped} runs={[(r['reason'], r['halt_confirmed']) for r in runs]}")
             for c in calls:
                 print(f"  caller={hex(c['caller_pc'])} entry={hex(c['entry_pc'])} table={c['in_table']} slot={c['slot']} "
                       f"delta={c['sp_delta']} method={classify_apicall(c, commercial_stub)} return={c.get('stack_check')}")
         evidence = {"verdict": verdict, "detail": detail, "apicalls": records["APICALL"],
-                    "runs": [{k: r[k] for k in ("cycle", "reason", "pc", "x", "halt_confirmed", "step")} |
-                             {"apicall_truncated": r.get("apicall_truncated", False)} for r in records["RUN"]]}
+                    "runs": evidence_runs(records)}
         try:
             save_commercial_evidence(args.commercial_output, json.dumps(evidence, indent=2, sort_keys=True) + "\n")
         except ValueError as error:
@@ -860,7 +880,8 @@ def main():
             ("spin", ["-DSPIN"], None, "SPIN", 500_000),
         ]
         for name, defines, slot, method, budget in cases:
-            verdicts = synthetic_case(tmp, probe, bios, stub, name, defines, slot, method, budget)
+            verdicts = synthetic_case(tmp, probe, bios, stub, name, defines, slot, method, budget,
+                                      max_apicalls=args.max_apicalls)
             print(f"PASS {name} cold/warm method={method} slot={slot}")
         # High-region callers (PUBLIC loader, entry >= $8000): the probe must
         # watch the whole PUBLIC load range ($3000-$DFFF), not only $3000-$7FFF.
@@ -884,7 +905,8 @@ def main():
         for name, defines, slot, method, origin, nsec in high_cases:
             budget = 500_000 if method == "SPIN" else 20_000_000
             synthetic_case(tmp, probe, pub_bios, pub_stub, name, defines, slot, method, budget,
-                           origin=origin, sta=0x3000, entry=origin, nsec=nsec, public=True)
+                           origin=origin, sta=0x3000, entry=origin, nsec=nsec, public=True,
+                           max_apicalls=args.max_apicalls)
             print(f"PASS {name} cold/warm method={method} slot={slot} origin=${origin:04X}")
     print("PASS synthetic API-entry controls (JSR/JMP/DIRECT/NOCALL/SPIN distinguished, incl. $8000/$9000/$C000 callers)")
     return 0
